@@ -1,4 +1,4 @@
-"""대상 영역 테두리 — 대기(녹색) / 녹화(빨강·주황)."""
+"""대상(전체/창) 영역 테두리 — 녹화 대기(녹색) / 녹화 중(빨강·주황)."""
 from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, QRect
 from PySide6.QtGui import QPainter, QColor, QPen, QFont
@@ -8,27 +8,27 @@ from ...capture.targets import CaptureTarget
 from ..capture_exclude import exclude_from_capture
 
 
-_COLOR_STANDBY = QColor("#2E7D32")   # 녹색 — 녹화 대기
-_COLOR_VIDEO = QColor("#E53935")     # 빨강 — 영상 녹화
-_COLOR_GIF = QColor("#FFB300")       # 주황 — GIF 녹화
+_COLOR_STANDBY = QColor("#2E7D32")
+_COLOR_VIDEO = QColor("#E53935")
+_COLOR_GIF = QColor("#FFB300")
 
 
 class RecordingBorder(QWidget):
     """
-    대상 영역 둘레에 테두리 + 좌상단 라벨을 항상 위에 그림.
-    - 상태: 'standby' (녹색 실선, 라벨 없음)
-             'recording' (빨강 실선 또는 주황 점선 + 경과 시간 라벨)
-    - 테두리는 캡처 영역 바깥에 그려지고, WDA_EXCLUDEFROMCAPTURE 로 제외되어
-      녹화 결과에 들어가지 않음.
+    target.current_rect() 를 매 틱 따라가며 그 주변에 테두리 + 좌상단 라벨 표시.
+    - 상태: standby (녹색) / recording (빨강 또는 주황 커스텀 점선)
+    - 캡처에서 제외되도록 WDA_EXCLUDEFROMCAPTURE 적용
     """
-    BORDER_THICKNESS = 3
-    LABEL_HEIGHT = 24
+    BORDER_THICKNESS = 4
+    CORNER_THICKNESS = 8
+    CORNER_LENGTH = 22
+    LABEL_HEIGHT = 26
 
     def __init__(self, target: CaptureTarget, mode: str = "video"):
         super().__init__()
         self.target = target
-        self.mode = mode                 # "video" | "gif"
-        self._state = "standby"          # "standby" | "recording"
+        self.mode = mode
+        self._state = "standby"
         self._elapsed = 0
 
         self.setWindowFlag(Qt.FramelessWindowHint)
@@ -46,7 +46,6 @@ class RecordingBorder(QWidget):
         self._sec_timer = QTimer(self)
         self._sec_timer.setInterval(1000)
         self._sec_timer.timeout.connect(self._sec)
-        # 녹화 상태일 때만 start
 
         self._excluded = False
 
@@ -83,52 +82,68 @@ class RecordingBorder(QWidget):
             rect.h + 2 * t + self.LABEL_HEIGHT,
         )
         self.show()
-        # show() 이후에 winId가 유효해짐 — 한 번만 적용
         if not self._excluded:
             self._excluded = exclude_from_capture(self)
 
-    def _current_color_and_style(self) -> tuple[QColor, Qt.PenStyle]:
+    def _current_color_and_dash(self):
         if self._state == "standby":
-            return _COLOR_STANDBY, Qt.SolidLine
+            return _COLOR_STANDBY, None
         if self.mode == "gif":
-            return _COLOR_GIF, Qt.DashLine
-        return _COLOR_VIDEO, Qt.SolidLine
+            return _COLOR_GIF, [8, 2]
+        return _COLOR_VIDEO, None
 
     def paintEvent(self, _):
         p = QPainter(self)
-        color, style = self._current_color_and_style()
-        pen = QPen(color, self.BORDER_THICKNESS, style)
-        p.setPen(pen)
+        color, dash = self._current_color_and_dash()
 
-        border = QRect(
-            self.BORDER_THICKNESS // 2,
-            self.LABEL_HEIGHT + self.BORDER_THICKNESS // 2,
-            self.width() - self.BORDER_THICKNESS,
-            self.height() - self.LABEL_HEIGHT - self.BORDER_THICKNESS,
-        )
-        p.drawRect(border)
+        w, h = self.width(), self.height()
+        bt = self.BORDER_THICKNESS
+        lh = self.LABEL_HEIGHT
+
+        pen = QPen(color, bt)
+        if dash is not None:
+            pen.setStyle(Qt.CustomDashLine)
+            pen.setDashPattern(dash)
+        else:
+            pen.setStyle(Qt.SolidLine)
+        pen.setCapStyle(Qt.FlatCap)
+        pen.setJoinStyle(Qt.MiterJoin)
+        p.setPen(pen)
+        border_rect = QRect(bt // 2, lh + bt // 2, w - bt, h - lh - bt)
+        p.drawRect(border_rect)
+
+        # 모서리 굵은 L자
+        corner_pen = QPen(color, self.CORNER_THICKNESS)
+        corner_pen.setCapStyle(Qt.FlatCap)
+        p.setPen(corner_pen)
+        cl = self.CORNER_LENGTH
+        t = self.CORNER_THICKNESS // 2
+        rx0, ry0 = 0, lh
+        rx1, ry1 = w - 1, h - 1
+        p.drawLine(rx0 + t, ry0 + t, rx0 + t + cl, ry0 + t)
+        p.drawLine(rx0 + t, ry0 + t, rx0 + t, ry0 + t + cl)
+        p.drawLine(rx1 - t - cl, ry0 + t, rx1 - t, ry0 + t)
+        p.drawLine(rx1 - t, ry0 + t, rx1 - t, ry0 + t + cl)
+        p.drawLine(rx0 + t, ry1 - t - cl, rx0 + t, ry1 - t)
+        p.drawLine(rx0 + t, ry1 - t, rx0 + t + cl, ry1 - t)
+        p.drawLine(rx1 - t - cl, ry1 - t, rx1 - t, ry1 - t)
+        p.drawLine(rx1 - t, ry1 - t - cl, rx1 - t, ry1 - t)
 
         # 라벨
         if self._state == "standby":
             label = "◇ 대기 중"
         else:
-            h, rem = divmod(self._elapsed, 3600)
+            h_, rem = divmod(self._elapsed, 3600)
             m, s = divmod(rem, 60)
             prefix = "● REC" if self.mode == "video" else "◆ GIF"
-            label = f"{prefix} {h:02d}:{m:02d}:{s:02d}"
-
+            label = f"{prefix} {h_:02d}:{m:02d}:{s:02d}"
+        p.fillRect(QRect(0, 0, min(w, 180), lh), color)
         font = QFont(); font.setBold(True); font.setPointSize(10)
         p.setFont(font)
-        p.fillRect(QRect(0, 0, 140, self.LABEL_HEIGHT), color)
         p.setPen(Qt.white)
-        p.drawText(
-            QRect(6, 0, 140, self.LABEL_HEIGHT),
-            Qt.AlignVCenter | Qt.AlignLeft,
-            label,
-        )
+        p.drawText(QRect(8, 0, min(w, 180) - 8, lh), Qt.AlignVCenter | Qt.AlignLeft, label)
 
     def stop(self):
-        """완전히 닫기 (대기 상태에서 취소하거나 앱 종료 시)."""
         self._tick_timer.stop()
         self._sec_timer.stop()
         self.close()

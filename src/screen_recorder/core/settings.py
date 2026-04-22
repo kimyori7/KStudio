@@ -11,6 +11,11 @@ class GeneralSettings:
     output_dir: str = ""  # 빈 문자열이면 ~/Videos/ScreenRecorder
     filename_pattern: str = "rec_{date}_{time}"
     mode: str = "video"  # "video" | "gif"
+    # 지정 영역 모드의 마지막 창 위치/크기. -1이면 미설정(최초 실행 시 기본값 사용).
+    region_x: int = -1
+    region_y: int = -1
+    region_w: int = -1
+    region_h: int = -1
 
 
 @dataclass

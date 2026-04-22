@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import pygetwindow as gw
 
-from PySide6.QtCore import Qt, QEventLoop, Slot
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget,
     QMessageBox, QApplication, QSystemTrayIcon, QInputDialog,
@@ -14,7 +15,7 @@ from screen_recorder.core.settings import AppSettings
 from screen_recorder.core.state import RecorderState
 from screen_recorder.hotkey.manager import HotkeyManager
 from screen_recorder.capture.targets import (
-    FullScreenTarget, RegionTarget, WindowTarget, Rect, CaptureTarget,
+    FullScreenTarget, RegionTarget, WindowTarget, Rect,
 )
 
 from .sidebar import Sidebar
@@ -22,8 +23,8 @@ from .control_bar import ControlBar
 from .status_bar import StatusBar
 from .tray import TrayController
 from .capture_exclude import exclude_from_capture
-from .overlay.region_selector import RegionSelector
 from .overlay.recording_border import RecordingBorder
+from .overlay.adjustable_region import AdjustableRegionBorder
 from .overlay.mini_control import MiniControl
 from .panels.general_panel import GeneralPanel
 from .panels.video_panel import VideoPanel
@@ -42,6 +43,7 @@ class MainWindow(QMainWindow):
         self.app_settings = settings
         self.ffmpeg_path = ffmpeg_path
 
+        # ---------- 레이아웃 ----------
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
@@ -68,7 +70,7 @@ class MainWindow(QMainWindow):
         self.status_bar.setFixedHeight(28)
         outer.addWidget(self.status_bar)
 
-        # Panels
+        # ---------- 패널 ----------
         self.panels: dict[str, QWidget] = {
             "general": GeneralPanel(self.app_settings.general),
             "video": VideoPanel(self.app_settings.video),
@@ -79,28 +81,24 @@ class MainWindow(QMainWindow):
         }
         for panel in self.panels.values():
             self.panel_stack.addWidget(panel)
-
         self.sidebar.panel_selected.connect(self._switch_panel)
 
-        # Controller + hotkey + tray
+        # ---------- 컨트롤러 & 부수 모듈 ----------
         self.controller = RecorderController(self.app_settings, self.ffmpeg_path)
         self.hotkeys = HotkeyManager()
         self.tray = TrayController(self)
 
-        # 오버레이/컨트롤 상태
-        self._border: RecordingBorder | None = None   # 상시 표시용 (대기=녹색 / 녹화=빨강)
+        self._border: QWidget | None = None  # RecordingBorder 또는 AdjustableRegionBorder
         self._mini: MiniControl | None = None
-        self._saved_region: Rect | None = None
-        self._region_selector: RegionSelector | None = None
-        self._self_excluded = False  # 메인 창 캡처 제외 1회 적용 플래그
+        self._self_excluded = False
 
-        # Register hotkey
+        # ---------- 단축키 등록 ----------
         try:
             self.hotkeys.register(self.app_settings.hotkey.toggle_record, self._on_hotkey_toggle)
         except Exception:
             pass
 
-        # Signals
+        # ---------- 시그널 연결 ----------
         self.control_bar.start_clicked.connect(self._on_start_clicked)
         self.control_bar.stop_clicked.connect(self._on_stop_clicked)
         self.control_bar.pause_clicked.connect(self._on_pause_clicked)
@@ -114,20 +112,37 @@ class MainWindow(QMainWindow):
         self.tray.quit_requested.connect(QApplication.instance().quit)
         self.tray.toggle_record.connect(self._on_hotkey_toggle)
 
-        self.panels["hotkey"].settings_changed.connect(self._reregister_hotkey)
+        # 모드(영상/GIF) 변경 시 현재 보이는 테두리의 색/점선 패턴 즉시 반영
+        self.panels["general"].settings_changed.connect(self._on_general_changed)
 
-    # ---------- 기본 윈도우 ----------
+        # 단축키 패널 편집 중에는 전역 훅 임시 해제
+        hotkey_panel = self.panels["hotkey"]
+        hotkey_panel.editing_started.connect(self._pause_hotkey)
+        hotkey_panel.editing_finished.connect(self._resume_hotkey)
+        hotkey_panel.settings_changed.connect(self._reregister_hotkey)
+
+    # ---------- 메인 창 ----------
 
     def showEvent(self, e):
         super().showEvent(e)
         if not self._self_excluded:
             self._self_excluded = exclude_from_capture(self)
 
-    # ---------- 패널 전환 ----------
-
     def _switch_panel(self, key: str) -> None:
         if key in self.panels:
             self.panel_stack.setCurrentWidget(self.panels[key])
+
+    # ---------- 단축키 관리 ----------
+
+    def _pause_hotkey(self) -> None:
+        """단축키 입력 중에는 글로벌 훅 해제 (F9 눌러도 녹화 안 걸리게)."""
+        try:
+            self.hotkeys.unregister()
+        except Exception:
+            pass
+
+    def _resume_hotkey(self) -> None:
+        self._reregister_hotkey()
 
     def _reregister_hotkey(self) -> None:
         try:
@@ -135,79 +150,76 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ---------- 대상(Target) 선택 ----------
+    # ---------- 대상 / 테두리 ----------
 
     def _on_target_changed(self, kind: str) -> None:
         if kind == "region":
-            self._pick_region()
+            self._show_region_border()
         else:
-            # 영역 아닌 다른 모드로 바뀌면 대기 테두리 내림
-            self._saved_region = None
             self._hide_border()
 
-    def _pick_region(self) -> None:
-        if self._region_selector is not None:
-            self._region_selector.close()
-        self._region_selector = RegionSelector()
-        self._region_selector.region_selected.connect(self._on_region_picked)
-        self._region_selector.cancelled.connect(self._on_region_cancelled)
-        self._region_selector.show()
-        # 영역 선택 오버레이 자체도 녹화에 안 찍히게
-        exclude_from_capture(self._region_selector)
-        self._region_selector.raise_()
-        self._region_selector.activateWindow()
+    def _on_general_changed(self) -> None:
+        # 모드(영상/GIF)가 바뀌었을 수 있으니 현재 테두리에 반영
+        if self._border is not None and hasattr(self._border, "set_mode"):
+            self._border.set_mode(self.app_settings.general.mode)
 
-    def _on_region_picked(self, rect) -> None:
-        self._saved_region = rect
-        self._region_selector = None
-        self.status_bar.state_label.setText(
-            f"● 대기 중 (영역 {rect.w}x{rect.h} @ {rect.x},{rect.y})"
-        )
-        # 대기용 녹색 테두리 표시
-        self._show_standby_border(RegionTarget(rect))
+    def _default_region_geometry(self) -> tuple[int, int, int, int]:
+        """화면 중앙에 1/4 크기 (가로/세로 각각 절반)."""
+        screens = QGuiApplication.screens()
+        if not screens:
+            return (100, 100, 960, 540)
+        g = screens[0].geometry()
+        w = max(200, g.width() // 2)
+        h = max(150, g.height() // 2)
+        x = g.x() + (g.width() - w) // 2
+        y = g.y() + (g.height() - h) // 2
+        return (x, y, w, h)
 
-    def _on_region_cancelled(self) -> None:
-        self._region_selector = None
+    def _saved_or_default_region(self) -> tuple[int, int, int, int]:
+        s = self.app_settings.general
+        if s.region_x >= 0 and s.region_y >= 0 and s.region_w > 0 and s.region_h > 0:
+            return (s.region_x, s.region_y, s.region_w, s.region_h)
+        return self._default_region_geometry()
 
-    # ---------- 테두리 ----------
-
-    def _show_standby_border(self, target: CaptureTarget) -> None:
-        mode = self.app_settings.general.mode
+    def _show_region_border(self) -> None:
         self._hide_border()
-        self._border = RecordingBorder(target, mode=mode)
+        geom = self._saved_or_default_region()
+        self._border = AdjustableRegionBorder(geom, mode=self.app_settings.general.mode)
+        self._border.rect_changed.connect(self._on_region_moved)
         self._border.show()
-        # show() 직후 WDA 적용 (_tick에서도 다시 시도됨)
         exclude_from_capture(self._border)
+        x, y, w, h = geom
+        self.status_bar.state_label.setText(
+            f"● 대기 중 (영역 {w}×{h} @ {x},{y})"
+        )
+
+    def _on_region_moved(self, x: int, y: int, w: int, h: int) -> None:
+        # 설정에 저장 (다음 실행에도 유지)
+        g = self.app_settings.general
+        g.region_x, g.region_y, g.region_w, g.region_h = x, y, w, h
+        self.status_bar.state_label.setText(f"● 대기 중 (영역 {w}×{h} @ {x},{y})")
 
     def _hide_border(self) -> None:
         if self._border is not None:
-            self._border.stop()
+            try:
+                self._border.stop()
+            except Exception:
+                self._border.close()
             self._border = None
 
-    # ---------- 대상 만들기 (시작 버튼) ----------
+    # ---------- 시작 / 정지 ----------
 
     def _build_target(self):
         kind = self.control_bar.target_combo.currentData()
         if kind == "fullscreen":
             return FullScreenTarget()
         if kind == "region":
-            if self._saved_region is None:
-                # 저장된 영역 없으면 즉시 고르게 모달처럼 처리
-                loop = QEventLoop()
-                sel = RegionSelector()
-                captured = {"rect": None}
-                sel.region_selected.connect(lambda r: captured.update(rect=r))
-                sel.region_selected.connect(loop.quit)
-                sel.cancelled.connect(loop.quit)
-                sel.show()
-                exclude_from_capture(sel)
-                sel.raise_()
-                sel.activateWindow()
-                loop.exec()
-                if captured["rect"] is None:
-                    return None
-                self._saved_region = captured["rect"]
-            return RegionTarget(self._saved_region)
+            # AdjustableRegionBorder가 있으면 그 geometry를 스냅샷
+            if isinstance(self._border, AdjustableRegionBorder):
+                x, y, w, h = self._border.current_geometry()
+            else:
+                x, y, w, h = self._saved_or_default_region()
+            return RegionTarget(Rect(x, y, w, h))
         if kind == "window":
             wins = [w for w in gw.getAllWindows() if w.title and w.visible]
             if not wins:
@@ -222,7 +234,10 @@ class MainWindow(QMainWindow):
             return WindowTarget(chosen) if chosen else None
         return None
 
-    # ---------- 녹화 제어 ----------
+    def _should_minimize_main(self) -> bool:
+        """메인 창을 트레이로 숨길지 결정 — 미니 컨트롤이 꺼져있으면 항상 False."""
+        prefs = self.app_settings.preferences
+        return prefs.use_mini_control and prefs.minimize_to_tray
 
     def _on_start_clicked(self):
         target = self._build_target()
@@ -234,22 +249,24 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "녹화 시작 실패", str(e))
             return
 
-        # 이미 대기 테두리가 있으면 그대로 recording 으로 전환,
-        # 없으면 새로 만들어서 바로 recording 상태로 표시
-        if self._border is None:
+        kind = self.control_bar.target_combo.currentData()
+        # 영역 모드: 이미 있는 AdjustableRegionBorder 를 recording 으로 전환
+        if kind == "region" and isinstance(self._border, AdjustableRegionBorder):
+            self._border.set_mode(self.app_settings.general.mode)
+            self._border.start_recording()
+        else:
+            # 전체/창 모드: 따라다니는 RecordingBorder 생성
+            self._hide_border()
             self._border = RecordingBorder(target, mode=self.app_settings.general.mode)
             self._border.show()
             exclude_from_capture(self._border)
-        else:
-            self._border.target = target
-            self._border.set_mode(self.app_settings.general.mode)
-        self._border.start_recording()
+            self._border.start_recording()
 
-        # 트레이 최소화 (사용자 옵션)
-        if self.app_settings.preferences.minimize_to_tray:
+        # 메인 창 트레이로 숨김 (미니 컨트롤 사용 + 트레이 옵션 ON 일 때만)
+        if self._should_minimize_main():
             self.hide()
 
-        # 미니 컨트롤 (사용자 옵션)
+        # 미니 컨트롤 표시 (옵션)
         if self.app_settings.preferences.use_mini_control:
             self._mini = MiniControl()
             self._mini.stop_clicked.connect(self._on_stop_clicked)
@@ -262,14 +279,15 @@ class MainWindow(QMainWindow):
         if self._mini:
             self._mini.stop()
             self._mini = None
-        if self._border:
-            if self._saved_region is not None and self.control_bar.target_combo.currentData() == "region":
-                # 영역 모드면 대기 테두리 유지
-                self._border.stop_recording()
-            else:
-                # 전체화면/창 모드는 테두리 내림
-                self._hide_border()
-        if self.app_settings.preferences.minimize_to_tray:
+
+        kind = self.control_bar.target_combo.currentData()
+        if kind == "region" and isinstance(self._border, AdjustableRegionBorder):
+            # 영역 모드는 대기 상태로 복귀 (계속 표시)
+            self._border.stop_recording()
+        else:
+            self._hide_border()
+
+        if self._should_minimize_main():
             self.showNormal()
 
     def _on_pause_clicked(self):
@@ -305,12 +323,9 @@ class MainWindow(QMainWindow):
             ret = QMessageBox.question(self, "종료", "녹화 중입니다. 정지하고 닫을까요?")
             if ret == QMessageBox.Yes:
                 self._on_stop_clicked()
-                self.hotkeys.unregister()
-                self._hide_border()
-                e.accept()
             else:
                 e.ignore()
-        else:
-            self.hotkeys.unregister()
-            self._hide_border()
-            e.accept()
+                return
+        self.hotkeys.unregister()
+        self._hide_border()
+        e.accept()
