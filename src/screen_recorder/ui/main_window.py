@@ -210,7 +210,7 @@ class MainWindow(QMainWindow):
     # ---------- 시작 / 정지 ----------
 
     def _build_target(self):
-        kind = self.control_bar.target_combo.currentData()
+        kind = self.control_bar.current_target()
         if kind == "fullscreen":
             return FullScreenTarget()
         if kind == "region":
@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "녹화 시작 실패", str(e))
             return
 
-        kind = self.control_bar.target_combo.currentData()
+        kind = self.control_bar.current_target()
         # 영역 모드: 이미 있는 AdjustableRegionBorder 를 recording 으로 전환
         if kind == "region" and isinstance(self._border, AdjustableRegionBorder):
             self._border.set_mode(self.app_settings.general.mode)
@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
             self._mini.stop()
             self._mini = None
 
-        kind = self.control_bar.target_combo.currentData()
+        kind = self.control_bar.current_target()
         if kind == "region" and isinstance(self._border, AdjustableRegionBorder):
             # 영역 모드는 대기 상태로 복귀 (계속 표시)
             self._border.stop_recording()
