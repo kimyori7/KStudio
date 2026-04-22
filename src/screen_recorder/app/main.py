@@ -14,6 +14,11 @@ SETTINGS_PATH = Path.home() / "AppData" / "Local" / "ScreenRecorder" / "settings
 
 
 def main() -> int:
+    from screen_recorder.core.logging_setup import setup_logging
+    setup_logging()
+    import logging
+    logging.info("Screen Recorder started")
+
     app = QApplication(sys.argv)
 
     ffmpeg = find_ffmpeg()
