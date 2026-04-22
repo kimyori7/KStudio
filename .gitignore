@@ -23,3 +23,17 @@ logs/
 *.log
 tmp/
 recordings/
+Video/
+
+# Recording output files
+*.mp4
+*.mkv
+*.webm
+*.gif
+*.aac
+*.raw
+*.wav
+
+# Bundled ffmpeg binaries (too large for git; install via PATH or bin/)
+bin/
+

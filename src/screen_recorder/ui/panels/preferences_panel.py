@@ -17,9 +17,13 @@ class PreferencesPanel(QWidget):
         self.autostart.setChecked(settings.autostart)
         form.addRow(self.autostart)
 
-        self.tray = QCheckBox("최소화 시 트레이로")
+        self.tray = QCheckBox("녹화 중 메인 창을 트레이로 숨기기")
         self.tray.setChecked(settings.minimize_to_tray)
         form.addRow(self.tray)
+
+        self.mini_control = QCheckBox("녹화 중 미니 컨트롤(⏹ ⏸) 표시")
+        self.mini_control.setChecked(settings.use_mini_control)
+        form.addRow(self.mini_control)
 
         self.lang = QComboBox()
         self.lang.addItem("한국어", "ko")
@@ -29,10 +33,12 @@ class PreferencesPanel(QWidget):
 
         self.autostart.toggled.connect(self._sync)
         self.tray.toggled.connect(self._sync)
+        self.mini_control.toggled.connect(self._sync)
         self.lang.currentIndexChanged.connect(self._sync)
 
     def _sync(self):
         self.settings.autostart = self.autostart.isChecked()
         self.settings.minimize_to_tray = self.tray.isChecked()
+        self.settings.use_mini_control = self.mini_control.isChecked()
         self.settings.language = self.lang.currentData()
         self.settings_changed.emit()

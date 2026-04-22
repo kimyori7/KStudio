@@ -4,7 +4,7 @@ from PySide6.QtWidgets import QListWidget, QListWidgetItem
 
 
 SIDEBAR_ITEMS = [
-    ("general",     "📺 일반"),
+    ("general",     "📺 녹화"),
     ("video",       "🎬 영상"),
     ("gif",         "🎞 GIF"),
     ("sound",       "🔊 사운드"),

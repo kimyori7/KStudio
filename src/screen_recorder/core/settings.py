@@ -45,6 +45,7 @@ class HotkeySettings:
 class PreferencesSettings:
     autostart: bool = False
     minimize_to_tray: bool = True
+    use_mini_control: bool = True
     language: str = "ko"
 
 
