@@ -51,6 +51,10 @@ class MainWindow(QMainWindow):
         self.panels["video"] = VideoPanel(self.app_settings.video)
         self.panel_stack.addWidget(self.panels["video"])
 
+        from .panels.gif_panel import GifPanel
+        self.panels["gif"] = GifPanel(self.app_settings.gif)
+        self.panel_stack.addWidget(self.panels["gif"])
+
         self.sidebar.panel_selected.connect(self._switch_panel)
 
     def _switch_panel(self, key: str) -> None:
