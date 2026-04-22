@@ -55,6 +55,10 @@ class MainWindow(QMainWindow):
         self.panels["gif"] = GifPanel(self.app_settings.gif)
         self.panel_stack.addWidget(self.panels["gif"])
 
+        from .panels.sound_panel import SoundPanel
+        self.panels["sound"] = SoundPanel(self.app_settings.sound)
+        self.panel_stack.addWidget(self.panels["sound"])
+
         self.sidebar.panel_selected.connect(self._switch_panel)
 
     def _switch_panel(self, key: str) -> None:
