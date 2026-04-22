@@ -63,6 +63,10 @@ class MainWindow(QMainWindow):
         self.panels["hotkey"] = HotkeyPanel(self.app_settings.hotkey)
         self.panel_stack.addWidget(self.panels["hotkey"])
 
+        from .panels.preferences_panel import PreferencesPanel
+        self.panels["preferences"] = PreferencesPanel(self.app_settings.preferences)
+        self.panel_stack.addWidget(self.panels["preferences"])
+
         self.sidebar.panel_selected.connect(self._switch_panel)
 
     def _switch_panel(self, key: str) -> None:
