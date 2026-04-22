@@ -25,7 +25,7 @@ class ControlBar(QWidget):
         self.target_combo.addItem("전체 화면", "fullscreen")
         self.target_combo.addItem("특정 창", "window")
         self.target_combo.addItem("지정 영역", "region")
-        self.target_combo.currentIndexChanged.connect(
+        self.target_combo.activated.connect(
             lambda _: self.target_changed.emit(self.target_combo.currentData())
         )
         layout.addWidget(self.target_combo)

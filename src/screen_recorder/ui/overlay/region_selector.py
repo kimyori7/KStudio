@@ -46,9 +46,9 @@ class RegionSelector(QWidget):
     def mouseDoubleClickEvent(self, _):
         self._commit()
 
-    def mouseReleaseEvent(self, _):
-        if self._rect.isValid() and self._rect.width() > 5 and self._rect.height() > 5:
-            pass
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self._rect.isValid() and self._rect.width() > 5 and self._rect.height() > 5:
+            self._commit()
 
     def _commit(self):
         if self._rect.isValid() and self._rect.width() > 5:

@@ -1,7 +1,11 @@
 """QApplication 진입점."""
 from __future__ import annotations
+import os
 import sys
 from pathlib import Path
+
+# Qt의 DPI awareness 경고 숨김 (이미 프로세스 DPI가 설정된 경우 Qt가 재설정 못해서 생기는 무해한 경고)
+os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.window=false")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 

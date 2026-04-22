@@ -14,7 +14,7 @@ from screen_recorder.core.settings import AppSettings
 from screen_recorder.core.state import RecorderState
 from screen_recorder.hotkey.manager import HotkeyManager
 from screen_recorder.capture.targets import (
-    FullScreenTarget, RegionTarget, WindowTarget,
+    FullScreenTarget, RegionTarget, WindowTarget, Rect,
 )
 
 from .sidebar import Sidebar
@@ -87,6 +87,8 @@ class MainWindow(QMainWindow):
         self.tray = TrayController(self)
         self._border: RecordingBorder | None = None
         self._mini: MiniControl | None = None
+        self._saved_region: Rect | None = None
+        self._region_selector: RegionSelector | None = None
 
         # Register hotkey
         try:
@@ -98,6 +100,7 @@ class MainWindow(QMainWindow):
         self.control_bar.start_clicked.connect(self._on_start_clicked)
         self.control_bar.stop_clicked.connect(self._on_stop_clicked)
         self.control_bar.pause_clicked.connect(self._on_pause_clicked)
+        self.control_bar.target_changed.connect(self._on_target_changed)
 
         self.controller.state_changed.connect(self._on_state_changed)
         self.controller.recording_finished.connect(self._on_finished)
@@ -119,22 +122,53 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _on_target_changed(self, kind: str) -> None:
+        if kind == "region":
+            self._pick_region()
+
+    def _pick_region(self) -> None:
+        """풀스크린 오버레이를 띄워 영역을 선택받아 self._saved_region에 저장."""
+        # 이전 선택창이 살아있으면 닫기
+        if self._region_selector is not None:
+            self._region_selector.close()
+        self._region_selector = RegionSelector()
+        self._region_selector.region_selected.connect(self._on_region_picked)
+        self._region_selector.cancelled.connect(self._on_region_cancelled)
+        self._region_selector.show()
+        self._region_selector.raise_()
+        self._region_selector.activateWindow()
+
+    def _on_region_picked(self, rect) -> None:
+        self._saved_region = rect
+        self._region_selector = None
+        self.status_bar.state_label.setText(
+            f"● 대기 중 (영역 {rect.w}x{rect.h} @ {rect.x},{rect.y})"
+        )
+
+    def _on_region_cancelled(self) -> None:
+        self._region_selector = None
+
     def _build_target(self):
         kind = self.control_bar.target_combo.currentData()
         if kind == "fullscreen":
             return FullScreenTarget()
         if kind == "region":
-            sel = RegionSelector()
-            captured = {"rect": None}
-            sel.region_selected.connect(lambda r: captured.update(rect=r))
-            sel.show()
-            loop = QEventLoop()
-            sel.region_selected.connect(loop.quit)
-            sel.cancelled.connect(loop.quit)
-            loop.exec()
-            if captured["rect"] is None:
-                return None
-            return RegionTarget(captured["rect"])
+            if self._saved_region is None:
+                # 저장된 영역 없으면 지금 고르게 모달처럼 처리
+                loop = QEventLoop()
+                sel = RegionSelector()
+                captured = {"rect": None}
+                sel.region_selected.connect(lambda r: captured.update(rect=r))
+                sel.region_selected.connect(loop.quit)
+                sel.cancelled.connect(loop.quit)
+                sel.show()
+                sel.raise_()
+                sel.activateWindow()
+                loop.exec()
+                if captured["rect"] is None:
+                    return None
+                self._saved_region = captured["rect"]
+            return RegionTarget(self._saved_region)
         if kind == "window":
             wins = [w for w in gw.getAllWindows() if w.title and w.visible]
             if not wins:
