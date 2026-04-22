@@ -59,6 +59,10 @@ class MainWindow(QMainWindow):
         self.panels["sound"] = SoundPanel(self.app_settings.sound)
         self.panel_stack.addWidget(self.panels["sound"])
 
+        from .panels.hotkey_panel import HotkeyPanel
+        self.panels["hotkey"] = HotkeyPanel(self.app_settings.hotkey)
+        self.panel_stack.addWidget(self.panels["hotkey"])
+
         self.sidebar.panel_selected.connect(self._switch_panel)
 
     def _switch_panel(self, key: str) -> None:
