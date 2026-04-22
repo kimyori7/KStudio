@@ -3,15 +3,23 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import logging
+
 from PySide6.QtCore import Qt, Signal, QFileSystemWatcher, QUrl, QTimer
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QFormLayout, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout,
     QRadioButton, QButtonGroup, QFileDialog, QLabel, QTableWidget,
-    QTableWidgetItem, QHeaderView, QMessageBox, QAbstractItemView,
+    QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
 
+try:
+    from send2trash import send2trash
+except ImportError:
+    send2trash = None
+
 from ...core.settings import GeneralSettings
+from ..toast import show_toast
 
 
 _RECORDING_EXTS = {".mp4", ".mkv", ".webm", ".gif", ".mov", ".avi"}
@@ -93,6 +101,11 @@ class GeneralPanel(QWidget):
         self.file_table.itemDoubleClicked.connect(lambda _item: self._open_selected())
         self.file_table.itemSelectionChanged.connect(self._update_buttons)
         root.addWidget(self.file_table, stretch=1)
+
+        # Del 키 단축키 (테이블에 포커스 있을 때만)
+        del_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.file_table)
+        del_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        del_shortcut.activated.connect(self._delete_selected)
 
         # ---------- 동작 버튼 ----------
         btn_row = QHBoxLayout()
@@ -220,18 +233,17 @@ class GeneralPanel(QWidget):
         p = self._selected_path()
         if p is None:
             return
-        ret = QMessageBox.question(
-            self, "삭제 확인",
-            f"다음 파일을 삭제할까요?\n\n{p.name}\n\n휴지통이 아니라 영구 삭제입니다.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if ret != QMessageBox.Yes:
+        host = self.window() or self
+        if send2trash is None:
+            show_toast(host, f"삭제 실패: send2trash 라이브러리가 없습니다.", 1500)
             return
         try:
-            p.unlink()
-        except OSError as e:
-            QMessageBox.warning(self, "삭제 실패", f"{p.name}\n\n{e}")
+            send2trash(str(p))
+        except Exception as e:
+            logging.getLogger(__name__).warning("send2trash failed for %s: %s", p, e)
+            show_toast(host, f"삭제 실패: {e}", 1500)
             return
+        show_toast(host, f"'{p.name}' 휴지통으로 들어갑니다.", 1000)
         self._refresh()
 
     def _open_folder(self) -> None:

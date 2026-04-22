@@ -9,6 +9,7 @@ dependencies = [
     "PyAudioWPatch>=0.2.12.7",
     "pynput>=1.7.7",
     "pygetwindow>=0.0.9",
+    "send2trash>=1.8",
 ]
 
 [project.optional-dependencies]
