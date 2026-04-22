@@ -12,7 +12,7 @@ venv/
 # Build artifacts
 build/
 dist/
-*.spec
+# *.spec  ← ScreenRecorder.spec 은 프로젝트 빌드 레시피로 추적
 
 # OS
 Thumbs.db

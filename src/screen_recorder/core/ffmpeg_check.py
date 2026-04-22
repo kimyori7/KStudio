@@ -4,10 +4,23 @@ from pathlib import Path
 import shutil
 import sys
 
-_BUNDLED_PATHS: list[Path] = [
-    Path(sys.argv[0]).parent / "bin" / "ffmpeg.exe",
-    Path(__file__).resolve().parent.parent.parent.parent / "bin" / "ffmpeg.exe",
-]
+def _bundled_paths() -> list[Path]:
+    paths = [
+        Path(sys.argv[0]).parent / "bin" / "ffmpeg.exe",              # exe 옆 bin
+        Path(__file__).resolve().parent.parent.parent.parent / "bin" / "ffmpeg.exe",  # 소스 실행
+    ]
+    # PyInstaller onedir: _internal/bin/ffmpeg.exe
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        paths.append(exe_dir / "_internal" / "bin" / "ffmpeg.exe")
+        # PyInstaller onefile 또는 기타: sys._MEIPASS
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            paths.append(Path(meipass) / "bin" / "ffmpeg.exe")
+    return paths
+
+
+_BUNDLED_PATHS: list[Path] = _bundled_paths()
 
 _cached: Path | None = None
 _cached_set = False
