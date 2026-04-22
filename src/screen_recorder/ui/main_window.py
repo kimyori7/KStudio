@@ -47,6 +47,10 @@ class MainWindow(QMainWindow):
         self.panels["general"] = GeneralPanel(self.app_settings.general)
         self.panel_stack.addWidget(self.panels["general"])
 
+        from .panels.video_panel import VideoPanel
+        self.panels["video"] = VideoPanel(self.app_settings.video)
+        self.panel_stack.addWidget(self.panels["video"])
+
         self.sidebar.panel_selected.connect(self._switch_panel)
 
     def _switch_panel(self, key: str) -> None:
