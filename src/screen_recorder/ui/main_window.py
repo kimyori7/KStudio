@@ -157,6 +157,10 @@ class MainWindow(QMainWindow):
             self._show_region_border()
         else:
             self._hide_border()
+            # 지정 영역 상태 텍스트가 남아있지 않도록 초기화
+            if self.controller.state == RecorderState.IDLE:
+                self.status_bar.state_label.setText("● 대기 중")
+                self.status_bar.state_label.setStyleSheet("color: #666;")
 
     def _on_general_changed(self) -> None:
         # 모드(영상/GIF)가 바뀌었을 수 있으니 현재 테두리에 반영
@@ -186,12 +190,18 @@ class MainWindow(QMainWindow):
         geom = self._saved_or_default_region()
         self._border = AdjustableRegionBorder(geom, mode=self.app_settings.general.mode)
         self._border.rect_changed.connect(self._on_region_moved)
+        self._border.close_requested.connect(self._on_region_close_requested)
         self._border.show()
         exclude_from_capture(self._border)
         x, y, w, h = geom
         self.status_bar.state_label.setText(
             f"● 대기 중 (영역 {w}×{h} @ {x},{y})"
         )
+
+    def _on_region_close_requested(self) -> None:
+        """지정 영역 테두리의 X 버튼 클릭 → 전체화면 모드로 복귀."""
+        self.control_bar.set_target("fullscreen")
+        self._on_target_changed("fullscreen")
 
     def _on_region_moved(self, x: int, y: int, w: int, h: int) -> None:
         # 설정에 저장 (다음 실행에도 유지)
@@ -312,9 +322,12 @@ class MainWindow(QMainWindow):
             self._on_stop_clicked()
 
     def _on_state_changed(self, state):
-        self.control_bar.set_recording(state != RecorderState.IDLE)
+        is_active = state != RecorderState.IDLE
+        self.control_bar.set_recording(is_active)
         self.status_bar.set_recording(state == RecorderState.RECORDING)
         self.status_bar.set_paused(state == RecorderState.PAUSED)
+        # 녹화/일시정지 중에는 모드(영상·GIF) 변경 잠금
+        self.panels["general"].set_recording(is_active)
 
     def _on_finished(self, path: str):
         self.tray.tray.showMessage("녹화 완료", path, QSystemTrayIcon.Information, 5000)

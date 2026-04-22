@@ -91,7 +91,7 @@ class GeneralPanel(QWidget):
         self.file_table.setHorizontalHeaderLabels(["파일명", "용량", "시간"])
         self.file_table.verticalHeader().setVisible(False)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.file_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.file_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.file_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.file_table.setAlternatingRowColors(True)
         header = self.file_table.horizontalHeader()
@@ -137,6 +137,15 @@ class GeneralPanel(QWidget):
 
         self._rewatch()
         self._update_buttons()
+
+    # ---------- 녹화 상태 ----------
+
+    def set_recording(self, recording: bool) -> None:
+        """녹화 중에는 출력 설정(모드/폴더/파일명) 변경 잠금."""
+        self.video_radio.setEnabled(not recording)
+        self.gif_radio.setEnabled(not recording)
+        self.dir_edit.setEnabled(not recording)
+        self.pattern_edit.setEnabled(not recording)
 
     # ---------- 설정 ----------
 
@@ -208,42 +217,65 @@ class GeneralPanel(QWidget):
             self.file_table.setItem(row, 2, time_item)
         self._update_buttons()
 
-    def _selected_path(self) -> Path | None:
-        row = self.file_table.currentRow()
-        if row < 0:
-            return None
-        item = self.file_table.item(row, 0)
-        if item is None:
-            return None
-        path_str = item.data(Qt.UserRole)
-        return Path(path_str) if path_str else None
+    def _selected_paths(self) -> list[Path]:
+        rows = sorted({idx.row() for idx in self.file_table.selectedIndexes()})
+        paths: list[Path] = []
+        for row in rows:
+            item = self.file_table.item(row, 0)
+            if item is None:
+                continue
+            path_str = item.data(Qt.UserRole)
+            if path_str:
+                paths.append(Path(path_str))
+        return paths
 
     def _update_buttons(self) -> None:
-        has_sel = self._selected_path() is not None
-        self.open_btn.setEnabled(has_sel)
-        self.delete_btn.setEnabled(has_sel)
+        sel = self._selected_paths()
+        n = len(sel)
+        # 열기는 단수 선택일 때만 (여러 개 동시 열기는 혼란스러움)
+        self.open_btn.setEnabled(n == 1)
+        self.delete_btn.setEnabled(n >= 1)
+        if n > 1:
+            self.delete_btn.setText(f"🗑 삭제 ({n})")
+        else:
+            self.delete_btn.setText("🗑 삭제")
 
     def _open_selected(self) -> None:
-        p = self._selected_path()
-        if p is None or not p.exists():
+        sel = self._selected_paths()
+        if len(sel) != 1:
+            return
+        p = sel[0]
+        if not p.exists():
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
 
     def _delete_selected(self) -> None:
-        p = self._selected_path()
-        if p is None:
+        sel = self._selected_paths()
+        if not sel:
             return
         host = self.window() or self
         if send2trash is None:
-            show_toast(host, f"삭제 실패: send2trash 라이브러리가 없습니다.", 1500)
+            show_toast(host, "삭제 실패: send2trash 라이브러리가 없습니다.", 1500)
             return
-        try:
-            send2trash(str(p))
-        except Exception as e:
-            logging.getLogger(__name__).warning("send2trash failed for %s: %s", p, e)
-            show_toast(host, f"삭제 실패: {e}", 1500)
-            return
-        show_toast(host, f"'{p.name}' 휴지통으로 들어갑니다.", 1000)
+
+        failed: list[tuple[Path, str]] = []
+        for p in sel:
+            try:
+                send2trash(str(p))
+            except Exception as e:
+                logging.getLogger(__name__).warning("send2trash failed for %s: %s", p, e)
+                failed.append((p, str(e)))
+
+        ok_count = len(sel) - len(failed)
+        if ok_count and not failed:
+            if ok_count == 1:
+                show_toast(host, f"'{sel[0].name}' 휴지통으로 들어갑니다.", 1000)
+            else:
+                show_toast(host, f"{ok_count}개 파일이 휴지통으로 들어갑니다.", 1000)
+        elif ok_count and failed:
+            show_toast(host, f"{ok_count}개 이동 완료, {len(failed)}개 실패.", 1500)
+        else:
+            show_toast(host, f"삭제 실패: {failed[0][1]}", 1500)
         self._refresh()
 
     def _open_folder(self) -> None:

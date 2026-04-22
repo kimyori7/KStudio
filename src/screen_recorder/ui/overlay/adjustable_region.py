@@ -4,14 +4,14 @@
 - 영상 녹화: 빨강 실선 + 모서리 굵은 L자 + 라벨 ● REC hh:mm:ss
 - GIF 녹화:  주황 "긴 선 + 짧은 간격" 점선 + 모서리 굵은 L자 + 라벨 ◆ GIF hh:mm:ss
 
-대기 상태에서는 테두리/라벨 영역 클릭으로 이동·크기 조절 가능.
+대기 상태에서는 테두리/타이틀바 영역으로 이동·크기 조절 가능.
 내부는 투명(클릭 통과)이라 아래 어플과 상호작용 가능.
 녹화 상태에서는 전체 클릭 통과(움직임 봉인) + 화면 캡처 제외.
 """
 from __future__ import annotations
 from PySide6.QtCore import Qt, QRect, QTimer, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRegion
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QPushButton
 
 
 _COLOR_STANDBY = QColor("#2E7D32")
@@ -21,6 +21,7 @@ _COLOR_GIF = QColor("#FFB300")
 
 class AdjustableRegionBorder(QWidget):
     rect_changed = Signal(int, int, int, int)  # x, y, w, h (geometry 변경)
+    close_requested = Signal()                 # 타이틀바 X 버튼 클릭
 
     BORDER_THICKNESS = 4
     CORNER_THICKNESS = 8           # 모서리 L자 두께
@@ -56,6 +57,20 @@ class AdjustableRegionBorder(QWidget):
         self._sec_timer.setInterval(1000)
         self._sec_timer.timeout.connect(self._tick_sec)
 
+        # 타이틀바 우상단 X 버튼 (전체화면으로 복귀)
+        self.close_btn = QPushButton("✕", self)
+        self.close_btn.setFixedSize(self.LABEL_HEIGHT, self.LABEL_HEIGHT)
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setToolTip("전체 화면으로 전환")
+        self.close_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: white; border: none; "
+            "font-weight: bold; font-size: 12pt; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 60); }"
+            "QPushButton:pressed { background-color: rgba(255, 255, 255, 100); }"
+        )
+        self.close_btn.clicked.connect(self.close_requested.emit)
+        self._position_close_button()
+
     # ---------- Public API (CaptureTarget 호환 일부) ----------
 
     def current_geometry(self) -> tuple[int, int, int, int]:
@@ -73,6 +88,8 @@ class AdjustableRegionBorder(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         # 마스크 제거 (마우스는 어차피 통과; 시각적으로도 방해 없음)
         self.clearMask()
+        # X 버튼은 녹화 중 숨김 (클릭해도 녹화 중단되지 않도록)
+        self.close_btn.hide()
         self.update()
 
     def stop_recording(self) -> None:
@@ -81,6 +98,7 @@ class AdjustableRegionBorder(QWidget):
         self._elapsed = 0
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._update_mask()
+        self.close_btn.show()
         self.update()
 
     def stop(self) -> None:
@@ -93,10 +111,17 @@ class AdjustableRegionBorder(QWidget):
     def showEvent(self, e):
         super().showEvent(e)
         self._update_mask()
+        self._position_close_button()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._update_mask()
+        self._position_close_button()
+
+    def _position_close_button(self) -> None:
+        size = self.LABEL_HEIGHT
+        self.close_btn.move(self.width() - size, 0)
+        self.close_btn.raise_()
 
     def _update_mask(self):
         """대기 상태에서 테두리 영역만 마우스 받고, 내부는 클릭 통과."""
@@ -124,15 +149,15 @@ class AdjustableRegionBorder(QWidget):
         w, h = self.width(), self.height()
         cg = self.CORNER_GRIP
         eg = self.EDGE_GRIP
-        # 코너 먼저 (우선순위)
-        if x < cg and y < cg: return "nw"
-        if x > w - cg and y < cg: return "ne"
+        lh = self.LABEL_HEIGHT
+        # 하단 코너 (리사이즈 유지)
         if x < cg and y > h - cg: return "sw"
         if x > w - cg and y > h - cg: return "se"
-        # 에지
+        # 타이틀바 영역은 항상 이동 (X 버튼 자리는 QPushButton이 먼저 잡음)
+        if y < lh: return "move"
+        # 좌우/하단 에지 리사이즈
         if x < eg: return "w"
         if x > w - eg: return "e"
-        if y < eg: return "n"
         if y > h - eg: return "s"
         # 나머지(마스크 영역 안쪽): 이동
         return "move"
