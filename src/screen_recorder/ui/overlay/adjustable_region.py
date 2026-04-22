@@ -195,69 +195,95 @@ class AdjustableRegionBorder(QWidget):
         self._elapsed += 1
         self.update()
 
+    # ---------- 캡처 영역 ----------
+
+    def current_capture_rect(self) -> tuple[int, int, int, int]:
+        """
+        실제 녹화 대상 사각형 (타이틀바/테두리 제외).
+        = 화면상 위젯 위치 + 내부 여백을 감안한 '내부 영역' 절대 좌표.
+        """
+        bt = self.BORDER_THICKNESS
+        lh = self.LABEL_HEIGHT
+        return (
+            self.x() + bt,
+            self.y() + lh,
+            max(1, self.width() - 2 * bt),
+            max(1, self.height() - lh - bt),
+        )
+
     # ---------- 그리기 ----------
 
-    def _current_color_and_dash(self) -> tuple[QColor, list[int] | None]:
+    def _current_color(self) -> QColor:
         if self._state == "standby":
-            return _COLOR_STANDBY, None
+            return _COLOR_STANDBY
         if self.mode == "gif":
-            # 긴 선 + 짧은 간격 (모서리가 헷갈리지 않게)
-            return _COLOR_GIF, [8, 2]
-        return _COLOR_VIDEO, None
+            return _COLOR_GIF
+        return _COLOR_VIDEO
+
+    def _use_dash(self) -> bool:
+        """녹화 중 + GIF 일 때만 점선."""
+        return self._state == "recording" and self.mode == "gif"
 
     def paintEvent(self, _):
         p = QPainter(self)
-        color, dash = self._current_color_and_dash()
-
+        color = self._current_color()
         w, h = self.width(), self.height()
         bt = self.BORDER_THICKNESS
         lh = self.LABEL_HEIGHT
-        # 메인 사각 테두리 (라벨 영역 제외)
-        pen = QPen(color, bt)
-        if dash is not None:
-            pen.setStyle(Qt.CustomDashLine)
-            pen.setDashPattern(dash)
-        else:
-            pen.setStyle(Qt.SolidLine)
-        pen.setCapStyle(Qt.FlatCap)
-        pen.setJoinStyle(Qt.MiterJoin)
-        p.setPen(pen)
-        border_rect = QRect(bt // 2, lh + bt // 2, w - bt, h - lh - bt)
-        p.drawRect(border_rect)
-
-        # 모서리 굵은 L자 마커 (상시 실선)
-        corner_pen = QPen(color, self.CORNER_THICKNESS)
-        corner_pen.setCapStyle(Qt.FlatCap)
-        p.setPen(corner_pen)
+        ct = self.CORNER_THICKNESS
         cl = self.CORNER_LENGTH
-        t = self.CORNER_THICKNESS // 2
-        rx0, ry0 = 0, lh
-        rx1, ry1 = w - 1, h - 1
-        # 좌상
-        p.drawLine(rx0 + t, ry0 + t, rx0 + t + cl, ry0 + t)
-        p.drawLine(rx0 + t, ry0 + t, rx0 + t, ry0 + t + cl)
-        # 우상
-        p.drawLine(rx1 - t - cl, ry0 + t, rx1 - t, ry0 + t)
-        p.drawLine(rx1 - t, ry0 + t, rx1 - t, ry0 + t + cl)
-        # 좌하
-        p.drawLine(rx0 + t, ry1 - t - cl, rx0 + t, ry1 - t)
-        p.drawLine(rx0 + t, ry1 - t, rx0 + t + cl, ry1 - t)
-        # 우하
-        p.drawLine(rx1 - t - cl, ry1 - t, rx1 - t, ry1 - t)
-        p.drawLine(rx1 - t, ry1 - t - cl, rx1 - t, ry1 - t)
 
-        # 라벨 배경 + 텍스트
-        if self._state == "standby":
-            label = f"◇ 대기 중  {w}×{h}"
+        # 1) 전체 폭 상단 타이틀바 (연속되어 보이도록 전체 가로 폭 채움)
+        p.fillRect(QRect(0, 0, w, lh), color)
+
+        # 2) 좌/우/하단 메인 테두리 — 모서리 L자와 겹치지 않는 '가운데 구간'만
+        if self._use_dash():
+            pen = QPen(color, bt)
+            pen.setStyle(Qt.CustomDashLine)
+            pen.setDashPattern([8, 2])
+            pen.setCapStyle(Qt.FlatCap)
+            p.setPen(pen)
+            half = bt // 2
+            if h - lh - 2 * cl > 0:
+                p.drawLine(half, lh + cl, half, h - cl)                      # 좌
+                p.drawLine(w - 1 - half, lh + cl, w - 1 - half, h - cl)      # 우
+            if w - 2 * cl > 0:
+                p.drawLine(cl, h - 1 - half, w - cl, h - 1 - half)           # 하
         else:
-            h_, rem = divmod(self._elapsed, 3600)
-            m, s = divmod(rem, 60)
+            # 실선은 fillRect로 (깔끔한 두께 보장)
+            if h - lh - 2 * cl > 0:
+                p.fillRect(0, lh + cl, bt, h - lh - 2 * cl, color)           # 좌
+                p.fillRect(w - bt, lh + cl, bt, h - lh - 2 * cl, color)      # 우
+            if w - 2 * cl > 0:
+                p.fillRect(cl, h - bt, w - 2 * cl, bt, color)                # 하
+
+        # 3) 네 귀퉁이 굵은 L자 (상시 실선, 내부 영역 기준)
+        # 좌상
+        p.fillRect(0, lh, cl, ct, color)              # 가로
+        p.fillRect(0, lh, ct, cl, color)              # 세로
+        # 우상
+        p.fillRect(w - cl, lh, cl, ct, color)
+        p.fillRect(w - ct, lh, ct, cl, color)
+        # 좌하
+        p.fillRect(0, h - ct, cl, ct, color)
+        p.fillRect(0, h - cl, ct, cl, color)
+        # 우하
+        p.fillRect(w - cl, h - ct, cl, ct, color)
+        p.fillRect(w - ct, h - cl, ct, cl, color)
+
+        # 4) 타이틀바 라벨 텍스트
+        inner_w = w - 2 * bt
+        inner_h = h - lh - bt
+        if self._state == "standby":
+            label = f"◇ 대기 중  {inner_w}×{inner_h}"
+        else:
+            hh, rem = divmod(self._elapsed, 3600)
+            mm, ss = divmod(rem, 60)
             prefix = "● REC" if self.mode == "video" else "◆ GIF"
-            label = f"{prefix} {h_:02d}:{m:02d}:{s:02d}"
-        p.fillRect(QRect(0, 0, min(w, 200), lh), color)
+            label = f"{prefix}  {hh:02d}:{mm:02d}:{ss:02d}   {inner_w}×{inner_h}"
         font = QFont()
         font.setBold(True)
         font.setPointSize(10)
         p.setFont(font)
         p.setPen(Qt.white)
-        p.drawText(QRect(8, 0, min(w, 200) - 8, lh), Qt.AlignVCenter | Qt.AlignLeft, label)
+        p.drawText(QRect(10, 0, w - 20, lh), Qt.AlignVCenter | Qt.AlignLeft, label)

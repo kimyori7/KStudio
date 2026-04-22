@@ -85,63 +85,73 @@ class RecordingBorder(QWidget):
         if not self._excluded:
             self._excluded = exclude_from_capture(self)
 
-    def _current_color_and_dash(self):
+    def _current_color(self):
         if self._state == "standby":
-            return _COLOR_STANDBY, None
+            return _COLOR_STANDBY
         if self.mode == "gif":
-            return _COLOR_GIF, [8, 2]
-        return _COLOR_VIDEO, None
+            return _COLOR_GIF
+        return _COLOR_VIDEO
+
+    def _use_dash(self) -> bool:
+        return self._state == "recording" and self.mode == "gif"
 
     def paintEvent(self, _):
         p = QPainter(self)
-        color, dash = self._current_color_and_dash()
+        color = self._current_color()
 
         w, h = self.width(), self.height()
         bt = self.BORDER_THICKNESS
         lh = self.LABEL_HEIGHT
-
-        pen = QPen(color, bt)
-        if dash is not None:
-            pen.setStyle(Qt.CustomDashLine)
-            pen.setDashPattern(dash)
-        else:
-            pen.setStyle(Qt.SolidLine)
-        pen.setCapStyle(Qt.FlatCap)
-        pen.setJoinStyle(Qt.MiterJoin)
-        p.setPen(pen)
-        border_rect = QRect(bt // 2, lh + bt // 2, w - bt, h - lh - bt)
-        p.drawRect(border_rect)
-
-        # 모서리 굵은 L자
-        corner_pen = QPen(color, self.CORNER_THICKNESS)
-        corner_pen.setCapStyle(Qt.FlatCap)
-        p.setPen(corner_pen)
+        ct = self.CORNER_THICKNESS
         cl = self.CORNER_LENGTH
-        t = self.CORNER_THICKNESS // 2
-        rx0, ry0 = 0, lh
-        rx1, ry1 = w - 1, h - 1
-        p.drawLine(rx0 + t, ry0 + t, rx0 + t + cl, ry0 + t)
-        p.drawLine(rx0 + t, ry0 + t, rx0 + t, ry0 + t + cl)
-        p.drawLine(rx1 - t - cl, ry0 + t, rx1 - t, ry0 + t)
-        p.drawLine(rx1 - t, ry0 + t, rx1 - t, ry0 + t + cl)
-        p.drawLine(rx0 + t, ry1 - t - cl, rx0 + t, ry1 - t)
-        p.drawLine(rx0 + t, ry1 - t, rx0 + t + cl, ry1 - t)
-        p.drawLine(rx1 - t - cl, ry1 - t, rx1 - t, ry1 - t)
-        p.drawLine(rx1 - t, ry1 - t - cl, rx1 - t, ry1 - t)
 
-        # 라벨
+        # 1) 전체 폭 상단 타이틀바
+        p.fillRect(QRect(0, 0, w, lh), color)
+
+        # 2) 좌/우/하단 메인 테두리 (모서리와 겹치지 않는 구간만)
+        if self._use_dash():
+            pen = QPen(color, bt)
+            pen.setStyle(Qt.CustomDashLine)
+            pen.setDashPattern([8, 2])
+            pen.setCapStyle(Qt.FlatCap)
+            p.setPen(pen)
+            half = bt // 2
+            if h - lh - 2 * cl > 0:
+                p.drawLine(half, lh + cl, half, h - cl)
+                p.drawLine(w - 1 - half, lh + cl, w - 1 - half, h - cl)
+            if w - 2 * cl > 0:
+                p.drawLine(cl, h - 1 - half, w - cl, h - 1 - half)
+        else:
+            if h - lh - 2 * cl > 0:
+                p.fillRect(0, lh + cl, bt, h - lh - 2 * cl, color)
+                p.fillRect(w - bt, lh + cl, bt, h - lh - 2 * cl, color)
+            if w - 2 * cl > 0:
+                p.fillRect(cl, h - bt, w - 2 * cl, bt, color)
+
+        # 3) 네 귀퉁이 굵은 L자
+        p.fillRect(0, lh, cl, ct, color)
+        p.fillRect(0, lh, ct, cl, color)
+        p.fillRect(w - cl, lh, cl, ct, color)
+        p.fillRect(w - ct, lh, ct, cl, color)
+        p.fillRect(0, h - ct, cl, ct, color)
+        p.fillRect(0, h - cl, ct, cl, color)
+        p.fillRect(w - cl, h - ct, cl, ct, color)
+        p.fillRect(w - ct, h - cl, ct, cl, color)
+
+        # 4) 라벨 텍스트
         if self._state == "standby":
             label = "◇ 대기 중"
         else:
             h_, rem = divmod(self._elapsed, 3600)
             m, s = divmod(rem, 60)
             prefix = "● REC" if self.mode == "video" else "◆ GIF"
-            label = f"{prefix} {h_:02d}:{m:02d}:{s:02d}"
-        p.fillRect(QRect(0, 0, min(w, 180), lh), color)
-        font = QFont(); font.setBold(True); font.setPointSize(10)
+            label = f"{prefix}  {h_:02d}:{m:02d}:{s:02d}"
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(10)
         p.setFont(font)
         p.setPen(Qt.white)
-        p.drawText(QRect(8, 0, min(w, 180) - 8, lh), Qt.AlignVCenter | Qt.AlignLeft, label)
+        p.drawText(QRect(10, 0, w - 20, lh), Qt.AlignVCenter | Qt.AlignLeft, label)
 
     def stop(self):
         self._tick_timer.stop()

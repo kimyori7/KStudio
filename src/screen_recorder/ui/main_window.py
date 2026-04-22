@@ -214,11 +214,15 @@ class MainWindow(QMainWindow):
         if kind == "fullscreen":
             return FullScreenTarget()
         if kind == "region":
-            # AdjustableRegionBorder가 있으면 그 geometry를 스냅샷
+            # AdjustableRegionBorder가 있으면 내부(타이틀바/테두리 제외) 영역을 스냅샷
             if isinstance(self._border, AdjustableRegionBorder):
-                x, y, w, h = self._border.current_geometry()
+                x, y, w, h = self._border.current_capture_rect()
             else:
-                x, y, w, h = self._saved_or_default_region()
+                wx, wy, ww, wh = self._saved_or_default_region()
+                # 설정에 저장된 것도 '위젯' 좌표이므로 같은 규칙으로 보정
+                bt = AdjustableRegionBorder.BORDER_THICKNESS
+                lh = AdjustableRegionBorder.LABEL_HEIGHT
+                x, y, w, h = wx + bt, wy + lh, max(1, ww - 2 * bt), max(1, wh - lh - bt)
             return RegionTarget(Rect(x, y, w, h))
         if kind == "window":
             wins = [w for w in gw.getAllWindows() if w.title and w.visible]
