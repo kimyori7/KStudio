@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs and temp recordings
+logs/
+*.log
+tmp/
+recordings/
