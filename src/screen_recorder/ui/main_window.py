@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QS
 
 from .control_bar import ControlBar
 from .sidebar import Sidebar
+from .status_bar import StatusBar
 
 
 class MainWindow(QMainWindow):
@@ -34,6 +35,6 @@ class MainWindow(QMainWindow):
         self.panel_stack = QStackedWidget()
         body_layout.addWidget(self.panel_stack, stretch=1)
 
-        self.status_holder = QWidget()
-        self.status_holder.setFixedHeight(28)
-        outer.addWidget(self.status_holder)
+        self.status_bar = StatusBar()
+        self.status_bar.setFixedHeight(28)
+        outer.addWidget(self.status_bar)
