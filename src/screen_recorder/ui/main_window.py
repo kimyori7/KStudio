@@ -1,6 +1,7 @@
 """메인 윈도우 셸: 상단 컨트롤바 + 좌측 사이드바 + 우측 패널 + 하단 상태바."""
 from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget
 
+from screen_recorder.core.settings import AppSettings
 from .control_bar import ControlBar
 from .sidebar import Sidebar
 from .status_bar import StatusBar
@@ -38,3 +39,16 @@ class MainWindow(QMainWindow):
         self.status_bar = StatusBar()
         self.status_bar.setFixedHeight(28)
         outer.addWidget(self.status_bar)
+
+        self.app_settings = AppSettings()
+        self.panels: dict[str, QWidget] = {}
+
+        from .panels.general_panel import GeneralPanel
+        self.panels["general"] = GeneralPanel(self.app_settings.general)
+        self.panel_stack.addWidget(self.panels["general"])
+
+        self.sidebar.panel_selected.connect(self._switch_panel)
+
+    def _switch_panel(self, key: str) -> None:
+        if key in self.panels:
+            self.panel_stack.setCurrentWidget(self.panels[key])
