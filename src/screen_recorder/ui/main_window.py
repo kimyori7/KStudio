@@ -1,6 +1,8 @@
 """메인 윈도우 셸: 상단 컨트롤바 + 좌측 사이드바 + 우측 패널 + 하단 상태바."""
 from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget
 
+from .sidebar import Sidebar
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -24,9 +26,9 @@ class MainWindow(QMainWindow):
         body_layout.setSpacing(0)
         outer.addWidget(body, stretch=1)
 
-        self.sidebar_holder = QWidget()
-        self.sidebar_holder.setFixedWidth(140)
-        body_layout.addWidget(self.sidebar_holder)
+        self.sidebar = Sidebar()
+        self.sidebar.setFixedWidth(140)
+        body_layout.addWidget(self.sidebar)
 
         self.panel_stack = QStackedWidget()
         body_layout.addWidget(self.panel_stack, stretch=1)
