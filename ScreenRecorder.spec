@@ -30,7 +30,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         "tkinter",
-        "unittest",
+        # 'unittest' 는 제외하면 안 됨 — pyrect/doctest 가 의존함
         "pytest",
         "pytest_qt",
         "pytest_cov",
