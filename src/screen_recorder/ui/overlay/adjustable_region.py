@@ -14,9 +14,10 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRegion
 from PySide6.QtWidgets import QWidget, QPushButton
 
 
-_COLOR_STANDBY = QColor("#2E7D32")
-_COLOR_VIDEO = QColor("#E53935")
-_COLOR_GIF = QColor("#FFB300")
+_COLOR_STANDBY_VIDEO = QColor("#2E7D32")  # 녹색 — 영상 대기
+_COLOR_STANDBY_GIF = QColor("#0277BD")    # 파랑/청록 — GIF 대기
+_COLOR_VIDEO = QColor("#E53935")          # 빨강 — 영상 녹화 중
+_COLOR_GIF = QColor("#FFB300")            # 주황 — GIF 녹화 중
 
 
 class AdjustableRegionBorder(QWidget):
@@ -236,7 +237,7 @@ class AdjustableRegionBorder(QWidget):
 
     def _current_color(self) -> QColor:
         if self._state == "standby":
-            return _COLOR_STANDBY
+            return _COLOR_STANDBY_GIF if self.mode == "gif" else _COLOR_STANDBY_VIDEO
         if self.mode == "gif":
             return _COLOR_GIF
         return _COLOR_VIDEO

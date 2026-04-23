@@ -8,7 +8,8 @@ from ...capture.targets import CaptureTarget
 from ..capture_exclude import exclude_from_capture
 
 
-_COLOR_STANDBY = QColor("#2E7D32")
+_COLOR_STANDBY_VIDEO = QColor("#2E7D32")
+_COLOR_STANDBY_GIF = QColor("#0277BD")
 _COLOR_VIDEO = QColor("#E53935")
 _COLOR_GIF = QColor("#FFB300")
 
@@ -87,7 +88,7 @@ class RecordingBorder(QWidget):
 
     def _current_color(self):
         if self._state == "standby":
-            return _COLOR_STANDBY
+            return _COLOR_STANDBY_GIF if self.mode == "gif" else _COLOR_STANDBY_VIDEO
         if self.mode == "gif":
             return _COLOR_GIF
         return _COLOR_VIDEO
