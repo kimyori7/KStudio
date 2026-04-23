@@ -92,7 +92,11 @@ class GeneralPanel(QWidget):
         self.file_table.verticalHeader().setVisible(False)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.file_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.file_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        # 선택된 셀을 다시 클릭(탐색기 식) + F2 키로 편집 진입.
+        # 더블클릭은 _open_selected 가 먼저 잡으므로 편집과 충돌하지 않음.
+        self.file_table.setEditTriggers(
+            QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed
+        )
         self.file_table.setAlternatingRowColors(True)
         header = self.file_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
@@ -100,12 +104,17 @@ class GeneralPanel(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.file_table.itemDoubleClicked.connect(lambda _item: self._open_selected())
         self.file_table.itemSelectionChanged.connect(self._update_buttons)
+        self.file_table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.file_table, stretch=1)
 
-        # Del 키 단축키 (테이블에 포커스 있을 때만)
+        # Del / F2 단축키 (테이블에 포커스 있을 때만)
         del_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.file_table)
         del_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         del_shortcut.activated.connect(self._delete_selected)
+
+        rename_shortcut = QShortcut(QKeySequence(Qt.Key_F2), self.file_table)
+        rename_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        rename_shortcut.activated.connect(self._begin_rename)
 
         # ---------- 동작 버튼 ----------
         btn_row = QHBoxLayout()
@@ -186,36 +195,45 @@ class GeneralPanel(QWidget):
 
     def _refresh(self) -> None:
         path = self._resolve_output_dir()
-        self.file_table.setRowCount(0)
-        if not path.exists():
-            return
+        # itemChanged 콜백이 _refresh 도중 트리거되지 않도록 잠시 차단
+        self.file_table.blockSignals(True)
         try:
-            files = [
-                p for p in path.iterdir()
-                if p.is_file() and p.suffix.lower() in _RECORDING_EXTS
-            ]
-        except OSError:
-            return
-        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-
-        self.file_table.setRowCount(len(files))
-        for row, p in enumerate(files):
+            self.file_table.setRowCount(0)
+            if not path.exists():
+                return
             try:
-                st = p.stat()
+                files = [
+                    p for p in path.iterdir()
+                    if p.is_file() and p.suffix.lower() in _RECORDING_EXTS
+                ]
             except OSError:
-                continue
-            size_item = QTableWidgetItem(_format_size(st.st_size))
-            size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            time_item = QTableWidgetItem(
-                datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-            )
-            name_item = QTableWidgetItem(p.name)
-            name_item.setData(Qt.UserRole, str(p))
-            # 툴팁으로 전체 경로 노출
-            name_item.setToolTip(str(p))
-            self.file_table.setItem(row, 0, name_item)
-            self.file_table.setItem(row, 1, size_item)
-            self.file_table.setItem(row, 2, time_item)
+                return
+            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+            self.file_table.setRowCount(len(files))
+            for row, p in enumerate(files):
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                size_item = QTableWidgetItem(_format_size(st.st_size))
+                size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                size_item.setFlags(size_item.flags() & ~Qt.ItemIsEditable)
+                time_item = QTableWidgetItem(
+                    datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+                )
+                time_item.setFlags(time_item.flags() & ~Qt.ItemIsEditable)
+                name_item = QTableWidgetItem(p.name)
+                name_item.setData(Qt.UserRole, str(p))
+                # 툴팁으로 전체 경로 노출
+                name_item.setToolTip(str(p))
+                # 0번 컬럼만 편집 허용
+                name_item.setFlags(name_item.flags() | Qt.ItemIsEditable)
+                self.file_table.setItem(row, 0, name_item)
+                self.file_table.setItem(row, 1, size_item)
+                self.file_table.setItem(row, 2, time_item)
+        finally:
+            self.file_table.blockSignals(False)
         self._update_buttons()
 
     def _selected_paths(self) -> list[Path]:
@@ -249,6 +267,63 @@ class GeneralPanel(QWidget):
         if not p.exists():
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+
+    def _begin_rename(self) -> None:
+        """F2 키로 호출. 현재 행의 파일명 셀을 편집 모드로 진입."""
+        row = self.file_table.currentRow()
+        if row < 0:
+            return
+        item = self.file_table.item(row, 0)
+        if item is not None:
+            self.file_table.editItem(item)
+
+    def _on_item_changed(self, item) -> None:
+        """파일명 셀이 편집되어 변경되었을 때 실제 파일을 rename."""
+        if item.column() != 0:
+            return
+        old_path_str = item.data(Qt.UserRole)
+        if not old_path_str:
+            return
+        old_path = Path(old_path_str)
+        new_name = item.text().strip()
+        host = self.window() or self
+
+        def revert():
+            self.file_table.blockSignals(True)
+            try:
+                item.setText(old_path.name)
+            finally:
+                self.file_table.blockSignals(False)
+
+        if not new_name or new_name == old_path.name:
+            revert()
+            return
+        invalid_chars = set('\\/:*?"<>|')
+        if any(c in invalid_chars for c in new_name) or new_name in {".", ".."}:
+            show_toast(host, '이름에 \\ / : * ? " < > | 는 사용할 수 없습니다.', 1500)
+            revert()
+            return
+
+        new_path = old_path.parent / new_name
+        if new_path.exists():
+            show_toast(host, f"'{new_name}' 이름이 이미 있습니다.", 1500)
+            revert()
+            return
+        try:
+            old_path.rename(new_path)
+        except OSError as e:
+            logging.getLogger(__name__).warning("rename %s -> %s failed: %s", old_path, new_path, e)
+            show_toast(host, f"이름 바꾸기 실패: {e}", 1500)
+            revert()
+            return
+        # 성공 — UserRole에 새 경로 + 툴팁 갱신
+        self.file_table.blockSignals(True)
+        try:
+            item.setData(Qt.UserRole, str(new_path))
+            item.setToolTip(str(new_path))
+        finally:
+            self.file_table.blockSignals(False)
+        show_toast(host, f"'{new_name}' (으)로 이름 변경", 1000)
 
     def _delete_selected(self) -> None:
         sel = self._selected_paths()
