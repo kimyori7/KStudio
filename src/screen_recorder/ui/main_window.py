@@ -26,6 +26,7 @@ from .tray import TrayController
 from .capture_exclude import exclude_from_capture
 from .app_icon import app_icon
 from .title_bar import CustomTitleBar
+from .frameless_resize import FramelessResizer
 from .overlay.recording_border import RecordingBorder
 from .overlay.adjustable_region import AdjustableRegionBorder
 from .overlay.mini_control import MiniControl
@@ -46,6 +47,8 @@ class MainWindow(QMainWindow):
 
         # Frameless + 커스텀 타이틀바
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        # 자체 가장자리 리사이즈 핸들 (frameless 라 OS가 안 잡아줌)
+        self._resizer = FramelessResizer(self, grip=6, min_w=640, min_h=420)
 
         self.app_settings = settings
         self.ffmpeg_path = ffmpeg_path
