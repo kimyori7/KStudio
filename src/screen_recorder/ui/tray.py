@@ -1,7 +1,9 @@
 """시스템 트레이 아이콘."""
 from PySide6.QtCore import Signal, QObject
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
+
+from .app_icon import app_icon
 
 
 class TrayController(QObject):
@@ -11,12 +13,14 @@ class TrayController(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.tray = QSystemTrayIcon(QIcon.fromTheme("media-record"), parent)
-        if self.tray.icon().isNull():
+        icon = app_icon()
+        if icon.isNull():
+            # 아이콘 파일을 못 찾으면 Qt 표준 아이콘으로 폴백
             from PySide6.QtWidgets import QStyle
             style = QApplication.instance().style() if QApplication.instance() else None
             if style is not None:
-                self.tray.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
+                icon = style.standardIcon(QStyle.SP_MediaPlay)
+        self.tray = QSystemTrayIcon(icon, parent)
         self.tray.setToolTip("Screen Recorder")
 
         menu = QMenu()

@@ -23,6 +23,7 @@ from .control_bar import ControlBar
 from .status_bar import StatusBar
 from .tray import TrayController
 from .capture_exclude import exclude_from_capture
+from .app_icon import app_icon
 from .overlay.recording_border import RecordingBorder
 from .overlay.adjustable_region import AdjustableRegionBorder
 from .overlay.mini_control import MiniControl
@@ -38,6 +39,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings, ffmpeg_path: Path):
         super().__init__()
         self.setWindowTitle("Screen Recorder")
+        self.setWindowIcon(app_icon())
         self.resize(800, 550)
 
         self.app_settings = settings

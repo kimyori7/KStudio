@@ -12,7 +12,9 @@ a = Analysis(
         # ffmpeg.exe만 동봉 (ffplay/ffprobe 는 어플이 안 씀)
         (str(ROOT / "bin" / "ffmpeg.exe"), "bin"),
     ],
-    datas=[],
+    datas=[
+        (str(ROOT / "resources" / "app_icon.ico"), "resources"),
+    ],
     hiddenimports=[
         "dxcam",
         "pyaudiowpatch",
@@ -54,6 +56,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(ROOT / "resources" / "app_icon.ico"),
 )
 
 coll = COLLECT(

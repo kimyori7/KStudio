@@ -24,6 +24,19 @@ def main() -> int:
     logging.info("Screen Recorder started")
 
     app = QApplication(sys.argv)
+    app.setApplicationName("Screen Recorder")
+    from screen_recorder.ui.app_icon import app_icon
+    app.setWindowIcon(app_icon())
+
+    # Windows 작업표시줄에서 어플 아이콘이 별도로 잡히도록 AppUserModelID 설정
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "COMPANY.kimyori.screen_recorder.1.0"
+            )
+        except Exception:
+            pass
 
     ffmpeg = find_ffmpeg()
     if ffmpeg is None:
