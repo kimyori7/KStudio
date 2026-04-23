@@ -20,12 +20,16 @@ class ControlBar(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.setObjectName("ControlBar")
+        self.setStyleSheet(
+            "#ControlBar { background-color: #23262D; border-bottom: 1px solid #2A2D34; }"
+        )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(6)
 
         self.rec_label = QLabel("● REC")
-        self.rec_label.setStyleSheet("color: #888; font-weight: bold;")
+        self.rec_label.setStyleSheet("color: #6A6E78; font-weight: bold; font-size: 11pt;")
         layout.addWidget(self.rec_label)
 
         layout.addWidget(QLabel("대상:"))
@@ -39,8 +43,13 @@ class ControlBar(QWidget):
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
             btn.setStyleSheet(
-                "QPushButton { padding: 4px 12px; }"
-                "QPushButton:checked { background-color: #1976D2; color: white; font-weight: bold; }"
+                "QPushButton { padding: 5px 14px; }"
+                "QPushButton:checked { "
+                "  background-color: #2D5DA8; "
+                "  color: white; "
+                "  font-weight: bold; "
+                "  border: 1px solid #4FC3F7; "
+                "}"
             )
             # 같은 버튼을 다시 눌러도 target_changed가 재발행되도록 clicked 사용
             btn.clicked.connect(lambda _chk, k=key: self._on_target_clicked(k))
@@ -92,6 +101,7 @@ class ControlBar(QWidget):
         # 녹화 중에는 대상 변경 막기
         for btn in self._target_buttons.values():
             btn.setEnabled(not recording)
-        self.rec_label.setStyleSheet(
-            "color: #E53935; font-weight: bold;" if recording else "color: #888; font-weight: bold;"
-        )
+        if recording:
+            self.rec_label.setStyleSheet("color: #E53935; font-weight: bold; font-size: 11pt;")
+        else:
+            self.rec_label.setStyleSheet("color: #6A6E78; font-weight: bold; font-size: 11pt;")

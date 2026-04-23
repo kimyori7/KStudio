@@ -18,6 +18,9 @@ class Sidebar(QListWidget):
 
     def __init__(self):
         super().__init__()
+        font = self.font()
+        font.setPointSize(10)
+        self.setFont(font)
         for key, label in SIDEBAR_ITEMS:
             item = QListWidgetItem(label)
             item.setData(0x0100, key)

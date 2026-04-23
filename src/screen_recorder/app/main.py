@@ -26,7 +26,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Screen Recorder")
     from screen_recorder.ui.app_icon import app_icon
+    from screen_recorder.ui.theme import apply_theme
     app.setWindowIcon(app_icon())
+    apply_theme(app)
 
     # Windows 작업표시줄에서 어플 아이콘이 별도로 잡히도록 AppUserModelID 설정
     if sys.platform == "win32":

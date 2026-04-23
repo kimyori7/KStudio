@@ -6,17 +6,21 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
 class StatusBar(QWidget):
     def __init__(self):
         super().__init__()
+        self.setObjectName("StatusBar")
+        self.setStyleSheet(
+            "#StatusBar { background-color: #17191D; border-top: 1px solid #2A2D34; }"
+        )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(12, 4, 12, 4)
 
         self.state_label = QLabel("● 대기 중")
-        self.state_label.setStyleSheet("color: #666;")
+        self.state_label.setStyleSheet("color: #A0A4AB;")
         layout.addWidget(self.state_label)
 
         layout.addStretch(1)
 
         self.drop_label = QLabel("drop: 0")
-        self.drop_label.setStyleSheet("color: #666;")
+        self.drop_label.setStyleSheet("color: #A0A4AB;")
         layout.addWidget(self.drop_label)
 
         self._timer = QTimer(self)
@@ -34,7 +38,7 @@ class StatusBar(QWidget):
         else:
             self._timer.stop()
             self.state_label.setText("● 대기 중")
-            self.state_label.setStyleSheet("color: #666;")
+            self.state_label.setStyleSheet("color: #A0A4AB;")
 
     def set_paused(self, paused: bool) -> None:
         if paused:
