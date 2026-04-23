@@ -2,12 +2,16 @@
 from __future__ import annotations
 import queue
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
 
 from ..core.settings import GifSettings, VideoSettings
 from ..core.ffmpeg_args import video_pipe_args, gif_palette_args, gif_apply_args
+
+
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 class GifEncoder(threading.Thread):
@@ -42,6 +46,7 @@ class GifEncoder(threading.Thread):
             proc = subprocess.Popen(
                 argv, stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=_NO_WINDOW,
             )
         except Exception as e:
             self.error = f"ffmpeg start failed: {e}"
@@ -70,11 +75,17 @@ class GifEncoder(threading.Thread):
 
         p_argv = gif_palette_args(self.gif_settings, str(temp_video), str(palette))
         p_argv[0] = str(self.ffmpeg_path)
-        subprocess.Popen(p_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait(timeout=60)
+        subprocess.Popen(
+            p_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
+        ).wait(timeout=60)
 
         g_argv = gif_apply_args(self.gif_settings, str(temp_video), str(palette), str(self.output_path))
         g_argv[0] = str(self.ffmpeg_path)
-        subprocess.Popen(g_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait(timeout=60)
+        subprocess.Popen(
+            g_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
+        ).wait(timeout=60)
 
         for p in (temp_video, palette):
             try:

@@ -1,5 +1,6 @@
 """메인 윈도우 셸 + 컨트롤러 와이어링."""
 from __future__ import annotations
+import logging
 from pathlib import Path
 import pygetwindow as gw
 
@@ -209,7 +210,17 @@ class MainWindow(QMainWindow):
         # 설정에 저장 (다음 실행에도 유지)
         g = self.app_settings.general
         g.region_x, g.region_y, g.region_w, g.region_h = x, y, w, h
-        self.status_bar.state_label.setText(f"● 대기 중 (영역 {w}×{h} @ {x},{y})")
+        # 녹화 중이면 capture thread에 위치 변경 알림 (크기는 hit_test에서 잠금 처리됨)
+        if (self.controller.state != RecorderState.IDLE
+                and isinstance(self._border, AdjustableRegionBorder)
+                and self.controller._video_thread is not None):
+            cap_x, cap_y, _w, _h = self._border.current_capture_rect()
+            try:
+                self.controller._video_thread.update_origin(cap_x, cap_y)
+            except Exception:
+                pass
+        if self.controller.state == RecorderState.IDLE:
+            self.status_bar.state_label.setText(f"● 대기 중 (영역 {w}×{h} @ {x},{y})")
 
     def _hide_border(self) -> None:
         if self._border is not None:
@@ -259,6 +270,13 @@ class MainWindow(QMainWindow):
         target = self._build_target()
         if target is None:
             return
+        log = logging.getLogger(__name__)
+        log.info(
+            "Start recording: target=%s, mode=%s, audio=%s",
+            self.control_bar.current_target(),
+            self.app_settings.general.mode,
+            self.app_settings.sound.system_audio_enabled,
+        )
         try:
             self.controller.start_recording(target)
         except Exception as e:

@@ -1,13 +1,18 @@
 """프레임 큐 -> ffmpeg pipe 영상 인코딩 + 오디오 mux."""
 from __future__ import annotations
+import logging
 import queue
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
 
 from ..core.settings import VideoSettings, SoundSettings
 from ..core.ffmpeg_args import video_pipe_args, audio_encode_args, mux_args
+
+
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 class VideoEncoder(threading.Thread):
@@ -40,6 +45,7 @@ class VideoEncoder(threading.Thread):
         self.error: Optional[str] = None
 
     def run(self) -> None:
+        log = logging.getLogger(__name__)
         has_audio = (
             self.sound_settings.system_audio_enabled
             and self.audio_raw_path is not None
@@ -59,9 +65,11 @@ class VideoEncoder(threading.Thread):
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=_NO_WINDOW,
             )
         except Exception as e:
             self.error = f"ffmpeg start failed: {e}"
+            log.error(self.error)
             return
 
         try:
@@ -71,12 +79,14 @@ class VideoEncoder(threading.Thread):
                     break
                 if proc.poll() is not None:
                     self.error = "ffmpeg exited unexpectedly"
+                    log.error(self.error)
                     break
                 data = item if isinstance(item, (bytes, bytearray)) else item.tobytes()
                 try:
                     proc.stdin.write(data)
                 except (BrokenPipeError, OSError) as e:
                     self.error = f"pipe write failed: {e}"
+                    log.error(self.error)
                     break
         finally:
             try:
@@ -88,6 +98,7 @@ class VideoEncoder(threading.Thread):
         if not has_audio:
             return
 
+        # ----- 오디오 인코딩 + mux. 실패해도 비디오는 살린다. -----
         audio_encoded = self.output_path.with_suffix(".audio.tmp." + self.sound_settings.codec)
         a_argv = audio_encode_args(
             self.sound_settings,
@@ -97,16 +108,67 @@ class VideoEncoder(threading.Thread):
             str(audio_encoded),
         )
         a_argv[0] = str(self.ffmpeg_path)
-        proc_a = subprocess.Popen(a_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        proc_a.wait(timeout=30)
+        audio_ok = False
+        try:
+            proc_a = subprocess.Popen(
+                a_argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=_NO_WINDOW,
+            )
+            proc_a.wait(timeout=30)
+            audio_ok = (proc_a.returncode == 0
+                        and audio_encoded.exists()
+                        and audio_encoded.stat().st_size > 0)
+        except Exception as e:
+            log.warning("audio encode failed: %s", e)
 
-        m_argv = mux_args(str(video_only), str(audio_encoded), str(self.output_path))
-        m_argv[0] = str(self.ffmpeg_path)
-        proc_m = subprocess.Popen(m_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        proc_m.wait(timeout=30)
-
-        for p in (video_only, audio_encoded, self.audio_raw_path):
+        mux_ok = False
+        if audio_ok:
+            m_argv = mux_args(str(video_only), str(audio_encoded), str(self.output_path))
+            m_argv[0] = str(self.ffmpeg_path)
             try:
-                Path(p).unlink(missing_ok=True)
-            except Exception:
-                pass
+                proc_m = subprocess.Popen(
+                    m_argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=_NO_WINDOW,
+                )
+                proc_m.wait(timeout=30)
+                mux_ok = (proc_m.returncode == 0
+                          and self.output_path.exists()
+                          and self.output_path.stat().st_size > 0)
+            except Exception as e:
+                log.warning("mux failed: %s", e)
+
+        if mux_ok:
+            # mux 성공 → 임시 파일들 정리
+            for p in (video_only, audio_encoded, self.audio_raw_path):
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
+        else:
+            # mux 실패 → 비디오는 살리고(오디오는 포기) 임시 파일만 정리
+            log.warning(
+                "audio mux failed; preserving video-only output. audio_ok=%s",
+                audio_ok,
+            )
+            try:
+                if video_only != self.output_path and Path(video_only).exists():
+                    # output_path 가 부분 생성되어 있으면 지우고 video_only 로 대체
+                    if self.output_path.exists():
+                        try:
+                            self.output_path.unlink()
+                        except Exception:
+                            pass
+                    Path(video_only).rename(self.output_path)
+            except Exception as e:
+                self.error = f"recovery failed: {e}"
+                log.error(self.error)
+            for p in (audio_encoded, self.audio_raw_path):
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            self.error = self.error or "audio mux failed; saved video-only"

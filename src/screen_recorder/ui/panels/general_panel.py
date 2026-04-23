@@ -125,6 +125,7 @@ class GeneralPanel(QWidget):
         self.dir_edit.editingFinished.connect(self._sync)
         self.pattern_edit.editingFinished.connect(self._sync)
         self.video_radio.toggled.connect(self._sync)
+        self.gif_radio.toggled.connect(self._sync)
 
         # ---------- 파일시스템 감시 ----------
         self._watcher = QFileSystemWatcher(self)

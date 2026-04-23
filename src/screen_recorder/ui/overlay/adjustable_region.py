@@ -84,10 +84,10 @@ class AdjustableRegionBorder(QWidget):
         self._state = "recording"
         self._elapsed = 0
         self._sec_timer.start()
-        # 녹화 중에는 마우스 통과(프레임이 대상 어플의 클릭을 막지 않도록)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        # 마스크 제거 (마우스는 어차피 통과; 시각적으로도 방해 없음)
-        self.clearMask()
+        # 녹화 중에도 타이틀바 이동은 허용 (크기 변경은 _hit_test에서 차단).
+        # 내부는 마스크로 클릭 통과 유지 → 녹화 대상 어플 조작 가능.
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self._update_mask()
         # X 버튼은 녹화 중 숨김 (클릭해도 녹화 중단되지 않도록)
         self.close_btn.hide()
         self.update()
@@ -124,15 +124,12 @@ class AdjustableRegionBorder(QWidget):
         self.close_btn.raise_()
 
     def _update_mask(self):
-        """대기 상태에서 테두리 영역만 마우스 받고, 내부는 클릭 통과."""
-        if self._state == "recording":
-            self.clearMask()
-            return
+        """테두리/타이틀바 영역만 마우스 받고, 내부는 클릭 통과 (대기/녹화 공통)."""
         w, h = self.width(), self.height()
         ms = self.MOVE_STRIP
         lh = self.LABEL_HEIGHT
         full = QRegion(0, 0, w, h)
-        # 내부 구멍(라벨 영역은 제외하고)
+        # 내부 구멍(타이틀바 아래쪽부터, 좌우/하단 ms 폭은 마우스 받음)
         hole_top = max(ms, lh)
         hole_x = ms
         hole_y = hole_top
@@ -150,6 +147,9 @@ class AdjustableRegionBorder(QWidget):
         cg = self.CORNER_GRIP
         eg = self.EDGE_GRIP
         lh = self.LABEL_HEIGHT
+        # 녹화 중에는 크기 변경 금지 → 이동만 허용 (인코더 입력 해상도 고정)
+        if self._state == "recording":
+            return "move"
         # 하단 코너 (리사이즈 유지)
         if x < cg and y > h - cg: return "sw"
         if x > w - cg and y > h - cg: return "se"
@@ -172,16 +172,12 @@ class AdjustableRegionBorder(QWidget):
         }.get(mode, Qt.ArrowCursor)
 
     def mousePressEvent(self, e):
-        if self._state != "standby":
-            return
         if e.button() == Qt.LeftButton:
             self._drag_mode = self._hit_test(e.position().toPoint())
             self._drag_origin = e.globalPosition().toPoint()
             self._drag_start_geom = self.geometry()
 
     def mouseMoveEvent(self, e):
-        if self._state != "standby":
-            return
         if self._drag_mode is None:
             mode = self._hit_test(e.position().toPoint())
             self.setCursor(self._cursor_for(mode))
