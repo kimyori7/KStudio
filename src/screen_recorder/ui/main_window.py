@@ -124,6 +124,14 @@ class MainWindow(QMainWindow):
         hotkey_panel.editing_finished.connect(self._resume_hotkey)
         hotkey_panel.settings_changed.connect(self._reregister_hotkey)
 
+        # 마지막에 사용한 대상(전체화면/특정 창/지정 영역) 복원
+        saved_target = self.app_settings.general.target
+        if saved_target in ("fullscreen", "window", "region"):
+            self.control_bar.set_target(saved_target)
+            # window 모드는 매번 창 선택이 필요해서 자동 복원 안 함 (테두리도 띄울 수 없음)
+            if saved_target == "region":
+                self._show_region_border()
+
     # ---------- 메인 창 ----------
 
     def showEvent(self, e):
@@ -156,6 +164,8 @@ class MainWindow(QMainWindow):
     # ---------- 대상 / 테두리 ----------
 
     def _on_target_changed(self, kind: str) -> None:
+        # 다음 실행에서도 같은 대상이 선택되도록 저장
+        self.app_settings.general.target = kind
         if kind == "region":
             self._show_region_border()
         else:
