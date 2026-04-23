@@ -10,7 +10,7 @@ from PySide6.QtGui import QDesktopServices, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QFormLayout, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout,
     QRadioButton, QButtonGroup, QFileDialog, QLabel, QTableWidget,
-    QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QTableWidgetItem, QHeaderView, QAbstractItemView, QStyledItemDelegate,
 )
 
 try:
@@ -23,6 +23,19 @@ from ..toast import show_toast
 
 
 _RECORDING_EXTS = {".mp4", ".mkv", ".webm", ".gif", ".mov", ".avi"}
+
+
+class _FilenameStemSelectDelegate(QStyledItemDelegate):
+    """편집 진입 시 확장자를 제외한 파일명 본문(stem)만 선택 — Windows 탐색기와 동일."""
+
+    def setEditorData(self, editor, index):
+        super().setEditorData(editor, index)
+        if isinstance(editor, QLineEdit):
+            text = editor.text()
+            dot = text.rfind(".")
+            stem_len = dot if dot > 0 else len(text)
+            # 부모 구현이 selectAll을 한 뒤이므로 한 틱 뒤에 stem 만 선택
+            QTimer.singleShot(0, lambda: editor.setSelection(0, stem_len))
 
 
 class GeneralPanel(QWidget):
@@ -105,6 +118,9 @@ class GeneralPanel(QWidget):
         self.file_table.itemDoubleClicked.connect(lambda _item: self._open_selected())
         self.file_table.itemSelectionChanged.connect(self._update_buttons)
         self.file_table.itemChanged.connect(self._on_item_changed)
+        # 0번 컬럼 편집기에 stem 선택 delegate 적용
+        self._filename_delegate = _FilenameStemSelectDelegate(self.file_table)
+        self.file_table.setItemDelegateForColumn(0, self._filename_delegate)
         root.addWidget(self.file_table, stretch=1)
 
         # Del / F2 단축키 (테이블에 포커스 있을 때만)
