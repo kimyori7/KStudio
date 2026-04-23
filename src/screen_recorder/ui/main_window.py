@@ -25,6 +25,7 @@ from .status_bar import StatusBar
 from .tray import TrayController
 from .capture_exclude import exclude_from_capture
 from .app_icon import app_icon
+from .title_bar import CustomTitleBar
 from .overlay.recording_border import RecordingBorder
 from .overlay.adjustable_region import AdjustableRegionBorder
 from .overlay.mini_control import MiniControl
@@ -43,6 +44,9 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
         self.resize(800, 550)
 
+        # Frameless + 커스텀 타이틀바
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+
         self.app_settings = settings
         self.ffmpeg_path = ffmpeg_path
 
@@ -52,6 +56,12 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        # 커스텀 타이틀바
+        self.title_bar = CustomTitleBar("Screen Recorder")
+        self.title_bar.minimize_clicked.connect(self.showMinimized)
+        self.title_bar.close_clicked.connect(self.close)
+        outer.addWidget(self.title_bar)
 
         self.control_bar = ControlBar()
         outer.addWidget(self.control_bar)

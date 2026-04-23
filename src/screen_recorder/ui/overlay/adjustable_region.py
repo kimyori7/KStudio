@@ -60,14 +60,26 @@ class AdjustableRegionBorder(QWidget):
 
         # 타이틀바 우상단 X 버튼 (전체화면으로 복귀)
         self.close_btn = QPushButton("✕", self)
+        self.close_btn.setObjectName("RegionCloseBtn")
         self.close_btn.setFixedSize(self.LABEL_HEIGHT, self.LABEL_HEIGHT)
         self.close_btn.setCursor(Qt.PointingHandCursor)
         self.close_btn.setToolTip("전체 화면으로 전환")
+        # 전역 다크 테마 QSS가 QPushButton 을 회색으로 잡아먹지 않도록 ID 셀렉터 사용
         self.close_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: white; border: none; "
-            "font-weight: bold; font-size: 12pt; }"
-            "QPushButton:hover { background-color: rgba(255, 255, 255, 60); }"
-            "QPushButton:pressed { background-color: rgba(255, 255, 255, 100); }"
+            "QPushButton#RegionCloseBtn { "
+            "  background-color: transparent; "
+            "  color: white; "
+            "  border: none; "
+            "  font-weight: 900; "
+            "  font-size: 14pt; "
+            "  padding: 0; "
+            "} "
+            "QPushButton#RegionCloseBtn:hover { "
+            "  background-color: rgba(255, 255, 255, 60); "
+            "} "
+            "QPushButton#RegionCloseBtn:pressed { "
+            "  background-color: rgba(255, 255, 255, 100); "
+            "}"
         )
         self.close_btn.clicked.connect(self.close_requested.emit)
         self._position_close_button()

@@ -112,14 +112,48 @@ QPushButton:disabled {
 /* ----- 라디오 / 체크박스 ----- */
 QRadioButton, QCheckBox {
     color: #E8E8EA;
-    spacing: 6px;
+    spacing: 8px;
 }
 QRadioButton:disabled, QCheckBox:disabled {
     color: #6A6E78;
 }
-QCheckBox::indicator, QRadioButton::indicator {
+
+QRadioButton::indicator {
     width: 14px;
     height: 14px;
+    border-radius: 9px;
+    border: 2px solid #6A6E78;
+    background-color: #2A2E36;
+}
+QRadioButton::indicator:hover {
+    border: 2px solid #A0A4AB;
+}
+QRadioButton::indicator:checked {
+    border: 2px solid #4FC3F7;
+    background-color: #4FC3F7;
+}
+QRadioButton::indicator:disabled {
+    border: 2px solid #3C414B;
+    background-color: #23252B;
+}
+
+QCheckBox::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid #6A6E78;
+    background-color: #2A2E36;
+}
+QCheckBox::indicator:hover {
+    border: 1px solid #A0A4AB;
+}
+QCheckBox::indicator:checked {
+    border: 1px solid #4FC3F7;
+    background-color: #4FC3F7;
+}
+QCheckBox::indicator:disabled {
+    border: 1px solid #3C414B;
+    background-color: #23252B;
 }
 
 /* ----- 라벨 ----- */
