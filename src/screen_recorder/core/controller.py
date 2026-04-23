@@ -137,6 +137,9 @@ class RecorderController(QObject):
             return
         self._set_state(RecorderState.IDLE)
 
+        # 오디오 thread가 만든 raw 임시 파일 경로 (있다면) 기억해두고 끝에서 정리
+        audio_raw_path = self._audio_thread.output_path if self._audio_thread else None
+
         if self._video_thread:
             self._video_thread.stop()
             self._video_thread.join(timeout=3.0)
@@ -147,6 +150,13 @@ class RecorderController(QObject):
             self._video_queue.put(None)
         if self._encoder:
             self._encoder.join(timeout=60.0)
+
+        # 인코더가 .raw를 못 지웠을 수도 있으므로 (has_audio=False 경로 등) 보강 정리
+        if audio_raw_path is not None:
+            try:
+                Path(audio_raw_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
         if self._output_path:
             self.recording_finished.emit(str(self._output_path))
