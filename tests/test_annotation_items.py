@@ -66,3 +66,24 @@ def test_arrow_set_endpoints(qtbot):
     a.set_end(QPointF(50, 50))
     assert a.start() == QPointF(5, 5)
     assert a.end() == QPointF(50, 50)
+
+
+from screen_recorder.ui.annotation.items.text import TextAnnotationItem
+
+
+def test_text_item_holds_pos_and_text(qtbot):
+    t = TextAnnotationItem(QPointF(20, 30), "안녕", QColor("#000"))
+    assert t.pos_f() == QPointF(20, 30)
+    assert t.text() == "안녕"
+
+
+def test_text_item_set_text(qtbot):
+    t = TextAnnotationItem(QPointF(0, 0), "a", QColor("#000"))
+    t.set_text("hello")
+    assert t.text() == "hello"
+
+
+def test_text_item_set_color(qtbot):
+    t = TextAnnotationItem(QPointF(0, 0), "a", QColor("#FF0000"))
+    t.set_color(QColor("#00FF00"))
+    assert t.color() == QColor("#00FF00")
