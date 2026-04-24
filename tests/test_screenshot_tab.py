@@ -46,3 +46,16 @@ def test_signal_emitted_on_save_state_change(qtbot, tmp_path):
 
     with qtbot.waitSignal(tab.save_state_changed, timeout=1000):
         tab.mark_saved(tmp_path / "x.png")
+
+
+def test_signal_not_re_emitted_on_subsequent_saves(qtbot, tmp_path):
+    """첫 저장 이후 추가 저장(다른 이름으로 등)에서는 시그널이 다시 발행되지 않아야 한다."""
+    img = QImage(10, 10, QImage.Format_ARGB32)
+    tab = ScreenshotTab(img)
+    qtbot.addWidget(tab)
+
+    with qtbot.waitSignal(tab.save_state_changed, timeout=500):
+        tab.mark_saved(tmp_path / "a.png")
+
+    with qtbot.assertNotEmitted(tab.save_state_changed, wait=100):
+        tab.mark_saved(tmp_path / "b.png")
