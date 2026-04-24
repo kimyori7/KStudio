@@ -36,6 +36,8 @@ from .panels.gif_panel import GifPanel
 from .panels.sound_panel import SoundPanel
 from .panels.hotkey_panel import HotkeyPanel
 from .panels.preferences_panel import PreferencesPanel
+from screen_recorder.screenshot.controller import ScreenshotController
+from .screenshot_viewer import ScreenshotViewer
 
 
 class MainWindow(QMainWindow):
@@ -108,11 +110,16 @@ class MainWindow(QMainWindow):
         self._mini: MiniControl | None = None
         self._self_excluded = False
 
+        # 스크린샷
+        self._screenshot_viewer: ScreenshotViewer | None = None
+        self._screenshot_ctrl = ScreenshotController(
+            main_window=self,
+            viewer_getter=lambda: self._screenshot_viewer,
+        )
+        self._screenshot_ctrl.captured.connect(self._on_screenshot_captured)
+
         # ---------- 단축키 등록 ----------
-        try:
-            self.hotkeys.register(self.app_settings.hotkey.toggle_record, self._on_hotkey_toggle)
-        except Exception:
-            pass
+        self._register_all_hotkeys()
 
         # ---------- 시그널 연결 ----------
         self.control_bar.start_clicked.connect(self._on_start_clicked)
@@ -127,6 +134,10 @@ class MainWindow(QMainWindow):
         self.tray.show_main.connect(self.showNormal)
         self.tray.quit_requested.connect(QApplication.instance().quit)
         self.tray.toggle_record.connect(self._on_hotkey_toggle)
+
+        self.control_bar.screenshot_clicked.connect(self._on_shot_region_action)
+        self.tray.screenshot_region.connect(self._on_shot_region_action)
+        self.tray.screenshot_full.connect(self._on_shot_full_action)
 
         # 모드(영상/GIF) 변경 시 현재 보이는 테두리의 색/점선 패턴 즉시 반영
         self.panels["general"].settings_changed.connect(self._on_general_changed)
@@ -169,8 +180,16 @@ class MainWindow(QMainWindow):
         self._reregister_hotkey()
 
     def _reregister_hotkey(self) -> None:
+        self._register_all_hotkeys()
+
+    def _register_all_hotkeys(self) -> None:
+        bindings = {
+            self.app_settings.hotkey.toggle_record: self._on_hotkey_toggle,
+            self.app_settings.hotkey.screenshot_region: self._on_hotkey_shot_region,
+            self.app_settings.hotkey.screenshot_full: self._on_hotkey_shot_full,
+        }
         try:
-            self.hotkeys.register(self.app_settings.hotkey.toggle_record, self._on_hotkey_toggle)
+            self.hotkeys.set_bindings(bindings)
         except Exception:
             pass
 
@@ -364,6 +383,45 @@ class MainWindow(QMainWindow):
         else:
             self._on_stop_clicked()
 
+    # ---------- 스크린샷 액션 ----------
+
+    def _ensure_viewer(self) -> ScreenshotViewer:
+        if self._screenshot_viewer is None:
+            v = ScreenshotViewer(self.app_settings)
+            v.closed.connect(self._on_viewer_closed)
+            self._screenshot_viewer = v
+        return self._screenshot_viewer
+
+    def _on_viewer_closed(self) -> None:
+        self._screenshot_viewer = None
+
+    def _on_screenshot_captured(self, image, label: str):
+        viewer = self._ensure_viewer()
+        viewer.add_tab(image, source_label=label)
+
+    def _on_shot_region_action(self) -> None:
+        self._screenshot_ctrl.capture_region()
+
+    def _on_shot_full_action(self) -> None:
+        self._screenshot_ctrl.capture_full()
+
+    def _on_hotkey_shot_region(self) -> None:
+        # pynput 스레드에서 들어오므로 Qt main 스레드로 라우팅
+        from PySide6.QtCore import QMetaObject
+        QMetaObject.invokeMethod(self, "_shot_region_safe", Qt.QueuedConnection)
+
+    def _on_hotkey_shot_full(self) -> None:
+        from PySide6.QtCore import QMetaObject
+        QMetaObject.invokeMethod(self, "_shot_full_safe", Qt.QueuedConnection)
+
+    @Slot()
+    def _shot_region_safe(self):
+        self._on_shot_region_action()
+
+    @Slot()
+    def _shot_full_safe(self):
+        self._on_shot_full_action()
+
     def _on_state_changed(self, state):
         is_active = state != RecorderState.IDLE
         self.control_bar.set_recording(is_active)
@@ -388,4 +446,7 @@ class MainWindow(QMainWindow):
                 return
         self.hotkeys.unregister()
         self._hide_border()
+        if self._screenshot_viewer is not None:
+            self._screenshot_viewer.close()
+            self._screenshot_viewer = None
         e.accept()
