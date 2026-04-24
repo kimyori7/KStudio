@@ -29,15 +29,16 @@ class ScreenshotController(QObject):
         self._viewer_getter = viewer_getter
 
         # 캡처 순간에 기억해둘 '복원 대상' (ing 중 상태)
-        self._to_restore: list[tuple[QWidget, bool, bool]] = []  # (widget, was_minimized, was_visible)
+        self._to_restore: list[tuple[QWidget, bool, bool, bool]] = []  # (widget, was_minimized, was_maximized, was_visible)
+        self._active_selector: "RegionSelector | None" = None
 
     # ---------- 공개 진입점 ----------
 
     def capture_full(self) -> None:
-        self._hide_self_and_then(lambda snapshot: self._handle_full(snapshot))
+        self._hide_self_and_then(self._handle_full)
 
     def capture_region(self) -> None:
-        self._hide_self_and_then(lambda snapshot: self._handle_region(snapshot))
+        self._hide_self_and_then(self._handle_region)
 
     # ---------- 내부 단계 ----------
 
@@ -48,8 +49,9 @@ class ScreenshotController(QObject):
             if w is None:
                 continue
             was_min = bool(w.isMinimized())
+            was_max = bool(w.isMaximized())
             was_vis = bool(w.isVisible())
-            self._to_restore.append((w, was_min, was_vis))
+            self._to_restore.append((w, was_min, was_max, was_vis))
             w.hide()
 
         QTimer.singleShot(_HIDE_SETTLE_MS, lambda: self._do_snap(after_snap))
@@ -60,11 +62,13 @@ class ScreenshotController(QObject):
         after_snap(snap)
 
     def _restore_own_windows(self) -> None:
-        for w, was_min, was_vis in self._to_restore:
+        for w, was_min, was_max, was_vis in self._to_restore:
             if not was_vis:
                 continue
             if was_min:
                 w.showMinimized()
+            elif was_max:
+                w.showMaximized()
             else:
                 w.showNormal()
         self._to_restore = []
@@ -84,6 +88,7 @@ class ScreenshotController(QObject):
             return
         bounds = virtual_desktop_bounds()
         sel = RegionSelector(show_magnifier=True)
+        self._active_selector = sel
         sel.set_source_image(snapshot)
 
         def on_selected(rect: Rect):
@@ -92,11 +97,14 @@ class ScreenshotController(QObject):
             cropped = crop_to_rect(snapshot, qrect)
             if cropped.isNull():
                 self.cancelled.emit()
+                self._active_selector = None
                 return
             self.captured.emit(cropped, "region")
+            self._active_selector = None
 
         def on_cancelled():
             self.cancelled.emit()
+            self._active_selector = None
 
         sel.region_selected.connect(on_selected)
         sel.cancelled.connect(on_cancelled)
