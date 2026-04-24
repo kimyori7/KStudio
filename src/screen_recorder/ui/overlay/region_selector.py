@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QRect, QPoint, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QGuiApplication, QImage, QFont
+from PySide6.QtGui import QPainter, QColor, QPen, QImage, QFont
 from PySide6.QtWidgets import QWidget
 
 from ...capture.targets import Rect
@@ -33,7 +33,6 @@ class RegionSelector(QWidget):
         self._end: QPoint | None = None
         self._rect = QRect()
 
-        self._show_magnifier = show_magnifier
         self._magnifier: Magnifier | None = None
         if show_magnifier:
             self._magnifier = Magnifier(self)
