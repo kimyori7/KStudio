@@ -80,14 +80,15 @@ class ScreenshotViewer(QMainWindow):
         if tab is None:
             return
         if self._settings.screenshot.save_dir == "":
-            # 최초 1회 — 폴더 선택 대화상자
-            default = str(Path.home() / "Pictures" / "ScreenRecorder")
-            chosen = QFileDialog.getExistingDirectory(
-                self, "스크린샷 저장 폴더 선택", default,
-            )
-            if not chosen:
+            # 저장 폴더가 아직 지정되지 않았으면 기본 경로(~/Pictures/ScreenRecorder)를
+            # 자동 생성하고 settings 에도 기록한다. 사용자는 나중에 패널에서 바꿀 수 있다.
+            default_dir = Path.home() / "Pictures" / "ScreenRecorder"
+            try:
+                default_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                QMessageBox.warning(self, "저장 실패", f"기본 폴더 생성 실패: {e}")
                 return
-            self._settings.screenshot.save_dir = chosen
+            self._settings.screenshot.save_dir = str(default_dir)
 
         target_label = tab.source_label()
         out_dir = Path(self._settings.screenshot.save_dir)

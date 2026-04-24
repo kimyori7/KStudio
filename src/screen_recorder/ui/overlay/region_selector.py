@@ -28,6 +28,7 @@ class RegionSelector(QWidget):
         self.setGeometry(bounds)
         self._bounds = bounds
         self.setCursor(Qt.CrossCursor)
+        self.setMouseTracking(True)
 
         self._origin: QPoint | None = None
         self._end: QPoint | None = None
@@ -47,6 +48,19 @@ class RegionSelector(QWidget):
 
     # ---------- 이벤트 ----------
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        # 오버레이가 뜨는 순간 커서 위치에 확대경을 표시 (드래그 전에도 보이도록)
+        if self._magnifier is not None:
+            from PySide6.QtGui import QCursor
+            global_pos = QCursor.pos()
+            local = QPoint(global_pos.x() - self._bounds.x(),
+                           global_pos.y() - self._bounds.y())
+            # 위젯 bounds 안으로 클램프
+            local.setX(max(0, min(local.x(), self.width() - 1)))
+            local.setY(max(0, min(local.y(), self.height() - 1)))
+            self._show_mag_at(local)
+
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
             self._cancel()
@@ -65,11 +79,13 @@ class RegionSelector(QWidget):
             self.update()
 
     def mouseMoveEvent(self, e):
+        pos = e.position().toPoint()
         if self._origin is not None:
-            self._end = e.position().toPoint()
+            self._end = pos
             self._rect = QRect(self._origin, self._end).normalized()
-            self._show_mag_at(self._end)
             self.update()
+        # 드래그 중이든 아니든 커서를 따라 확대경 갱신
+        self._show_mag_at(pos)
 
     def mouseDoubleClickEvent(self, _):
         self._commit()
