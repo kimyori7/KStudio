@@ -5,6 +5,8 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QPushButton, QButtonGroup, QFrame, QMenu,
 )
 
+from .overlay.monitor_identifier import MonitorIdentifier
+
 
 _TARGETS = [
     ("fullscreen", "🖥 전체 화면"),
@@ -142,6 +144,12 @@ class ControlBar(QWidget):
         screens = QGuiApplication.screens()
         if len(screens) < 2:
             return
+
+        # 어느 쪽이 몇 번인지 각 모니터 중앙에 큰 숫자를 띄움. 메뉴가 닫히면 같이 닫음.
+        identifiers = [MonitorIdentifier(s, i + 1) for i, s in enumerate(screens)]
+        for ident in identifiers:
+            ident.show()
+
         btn = self._target_buttons["fullscreen"]
         menu = QMenu(self)
         group = QActionGroup(menu)
@@ -156,7 +164,11 @@ class ControlBar(QWidget):
             act.triggered.connect(lambda _=False, idx=i: self._on_monitor_picked(idx))
             group.addAction(act)
             menu.addAction(act)
-        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        try:
+            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        finally:
+            for ident in identifiers:
+                ident.close()
 
     def _on_monitor_picked(self, idx: int) -> None:
         self._fullscreen_monitor_index = idx
