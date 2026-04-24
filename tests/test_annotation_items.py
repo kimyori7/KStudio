@@ -40,3 +40,29 @@ def test_rect_item_set_thickness_updates(qtbot):
     item = RectAnnotationItem(QRectF(0, 0, 10, 10), QColor("#000"), thickness_step=1)
     item.set_thickness_step(3)
     assert item.thickness_step() == 3
+
+
+from PySide6.QtCore import QPointF
+from screen_recorder.ui.annotation.items.arrow import ArrowAnnotationItem
+
+
+def test_arrow_item_holds_endpoints(qtbot):
+    a = ArrowAnnotationItem(QPointF(10, 20), QPointF(100, 80), QColor("#000"), thickness_step=2)
+    assert a.start() == QPointF(10, 20)
+    assert a.end() == QPointF(100, 80)
+
+
+def test_arrow_item_bounding_rect_encloses_endpoints(qtbot):
+    a = ArrowAnnotationItem(QPointF(0, 0), QPointF(100, 50), QColor("#000"), thickness_step=4)
+    br = a.boundingRect()
+    # 양 끝 + stroke padding + 화살표 머리 여유
+    assert br.contains(QPointF(0, 0))
+    assert br.contains(QPointF(100, 50))
+
+
+def test_arrow_set_endpoints(qtbot):
+    a = ArrowAnnotationItem(QPointF(0, 0), QPointF(10, 10), QColor("#000"), thickness_step=1)
+    a.set_start(QPointF(5, 5))
+    a.set_end(QPointF(50, 50))
+    assert a.start() == QPointF(5, 5)
+    assert a.end() == QPointF(50, 50)
