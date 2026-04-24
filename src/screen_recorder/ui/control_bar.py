@@ -1,7 +1,8 @@
 """상단 컨트롤바 — 녹화 섹션(대상/시작/일시정지/정지) + 스크린샷 섹션."""
 from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QLabel, QPushButton, QButtonGroup, QFrame,
+    QWidget, QHBoxLayout, QLabel, QPushButton, QButtonGroup, QFrame, QMenu,
 )
 
 
@@ -18,6 +19,7 @@ class ControlBar(QWidget):
     pause_clicked = Signal()
     target_changed = Signal(str)
     screenshot_clicked = Signal()  # 신규: 스크린샷 버튼 (영역 캡처)
+    fullscreen_monitor_changed = Signal(int)  # 다중 모니터 환경에서 선택 변경
 
     def __init__(self):
         super().__init__()
@@ -60,6 +62,8 @@ class ControlBar(QWidget):
 
         self._target_buttons["fullscreen"].setChecked(True)
         self._current_target = "fullscreen"
+        self._fullscreen_monitor_index = 0
+        self._refresh_fullscreen_label()
 
         layout.addStretch(1)
 
@@ -114,12 +118,60 @@ class ControlBar(QWidget):
         if key in self._target_buttons:
             self._target_buttons[key].setChecked(True)
             self._current_target = key
+            if key == "fullscreen":
+                self._refresh_fullscreen_label()
+
+    def fullscreen_monitor_index(self) -> int:
+        return self._fullscreen_monitor_index
+
+    def set_fullscreen_monitor_index(self, idx: int) -> None:
+        screens = QGuiApplication.screens()
+        idx = max(0, min(idx, len(screens) - 1)) if screens else 0
+        self._fullscreen_monitor_index = idx
+        self._refresh_fullscreen_label()
 
     def _on_target_clicked(self, key: str) -> None:
         self._current_target = key
-        # 같은 버튼을 다시 눌러도 체크 상태 유지
         self._target_buttons[key].setChecked(True)
         self.target_changed.emit(key)
+        # 전체 화면이면서 모니터가 2개 이상이면 모니터 선택 메뉴를 이어서 띄움
+        if key == "fullscreen" and len(QGuiApplication.screens()) >= 2:
+            self._show_monitor_menu()
+
+    def _show_monitor_menu(self) -> None:
+        screens = QGuiApplication.screens()
+        if len(screens) < 2:
+            return
+        btn = self._target_buttons["fullscreen"]
+        menu = QMenu(self)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        primary = QGuiApplication.primaryScreen()
+        for i, s in enumerate(screens):
+            g = s.geometry()
+            suffix = " — 주" if s is primary else ""
+            act = QAction(f"모니터 {i + 1}  {g.width()}×{g.height()}{suffix}", menu)
+            act.setCheckable(True)
+            act.setChecked(i == self._fullscreen_monitor_index)
+            act.triggered.connect(lambda _=False, idx=i: self._on_monitor_picked(idx))
+            group.addAction(act)
+            menu.addAction(act)
+        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _on_monitor_picked(self, idx: int) -> None:
+        self._fullscreen_monitor_index = idx
+        self._refresh_fullscreen_label()
+        self.fullscreen_monitor_changed.emit(idx)
+
+    def _refresh_fullscreen_label(self) -> None:
+        btn = self._target_buttons.get("fullscreen")
+        if btn is None:
+            return
+        screens = QGuiApplication.screens()
+        if len(screens) >= 2:
+            btn.setText(f"🖥 모니터 {self._fullscreen_monitor_index + 1} ▾")
+        else:
+            btn.setText("🖥 전체 화면")
 
     # ---------- 녹화 상태 ----------
 

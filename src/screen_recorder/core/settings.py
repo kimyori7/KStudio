@@ -17,6 +17,9 @@ class GeneralSettings:
     region_y: int = -1
     region_w: int = -1
     region_h: int = -1
+    # 전체 화면 모드에서 녹화할 모니터 인덱스 (0=주 모니터). 모니터 연결 상태가
+    # 바뀌어 범위를 벗어나면 FullScreenTarget 이 자동으로 클램프한다.
+    fullscreen_monitor_index: int = 0
 
 
 @dataclass

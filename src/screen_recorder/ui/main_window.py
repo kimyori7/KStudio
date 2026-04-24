@@ -140,6 +140,12 @@ class MainWindow(QMainWindow):
         self.control_bar.screenshot_clicked.connect(self._on_shot_region_action)
         self.tray.screenshot_region.connect(self._on_shot_region_action)
         self.tray.screenshot_full.connect(self._on_shot_full_action)
+        self.control_bar.fullscreen_monitor_changed.connect(self._on_fullscreen_monitor_changed)
+
+        # 저장된 전체 화면 모니터 인덱스를 복원
+        self.control_bar.set_fullscreen_monitor_index(
+            self.app_settings.general.fullscreen_monitor_index
+        )
 
         # 모드(영상/GIF) 변경 시 현재 보이는 테두리의 색/점선 패턴 즉시 반영
         self.panels["general"].settings_changed.connect(self._on_general_changed)
@@ -214,6 +220,14 @@ class MainWindow(QMainWindow):
         if self._border is not None and hasattr(self._border, "set_mode"):
             self._border.set_mode(self.app_settings.general.mode)
 
+    def _on_fullscreen_monitor_changed(self, idx: int) -> None:
+        # 다음 실행에서도 유지되도록 저장 + 대기 상태면 상태바에 표시
+        self.app_settings.general.fullscreen_monitor_index = idx
+        if (self.controller.state == RecorderState.IDLE
+                and self.control_bar.current_target() == "fullscreen"):
+            self.status_bar.state_label.setText(f"● 대기 중 (모니터 {idx + 1})")
+            self.status_bar.state_label.setStyleSheet("color: #666;")
+
     def _default_region_geometry(self) -> tuple[int, int, int, int]:
         """화면 중앙에 1/4 크기 (가로/세로 각각 절반)."""
         screens = QGuiApplication.screens()
@@ -279,7 +293,7 @@ class MainWindow(QMainWindow):
     def _build_target(self):
         kind = self.control_bar.current_target()
         if kind == "fullscreen":
-            return FullScreenTarget()
+            return FullScreenTarget(self.control_bar.fullscreen_monitor_index())
         if kind == "region":
             # AdjustableRegionBorder가 있으면 내부(타이틀바/테두리 제외) 영역을 스냅샷
             if isinstance(self._border, AdjustableRegionBorder):
