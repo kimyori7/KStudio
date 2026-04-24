@@ -29,6 +29,7 @@ class RegionSelector(QWidget):
         self._bounds = bounds
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
 
         self._origin: QPoint | None = None
         self._end: QPoint | None = None
@@ -50,6 +51,8 @@ class RegionSelector(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
+        # 키 이벤트(ESC/Enter) 를 받기 위해 오버레이에 키보드 포커스 부여
+        self.setFocus(Qt.ActiveWindowFocusReason)
         # 오버레이가 뜨는 순간 커서 위치에 확대경을 표시 (드래그 전에도 보이도록)
         if self._magnifier is not None:
             from PySide6.QtGui import QCursor
