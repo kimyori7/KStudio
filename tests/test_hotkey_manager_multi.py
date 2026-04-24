@@ -3,69 +3,62 @@ from unittest.mock import MagicMock, patch
 from screen_recorder.hotkey.manager import HotkeyManager
 
 
-def test_set_bindings_registers_all_hotkeys():
+def test_set_bindings_registers_each_non_empty_hotkey(qtbot):
     cb1, cb2 = MagicMock(), MagicMock()
-    fake_listener = MagicMock()
-
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys", return_value=fake_listener) as ctor:
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 1
         m = HotkeyManager()
         m.set_bindings({"Ctrl+Shift+T": cb1, "Ctrl+Shift+R": cb2})
-
-        ctor.assert_called_once()
-        binding = ctor.call_args[0][0]
-        assert binding["<ctrl>+<shift>+t"] is cb1
-        assert binding["<ctrl>+<shift>+r"] is cb2
-        fake_listener.start.assert_called_once()
+        # 두 개 모두 등록 시도
+        assert user32_mock.RegisterHotKey.call_count == 2
 
 
-def test_set_bindings_with_empty_text_skips_that_entry():
-    """빈 문자열 단축키는 등록하지 않음 (미할당 의미)."""
+def test_set_bindings_with_empty_text_skips_that_entry(qtbot):
     cb1, cb2 = MagicMock(), MagicMock()
-    fake_listener = MagicMock()
-
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys", return_value=fake_listener) as ctor:
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 1
         m = HotkeyManager()
         m.set_bindings({"Ctrl+Shift+T": cb1, "": cb2})
-        binding = ctor.call_args[0][0]
-        assert "<ctrl>+<shift>+t" in binding
-        assert len(binding) == 1
+        assert user32_mock.RegisterHotKey.call_count == 1
 
 
-def test_set_bindings_with_all_empty_does_not_create_listener():
+def test_set_bindings_with_all_empty_does_not_register(qtbot):
     cb = MagicMock()
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys") as ctor:
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 1
         m = HotkeyManager()
         m.set_bindings({"": cb})
-        ctor.assert_not_called()
+        user32_mock.RegisterHotKey.assert_not_called()
 
 
-def test_set_bindings_replaces_previous_listener():
+def test_set_bindings_replaces_previous(qtbot):
     cb1, cb2 = MagicMock(), MagicMock()
-    l1, l2 = MagicMock(), MagicMock()
-
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys", side_effect=[l1, l2]):
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 1
         m = HotkeyManager()
         m.set_bindings({"F9": cb1})
         m.set_bindings({"F10": cb2})
-        l1.stop.assert_called_once()
-        l2.start.assert_called_once()
+        # 첫 번째가 unregister 되어야 함
+        assert user32_mock.UnregisterHotKey.call_count >= 1
+        # 두 번째가 등록되어야 함
+        assert user32_mock.RegisterHotKey.call_count == 2
 
 
-def test_register_still_works_for_backward_compat():
-    """기존 main_window 가 쓰던 register(text, cb) 는 살아있어야 한다."""
-    cb = MagicMock()
-    fake = MagicMock()
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys", return_value=fake):
-        m = HotkeyManager()
-        m.register("Ctrl+Shift+T", cb)
-        fake.start.assert_called_once()
-
-
-def test_register_bad_hotkey_does_not_raise_and_leaves_manager_usable():
-    """잘못된 단축키 텍스트는 조용히 무시되어야 한다 (이전 동작 유지)."""
+def test_register_bad_hotkey_does_not_raise(qtbot):
     m = HotkeyManager()
-    try:
+    # 파싱 실패는 조용히 스킵
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
         m.set_bindings({"bogus+key+zzz": lambda: None})
-    except Exception:
-        pass
+        user32_mock.RegisterHotKey.assert_not_called()
     m.unregister()  # 안 깨짐
+
+
+def test_failed_registration_skipped(qtbot):
+    """RegisterHotKey 가 실패(다른 앱이 선점)하면 해당 id는 저장 안 됨."""
+    cb = MagicMock()
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 0  # 실패
+        m = HotkeyManager()
+        m.set_bindings({"Ctrl+Shift+T": cb})
+        # 등록 시도는 했지만 성공 못했으므로 ids 비어있음
+        assert len(m._ids) == 0

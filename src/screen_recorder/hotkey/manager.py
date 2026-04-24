@@ -1,49 +1,86 @@
-"""pynput 전역 단축키 래퍼 (다중 바인딩 지원)."""
+"""Windows RegisterHotKey 기반 전역 단축키 매니저 — OS 레벨에서 키 조합을 가로채므로
+다른 앱(브라우저 등)이 해당 조합을 보지 못한다."""
 from __future__ import annotations
+import ctypes
+from ctypes import wintypes
 from typing import Callable, Dict
 
-try:
-    from pynput.keyboard import GlobalHotKeys  # type: ignore
-except ImportError:
-    GlobalHotKeys = None  # type: ignore
+from PySide6.QtCore import QAbstractNativeEventFilter
+from PySide6.QtWidgets import QApplication
 
-from .parser import parse_hotkey, HotkeyParseError
+from .parser import parse_hotkey_to_vk, HotkeyParseError
 
 
-class HotkeyManager:
+_user32 = ctypes.windll.user32
+
+# RegisterHotKey 수식자 플래그
+_MOD_NOREPEAT = 0x4000
+
+_WM_HOTKEY = 0x0312
+
+
+class HotkeyManager(QAbstractNativeEventFilter):
+    """`RegisterHotKey` 로 등록된 단축키를 `WM_HOTKEY` 메시지로 받아 콜백 디스패치.
+
+    동일 조합을 이미 다른 앱이 선점한 상태이면 등록이 실패할 수 있고,
+    그 바인딩은 조용히 스킵된다 (나머지 바인딩은 살아남는다).
+    """
+
     def __init__(self) -> None:
-        self._listener = None
+        super().__init__()
+        self._ids: Dict[int, Callable[[], None]] = {}
+        self._next_id = 1
+        self._installed = False
 
     def set_bindings(self, bindings: Dict[str, Callable[[], None]]) -> None:
-        """여러 단축키를 한 번에 등록. 빈 문자열 키는 건너뛴다 (미할당 의미).
+        """여러 단축키를 한 번에 등록. 빈 문자열 키는 미할당으로 간주해 건너뛴다.
 
-        이전 리스너는 정리되고 새 리스너 하나가 만들어진다.
-        파싱 불가능한 단축키는 조용히 무시한다 — 하나가 깨져도 나머지는 살림.
+        기존 등록은 먼저 정리된다.
         """
         self.unregister()
-        parsed: Dict[str, Callable[[], None]] = {}
+        self._ensure_filter_installed()
         for text, cb in bindings.items():
             if not text or not text.strip():
                 continue
             try:
-                parsed[parse_hotkey(text)] = cb
+                mods, vk = parse_hotkey_to_vk(text)
             except HotkeyParseError:
                 continue
-        if not parsed:
-            return
-        if GlobalHotKeys is None:
-            return
-        self._listener = GlobalHotKeys(parsed)
-        self._listener.start()
+            hid = self._next_id
+            if _user32.RegisterHotKey(None, hid, mods | _MOD_NOREPEAT, vk):
+                self._ids[hid] = cb
+                self._next_id += 1
 
     def register(self, hotkey_text: str, callback: Callable[[], None]) -> None:
-        """단일 바인딩 편의 메서드 (하위 호환)."""
+        """단일 바인딩 편의 메서드."""
         self.set_bindings({hotkey_text: callback})
 
     def unregister(self) -> None:
-        if self._listener is not None:
+        for hid in list(self._ids.keys()):
             try:
-                self._listener.stop()
+                _user32.UnregisterHotKey(None, hid)
             except Exception:
                 pass
-            self._listener = None
+        self._ids.clear()
+
+    def _ensure_filter_installed(self) -> None:
+        if self._installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.installNativeEventFilter(self)
+            self._installed = True
+
+    def nativeEventFilter(self, event_type, message):
+        try:
+            if event_type != b"windows_generic_MSG":
+                return False, 0
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == _WM_HOTKEY:
+                cb = self._ids.get(int(msg.wParam))
+                if cb is not None:
+                    cb()
+                    return True, 0
+        except Exception:
+            return False, 0
+        return False, 0

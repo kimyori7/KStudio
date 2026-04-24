@@ -3,35 +3,43 @@ from unittest.mock import MagicMock, patch
 from screen_recorder.hotkey.manager import HotkeyManager
 
 
-def test_register_creates_pynput_listener_with_parsed_keys():
+def test_register_calls_win32_RegisterHotKey_with_parsed_vk(qtbot):
     callback = MagicMock()
-    fake_listener = MagicMock()
 
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys", return_value=fake_listener) as ctor:
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 1  # success
         m = HotkeyManager()
         m.register("Ctrl+Shift+R", callback)
 
-        ctor.assert_called_once()
-        binding = ctor.call_args[0][0]
-        assert "<ctrl>+<shift>+r" in binding
-        fake_listener.start.assert_called_once()
+        user32_mock.RegisterHotKey.assert_called_once()
+        args = user32_mock.RegisterHotKey.call_args[0]
+        # args: (hwnd, id, modifiers, vk)
+        mods = args[2]
+        vk = args[3]
+        # ctrl(0x02) + shift(0x04) + NOREPEAT(0x4000) = 0x4006
+        assert mods == 0x4006
+        assert vk == ord("R")
 
 
-def test_register_again_stops_previous():
-    fake1, fake2 = MagicMock(), MagicMock()
+def test_register_again_unregisters_previous(qtbot):
+    cb1, cb2 = MagicMock(), MagicMock()
 
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys", side_effect=[fake1, fake2]):
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 1
         m = HotkeyManager()
-        m.register("F9", lambda: None)
-        m.register("F8", lambda: None)
-        fake1.stop.assert_called_once()
-        fake2.start.assert_called_once()
+        m.register("F9", cb1)
+        m.register("F8", cb2)
+        # 두 번 Register, 첫 번째는 Unregister 되어야 함
+        assert user32_mock.RegisterHotKey.call_count == 2
+        assert user32_mock.UnregisterHotKey.call_count >= 1
 
 
-def test_unregister_stops_listener():
-    fake = MagicMock()
-    with patch("screen_recorder.hotkey.manager.GlobalHotKeys", return_value=fake):
+def test_unregister_calls_UnregisterHotKey(qtbot):
+    cb = MagicMock()
+
+    with patch("screen_recorder.hotkey.manager._user32") as user32_mock:
+        user32_mock.RegisterHotKey.return_value = 1
         m = HotkeyManager()
-        m.register("F9", lambda: None)
+        m.register("F9", cb)
         m.unregister()
-        fake.stop.assert_called_once()
+        user32_mock.UnregisterHotKey.assert_called_once()
