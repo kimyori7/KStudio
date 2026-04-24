@@ -44,6 +44,9 @@ class Magnifier(QWidget):
             src_h = LENS_SIZE // ZOOM
             sx = self._cursor_pos.x() - src_w // 2
             sy = self._cursor_pos.y() - src_h // 2
+            # 가상 데스크톱 경계 근처에서 source_rect 가 이미지 바깥으로 나가지 않도록 클램프
+            sx = max(0, min(sx, self._source.width() - src_w))
+            sy = max(0, min(sy, self._source.height() - src_h))
             src_rect = QRect(sx, sy, src_w, src_h)
             p.drawImage(lens_rect, self._source, src_rect)
 
