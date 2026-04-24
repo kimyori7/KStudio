@@ -1,7 +1,7 @@
-"""상단 녹화 컨트롤바 — 대상 선택(3버튼) + 시작/일시정지/정지."""
+"""상단 컨트롤바 — 녹화 섹션(대상/시작/일시정지/정지) + 스크린샷 섹션."""
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QLabel, QPushButton, QButtonGroup,
+    QWidget, QHBoxLayout, QLabel, QPushButton, QButtonGroup, QFrame,
 )
 
 
@@ -77,8 +77,31 @@ class ControlBar(QWidget):
         self.stop_btn.setEnabled(False)
         layout.addWidget(self.stop_btn)
 
+        # ---------- 녹화 | 스크린샷 구분선 ----------
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet("color: #3A3E47; background-color: #3A3E47; max-width: 1px;")
+        sep.setFixedWidth(1)
+        # 위아래로 약간의 숨 공간 — 라인이 너무 꽉 차 보이지 않게
+        layout.addSpacing(6)
+        layout.addWidget(sep)
+        layout.addSpacing(6)
+
+        # ---------- 스크린샷 섹션 (색상 차별화로 녹화와 구분) ----------
         self.screenshot_btn = QPushButton("📸 스크린샷")
         self.screenshot_btn.setToolTip("영역 지정 캡처")
+        self.screenshot_btn.setStyleSheet(
+            "QPushButton { "
+            "  padding: 5px 14px; "
+            "  background-color: #4A148C; "   # 짙은 보라 — REC 붉은 계열과 명확히 구분
+            "  color: white; "
+            "  font-weight: bold; "
+            "  border: 1px solid #7B1FA2; "
+            "  border-radius: 3px; "
+            "}"
+            "QPushButton:hover { background-color: #6A1B9A; }"
+            "QPushButton:pressed { background-color: #38006B; }"
+        )
         self.screenshot_btn.clicked.connect(self.screenshot_clicked.emit)
         layout.addWidget(self.screenshot_btn)
 
