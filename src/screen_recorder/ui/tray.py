@@ -10,6 +10,8 @@ class TrayController(QObject):
     show_main = Signal()
     quit_requested = Signal()
     toggle_record = Signal()
+    screenshot_region = Signal()    # 신규
+    screenshot_full = Signal()      # 신규
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -26,8 +28,17 @@ class TrayController(QObject):
         menu = QMenu()
         show_action = QAction("창 보이기", menu); show_action.triggered.connect(self.show_main.emit)
         rec_action = QAction("녹화 시작/정지", menu); rec_action.triggered.connect(self.toggle_record.emit)
+        shot_region = QAction("영역 캡처", menu); shot_region.triggered.connect(self.screenshot_region.emit)
+        shot_full = QAction("전체 캡처", menu); shot_full.triggered.connect(self.screenshot_full.emit)
         quit_action = QAction("종료", menu); quit_action.triggered.connect(self.quit_requested.emit)
-        menu.addAction(show_action); menu.addAction(rec_action); menu.addSeparator(); menu.addAction(quit_action)
+
+        menu.addAction(show_action)
+        menu.addAction(rec_action)
+        menu.addSeparator()
+        menu.addAction(shot_region)
+        menu.addAction(shot_full)
+        menu.addSeparator()
+        menu.addAction(quit_action)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_activated)
         self.tray.show()

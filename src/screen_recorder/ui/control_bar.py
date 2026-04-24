@@ -17,6 +17,7 @@ class ControlBar(QWidget):
     stop_clicked = Signal()
     pause_clicked = Signal()
     target_changed = Signal(str)
+    screenshot_clicked = Signal()  # 신규: 스크린샷 버튼 (영역 캡처)
 
     def __init__(self):
         super().__init__()
@@ -75,6 +76,11 @@ class ControlBar(QWidget):
         self.stop_btn.clicked.connect(self.stop_clicked.emit)
         self.stop_btn.setEnabled(False)
         layout.addWidget(self.stop_btn)
+
+        self.screenshot_btn = QPushButton("📸 스크린샷")
+        self.screenshot_btn.setToolTip("영역 지정 캡처")
+        self.screenshot_btn.clicked.connect(self.screenshot_clicked.emit)
+        layout.addWidget(self.screenshot_btn)
 
     # ---------- 대상 선택 ----------
 
