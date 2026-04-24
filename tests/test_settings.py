@@ -54,3 +54,28 @@ def test_load_partial_file_fills_defaults(tmp_path):
     assert s.video.fps == 60
     assert s.video.codec == "h264"  # default
     assert s.gif.fps == 10  # default
+
+
+def test_annotation_settings_defaults():
+    from screen_recorder.core.settings import AnnotationSettings, AppSettings
+    s = AnnotationSettings()
+    assert s.last_color == "#E53935"
+    assert s.last_thickness == 2
+
+    app = AppSettings()
+    assert app.annotation.last_color == "#E53935"
+    assert app.annotation.last_thickness == 2
+
+
+def test_annotation_settings_roundtrip(tmp_path):
+    from screen_recorder.core.settings import AppSettings, save, load
+    app = AppSettings()
+    app.annotation.last_color = "#123456"
+    app.annotation.last_thickness = 4
+
+    path = tmp_path / "settings.json"
+    save(app, path)
+    loaded = load(path)
+
+    assert loaded.annotation.last_color == "#123456"
+    assert loaded.annotation.last_thickness == 4

@@ -66,6 +66,12 @@ class ScreenshotSettings:
 
 
 @dataclass
+class AnnotationSettings:
+    last_color: str = "#E53935"   # 마지막 사용 색상 (hex, #RRGGBB)
+    last_thickness: int = 2        # 마지막 사용 두께 단계 (1~4)
+
+
+@dataclass
 class PreferencesSettings:
     autostart: bool = False
     minimize_to_tray: bool = True
@@ -82,6 +88,7 @@ class AppSettings:
     hotkey: HotkeySettings = field(default_factory=HotkeySettings)
     preferences: PreferencesSettings = field(default_factory=PreferencesSettings)
     screenshot: ScreenshotSettings = field(default_factory=ScreenshotSettings)
+    annotation: AnnotationSettings = field(default_factory=AnnotationSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:
