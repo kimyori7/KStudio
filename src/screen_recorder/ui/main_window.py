@@ -105,7 +105,7 @@ class MainWindow(QMainWindow):
 
         # ---------- 컨트롤러 & 부수 모듈 ----------
         self.controller = RecorderController(self.app_settings, self.ffmpeg_path)
-        self.hotkeys = HotkeyManager()
+        self.hotkeys = HotkeyManager(host_widget=self)
         self.tray = TrayController(self)
 
         self._border: QWidget | None = None  # RecordingBorder 또는 AdjustableRegionBorder
