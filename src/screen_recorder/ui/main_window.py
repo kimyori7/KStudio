@@ -31,9 +31,8 @@ from .overlay.recording_border import RecordingBorder
 from .overlay.adjustable_region import AdjustableRegionBorder
 from .overlay.mini_control import MiniControl
 from .panels.general_panel import GeneralPanel
+from .panels.screenshot_panel import ScreenshotPanel
 from .panels.video_panel import VideoPanel
-from .panels.gif_panel import GifPanel
-from .panels.sound_panel import SoundPanel
 from .panels.hotkey_panel import HotkeyPanel
 from .panels.preferences_panel import PreferencesPanel
 from screen_recorder.screenshot.controller import ScreenshotController
@@ -91,9 +90,12 @@ class MainWindow(QMainWindow):
         # ---------- 패널 ----------
         self.panels: dict[str, QWidget] = {
             "general": GeneralPanel(self.app_settings.general),
-            "video": VideoPanel(self.app_settings.video),
-            "gif": GifPanel(self.app_settings.gif),
-            "sound": SoundPanel(self.app_settings.sound),
+            "screenshot": ScreenshotPanel(self.app_settings.screenshot),
+            "video": VideoPanel(
+                self.app_settings.video,
+                self.app_settings.gif,
+                self.app_settings.sound,
+            ),
             "hotkey": HotkeyPanel(self.app_settings.hotkey),
             "preferences": PreferencesPanel(self.app_settings.preferences),
         }
