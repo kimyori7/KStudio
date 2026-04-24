@@ -1,15 +1,6 @@
-"""사용자 친화 단축키 문자열 -> pynput / Windows RegisterHotKey 포맷."""
+"""사용자 친화 단축키 문자열 → Windows RegisterHotKey (mod_flags, vk) 변환."""
 import string
 
-
-_MODIFIERS_PYNPUT = {
-    "ctrl": "<ctrl>",
-    "control": "<ctrl>",
-    "shift": "<shift>",
-    "alt": "<alt>",
-    "win": "<cmd>",
-    "super": "<cmd>",
-}
 
 # Windows Virtual Key 수식자 플래그
 _MOD_ALT = 0x0001
@@ -45,27 +36,6 @@ _VK_SPECIAL = {
 
 class HotkeyParseError(ValueError):
     pass
-
-
-def _normalize_key_pynput(token: str) -> str:
-    t = token.strip().lower()
-    if t in _MODIFIERS_PYNPUT:
-        return _MODIFIERS_PYNPUT[t]
-    if t.startswith("f") and t[1:].isdigit() and 1 <= int(t[1:]) <= 24:
-        return f"<{t}>"
-    if len(t) == 1 and t in (string.ascii_lowercase + string.digits):
-        return t
-    raise HotkeyParseError(f"unknown key token: {token!r}")
-
-
-def parse_hotkey(text: str) -> str:
-    """'Ctrl+Shift+R' → pynput 조합 문자열. 기존 테스트 하위호환용."""
-    if not text or not text.strip():
-        raise HotkeyParseError("empty hotkey string")
-    parts = [p for p in text.split("+") if p.strip()]
-    if not parts:
-        raise HotkeyParseError("no key tokens")
-    return "+".join(_normalize_key_pynput(p) for p in parts)
 
 
 def parse_hotkey_to_vk(text: str) -> tuple[int, int]:

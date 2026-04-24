@@ -18,9 +18,6 @@ a = Analysis(
     hiddenimports=[
         "dxcam",
         "pyaudiowpatch",
-        "pynput",
-        "pynput.keyboard._win32",
-        "pynput.mouse._win32",
         "send2trash",
         "send2trash.plat_win",
         "pygetwindow",

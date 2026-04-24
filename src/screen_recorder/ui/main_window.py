@@ -422,7 +422,8 @@ class MainWindow(QMainWindow):
         self._screenshot_ctrl.capture_full()
 
     def _on_hotkey_shot_region(self) -> None:
-        # pynput 스레드에서 들어오므로 Qt main 스레드로 라우팅
+        # Win32 WM_HOTKEY 는 Qt 메인 스레드의 네이티브 이벤트 필터에서 잡히지만,
+        # 콜백 실행 경로에서 재진입 위험을 피하려고 한 번 큐잉해서 돌림.
         from PySide6.QtCore import QMetaObject
         QMetaObject.invokeMethod(self, "_shot_region_safe", Qt.QueuedConnection)
 
