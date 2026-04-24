@@ -22,7 +22,9 @@ def test_default_settings_have_expected_values():
     assert s.sound.system_audio_enabled is True
     assert s.sound.codec == "aac"
     assert s.sound.bitrate_kbps == 192
-    assert s.hotkey.toggle_record == "F9"
+    assert s.hotkey.toggle_record == "Ctrl+Shift+T"
+    assert s.screenshot.filename_pattern == "screenshot_{date}_{time}"
+    assert s.hotkey.screenshot_region == "Ctrl+Shift+R"
 
 
 def test_save_and_load_roundtrip(tmp_path):

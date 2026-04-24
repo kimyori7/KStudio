@@ -44,7 +44,22 @@ class SoundSettings:
 
 @dataclass
 class HotkeySettings:
-    toggle_record: str = "F9"
+    toggle_record: str = "Ctrl+Shift+T"
+    screenshot_region: str = "Ctrl+Shift+R"
+    screenshot_full: str = ""  # 빈 문자열 = 미할당
+
+
+@dataclass
+class ScreenshotSettings:
+    save_dir: str = ""  # 빈 문자열이면 ~/Pictures/ScreenRecorder
+    filename_pattern: str = "screenshot_{date}_{time}"
+    format: str = "png"
+    magnifier_enabled: bool = True
+    # 뷰어 창 위치/크기 (-1이면 미설정)
+    viewer_x: int = -1
+    viewer_y: int = -1
+    viewer_w: int = -1
+    viewer_h: int = -1
 
 
 @dataclass
@@ -63,6 +78,7 @@ class AppSettings:
     sound: SoundSettings = field(default_factory=SoundSettings)
     hotkey: HotkeySettings = field(default_factory=HotkeySettings)
     preferences: PreferencesSettings = field(default_factory=PreferencesSettings)
+    screenshot: ScreenshotSettings = field(default_factory=ScreenshotSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:
