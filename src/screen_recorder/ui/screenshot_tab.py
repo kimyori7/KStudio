@@ -10,9 +10,10 @@ from PySide6.QtWidgets import QScrollArea, QLabel, QWidget, QVBoxLayout
 class ScreenshotTab(QWidget):
     save_state_changed = Signal()  # is_saved() 값이 바뀌면 발행
 
-    def __init__(self, image: QImage):
+    def __init__(self, image: QImage, source_label: str = "region"):
         super().__init__()
         self._image = image
+        self._source_label = source_label
         self._saved_path: Path | None = None
 
         layout = QVBoxLayout(self)
@@ -33,6 +34,9 @@ class ScreenshotTab(QWidget):
 
     def image(self) -> QImage:
         return self._image
+
+    def source_label(self) -> str:
+        return self._source_label
 
     def is_saved(self) -> bool:
         return self._saved_path is not None

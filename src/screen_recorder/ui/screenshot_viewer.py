@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QImage, QAction, QKeySequence, QClipboard, QGuiApplication
+from PySide6.QtGui import QImage, QAction, QKeySequence, QGuiApplication
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QToolBar, QFileDialog, QMessageBox,
 )
@@ -35,7 +35,6 @@ class ScreenshotViewer(QMainWindow):
         self.setCentralWidget(self._tabs)
 
         self._build_toolbar()
-        self._build_shortcuts()
 
         # 마지막 창 위치/크기 복원
         s = settings.screenshot
@@ -48,8 +47,7 @@ class ScreenshotViewer(QMainWindow):
 
     def add_tab(self, image: QImage, source_label: str) -> None:
         """새 캡처 탭 추가. source_label 은 파일명 {target} 토큰에 쓰임 (예: 'region'/'fullscreen')."""
-        tab = ScreenshotTab(image)
-        tab.source_label = source_label  # 동적 속성 — save 시 참조
+        tab = ScreenshotTab(image, source_label=source_label)
         tab.save_state_changed.connect(lambda i=tab: self._refresh_tab_title_for(i))
 
         idx = self._tabs.addTab(tab, "")
@@ -91,7 +89,7 @@ class ScreenshotViewer(QMainWindow):
                 return
             self._settings.screenshot.save_dir = chosen
 
-        target_label = getattr(tab, "source_label", "region")
+        target_label = tab.source_label()
         out_dir = Path(self._settings.screenshot.save_dir)
         name = build_filename(
             pattern=self._settings.screenshot.filename_pattern,
@@ -120,6 +118,8 @@ class ScreenshotViewer(QMainWindow):
         if not path_str:
             return
         path = Path(path_str)
+        if not path.suffix:
+            path = path.with_suffix(".png")
         try:
             save_png(tab.image(), path)
             tab.mark_saved(path)
@@ -130,7 +130,7 @@ class ScreenshotViewer(QMainWindow):
         tab = self.current_tab()
         if tab is None:
             return
-        QGuiApplication.clipboard().setImage(tab.image(), QClipboard.Clipboard)
+        QGuiApplication.clipboard().setImage(tab.image())
 
     def close_tab(self, index: int) -> None:
         """경고 없이 탭 제거 (caller 가 가드 처리한 뒤 호출)."""
@@ -163,29 +163,32 @@ class ScreenshotViewer(QMainWindow):
         self._act_copy.triggered.connect(self.copy_current_to_clipboard)
         tb.addAction(self._act_copy)
 
-    def _build_shortcuts(self) -> None:
-        # Ctrl+A 는 이미지 뷰어에선 시각적 효과 없는 no-op; Ctrl+C 가 이미 동작하니 사용자 플로우 만족.
-        select_all = QAction(self)
-        select_all.setShortcut(QKeySequence("Ctrl+A"))
-        select_all.triggered.connect(lambda: None)
-        self.addAction(select_all)
-
     def _refresh_tab_title_for(self, tab: ScreenshotTab) -> None:
         idx = self._tabs.indexOf(tab)
         if idx < 0:
             return
-        label = getattr(tab, "source_label", "region")
+        label = tab.source_label()
         base = f"{label} {idx + 1}"
         title = base if tab.is_saved() else f"● {base}"
         self._tabs.setTabText(idx, title)
 
-    def _on_tab_close_requested(self, index: int) -> None:
-        # 닫기 요청 → 저장 안 된 탭이 하나라도 있으면 다이얼로그
-        unsaved_count = sum(
+    def _unsaved_count(self) -> int:
+        return sum(
             1 for i in range(self._tabs.count())
             if isinstance(self._tabs.widget(i), ScreenshotTab)
             and not self._tabs.widget(i).is_saved()
         )
+
+    def _drop_all_tabs(self) -> None:
+        while self._tabs.count() > 0:
+            w = self._tabs.widget(0)
+            self._tabs.removeTab(0)
+            if w is not None:
+                w.deleteLater()
+
+    def _on_tab_close_requested(self, index: int) -> None:
+        # 닫기 요청 → 저장 안 된 탭이 하나라도 있으면 다이얼로그
+        unsaved_count = self._unsaved_count()
         if unsaved_count == 0:
             self.close_tab(index)
             return
@@ -198,20 +201,12 @@ class ScreenshotViewer(QMainWindow):
             self.close_tab(index)
             return
         # CLOSE_ALL — 모든 탭 제거 후 창 닫힘
-        while self._tabs.count() > 0:
-            w = self._tabs.widget(0)
-            self._tabs.removeTab(0)
-            if w is not None:
-                w.deleteLater()
+        self._drop_all_tabs()
         self.close()
 
     def closeEvent(self, e):
         # 창 X 클릭 시 — 저장 안 된 탭 경고
-        unsaved_count = sum(
-            1 for i in range(self._tabs.count())
-            if isinstance(self._tabs.widget(i), ScreenshotTab)
-            and not self._tabs.widget(i).is_saved()
-        )
+        unsaved_count = self._unsaved_count()
         if unsaved_count > 0:
             dlg = CloseDialog(unsaved_count, parent=self)
             dlg.exec()
