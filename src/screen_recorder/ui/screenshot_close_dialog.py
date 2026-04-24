@@ -2,7 +2,6 @@
 from __future__ import annotations
 from enum import Enum
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout
 
 
