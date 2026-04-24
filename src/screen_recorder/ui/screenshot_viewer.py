@@ -16,6 +16,7 @@ from .screenshot_tab import ScreenshotTab
 from .screenshot_close_dialog import CloseDialog, CloseAction
 from .app_icon import app_icon
 from .capture_exclude import exclude_from_capture
+from .toast import show_toast
 
 
 class ScreenshotViewer(QMainWindow):
@@ -103,6 +104,7 @@ class ScreenshotViewer(QMainWindow):
         try:
             save_png(tab.image(), path)
             tab.mark_saved(path)
+            show_toast(self, f"저장됨: {path.name}", 1500)
         except IOError as e:
             QMessageBox.warning(self, "저장 실패", str(e))
 
@@ -124,6 +126,7 @@ class ScreenshotViewer(QMainWindow):
         try:
             save_png(tab.image(), path)
             tab.mark_saved(path)
+            show_toast(self, f"저장됨: {path.name}", 1500)
         except IOError as e:
             QMessageBox.warning(self, "저장 실패", str(e))
 

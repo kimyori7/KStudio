@@ -50,6 +50,19 @@ class RecordingBorder(QWidget):
 
         self._excluded = False
 
+        # 첫 show() 가 호출되기 전에 geometry 를 target 위치로 맞춰둠 — 안 그러면
+        # Qt 기본 크기(작은 사각형)로 잠깐 보였다가 500ms 뒤 첫 _tick 에서 점프하는
+        # 깜빡임이 생김.
+        rect = target.current_rect()
+        if rect is not None:
+            t = self.BORDER_THICKNESS
+            self.setGeometry(
+                rect.x - t,
+                rect.y - t - self.LABEL_HEIGHT,
+                rect.w + 2 * t,
+                rect.h + 2 * t + self.LABEL_HEIGHT,
+            )
+
     def set_mode(self, mode: str) -> None:
         self.mode = mode
         self.update()
