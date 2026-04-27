@@ -351,6 +351,7 @@ class MainWindow(QMainWindow):
         self._border = AdjustableRegionBorder(geom, mode=self.app_settings.general.mode)
         self._border.rect_changed.connect(self._on_region_moved)
         self._border.close_requested.connect(self._on_region_close_requested)
+        self._border.stop_requested.connect(self._on_stop_clicked)
         self._border.show()
         exclude_from_capture(self._border)
         x, y, w, h = geom
@@ -522,10 +523,35 @@ class MainWindow(QMainWindow):
         return 0
 
     def _extract_first_frame(self, path: Path) -> QImage:
-        """첫 프레임 썸네일 — Phase 3+ 에서 ffmpeg 첫 프레임 추출로 개선."""
-        img = QImage(64, 36, QImage.Format_ARGB32)
-        img.fill(0xFF222222)
-        return img
+        """ffmpeg 으로 첫 프레임을 추출해 QImage 반환. 실패하면 회색 placeholder."""
+        placeholder = QImage(64, 36, QImage.Format_ARGB32)
+        placeholder.fill(0xFF222222)
+        if not path.exists() or not self.ffmpeg_path.exists():
+            return placeholder
+        try:
+            import subprocess
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                tmp = Path(f.name)
+            try:
+                # 첫 프레임 1장 추출. -ss 0 + -frames:v 1. -y 로 덮어쓰기.
+                # GIF 도 같은 명령으로 첫 프레임 추출됨.
+                subprocess.run(
+                    [str(self.ffmpeg_path), "-y", "-loglevel", "error",
+                     "-i", str(path), "-frames:v", "1", str(tmp)],
+                    check=True, capture_output=True, timeout=10,
+                )
+                img = QImage(str(tmp))
+                if not img.isNull():
+                    return img
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+            logging.getLogger(__name__).warning("first-frame extract failed: %s", e)
+        return placeholder
 
     def _open_entry(self, entry_id: int) -> None:
         if self.tab_area.find_index_by_entry(entry_id) >= 0:

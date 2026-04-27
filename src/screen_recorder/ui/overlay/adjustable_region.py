@@ -22,7 +22,8 @@ _COLOR_GIF = QColor("#FFB300")            # 주황 — GIF 녹화 중
 
 class AdjustableRegionBorder(QWidget):
     rect_changed = Signal(int, int, int, int)  # x, y, w, h (geometry 변경)
-    close_requested = Signal()                 # 타이틀바 X 버튼 클릭
+    close_requested = Signal()                 # 타이틀바 X 버튼 클릭 (대기 상태)
+    stop_requested = Signal()                  # 우상단 ⏹ 버튼 클릭 (녹화 중)
 
     BORDER_THICKNESS = 4
     CORNER_THICKNESS = 8           # 모서리 L자 두께
@@ -82,6 +83,31 @@ class AdjustableRegionBorder(QWidget):
             "}"
         )
         self.close_btn.clicked.connect(self.close_requested.emit)
+
+        # 우상단 ⏹ 정지 버튼 (녹화 중에만 표시, X 버튼 자리에 들어감)
+        self.stop_btn = QPushButton("⏹", self)
+        self.stop_btn.setObjectName("RegionStopBtn")
+        self.stop_btn.setFixedSize(self.LABEL_HEIGHT, self.LABEL_HEIGHT)
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
+        self.stop_btn.setToolTip("녹화 정지")
+        self.stop_btn.setStyleSheet(
+            "QPushButton#RegionStopBtn { "
+            "  background-color: transparent; "
+            "  color: white; "
+            "  border: none; "
+            "  font-weight: 900; "
+            "  font-size: 14pt; "
+            "  padding: 0; "
+            "} "
+            "QPushButton#RegionStopBtn:hover { "
+            "  background-color: rgba(255, 255, 255, 60); "
+            "} "
+            "QPushButton#RegionStopBtn:pressed { "
+            "  background-color: rgba(255, 255, 255, 100); "
+            "}"
+        )
+        self.stop_btn.clicked.connect(self.stop_requested.emit)
+        self.stop_btn.hide()
         self._position_close_button()
 
     # ---------- Public API (CaptureTarget 호환 일부) ----------
@@ -101,8 +127,10 @@ class AdjustableRegionBorder(QWidget):
         # 내부는 마스크로 클릭 통과 유지 → 녹화 대상 어플 조작 가능.
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._update_mask()
-        # X 버튼은 녹화 중 숨김 (클릭해도 녹화 중단되지 않도록)
+        # 녹화 중에는 X (전체화면 복귀) 대신 ⏹ (정지) 버튼
         self.close_btn.hide()
+        self.stop_btn.show()
+        self.stop_btn.raise_()
         self.update()
 
     def stop_recording(self) -> None:
@@ -111,6 +139,7 @@ class AdjustableRegionBorder(QWidget):
         self._elapsed = 0
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._update_mask()
+        self.stop_btn.hide()
         self.close_btn.show()
         self.update()
 
@@ -133,8 +162,11 @@ class AdjustableRegionBorder(QWidget):
 
     def _position_close_button(self) -> None:
         size = self.LABEL_HEIGHT
-        self.close_btn.move(self.width() - size, 0)
+        x = self.width() - size
+        self.close_btn.move(x, 0)
         self.close_btn.raise_()
+        self.stop_btn.move(x, 0)
+        self.stop_btn.raise_()
 
     def _update_mask(self):
         """테두리/타이틀바 영역만 마우스 받고, 내부는 클릭 통과 (대기/녹화 공통)."""
