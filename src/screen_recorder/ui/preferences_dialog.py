@@ -16,7 +16,7 @@ from .panels.player_panel import PlayerPanel
 
 
 _CATEGORIES = [
-    ("스크린샷", "screenshot"),
+    ("저장 / 파일명", "screenshot"),
     ("영상·GIF·사운드", "video"),
     ("영상 플레이어", "player"),
     ("단축키", "hotkey"),
@@ -46,7 +46,7 @@ class PreferencesDialog(QDialog):
         self.stack = QStackedWidget()
         body.addWidget(self.stack, stretch=1)
 
-        self.screenshot_panel = ScreenshotPanel(settings.screenshot)
+        self.screenshot_panel = ScreenshotPanel(settings.screenshot, settings.general)
         self.video_panel = VideoPanel(settings.video, settings.gif, settings.sound)
         self.player_panel = PlayerPanel(settings.player)
         self.hotkey_panel = HotkeyPanel(settings.hotkey)

@@ -8,7 +8,7 @@ def test_dialog_has_five_categories(qtbot):
     qtbot.addWidget(d)
     assert d.category_list.count() == 5
     titles = [d.category_list.item(i).text() for i in range(5)]
-    assert "스크린샷" in titles
+    assert "저장 / 파일명" in titles
     assert "영상·GIF·사운드" in titles
     assert "영상 플레이어" in titles
     assert "단축키" in titles
