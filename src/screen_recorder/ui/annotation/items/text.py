@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QFont, QTextCursor
-from PySide6.QtWidgets import QGraphicsTextItem
+from PySide6.QtGui import QColor, QFont, QPen, QTextCursor
+from PySide6.QtWidgets import QGraphicsTextItem, QStyle
 
 from .base import AnnotationProperties
 
@@ -30,6 +30,7 @@ class TextAnnotationItem(QGraphicsTextItem):
         self.setFlag(QGraphicsTextItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsTextItem.ItemIsMovable, True)
         self.setFlag(QGraphicsTextItem.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
         # 외부(주로 TextTool)가 편집 종료(ESC, focusOut) 시점을 알 수 있게 하는 콜백.
         # 호출 후 자동으로 None 으로 비워져 재진입(commit_active → exit_edit_mode → cb → ...) 방지.
         self.on_edit_finished = None  # type: Callable[[], None] | None
@@ -106,3 +107,27 @@ class TextAnnotationItem(QGraphicsTextItem):
             self.exit_edit_mode()
             return
         super().keyPressEvent(event)
+
+    # --- hover / selected 시각 표시 ---
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)  # 텍스트 자체 그리기
+        selected = bool(option.state & QStyle.State_Selected)
+        hovered = self.isUnderMouse() and not selected
+        editing = self.textInteractionFlags() != Qt.NoTextInteraction
+        if not (selected or hovered or editing):
+            return
+        outline = QColor(100, 180, 255)
+        # editing 또는 selected = 진한 dashed, hover = 옅은 solid
+        strong = selected or editing
+        outline.setAlpha(220 if strong else 110)
+        painter.setPen(QPen(outline, 1, Qt.DashLine if strong else Qt.SolidLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(self.boundingRect().adjusted(2, 2, -2, -2))
+
+    def hoverEnterEvent(self, event):
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.update()
+        super().hoverLeaveEvent(event)

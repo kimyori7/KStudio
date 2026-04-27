@@ -5,7 +5,7 @@ import math
 
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
+from PySide6.QtWidgets import QGraphicsItem, QStyle, QStyleOptionGraphicsItem, QWidget
 
 from ..thickness import thickness_to_pixels
 from .base import AnnotationProperties
@@ -34,6 +34,7 @@ class ArrowAnnotationItem(QGraphicsItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
         self._start_on_drag_start: QPointF | None = None
         self._end_on_drag_start: QPointF | None = None
         self._undo_push_callback = None
@@ -116,6 +117,26 @@ class ArrowAnnotationItem(QGraphicsItem):
         )
         painter.setPen(Qt.NoPen)
         painter.drawPolygon(QPolygonF([self._end, left, right]))
+
+        # hover/선택 시각 표시
+        selected = bool(option.state & QStyle.State_Selected)
+        hovered = self.isUnderMouse() and not selected
+        if selected or hovered:
+            outline = QColor(100, 180, 255)
+            outline.setAlpha(220 if selected else 110)
+            painter.setPen(QPen(outline, 1, Qt.DashLine if selected else Qt.SolidLine))
+            painter.setBrush(Qt.NoBrush)
+            bbox = QRectF(self._start, self._end).normalized()
+            margin = max(6.0, float(px))
+            painter.drawRect(bbox.adjusted(-margin, -margin, margin, margin))
+
+    def hoverEnterEvent(self, event):
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.update()
+        super().hoverLeaveEvent(event)
 
     def _on_props_changed(self) -> None:
         self.prepareGeometryChange()

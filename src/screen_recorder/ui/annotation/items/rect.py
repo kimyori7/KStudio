@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
+from PySide6.QtWidgets import QGraphicsItem, QStyle, QStyleOptionGraphicsItem, QWidget
 
 from ..thickness import thickness_to_pixels
 from .base import AnnotationProperties
@@ -27,6 +27,7 @@ class RectAnnotationItem(QGraphicsItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
         self._rect_on_drag_start: QRectF | None = None
         self._undo_push_callback = None  # scene 이 add_annotation 시 주입
 
@@ -70,6 +71,25 @@ class RectAnnotationItem(QGraphicsItem):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(self._rect)
+
+        # hover/선택 시각 표시 — 사용자 색상과 무관한 sky-blue dashed/solid outline
+        selected = bool(option.state & QStyle.State_Selected)
+        hovered = self.isUnderMouse() and not selected
+        if selected or hovered:
+            outline = QColor(100, 180, 255)
+            outline.setAlpha(220 if selected else 110)
+            painter.setPen(QPen(outline, 1, Qt.DashLine if selected else Qt.SolidLine))
+            painter.setBrush(Qt.NoBrush)
+            margin = max(4.0, px / 2.0 + 2)
+            painter.drawRect(self._rect.adjusted(-margin, -margin, margin, margin))
+
+    def hoverEnterEvent(self, event):
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.update()
+        super().hoverLeaveEvent(event)
 
     def _on_props_changed(self) -> None:
         self.prepareGeometryChange()

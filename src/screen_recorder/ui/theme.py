@@ -251,6 +251,39 @@ QToolTip {
     border-radius: 3px;
 }
 
+/* ----- 툴바 / 툴버튼 (저장/도구/Undo 등) ----- */
+QToolBar {
+    background-color: #1F2125;
+    border: none;
+    spacing: 2px;
+    padding: 2px;
+}
+QToolButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 4px 8px;
+    color: #E8E8EA;
+}
+QToolButton:hover {
+    background-color: #3A3F4B;
+    border: 1px solid #5A5F6B;
+}
+QToolButton:pressed {
+    background-color: #2A2D34;
+}
+QToolButton:checked {
+    background-color: #2D5DA8;
+    border: 1px solid #4FC3F7;
+    color: #FFFFFF;
+    font-weight: bold;
+}
+QToolBar::separator {
+    background-color: #3C414B;
+    width: 1px;
+    margin: 4px 4px;
+}
+
 /* ----- 메뉴 (트레이/우클릭) ----- */
 QMenu {
     background-color: #23262D;
