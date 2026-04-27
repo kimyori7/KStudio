@@ -1,0 +1,38 @@
+from PySide6.QtGui import QImage
+from screen_recorder.ui.library_model import LibraryModel, EntryKind
+from screen_recorder.ui.docks.library_panel import LibraryPanel
+
+
+def _img() -> QImage:
+    img = QImage(8, 8, QImage.Format_ARGB32)
+    img.fill(0xFF112233)
+    return img
+
+
+def test_panel_reflects_model_add(qtbot):
+    m = LibraryModel()
+    p = LibraryPanel(m)
+    qtbot.addWidget(p)
+    assert p.list_widget.count() == 0
+    m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    assert p.list_widget.count() == 1
+
+
+def test_panel_reflects_model_remove(qtbot):
+    m = LibraryModel()
+    e = m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    p = LibraryPanel(m)
+    qtbot.addWidget(p)
+    assert p.list_widget.count() == 1
+    m.remove(e.id)
+    assert p.list_widget.count() == 0
+
+
+def test_clicking_item_emits_open(qtbot):
+    m = LibraryModel()
+    e = m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    p = LibraryPanel(m)
+    qtbot.addWidget(p)
+    with qtbot.waitSignal(p.entry_open_requested, timeout=200) as blocker:
+        p.list_widget.itemClicked.emit(p.list_widget.item(0))
+    assert blocker.args == [e.id]
