@@ -219,6 +219,9 @@ class MainWindow(QMainWindow):
         self.tab_area.tab_added.connect(self._on_tab_added)
         self.tab_area.currentChanged.connect(self._on_active_tab_changed)
         self.library_panel.entry_open_requested.connect(self._open_entry)
+        self.library_panel.entry_delete_requested.connect(self._on_library_delete)
+        self.library_panel.entry_open_folder_requested.connect(self._on_library_open_folder)
+        self.library_model.entry_renamed.connect(self._on_entry_renamed)
 
         # 영상 탭 프레임 → 스크린샷 단축키
         QShortcut(QKeySequence("Ctrl+Shift+P"), self,
@@ -487,11 +490,26 @@ class MainWindow(QMainWindow):
     # ---------- 스크린샷 / 녹화 결과 → LibraryModel + TabArea ----------
 
     def _on_screenshot_captured(self, image: QImage, label: str) -> None:
+        display = self._build_screenshot_display_name(label)
         entry = self.library_model.add(
-            EntryKind.SCREENSHOT, thumbnail=image, source_label=label
+            EntryKind.SCREENSHOT,
+            thumbnail=image,
+            source_label=label,
+            display_name=display,
         )
         self.tab_area.add_screenshot(image=image, source_label=label, entry_id=entry.id)
         self._restore_window_for_capture()
+
+    def _build_screenshot_display_name(self, source_label: str) -> str:
+        """파일명 규칙으로 디스크 저장 시 사용할 파일명을 미리 만든다 (캡처 즉시 라이브러리 표시용)."""
+        from datetime import datetime
+        return build_filename(
+            pattern=self.app_settings.screenshot.filename_pattern,
+            when=datetime.now(),
+            mode="screenshot",
+            target=source_label,
+            extension=self.app_settings.screenshot.format,
+        )
 
     def _restore_window_for_capture(self) -> None:
         if self.isHidden() or self.isMinimized():
@@ -551,6 +569,64 @@ class MainWindow(QMainWindow):
         """새 탭이 추가되면 그 탭의 시그널을 옵션바 등에 연결."""
         if isinstance(widget, ScreenshotTab):
             widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
+
+    def _entry_for_current_tab(self):
+        eid = self.tab_area.current_entry_id()
+        if eid is None:
+            return None
+        return self.library_model.get(eid)
+
+    # ---------- 라이브러리 컨텍스트 메뉴 ----------
+
+    def _on_entry_renamed(self, entry_id: int, new_name: str) -> None:
+        """라이브러리 인라인 편집으로 display_name 이 바뀜 — 디스크 path 가 있으면 같이 rename."""
+        entry = self.library_model.get(entry_id)
+        if entry is None or entry.path is None:
+            return
+        old_path = entry.path
+        if not old_path.exists():
+            return
+        # 확장자 보존 — 사용자가 확장자 빼먹어도 자동 보전
+        new_stem = Path(new_name).stem
+        new_suffix = Path(new_name).suffix or old_path.suffix
+        target = old_path.parent / f"{new_stem}{new_suffix}"
+        if target == old_path or target.exists():
+            return
+        try:
+            old_path.rename(target)
+            entry.path = target
+        except OSError as e:
+            logging.getLogger(__name__).warning("rename failed: %s", e)
+
+    def _on_library_delete(self, entry_id: int) -> None:
+        entry = self.library_model.get(entry_id)
+        if entry is None:
+            return
+        # 디스크 파일이 있으면 휴지통으로
+        if entry.path is not None and entry.path.exists():
+            try:
+                from send2trash import send2trash
+                send2trash(str(entry.path))
+            except Exception as e:
+                logging.getLogger(__name__).warning("send2trash failed: %s", e)
+        # 열려 있는 탭도 같이 닫기
+        idx = self.tab_area.find_index_by_entry(entry_id)
+        if idx >= 0:
+            self.tab_area._on_close_requested(idx)  # 내부 close — entry_closed 도 발화
+        self.library_model.remove(entry_id)
+
+    def _on_library_open_folder(self, entry_id: int) -> None:
+        entry = self.library_model.get(entry_id)
+        if entry is None:
+            return
+        if entry.path is not None and entry.path.exists():
+            folder = entry.path.parent
+        elif entry.kind is EntryKind.VIDEO:
+            folder = Path(self.app_settings.general.output_dir or Path.home() / "Videos" / "KStudio")
+        else:
+            folder = Path(self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio")
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _on_video_snapshot(self, image: QImage, label_at: str) -> None:
         """영상 탭에서 '현재 프레임 → 스크린샷' 요청."""
@@ -635,17 +711,27 @@ class MainWindow(QMainWindow):
         else:
             save_dir = self.app_settings.screenshot.save_dir or str(Path.home() / "Pictures" / "KStudio")
             Path(save_dir).mkdir(parents=True, exist_ok=True)
-            from datetime import datetime
-            base = build_filename(
-                pattern=self.app_settings.screenshot.filename_pattern,
-                when=datetime.now(),
-                mode="screenshot",
-                target=tab.source_label(),
-                extension=self.app_settings.screenshot.format,
-            )
+            # 라이브러리 entry 의 display_name 이 있으면 그걸 우선 사용 (사용자가 변경했을 수 있음)
+            entry = self._entry_for_current_tab()
+            if entry is not None and entry.display_name:
+                base = entry.display_name
+            else:
+                from datetime import datetime
+                base = build_filename(
+                    pattern=self.app_settings.screenshot.filename_pattern,
+                    when=datetime.now(),
+                    mode="screenshot",
+                    target=tab.source_label(),
+                    extension=self.app_settings.screenshot.format,
+                )
             path = resolve_collision(Path(save_dir) / base)
         save_png(tab.image(), path)
         tab.mark_saved(path)
+        # 라이브러리 entry 의 path 도 갱신
+        entry = self._entry_for_current_tab()
+        if entry is not None:
+            entry.path = path
+            self.library_model.rename(entry.id, path.name)
 
     def _save_as_current_screenshot(self) -> None:
         tab = self._current_screenshot_tab()
@@ -736,6 +822,7 @@ class MainWindow(QMainWindow):
             EntryKind.VIDEO,
             thumbnail=thumb,
             source_label=self.global_toolbar.current_target(),
+            display_name=p.name,        # 실제 저장된 파일명을 라이브러리에 그대로 표시
             path=p,
             duration_ms=duration_ms,
         )

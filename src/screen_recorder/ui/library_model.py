@@ -21,7 +21,8 @@ class LibraryEntry:
     id: int
     kind: EntryKind
     thumbnail: QImage
-    source_label: str          # "region" / "fullscreen" / "window"
+    source_label: str          # "region" / "fullscreen" / "window" (파일명 규칙 {target} 토큰용)
+    display_name: str = ""     # 라이브러리/디스크에 보일 파일명 (예: "screenshot_2026-04-27_15-30.png")
     created_at: datetime = field(default_factory=datetime.now)
     path: Optional[Path] = None
     duration_ms: int = 0
@@ -30,6 +31,7 @@ class LibraryEntry:
 class LibraryModel(QObject):
     entry_added = Signal(object)    # LibraryEntry
     entry_removed = Signal(int)     # entry id
+    entry_renamed = Signal(int, str)   # (entry_id, new_display_name) — 모델이 갱신된 후 emit
 
     def __init__(self) -> None:
         super().__init__()
@@ -37,18 +39,28 @@ class LibraryModel(QObject):
         self._id_seq = count(1)
 
     def add(self, kind: EntryKind, *, thumbnail: QImage, source_label: str,
-            path: Optional[Path] = None, duration_ms: int = 0) -> LibraryEntry:
+            display_name: str = "", path: Optional[Path] = None,
+            duration_ms: int = 0) -> LibraryEntry:
         entry = LibraryEntry(
             id=next(self._id_seq),
             kind=kind,
             thumbnail=thumbnail,
             source_label=source_label,
+            display_name=display_name,
             path=path,
             duration_ms=duration_ms,
         )
         self._entries.append(entry)
         self.entry_added.emit(entry)
         return entry
+
+    def rename(self, entry_id: int, new_name: str) -> None:
+        """display_name 변경 (디스크 path rename 은 호출자 책임)."""
+        for e in self._entries:
+            if e.id == entry_id:
+                e.display_name = new_name
+                self.entry_renamed.emit(entry_id, new_name)
+                return
 
     def remove(self, entry_id: int) -> None:
         for i, e in enumerate(self._entries):

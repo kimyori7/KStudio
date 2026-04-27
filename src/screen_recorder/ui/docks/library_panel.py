@@ -1,10 +1,12 @@
-"""라이브러리 패널 — 세션 결과물 썸네일 목록 (모드별 필터링)."""
+"""라이브러리 패널 — 세션 결과물 썸네일 목록 (모드별 필터링 + 컨텍스트 메뉴)."""
 from __future__ import annotations
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QPixmap, QIcon
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel
+from PySide6.QtCore import Qt, Signal, QSize, QPoint
+from PySide6.QtGui import QPixmap, QIcon, QAction
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QMenu,
+)
 
 from ..library_model import LibraryEntry, LibraryModel, EntryKind
 from ..mode_controller import AppMode, ModeController
@@ -16,7 +18,10 @@ def _format_duration(ms: int) -> str:
 
 
 class LibraryPanel(QWidget):
-    entry_open_requested = Signal(int)   # entry id
+    entry_open_requested = Signal(int)       # entry id
+    entry_rename_requested = Signal(int)     # entry id (UI 상에서 인라인 편집 시작 요청)
+    entry_delete_requested = Signal(int)     # entry id
+    entry_open_folder_requested = Signal(int)  # entry id
 
     def __init__(self, model: LibraryModel,
                  mode_controller: Optional[ModeController] = None) -> None:
@@ -36,6 +41,9 @@ class LibraryPanel(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.setIconSize(QSize(48, 32))
         self.list_widget.itemClicked.connect(self._on_item_clicked)
+        self.list_widget.itemChanged.connect(self._on_item_changed)
+        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.list_widget, stretch=1)
 
         for e in self._model.entries():
@@ -43,19 +51,20 @@ class LibraryPanel(QWidget):
 
         model.entry_added.connect(lambda e: self._insert(e, at_top=True))
         model.entry_removed.connect(self._remove_by_id)
+        model.entry_renamed.connect(self._on_entry_renamed)
 
         if self._mode is not None:
             self._mode.mode_changed.connect(self._refresh_visibility)
             self._refresh_visibility(self._mode.mode())
 
+    # ---------- 모델 → UI ----------
     def _insert(self, entry: LibraryEntry, *, at_top: bool) -> None:
-        prefix = "📸" if entry.kind is EntryKind.SCREENSHOT else "🎞"
-        ts = entry.created_at.strftime("%H:%M")
-        suffix = _format_duration(entry.duration_ms) if entry.kind is EntryKind.VIDEO else ""
-        text = f"{prefix} {entry.source_label} {ts}{suffix}"
-        item = QListWidgetItem(text)
+        item = QListWidgetItem()
         item.setData(Qt.UserRole, entry.id)
         item.setData(Qt.UserRole + 1, entry.kind)
+        # 표시 텍스트는 display_name 우선, 없으면 source_label + 시간 (구버전 fallback)
+        item.setText(self._render_text(entry))
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
         if not entry.thumbnail.isNull():
             item.setIcon(QIcon(QPixmap.fromImage(entry.thumbnail).scaled(
                 48, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation
@@ -65,10 +74,20 @@ class LibraryPanel(QWidget):
         else:
             self.list_widget.addItem(item)
         self._items_by_id[entry.id] = item
-        # 모드별 필터링 즉시 반영
         if self._mode is not None:
             wanted = self._kind_for_mode(self._mode.mode())
             item.setHidden(entry.kind is not wanted)
+
+    @staticmethod
+    def _render_text(entry: LibraryEntry) -> str:
+        prefix = "📸" if entry.kind is EntryKind.SCREENSHOT else "🎞"
+        if entry.display_name:
+            base = entry.display_name
+        else:
+            ts = entry.created_at.strftime("%H:%M")
+            base = f"{entry.source_label} {ts}"
+        suffix = _format_duration(entry.duration_ms) if entry.kind is EntryKind.VIDEO else ""
+        return f"{prefix} {base}{suffix}"
 
     def _remove_by_id(self, entry_id: int) -> None:
         item = self._items_by_id.pop(entry_id, None)
@@ -78,10 +97,90 @@ class LibraryPanel(QWidget):
         if row >= 0:
             self.list_widget.takeItem(row)
 
+    def _on_entry_renamed(self, entry_id: int, _new_name: str) -> None:
+        item = self._items_by_id.get(entry_id)
+        if item is None:
+            return
+        entry = self._model.get(entry_id)
+        if entry is None:
+            return
+        # itemChanged 가 다시 발화하지 않도록 차단
+        self.list_widget.blockSignals(True)
+        try:
+            item.setText(self._render_text(entry))
+        finally:
+            self.list_widget.blockSignals(False)
+
+    # ---------- UI → 외부 ----------
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         eid = item.data(Qt.UserRole)
         if eid is not None:
             self.entry_open_requested.emit(int(eid))
+
+    def _on_item_changed(self, item: QListWidgetItem) -> None:
+        """인라인 편집으로 텍스트가 바뀜 — 사용자가 입력한 텍스트에서 prefix/접미사를 떼고
+        새 display_name 만 추출한 뒤 모델/디스크에 반영하도록 외부에 위임."""
+        eid = item.data(Qt.UserRole)
+        if eid is None:
+            return
+        entry = self._model.get(int(eid))
+        if entry is None:
+            return
+        # 사용자가 직접 텍스트 박스 편집을 끝낸 경우만 처리 — _render_text 와 같으면 noop
+        new_text = item.text()
+        # prefix 제거: "📸 " 또는 "🎞 " 로 시작
+        for pfx in ("📸 ", "🎞 "):
+            if new_text.startswith(pfx):
+                new_text = new_text[len(pfx):]
+                break
+        # duration suffix 제거: " (32s)" 등
+        if entry.kind is EntryKind.VIDEO:
+            sfx = _format_duration(entry.duration_ms)
+            if sfx and new_text.endswith(sfx):
+                new_text = new_text[:-len(sfx)]
+        new_display = new_text.strip()
+        if new_display == entry.display_name:
+            # 변경 없음 — 텍스트 정규화만 다시 적용
+            self._on_entry_renamed(entry.id, entry.display_name)
+            return
+        if not new_display:
+            # 빈 이름 거부 — 원복
+            self._on_entry_renamed(entry.id, entry.display_name)
+            return
+        # 외부(MainWindow)가 받아 디스크 rename + model.rename 처리
+        self.entry_rename_requested.emit(int(eid))
+        # 일단 모델만 업데이트 — MainWindow 가 시그널 받은 뒤 디스크 처리
+        # NOTE: rename_requested 만 emit 하면 MainWindow 에서 prompt 하지 않고 인라인 텍스트 사용해야 함.
+        # 단순화: 인라인 편집 결과를 직접 모델에 반영하고, 디스크 rename 만 MainWindow 에 위임.
+        self._model.rename(entry.id, new_display)
+
+    def _on_context_menu(self, pos: QPoint) -> None:
+        item = self.list_widget.itemAt(pos)
+        if item is None:
+            return
+        eid = item.data(Qt.UserRole)
+        if eid is None:
+            return
+        eid = int(eid)
+        menu = QMenu(self)
+        rename_action = QAction("이름 바꾸기 (F2)", self)
+        rename_action.triggered.connect(lambda: self.list_widget.editItem(item))
+        menu.addAction(rename_action)
+
+        open_folder_action = QAction("저장 폴더 열기", self)
+        open_folder_action.triggered.connect(
+            lambda: self.entry_open_folder_requested.emit(eid)
+        )
+        menu.addAction(open_folder_action)
+
+        menu.addSeparator()
+        delete_action = QAction("삭제 (휴지통)", self)
+        delete_action.triggered.connect(
+            lambda: self.entry_delete_requested.emit(eid)
+        )
+        menu.addAction(delete_action)
+
+        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
 
     def _refresh_visibility(self, mode: AppMode) -> None:
         wanted = self._kind_for_mode(mode)

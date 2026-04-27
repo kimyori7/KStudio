@@ -38,6 +38,9 @@ class ScreenshotPanel(QWidget):
         self.img_dir_edit, img_dir_row = self._make_dir_row(
             screenshot.save_dir, "_browse_image_dir"
         )
+        self.img_dir_edit.setPlaceholderText(
+            f"기본값: {Path.home() / 'Pictures' / 'KStudio'}"
+        )
         img_form.addRow("저장 폴더:", img_dir_row)
 
         self.img_pattern_edit = QLineEdit(screenshot.filename_pattern)
@@ -66,6 +69,9 @@ class ScreenshotPanel(QWidget):
 
             self.vid_dir_edit, vid_dir_row = self._make_dir_row(
                 general.output_dir, "_browse_video_dir"
+            )
+            self.vid_dir_edit.setPlaceholderText(
+                f"기본값: {Path.home() / 'Videos' / 'KStudio'}"
             )
             vid_form.addRow("저장 폴더:", vid_dir_row)
 
