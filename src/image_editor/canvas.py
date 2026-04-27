@@ -188,6 +188,9 @@ class LayerCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(e)
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
-        if self._tool is not None and e.key() == Qt.Key_Escape:
-            self._tool.key_escape(self._scene)
+        if self._tool is not None:
+            if e.key() == Qt.Key_Escape:
+                self._tool.key_escape(self._scene)
+            elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self._tool.key_enter(self._scene)
         super().keyPressEvent(e)

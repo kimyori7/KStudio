@@ -35,3 +35,7 @@ class Tool:
     def key_escape(self, scene: AnnotationScene) -> None:
         """ESC 눌림. 드래그 중이면 취소, 아니면 선택 해제."""
         pass
+
+    def key_enter(self, scene: AnnotationScene) -> None:
+        """Enter / Return 키 눌림. 기본 동작 없음 (CropTool 등에서 override)."""
+        pass
