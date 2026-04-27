@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QColorDialog, QHBoxLayout, QPushButton, QToolBar, QWidget,
+    QColorDialog, QHBoxLayout, QLabel, QPushButton, QToolBar, QWidget,
 )
 
 from .annotation.thickness import THICKNESS_STEPS, DEFAULT_THICKNESS_STEP
@@ -38,8 +38,7 @@ class AnnotationToolbar(QToolBar):
     thickness_changed = Signal(int)
     undo_requested = Signal()
     redo_requested = Signal()
-    fit_requested = Signal()
-    hundred_percent_requested = Signal()
+    original_requested = Signal()  # 1.0 배율로 복귀
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("편집", parent)
@@ -56,20 +55,30 @@ class AnnotationToolbar(QToolBar):
         self.addSeparator()
         self._build_thickness()
         self.addSeparator()
-        # ⟲ ⟳ 는 ↶ ↷ 보다 시각적으로 훨씬 큼
+        # Undo/Redo — 18pt + 명시 큰 크기
         self._act_undo = self._add_button("⟲", self._on_undo, "실행취소 (Ctrl+Z)")
         self._act_redo = self._add_button("⟳", self._on_redo, "다시실행 (Ctrl+Y)")
-        # Undo/Redo 버튼만 폰트 크게 (다른 버튼은 그대로 유지)
         for act in (self._act_undo, self._act_redo):
             btn = self.widgetForAction(act)
             if btn is not None:
                 f = btn.font()
-                f.setPointSize(14)
+                f.setPointSize(18)
                 f.setBold(True)
                 btn.setFont(f)
+                btn.setMinimumSize(40, 32)
         self.addSeparator()
-        self._add_button("Fit", self._on_fit, "창에 맞춤 (Ctrl+0)")
-        self._add_button("100%", self._on_hundred, "원본 크기 (Ctrl+1)")
+        # 원본 크기로 가는 버튼 + 현재 줌 배율 라벨
+        self._act_original = self._add_button(
+            "원본", self._on_original, "원본 크기로 (Ctrl+0). Ctrl+마우스휠로 자유 줌"
+        )
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setMinimumWidth(50)
+        self._zoom_label.setAlignment(Qt.AlignCenter)
+        self._zoom_label.setStyleSheet(
+            "QLabel { color: #ddd; padding: 0 8px; font-weight: bold; }"
+        )
+        self._zoom_label.setToolTip("현재 줌 배율 (Ctrl+마우스휠로 조절)")
+        self.addWidget(self._zoom_label)
 
     # --- API ---
     def tool_ids(self) -> tuple[str, ...]:
@@ -118,6 +127,11 @@ class AnnotationToolbar(QToolBar):
     def set_redo_enabled(self, enabled: bool) -> None:
         self._act_redo.setEnabled(enabled)
 
+    def set_zoom_label(self, factor: float) -> None:
+        """현재 줌 배율을 라벨에 표시 (1.0 → '100%')."""
+        percent = int(round(factor * 100))
+        self._zoom_label.setText(f"{percent}%")
+
     # --- internal build ---
     def _build_tool_group(self) -> None:
         group = QActionGroup(self)
@@ -157,14 +171,44 @@ class AnnotationToolbar(QToolBar):
             self._color_buttons.append(btn)
         self._color_buttons[0].setChecked(True)
 
-        # 커스텀 색상 선택 — 팔레트 이모지 아이콘
-        custom = QPushButton("🎨")
-        custom.setFixedSize(26, 22)
+        # 커스텀 색상 선택 — 직접 그린 팔레트 아이콘 (이모지는 Windows 폰트
+        # 의존성으로 안정적이지 않음)
+        custom = QPushButton()
+        custom.setIcon(self._make_palette_icon())
+        custom.setIconSize(custom.size())
+        custom.setFixedSize(28, 22)
         custom.setToolTip("더 많은 색… (커스텀 색상 선택)")
         custom.clicked.connect(self._on_custom_color)
         layout.addWidget(custom)
 
         self.addWidget(container)
+
+    def _make_palette_icon(self) -> QIcon:
+        """팔레트 모양 작은 아이콘 — 둥근 사각 위에 4 색점."""
+        size = 18
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            # 팔레트 본체 (회색 둥근 사각)
+            p.setPen(QPen(QColor("#888"), 1))
+            p.setBrush(QColor("#cfcfcf"))
+            p.drawRoundedRect(1, 2, size - 2, size - 4, 4, 4)
+            # 색점 4개 (빨/노/파/초)
+            spots = [
+                (5, 6, "#E53935"),   # 빨
+                (12, 6, "#FDD835"),  # 노
+                (5, 12, "#1E88E5"),  # 파
+                (12, 12, "#43A047"), # 초
+            ]
+            p.setPen(Qt.NoPen)
+            for cx, cy, c in spots:
+                p.setBrush(QColor(c))
+                p.drawEllipse(cx - 2, cy - 2, 4, 4)
+        finally:
+            p.end()
+        return QIcon(pm)
 
     def _build_thickness(self) -> None:
         container = QWidget(self)
@@ -215,8 +259,5 @@ class AnnotationToolbar(QToolBar):
     def _on_redo(self) -> None:
         self.redo_requested.emit()
 
-    def _on_fit(self) -> None:
-        self.fit_requested.emit()
-
-    def _on_hundred(self) -> None:
-        self.hundred_percent_requested.emit()
+    def _on_original(self) -> None:
+        self.original_requested.emit()

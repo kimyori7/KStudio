@@ -57,14 +57,12 @@ class ScreenshotViewer(QMainWindow):
         self.annotation_toolbar.thickness_changed.connect(self._on_thickness_changed)
         self.annotation_toolbar.undo_requested.connect(self._on_undo)
         self.annotation_toolbar.redo_requested.connect(self._on_redo)
-        self.annotation_toolbar.fit_requested.connect(self._on_fit)
-        self.annotation_toolbar.hundred_percent_requested.connect(self._on_hundred)
+        self.annotation_toolbar.original_requested.connect(self._on_original)
 
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._on_undo)
         QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._on_redo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self._on_redo)
-        QShortcut(QKeySequence("Ctrl+0"), self, activated=self._on_fit)
-        QShortcut(QKeySequence("Ctrl+1"), self, activated=self._on_hundred)
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=self._on_original)
 
         self._tabs.currentChanged.connect(self._on_current_tab_changed)
 
@@ -81,11 +79,13 @@ class ScreenshotViewer(QMainWindow):
         """새 캡처 탭 추가. source_label 은 파일명 {target} 토큰에 쓰임 (예: 'region'/'fullscreen')."""
         tab = ScreenshotTab(image, source_label=source_label)
         tab.save_state_changed.connect(lambda i=tab: self._refresh_tab_title_for(i))
+        tab.canvas.zoom_changed.connect(self._on_zoom_changed)
 
         idx = self._tabs.addTab(tab, "")
         self._refresh_tab_title_for(tab)
         self._tabs.setCurrentIndex(idx)
         self._apply_tool_to_current_tab()  # 새 탭에 현재 도구 반영
+        self.annotation_toolbar.set_zoom_label(tab.canvas.current_zoom())
 
         # 최소화 상태였으면 복원 + 포커스 (D9)
         if self.isMinimized():
@@ -358,19 +358,20 @@ class ScreenshotViewer(QMainWindow):
             tab.undo_stack.redo()
             self._apply_tool_to_current_tab()
 
-    def _on_fit(self) -> None:
-        tab = self.current_tab()
-        if tab:
-            tab.canvas.set_fit_mode()
-
-    def _on_hundred(self) -> None:
+    def _on_original(self) -> None:
         tab = self.current_tab()
         if tab:
             tab.canvas.set_hundred_percent_mode()
 
+    def _on_zoom_changed(self, factor: float) -> None:
+        self.annotation_toolbar.set_zoom_label(factor)
+
     def _on_current_tab_changed(self, idx: int) -> None:
         if idx >= 0:
             self._apply_tool_to_current_tab()
+            tab = self.current_tab()
+            if tab:
+                self.annotation_toolbar.set_zoom_label(tab.canvas.current_zoom())
 
     def _after_text_commit(self) -> None:
         """텍스트 도구로 한 개 입력 완료 후 자동으로 선택 도구로 복귀."""

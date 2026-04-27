@@ -22,6 +22,7 @@ ZOOM_STEP = 1.15
 
 class AnnotationCanvas(QGraphicsView):
     tool_mouse_pressed = Signal()  # Undo 커맨드 그룹핑 힌트용 (Task 18에서 활용)
+    zoom_changed = Signal(float)   # 새 배율 (1.0 = 100%) — 툴바 줌 라벨 갱신용
 
     def __init__(self, background: QImage) -> None:
         self._scene = AnnotationScene(background)
@@ -76,18 +77,26 @@ class AnnotationCanvas(QGraphicsView):
 
     # --- zoom ---
     def set_fit_mode(self) -> None:
+        # 더 이상 툴바에서 호출하지 않음. 호환성 위해 메서드는 유지.
         br = self._scene.sceneRect()
         self.fitInView(br, Qt.KeepAspectRatio)
         if self.transform().m11() > 1.0:
-            self.resetTransform()  # 작은 이미지는 100% 유지
+            self.resetTransform()
+        self.zoom_changed.emit(self.transform().m11())
 
     def set_hundred_percent_mode(self) -> None:
         self.resetTransform()
+        self.zoom_changed.emit(1.0)
 
     def set_zoom_factor(self, factor: float) -> None:
         factor = max(ZOOM_MIN, min(ZOOM_MAX, factor))
         self.resetTransform()
         self.scale(factor, factor)
+        self.zoom_changed.emit(self.transform().m11())
+
+    def current_zoom(self) -> float:
+        """현재 배율 (1.0 = 100%)."""
+        return self.transform().m11()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.ControlModifier:
