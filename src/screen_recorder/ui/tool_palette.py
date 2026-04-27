@@ -20,12 +20,12 @@ class ToolPalette(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("ToolPalette")
-        # 3배 크기 — 32→96 너비 / 28→84 높이
-        self.setFixedWidth(108)
+        # 버튼은 컴팩트하게 두고 아이콘 폰트만 크게 — 작은 사이드 스트립
+        self.setFixedWidth(48)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 8, 6, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(4, 6, 4, 6)
+        layout.setSpacing(4)
 
         self._buttons: dict[str, QToolButton] = {}
         self._group = QButtonGroup(self)
@@ -36,9 +36,9 @@ class ToolPalette(QWidget):
             btn.setText(icon)
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
-            btn.setFixedSize(96, 84)
+            btn.setFixedSize(40, 40)
             f = btn.font()
-            f.setPointSize(28)
+            f.setPointSize(18)  # 아이콘만 크게 — 버튼 크기는 컴팩트 유지
             btn.setFont(f)
             btn.setToolTip(tip)
             btn.clicked.connect(lambda _chk=False, t=tid: self._on_clicked(t))

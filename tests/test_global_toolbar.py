@@ -80,5 +80,21 @@ def test_target_changed_signal(qtbot):
     tb = GlobalToolbar()
     qtbot.addWidget(tb)
     with qtbot.waitSignal(tb.target_changed, timeout=200) as blocker:
-        tb.target_combo.setCurrentIndex(1)
-    assert blocker.args[0] in ("fullscreen", "window", "region")
+        tb._target_btns["region"].click()
+    assert blocker.args[0] == "region"
+
+
+def test_format_changed_signal(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    with qtbot.waitSignal(tb.mode_value_changed, timeout=200) as blocker:
+        tb._format_btns["gif"].click()
+    assert blocker.args[0] == "gif"
+
+
+def test_set_target_updates_button_state(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    tb.set_target("window")
+    assert tb._target_btns["window"].isChecked()
+    assert tb.current_target() == "window"

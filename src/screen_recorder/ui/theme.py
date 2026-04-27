@@ -285,9 +285,10 @@ QToolButton:checked {
     font-weight: bold;
 }
 QToolBar::separator {
-    background-color: #3C414B;
-    width: 1px;
-    margin: 4px 4px;
+    background-color: #4A5060;
+    width: 2px;
+    margin: 6px 6px;
+    border-radius: 1px;
 }
 
 /* ----- 메뉴 바 (메인 창 상단) ----- */

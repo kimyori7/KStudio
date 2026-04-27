@@ -46,8 +46,8 @@ class GlobalToolbar(QWidget):
         # ---------- 모드 토글 (양쪽 공통) ----------
         self._mode_group = QButtonGroup(self)
         self._mode_group.setExclusive(True)
-        self.video_btn = self._make_mode_btn("🎞 영상")
-        self.image_btn = self._make_mode_btn("🖼 이미지")
+        self.video_btn = self._make_toggle_btn("🎞 영상", min_width=80)
+        self.image_btn = self._make_toggle_btn("🖼 이미지", min_width=80)
         self._mode_group.addButton(self.video_btn)
         self._mode_group.addButton(self.image_btn)
         self.video_btn.clicked.connect(lambda: self.mode_clicked.emit(AppMode.VIDEO))
@@ -82,15 +82,24 @@ class GlobalToolbar(QWidget):
         self._sep2 = self._make_sep()
         layout.addWidget(self._sep2)
 
-        # ---------- 영상 모드: 녹화 옵션 ----------
-        self._target_label = QLabel("대상:")
-        layout.addWidget(self._target_label)
-        self.target_combo = QComboBox()
+        # ---------- 영상 모드: 대상 토글 (전체화면/특정 창/지정 영역) ----------
+        self._target_group = QButtonGroup(self)
+        self._target_group.setExclusive(True)
+        self._target_btns: dict[str, QPushButton] = {}
         for key, label in _TARGETS:
-            self.target_combo.addItem(label, key)
-        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
-        layout.addWidget(self.target_combo)
+            btn = self._make_toggle_btn(label, min_width=70)
+            self._target_btns[key] = btn
+            self._target_group.addButton(btn)
+            btn.clicked.connect(lambda _chk=False, k=key: self._on_target_btn_clicked(k))
+            layout.addWidget(btn)
+        # 기본 대상
+        self._current_target_key = "fullscreen"
+        self._target_btns["fullscreen"].setChecked(True)
 
+        self._sep3 = self._make_sep()
+        layout.addWidget(self._sep3)
+
+        # ---------- 영상 모드: 모니터 (개수 가변이라 콤보 유지) ----------
         self._monitor_label = QLabel("모니터:")
         layout.addWidget(self._monitor_label)
         self.monitor_combo = QComboBox()
@@ -98,13 +107,21 @@ class GlobalToolbar(QWidget):
         self.monitor_combo.currentIndexChanged.connect(self.monitor_changed.emit)
         layout.addWidget(self.monitor_combo)
 
-        self._format_label = QLabel("녹화 형식:")
-        layout.addWidget(self._format_label)
-        self.mode_combo = QComboBox()
+        self._sep4 = self._make_sep()
+        layout.addWidget(self._sep4)
+
+        # ---------- 영상 모드: 녹화 형식 토글 (영상/GIF) ----------
+        self._format_group = QButtonGroup(self)
+        self._format_group.setExclusive(True)
+        self._format_btns: dict[str, QPushButton] = {}
         for key, label in _FORMATS:
-            self.mode_combo.addItem(label, key)
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_value_changed)
-        layout.addWidget(self.mode_combo)
+            btn = self._make_toggle_btn(label, min_width=56)
+            self._format_btns[key] = btn
+            self._format_group.addButton(btn)
+            btn.clicked.connect(lambda _chk=False, k=key: self._on_format_btn_clicked(k))
+            layout.addWidget(btn)
+        self._current_format_key = "video"
+        self._format_btns["video"].setChecked(True)
 
         layout.addStretch(1)
 
@@ -144,27 +161,28 @@ class GlobalToolbar(QWidget):
         self.pause_btn.setText("▶ 재개" if state == RecorderState.PAUSED else "⏸ 일시정지")
         # 녹화 중에는 옵션 잠금
         idle = state == RecorderState.IDLE
-        for w in (self.target_combo, self.monitor_combo, self.mode_combo):
-            w.setEnabled(idle)
+        for btn in self._target_btns.values():
+            btn.setEnabled(idle)
+        for btn in self._format_btns.values():
+            btn.setEnabled(idle)
+        self.monitor_combo.setEnabled(idle)
         self._refresh_widgets_visibility()
 
     def set_target(self, key: str) -> None:
-        for i in range(self.target_combo.count()):
-            if self.target_combo.itemData(i) == key:
-                self.target_combo.setCurrentIndex(i)
-                return
+        if key in self._target_btns and key != self._current_target_key:
+            self._current_target_key = key
+            self._target_btns[key].setChecked(True)
 
     def current_target(self) -> str:
-        return self.target_combo.currentData()
+        return self._current_target_key
 
     def set_recording_mode(self, key: str) -> None:
-        for i in range(self.mode_combo.count()):
-            if self.mode_combo.itemData(i) == key:
-                self.mode_combo.setCurrentIndex(i)
-                return
+        if key in self._format_btns and key != self._current_format_key:
+            self._current_format_key = key
+            self._format_btns[key].setChecked(True)
 
     def current_recording_mode(self) -> str:
-        return self.mode_combo.currentData()
+        return self._current_format_key
 
     def set_monitor_index(self, idx: int) -> None:
         if 0 <= idx < self.monitor_combo.count():
@@ -186,11 +204,13 @@ class GlobalToolbar(QWidget):
         self.pause_btn.setVisible(is_video and active)
         self.stop_btn.setVisible(is_video and active)
 
-        # 영상 모드 전용 — 옵션 (라벨 + 콤보)
-        for w in (self._target_label, self.target_combo,
-                  self._monitor_label, self.monitor_combo,
-                  self._format_label, self.mode_combo):
-            w.setVisible(is_video)
+        # 영상 모드 전용 — 대상 토글, 모니터, 형식 토글
+        for btn in self._target_btns.values():
+            btn.setVisible(is_video)
+        self._monitor_label.setVisible(is_video)
+        self.monitor_combo.setVisible(is_video)
+        for btn in self._format_btns.values():
+            btn.setVisible(is_video)
 
         # 이미지 모드 전용 — 캡처 + 액션
         self.capture_region_btn.setVisible(is_image)
@@ -198,22 +218,26 @@ class GlobalToolbar(QWidget):
         self.save_btn.setVisible(is_image)
         self.copy_btn.setVisible(is_image)
 
-        # 분리자: 영상 모드일 때 옵션 그룹 분리, 이미지 모드일 때도 캡처와 액션 분리 — 둘 다 의미 있음
-        # _sep1 (모드 토글 ↔ 액션 그룹) 은 항상 표시
-        # _sep2 (액션 그룹 ↔ 옵션) 은 영상 모드에서만 의미 있음 (이미지 모드는 stretch 만)
+        # 분리자: 영상 모드에서만 의미 있는 것들
         self._sep2.setVisible(is_video)
+        self._sep3.setVisible(is_video)
+        self._sep4.setVisible(is_video)
 
     # ---------- 내부 ----------
-    def _make_mode_btn(self, text: str) -> QPushButton:
+    def _make_toggle_btn(self, text: str, *, min_width: int) -> QPushButton:
         b = QPushButton(text)
         b.setCheckable(True)
-        b.setMinimumWidth(80)
+        b.setMinimumWidth(min_width)
         return b
 
     def _make_sep(self) -> QFrame:
         f = QFrame()
         f.setFrameShape(QFrame.VLine)
-        f.setStyleSheet("color: #3A3E47;")
+        f.setFixedWidth(2)
+        f.setStyleSheet(
+            "QFrame { background-color: #4A5060; border: none; "
+            "margin-left: 6px; margin-right: 6px; }"
+        )
         return f
 
     def _refresh_monitors(self) -> None:
@@ -225,12 +249,14 @@ class GlobalToolbar(QWidget):
         if not screens:
             self.monitor_combo.addItem("1", 0)
 
-    def _on_target_changed(self, _i: int) -> None:
-        key = self.target_combo.currentData()
-        if key:
-            self.target_changed.emit(key)
+    def _on_target_btn_clicked(self, key: str) -> None:
+        if key == self._current_target_key:
+            return
+        self._current_target_key = key
+        self.target_changed.emit(key)
 
-    def _on_mode_value_changed(self, _i: int) -> None:
-        key = self.mode_combo.currentData()
-        if key:
-            self.mode_value_changed.emit(key)
+    def _on_format_btn_clicked(self, key: str) -> None:
+        if key == self._current_format_key:
+            return
+        self._current_format_key = key
+        self.mode_value_changed.emit(key)
