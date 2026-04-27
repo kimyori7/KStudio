@@ -1,9 +1,9 @@
 """LayerCanvas — LayerStack 을 QGraphicsScene 으로 시각화."""
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, Optional
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsItemGroup, QGraphicsPixmapItem,
     QGraphicsScene, QGraphicsView,
@@ -13,6 +13,11 @@ from .layer_model import LayerStack
 from .layers.annotation_layer import AnnotationLayer
 from .layers.base import Layer
 from .layers.image_layer import ImageLayer
+from .tools.base import Tool
+
+ZOOM_MIN = 0.25
+ZOOM_MAX = 4.0
+ZOOM_STEP = 1.15
 
 
 class LayerCanvas(QGraphicsView):
@@ -28,6 +33,12 @@ class LayerCanvas(QGraphicsView):
         self._sync_scene_rect()
         self._stack.layers_changed.connect(self._rebuild_items)
         self._stack.canvas_size_changed.connect(self._sync_scene_rect)
+        self._tool: Optional[Tool] = None
+        self._zoom: float = 1.0
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._stack.active_layer_changed.connect(self._on_active_changed)
         self._rebuild_items()
 
     # --- 모델 → 뷰 ---
@@ -97,3 +108,86 @@ class LayerCanvas(QGraphicsView):
         finally:
             painter.end()
         return out
+
+    # --- 도구 ---
+    def set_tool(self, tool: Optional[Tool]) -> None:
+        if self._tool is tool:
+            return
+        if self._tool is not None:
+            self._tool.deactivated(self._scene)
+        self._tool = tool
+        if tool is not None:
+            tool.activated(self._scene)
+
+    def current_tool(self) -> Optional[Tool]:
+        return self._tool
+
+    def active_layer_id(self) -> Optional[int]:
+        return self._stack.active_layer_id
+
+    def _on_active_changed(self, lid: int) -> None:
+        # 후속에 도구 활/비활 정책에 사용. 현재는 이벤트 후크 자리만.
+        pass
+
+    # --- 줌 ---
+    def zoom_factor(self) -> float:
+        return self._zoom
+
+    def set_zoom(self, factor: float) -> None:
+        factor = max(ZOOM_MIN, min(ZOOM_MAX, factor))
+        if abs(factor - self._zoom) < 1e-6:
+            return
+        ratio = factor / self._zoom
+        self._zoom = factor
+        self.scale(ratio, ratio)
+
+    def zoom_in_at_cursor(self) -> None:
+        self.set_zoom(self._zoom * ZOOM_STEP)
+
+    def zoom_out_at_cursor(self) -> None:
+        self.set_zoom(self._zoom / ZOOM_STEP)
+
+    def fit_to_view(self) -> None:
+        self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        # fitInView 가 transform 을 직접 바꾸므로 _zoom 동기화
+        self._zoom = self.transform().m11()
+
+    # --- 이벤트 ---
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.ControlModifier:
+            if event.angleDelta().y() > 0:
+                self.zoom_in_at_cursor()
+            else:
+                self.zoom_out_at_cursor()
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def mousePressEvent(self, e: QMouseEvent) -> None:
+        if self._tool is not None:
+            scene_pos = self.mapToScene(e.position().toPoint())
+            self._tool.mouse_press(self._scene, scene_pos)
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent) -> None:
+        if self._tool is not None:
+            scene_pos = self.mapToScene(e.position().toPoint())
+            self._tool.mouse_move(self._scene, scene_pos)
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent) -> None:
+        if self._tool is not None:
+            scene_pos = self.mapToScene(e.position().toPoint())
+            self._tool.mouse_release(self._scene, scene_pos)
+        super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:
+        if self._tool is not None:
+            scene_pos = self.mapToScene(e.position().toPoint())
+            self._tool.double_click(self._scene, scene_pos)
+        super().mouseDoubleClickEvent(e)
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if self._tool is not None and e.key() == Qt.Key_Escape:
+            self._tool.key_escape(self._scene)
+        super().keyPressEvent(e)

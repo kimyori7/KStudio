@@ -99,3 +99,63 @@ def test_composite_returns_combined_image(qtbot):
     out = canvas.composite()
     assert out.size() == QSize(20, 20)
     assert QColor(out.pixel(10, 10)).green() == 255
+
+
+def test_set_tool_dispatches_mouse_press(qtbot):
+    from image_editor.layer_model import LayerStack
+    from image_editor.canvas import LayerCanvas
+    from image_editor.tools.base import Tool
+    from PySide6.QtCore import QPointF
+
+    class _ProbeTool(Tool):
+        def __init__(self):
+            self.pressed_at = None
+            self.activated_called = False
+            self.deactivated_called = False
+        def activated(self, scene):
+            self.activated_called = True
+        def deactivated(self, scene):
+            self.deactivated_called = True
+        def mouse_press(self, scene, scene_pos):
+            self.pressed_at = scene_pos
+
+    stack = LayerStack(QSize(100, 100))
+    canvas = LayerCanvas(stack)
+    qtbot.addWidget(canvas)
+    canvas.show()
+    tool = _ProbeTool()
+    canvas.set_tool(tool)
+    assert tool.activated_called is True
+    qtbot.mouseClick(
+        canvas.viewport(),
+        Qt.LeftButton,
+        pos=canvas.mapFromScene(QPointF(20, 20)),
+    )
+    assert tool.pressed_at is not None
+
+
+def test_zoom_at_factor_scales_view(qtbot):
+    from image_editor.layer_model import LayerStack
+    from image_editor.canvas import LayerCanvas
+    stack = LayerStack(QSize(100, 100))
+    canvas = LayerCanvas(stack)
+    qtbot.addWidget(canvas)
+    canvas.show()
+    canvas.set_zoom(2.0)
+    assert abs(canvas.zoom_factor() - 2.0) < 0.001
+
+
+def test_active_layer_signal_propagated(qtbot):
+    from image_editor.layer_model import LayerStack
+    from image_editor.canvas import LayerCanvas
+    from image_editor.layers.image_layer import ImageLayer
+    from PySide6.QtGui import QImage
+    stack = LayerStack(QSize(20, 20))
+    canvas = LayerCanvas(stack)
+    qtbot.addWidget(canvas)
+    pix = QImage(20, 20, QImage.Format_ARGB32)
+    pix.fill(Qt.transparent)
+    stack.add_layer(ImageLayer(id=1, name="x", pixmap=pix))
+    stack.add_layer(ImageLayer(id=2, name="y", pixmap=pix))
+    stack.set_active_layer(2)
+    assert canvas.active_layer_id() == 2
