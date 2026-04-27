@@ -66,3 +66,42 @@ def test_audio_disabled_for_gif(qtbot):
     c.set_audio_enabled(False)
     assert not c.volume_slider.isEnabled()
     assert not c.mute_btn.isEnabled()
+
+
+def test_set_playing_toggles_button_text(qtbot):
+    c = PlayerControls()
+    qtbot.addWidget(c)
+    c.set_playing(True)
+    assert c.play_btn.text() == "⏸"
+    c.set_playing(False)
+    assert c.play_btn.text() == "▶"
+
+
+def test_set_muted_toggles_button_text(qtbot):
+    c = PlayerControls()
+    qtbot.addWidget(c)
+    c.set_muted(True)
+    assert c.mute_btn.text() == "🔇"
+    c.set_muted(False)
+    assert c.mute_btn.text() == "🔊"
+
+
+def test_set_speed_updates_combo(qtbot):
+    c = PlayerControls()
+    qtbot.addWidget(c)
+    c.set_speed(0.5)
+    assert c.speed_combo.currentText() == "0.5×"
+
+
+def test_mute_button_emits_signal(qtbot):
+    c = PlayerControls()
+    qtbot.addWidget(c)
+    with qtbot.waitSignal(c.mute_toggled, timeout=200):
+        c.mute_btn.click()
+
+
+def test_fullscreen_button_emits_signal(qtbot):
+    c = PlayerControls()
+    qtbot.addWidget(c)
+    with qtbot.waitSignal(c.fullscreen_toggled, timeout=200):
+        c.fullscreen_btn.click()
