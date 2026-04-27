@@ -126,3 +126,29 @@ def test_tab_title_has_dot_after_edit(qtbot, tmp_path):
     item = RectAnnotationItem(QRectF(0, 0, 5, 5), QColor("#000"), 2)
     tab.undo_stack.push(AddAnnotationCommand(tab.canvas.scene(), item))
     assert v.tab_title(0).startswith("● ")
+
+
+def test_color_change_persists_to_settings(qtbot):
+    settings = AppSettings()
+    v = ScreenshotViewer(settings)
+    qtbot.addWidget(v)
+    v.annotation_toolbar.set_current_color(QColor("#123456"))
+    assert settings.annotation.last_color == "#123456"
+
+
+def test_thickness_change_persists_to_settings(qtbot):
+    settings = AppSettings()
+    v = ScreenshotViewer(settings)
+    qtbot.addWidget(v)
+    v.annotation_toolbar.set_current_thickness_step(4)
+    assert settings.annotation.last_thickness == 4
+
+
+def test_viewer_inits_toolbar_from_settings(qtbot):
+    settings = AppSettings()
+    settings.annotation.last_color = "#00FF00"
+    settings.annotation.last_thickness = 3
+    v = ScreenshotViewer(settings)
+    qtbot.addWidget(v)
+    assert v.annotation_toolbar.current_color() == QColor("#00FF00")
+    assert v.annotation_toolbar.current_thickness_step() == 3

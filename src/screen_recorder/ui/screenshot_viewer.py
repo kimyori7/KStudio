@@ -47,6 +47,11 @@ class ScreenshotViewer(QMainWindow):
         self.annotation_toolbar = AnnotationToolbar(self)
         self.addToolBarBreak()
         self.addToolBar(self.annotation_toolbar)
+
+        # 마지막 색/두께 복원
+        self.annotation_toolbar.set_current_color(QColor(settings.annotation.last_color))
+        self.annotation_toolbar.set_current_thickness_step(settings.annotation.last_thickness)
+
         self.annotation_toolbar.tool_changed.connect(self._on_tool_changed)
         self.annotation_toolbar.color_changed.connect(self._on_color_changed)
         self.annotation_toolbar.thickness_changed.connect(self._on_thickness_changed)
@@ -311,9 +316,11 @@ class ScreenshotViewer(QMainWindow):
         self._apply_tool_to_current_tab()
 
     def _on_color_changed(self, color: QColor) -> None:
+        self._settings.annotation.last_color = color.name()  # "#RRGGBB"
         self._apply_tool_to_current_tab()
 
     def _on_thickness_changed(self, step: int) -> None:
+        self._settings.annotation.last_thickness = step
         self._apply_tool_to_current_tab()
 
     def _on_undo(self) -> None:
