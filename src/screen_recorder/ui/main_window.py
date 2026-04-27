@@ -74,9 +74,15 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("KStudio")
         self.setWindowIcon(app_icon())
-        self.resize(1280, 820)
         # 일반 OS 창 프레임 사용 (frameless 해제 — 메뉴 바를 위해)
         self.setWindowFlags(Qt.Window)
+
+        # 마지막 위치/크기 복원 (없으면 기본 1280×820)
+        s = settings.screenshot
+        if s.viewer_x >= 0 and s.viewer_y >= 0 and s.viewer_w > 0 and s.viewer_h > 0:
+            self.setGeometry(s.viewer_x, s.viewer_y, s.viewer_w, s.viewer_h)
+        else:
+            self.resize(1280, 820)
 
         self.app_settings = settings
         self.ffmpeg_path = ffmpeg_path
@@ -719,6 +725,12 @@ class MainWindow(QMainWindow):
             else:
                 e.ignore()
                 return
+        # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출)
+        g = self.geometry()
+        self.app_settings.screenshot.viewer_x = g.x()
+        self.app_settings.screenshot.viewer_y = g.y()
+        self.app_settings.screenshot.viewer_w = g.width()
+        self.app_settings.screenshot.viewer_h = g.height()
         self.hotkeys.unregister()
         self._hide_border()
         e.accept()
