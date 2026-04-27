@@ -53,12 +53,35 @@ def test_entries_filtered_by_kind():
 
 def test_signal_emitted_on_add(qtbot):
     m = LibraryModel()
-    with qtbot.waitSignal(m.entry_added, timeout=200):
-        m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    received = []
+    m.entry_added.connect(received.append)
+    entry = m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    assert received == [entry]
 
 
 def test_signal_emitted_on_remove(qtbot):
     m = LibraryModel()
+    received = []
+    m.entry_removed.connect(received.append)
     e = m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
-    with qtbot.waitSignal(m.entry_removed, timeout=200):
-        m.remove(e.id)
+    m.remove(e.id)
+    assert received == [e.id]
+
+
+def test_clear_emits_remove_for_each_entry_then_empties(qtbot):
+    m = LibraryModel()
+    e1 = m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    e2 = m.add(EntryKind.VIDEO, thumbnail=_img(), source_label="full")
+    received = []
+    m.entry_removed.connect(received.append)
+    m.clear()
+    assert received == [e1.id, e2.id]
+    assert m.entries() == []
+
+
+def test_remove_unknown_id_does_nothing(qtbot):
+    m = LibraryModel()
+    received = []
+    m.entry_removed.connect(received.append)
+    m.remove(9999)
+    assert received == []
