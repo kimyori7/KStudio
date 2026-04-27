@@ -252,6 +252,32 @@ class MainWindow(QMainWindow):
         super().showEvent(e)
         if not self._self_excluded:
             self._self_excluded = exclude_from_capture(self)
+        self._apply_dark_titlebar()
+
+    def _apply_dark_titlebar(self) -> None:
+        """Windows DWM 다크 타이틀바 활성화 (Win10 1809+ / Win11)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            hwnd = int(self.winId())
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20  # Win10 build 18985+
+            value = ctypes.c_int(1)
+            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                wintypes.HWND(hwnd),
+                ctypes.c_int(DWMWA_USE_IMMERSIVE_DARK_MODE),
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+            if res != 0:
+                # 구버전 Win10: attribute 19 시도
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    wintypes.HWND(hwnd),
+                    ctypes.c_int(19),
+                    ctypes.byref(value),
+                    ctypes.sizeof(value),
+                )
+        except Exception:
+            pass
 
     # ---------- 단축키 관리 ----------
 

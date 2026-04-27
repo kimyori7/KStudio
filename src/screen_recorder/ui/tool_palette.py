@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QToolButton, QButtonGroup
 
 
 _TOOLS = [
-    ("select", "▸", "선택 (V)", "V"),
+    ("select", "🖐", "선택 (V)", "V"),
     ("rect",   "□", "사각형 (R)", "R"),
     ("arrow",  "→", "화살표 (A)", "A"),
     ("text",   "T", "텍스트 (T)", "T"),
@@ -20,11 +20,12 @@ class ToolPalette(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("ToolPalette")
-        self.setFixedWidth(38)
+        # 3배 크기 — 32→96 너비 / 28→84 높이
+        self.setFixedWidth(108)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 4, 2, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(6, 8, 6, 8)
+        layout.setSpacing(6)
 
         self._buttons: dict[str, QToolButton] = {}
         self._group = QButtonGroup(self)
@@ -35,7 +36,10 @@ class ToolPalette(QWidget):
             btn.setText(icon)
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
-            btn.setFixedSize(32, 28)
+            btn.setFixedSize(96, 84)
+            f = btn.font()
+            f.setPointSize(28)
+            btn.setFont(f)
             btn.setToolTip(tip)
             btn.clicked.connect(lambda _chk=False, t=tid: self._on_clicked(t))
             self._buttons[tid] = btn

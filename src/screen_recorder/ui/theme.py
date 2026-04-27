@@ -103,6 +103,12 @@ QPushButton:hover {
 QPushButton:pressed {
     background-color: #2A2D34;
 }
+QPushButton:checked {
+    background-color: #2D5DA8;
+    border: 1px solid #4FC3F7;
+    color: #FFFFFF;
+    font-weight: bold;
+}
 QPushButton:disabled {
     background-color: #23252B;
     color: #6A6E78;
@@ -284,7 +290,28 @@ QToolBar::separator {
     margin: 4px 4px;
 }
 
-/* ----- 메뉴 (트레이/우클릭) ----- */
+/* ----- 메뉴 바 (메인 창 상단) ----- */
+QMenuBar {
+    background-color: #1F2125;
+    color: #E8E8EA;
+    padding: 2px 4px;
+    border-bottom: 1px solid #2A2D34;
+}
+QMenuBar::item {
+    background-color: transparent;
+    padding: 4px 10px;
+    color: #E8E8EA;
+    border-radius: 3px;
+}
+QMenuBar::item:selected {
+    background-color: #2D5DA8;
+    color: #FFFFFF;
+}
+QMenuBar::item:pressed {
+    background-color: #2A4D8A;
+}
+
+/* ----- 메뉴 (트레이/우클릭/메뉴바 펼침) ----- */
 QMenu {
     background-color: #23262D;
     border: 1px solid #3C414B;
@@ -301,6 +328,42 @@ QMenu::separator {
     height: 1px;
     background-color: #3C414B;
     margin: 4px 6px;
+}
+
+/* ----- 탭 위젯 ----- */
+QTabWidget::pane {
+    border: 1px solid #2A2D34;
+    background: #1F2125;
+}
+QTabBar::tab {
+    background: #17191D;
+    color: #A0A4AB;
+    padding: 6px 12px;
+    border: 1px solid #2A2D34;
+    border-bottom: none;
+}
+QTabBar::tab:selected {
+    background: #1F2125;
+    color: #FFFFFF;
+    border-bottom: 2px solid #4FC3F7;
+}
+QTabBar::tab:hover {
+    background: #23262D;
+    color: #E8E8EA;
+}
+QTabBar::close-button {
+    subcontrol-position: right;
+}
+
+/* ----- 스플리터 핸들 ----- */
+QSplitter::handle {
+    background: #2A2D34;
+}
+QSplitter::handle:horizontal {
+    width: 1px;
+}
+QSplitter::handle:vertical {
+    height: 1px;
 }
 """
 
