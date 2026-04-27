@@ -95,3 +95,26 @@ def test_arrow_tool_tiny_drag_cancelled(qtbot):
     tool.mouse_move(scene, QPointF(11, 11))
     tool.mouse_release(scene, QPointF(11, 11))
     assert len([a for a in scene.annotations() if isinstance(a, ArrowAnnotationItem)]) == 0
+
+
+from screen_recorder.ui.annotation.tools.text import TextTool
+from screen_recorder.ui.annotation.items.text import TextAnnotationItem
+
+
+def test_text_tool_click_creates_editing_text(qtbot):
+    scene = _scene()
+    tool = TextTool(color=QColor("#000"))
+    tool.mouse_press(scene, QPointF(40, 40))
+    tool.mouse_release(scene, QPointF(40, 40))
+    texts = [a for a in scene.annotations() if isinstance(a, TextAnnotationItem)]
+    assert len(texts) == 1
+    assert texts[0].pos_f() == QPointF(40, 40)
+
+
+def test_text_tool_empty_text_is_cleaned_on_commit(qtbot):
+    scene = _scene()
+    tool = TextTool(color=QColor("#000"))
+    tool.mouse_press(scene, QPointF(40, 40))
+    tool.mouse_release(scene, QPointF(40, 40))
+    tool.commit_active(scene)  # 빈 채로 확정
+    assert len([a for a in scene.annotations() if isinstance(a, TextAnnotationItem)]) == 0
