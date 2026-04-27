@@ -23,7 +23,7 @@ logs/
 *.log
 tmp/
 recordings/
-Video/
+/Video/
 
 # Recording output files
 *.mp4
