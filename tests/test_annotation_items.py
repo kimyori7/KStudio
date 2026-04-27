@@ -87,3 +87,34 @@ def test_text_item_set_color(qtbot):
     t = TextAnnotationItem(QPointF(0, 0), "a", QColor("#FF0000"))
     t.set_color(QColor("#00FF00"))
     assert t.color() == QColor("#00FF00")
+
+
+from PySide6.QtWidgets import QGraphicsScene
+
+
+def test_rect_selecting_shows_8_handles(qtbot):
+    scene = QGraphicsScene()
+    item = RectAnnotationItem(QRectF(0, 0, 100, 50), QColor("#000"), 2)
+    scene.addItem(item)
+    item.setSelected(True)
+    handles = [c for c in item.childItems() if c.data(0) == "handle"]
+    assert len(handles) == 8
+
+
+def test_rect_deselecting_removes_handles(qtbot):
+    scene = QGraphicsScene()
+    item = RectAnnotationItem(QRectF(0, 0, 100, 50), QColor("#000"), 2)
+    scene.addItem(item)
+    item.setSelected(True)
+    item.setSelected(False)
+    handles = [c for c in item.childItems() if c.data(0) == "handle"]
+    assert len(handles) == 0
+
+
+def test_arrow_selecting_shows_2_handles(qtbot):
+    scene = QGraphicsScene()
+    item = ArrowAnnotationItem(QPointF(0, 0), QPointF(100, 100), QColor("#000"), 2)
+    scene.addItem(item)
+    item.setSelected(True)
+    handles = [c for c in item.childItems() if c.data(0) == "handle"]
+    assert len(handles) == 2

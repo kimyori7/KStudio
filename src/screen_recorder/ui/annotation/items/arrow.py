@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from ..thickness import thickness_to_pixels
 from .base import AnnotationProperties
+from .handles import Handle
 
 
 class ArrowAnnotationItem(QGraphicsItem):
@@ -116,3 +117,46 @@ class ArrowAnnotationItem(QGraphicsItem):
     def _on_props_changed(self) -> None:
         self.prepareGeometryChange()
         self.update()
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemSelectedHasChanged:
+            if value:
+                self._create_handles()
+            else:
+                self._destroy_handles()
+        return super().itemChange(change, value)
+
+    def _create_handles(self) -> None:
+        self._handles: list[Handle] = []
+        start_h = Handle(
+            self._start,
+            lambda p: self._on_handle_drag("start", p),
+            Qt.CrossCursor,
+            parent=self,
+        )
+        end_h = Handle(
+            self._end,
+            lambda p: self._on_handle_drag("end", p),
+            Qt.CrossCursor,
+            parent=self,
+        )
+        self._handles.extend([start_h, end_h])
+
+    def _destroy_handles(self) -> None:
+        for h in getattr(self, "_handles", []):
+            if h.scene() is not None:
+                h.scene().removeItem(h)
+        self._handles = []
+
+    def _on_handle_drag(self, which: str, new_pos: QPointF) -> None:
+        if which == "start":
+            self.set_start(new_pos)
+        else:
+            self.set_end(new_pos)
+        self._reposition_handles()
+
+    def _reposition_handles(self) -> None:
+        hs = getattr(self, "_handles", [])
+        if len(hs) == 2:
+            hs[0].setPos(self._start)
+            hs[1].setPos(self._end)

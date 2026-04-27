@@ -1,12 +1,13 @@
 """사각형 주석 아이템."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from ..thickness import thickness_to_pixels
 from .base import AnnotationProperties
+from .handles import Handle
 
 
 class RectAnnotationItem(QGraphicsItem):
@@ -71,3 +72,69 @@ class RectAnnotationItem(QGraphicsItem):
     def _on_props_changed(self) -> None:
         self.prepareGeometryChange()
         self.update()
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemSelectedHasChanged:
+            if value:
+                self._create_handles()
+            else:
+                self._destroy_handles()
+        return super().itemChange(change, value)
+
+    def _create_handles(self) -> None:
+        r = self._rect
+        specs = [
+            (r.topLeft(), Qt.SizeFDiagCursor, "tl"),
+            (QPointF(r.center().x(), r.top()), Qt.SizeVerCursor, "tc"),
+            (r.topRight(), Qt.SizeBDiagCursor, "tr"),
+            (QPointF(r.right(), r.center().y()), Qt.SizeHorCursor, "rc"),
+            (r.bottomRight(), Qt.SizeFDiagCursor, "br"),
+            (QPointF(r.center().x(), r.bottom()), Qt.SizeVerCursor, "bc"),
+            (r.bottomLeft(), Qt.SizeBDiagCursor, "bl"),
+            (QPointF(r.left(), r.center().y()), Qt.SizeHorCursor, "lc"),
+        ]
+        self._handles: list[Handle] = []
+        for center, cursor, tag in specs:
+            h = Handle(
+                center,
+                lambda p, t=tag: self._on_handle_drag(t, p),
+                cursor,
+                parent=self,
+            )
+            self._handles.append(h)
+
+    def _destroy_handles(self) -> None:
+        for h in getattr(self, "_handles", []):
+            if h.scene() is not None:
+                h.scene().removeItem(h)
+        self._handles = []
+
+    def _on_handle_drag(self, tag: str, new_pos: QPointF) -> None:
+        r = QRectF(self._rect)
+        if "t" in tag:
+            r.setTop(new_pos.y())
+        if "b" in tag:
+            r.setBottom(new_pos.y())
+        if "l" in tag:
+            r.setLeft(new_pos.x())
+        if "r" in tag:
+            r.setRight(new_pos.x())
+        self.set_rect(r.normalized())
+        self._reposition_handles()
+
+    def _reposition_handles(self) -> None:
+        if not getattr(self, "_handles", []):
+            return
+        r = self._rect
+        positions = [
+            r.topLeft(),
+            QPointF(r.center().x(), r.top()),
+            r.topRight(),
+            QPointF(r.right(), r.center().y()),
+            r.bottomRight(),
+            QPointF(r.center().x(), r.bottom()),
+            r.bottomLeft(),
+            QPointF(r.left(), r.center().y()),
+        ]
+        for h, p in zip(self._handles, positions):
+            h.setPos(p)
