@@ -294,6 +294,24 @@ class ScreenshotViewer(QMainWindow):
         super().showEvent(e)
         # 자기 창이 다음 스크린샷 캡처에 찍히지 않도록 제외
         exclude_from_capture(self)
+        # Windows: OS 기본 타이틀바를 다크 모드로 (DwmSetWindowAttribute,
+        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20). Windows 11 / 최신 10 에서 동작.
+        import sys
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                value = ctypes.c_int(1)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 20, ctypes.byref(value), ctypes.sizeof(value)
+                )
+            except Exception:
+                pass
+
+    def createPopupMenu(self):
+        # QMainWindow 기본 동작은 툴바 우클릭 시 "툴바 숨기기" 컨텍스트 메뉴를
+        # 띄우는데, 두 툴바를 모두 숨기면 복구할 방법이 없어 의도적으로 차단.
+        return None
 
     def _apply_tool_to_current_tab(self) -> None:
         tab = self.current_tab()

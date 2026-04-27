@@ -56,8 +56,17 @@ class AnnotationToolbar(QToolBar):
         self.addSeparator()
         self._build_thickness()
         self.addSeparator()
-        self._act_undo = self._add_button("↶", self._on_undo, "실행취소 (Ctrl+Z)")
-        self._act_redo = self._add_button("↷", self._on_redo, "다시실행 (Ctrl+Y)")
+        # ⟲ ⟳ 는 ↶ ↷ 보다 시각적으로 훨씬 큼
+        self._act_undo = self._add_button("⟲", self._on_undo, "실행취소 (Ctrl+Z)")
+        self._act_redo = self._add_button("⟳", self._on_redo, "다시실행 (Ctrl+Y)")
+        # Undo/Redo 버튼만 폰트 크게 (다른 버튼은 그대로 유지)
+        for act in (self._act_undo, self._act_redo):
+            btn = self.widgetForAction(act)
+            if btn is not None:
+                f = btn.font()
+                f.setPointSize(14)
+                f.setBold(True)
+                btn.setFont(f)
         self.addSeparator()
         self._add_button("Fit", self._on_fit, "창에 맞춤 (Ctrl+0)")
         self._add_button("100%", self._on_hundred, "원본 크기 (Ctrl+1)")
@@ -137,22 +146,19 @@ class AnnotationToolbar(QToolBar):
             btn.setFixedSize(22, 22)
             btn.setCheckable(True)
             btn.setToolTip(f"{hexcolor}")
-            # 선택된 색상: 흰색(2px) → 검정(2px) 이중 테두리 — 어떤 색상 위에서도 명확히 보임
+            # 선택 표시: 흰색 단일 테두리 3px (이전 검정 outline 제거 — 색이 가려져 어색).
             btn.setStyleSheet(
                 f"QPushButton {{ background: {hexcolor}; border: 1px solid #555; }}"
-                f"QPushButton:hover {{ border: 1px solid #fff; }}"
-                f"QPushButton:checked {{"
-                f"  border: 2px solid #fff;"
-                f"  outline: 2px solid #000;"
-                f"  margin: 0px;"
-                f"}}"
+                f"QPushButton:hover {{ border: 2px solid #fff; }}"
+                f"QPushButton:checked {{ border: 3px solid #fff; }}"
             )
             btn.clicked.connect(lambda _, c=hexcolor: self.set_current_color(QColor(c)))
             layout.addWidget(btn)
             self._color_buttons.append(btn)
         self._color_buttons[0].setChecked(True)
 
-        custom = QPushButton("…")
+        # 커스텀 색상 선택 — 팔레트 이모지 아이콘
+        custom = QPushButton("🎨")
         custom.setFixedSize(26, 22)
         custom.setToolTip("더 많은 색… (커스텀 색상 선택)")
         custom.clicked.connect(self._on_custom_color)
