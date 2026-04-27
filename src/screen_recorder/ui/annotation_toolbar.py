@@ -1,10 +1,10 @@
 """편집 툴바 — 도구 선택 / 팔레트 / 두께 / Undo / 뷰 버튼."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QColorDialog, QHBoxLayout, QLabel, QPushButton, QToolBar, QWidget,
+    QColorDialog, QHBoxLayout, QLabel, QPushButton, QSpinBox, QToolBar, QWidget,
 )
 
 from .annotation.thickness import THICKNESS_STEPS, DEFAULT_THICKNESS_STEP
@@ -39,6 +39,7 @@ class AnnotationToolbar(QToolBar):
     undo_requested = Signal()
     redo_requested = Signal()
     original_requested = Signal()  # 1.0 배율로 복귀
+    zoom_input_changed = Signal(int)  # 사용자가 줌 입력값 변경 (단위: %)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("편집", parent)
@@ -67,18 +68,23 @@ class AnnotationToolbar(QToolBar):
                 btn.setFont(f)
                 btn.setMinimumSize(40, 32)
         self.addSeparator()
-        # 원본 크기로 가는 버튼 + 현재 줌 배율 라벨
+        # 원본 크기 버튼 + 줌 입력(% 직접 타이핑/휠 조절)
         self._act_original = self._add_button(
-            "원본", self._on_original, "원본 크기로 (Ctrl+0). Ctrl+마우스휠로 자유 줌"
+            "원본", self._on_original, "원본 크기로 (Ctrl+0)"
         )
-        self._zoom_label = QLabel("100%")
-        self._zoom_label.setMinimumWidth(50)
-        self._zoom_label.setAlignment(Qt.AlignCenter)
-        self._zoom_label.setStyleSheet(
-            "QLabel { color: #ddd; padding: 0 8px; font-weight: bold; }"
+        self._zoom_spin = QSpinBox()
+        self._zoom_spin.setRange(25, 400)
+        self._zoom_spin.setValue(100)
+        self._zoom_spin.setSuffix("%")
+        self._zoom_spin.setSingleStep(10)
+        self._zoom_spin.setFixedWidth(72)
+        self._zoom_spin.setToolTip(
+            "줌 배율 — 직접 숫자 입력 또는 ▲▼/휠로 조절. Ctrl+마우스휠로 캔버스 위에서도 가능"
         )
-        self._zoom_label.setToolTip("현재 줌 배율 (Ctrl+마우스휠로 조절)")
-        self.addWidget(self._zoom_label)
+        # 사용자 입력만 emit — 외부(캔버스)가 set_zoom_label 로 갱신할 때는
+        # blockSignals 로 무한 루프 차단
+        self._zoom_spin.valueChanged.connect(self._on_zoom_spin_changed)
+        self.addWidget(self._zoom_spin)
 
     # --- API ---
     def tool_ids(self) -> tuple[str, ...]:
@@ -128,9 +134,16 @@ class AnnotationToolbar(QToolBar):
         self._act_redo.setEnabled(enabled)
 
     def set_zoom_label(self, factor: float) -> None:
-        """현재 줌 배율을 라벨에 표시 (1.0 → '100%')."""
+        """현재 줌 배율을 spinbox 에 반영 (1.0 → 100). 시그널 차단으로 루프 방지."""
         percent = int(round(factor * 100))
-        self._zoom_label.setText(f"{percent}%")
+        # 클램프 — 캔버스 ZOOM_MIN/MAX 와 spinbox 범위 같음 (25~400)
+        percent = max(25, min(400, percent))
+        self._zoom_spin.blockSignals(True)
+        self._zoom_spin.setValue(percent)
+        self._zoom_spin.blockSignals(False)
+
+    def _on_zoom_spin_changed(self, percent: int) -> None:
+        self.zoom_input_changed.emit(percent)
 
     # --- internal build ---
     def _build_tool_group(self) -> None:
@@ -215,23 +228,29 @@ class AnnotationToolbar(QToolBar):
         layout = QHBoxLayout(container)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
+        # "두께:" 라벨
+        label = QLabel("두께:")
+        label.setStyleSheet("color: #aaa; padding: 0 4px 0 0;")
+        layout.addWidget(label)
+
         from .annotation.thickness import thickness_to_pixels
         self._thickness_buttons: dict[int, QPushButton] = {}
-        # 두께 버튼: 체크 시 강한 파란 배경으로 명확히 강조
+        # 체크 시 강한 파란 배경으로 명확히 강조
         thickness_qss = (
-            "QPushButton { background: #2c2c2c; color: #ddd; border: 1px solid #555; }"
+            "QPushButton { background: #2c2c2c; border: 1px solid #555; }"
             "QPushButton:hover { background: #3a3a3a; border: 1px solid #888; }"
             "QPushButton:checked {"
-            "  background: #1976d2; color: white;"
+            "  background: #1976d2;"
             "  border: 2px solid #fff;"
-            "  font-weight: bold;"
             "}"
         )
         for step in THICKNESS_STEPS:
-            btn = QPushButton(str(step))
-            btn.setFixedSize(26, 22)
+            btn = QPushButton()
+            btn.setIcon(self._make_thickness_icon(step))
+            btn.setIconSize(QSize(24, 14))
+            btn.setFixedSize(32, 22)
             btn.setCheckable(True)
-            btn.setToolTip(f"두께 {step}단계 ({thickness_to_pixels(step)}px)")
+            btn.setToolTip(f"두께 {step}단계 ({thickness_to_pixels(step)}px) — 사각형/화살표 선 굵기")
             btn.setStyleSheet(thickness_qss)
             if step == DEFAULT_THICKNESS_STEP:
                 btn.setChecked(True)
@@ -239,6 +258,26 @@ class AnnotationToolbar(QToolBar):
             layout.addWidget(btn)
             self._thickness_buttons[step] = btn
         self.addWidget(container)
+
+    def _make_thickness_icon(self, step: int) -> QIcon:
+        """가운데 가로선이 단계별로 굵어지는 작은 아이콘."""
+        # 실제 픽셀(1→2, 2→4, 3→6, 4→8) 그대로 쓰면 14px 높이 안에 들어가지만
+        # 4단계는 너무 두꺼워 단계간 시각 차이만 강조: 1, 3, 5, 7
+        visual_map = {1: 1, 2: 3, 3: 5, 4: 7}
+        line_w = visual_map.get(step, 2)
+        size_w, size_h = 24, 14
+        pm = QPixmap(size_w, size_h)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setPen(QPen(QColor("#e0e0e0"), line_w, Qt.SolidLine, Qt.RoundCap))
+            y = size_h // 2
+            margin = 3
+            p.drawLine(margin, y, size_w - margin, y)
+        finally:
+            p.end()
+        return QIcon(pm)
 
     def _add_button(self, text: str, slot, tooltip: str) -> QAction:
         act = QAction(text, self)

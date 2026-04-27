@@ -58,6 +58,7 @@ class ScreenshotViewer(QMainWindow):
         self.annotation_toolbar.undo_requested.connect(self._on_undo)
         self.annotation_toolbar.redo_requested.connect(self._on_redo)
         self.annotation_toolbar.original_requested.connect(self._on_original)
+        self.annotation_toolbar.zoom_input_changed.connect(self._on_zoom_input)
 
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._on_undo)
         QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._on_redo)
@@ -365,6 +366,11 @@ class ScreenshotViewer(QMainWindow):
 
     def _on_zoom_changed(self, factor: float) -> None:
         self.annotation_toolbar.set_zoom_label(factor)
+
+    def _on_zoom_input(self, percent: int) -> None:
+        tab = self.current_tab()
+        if tab:
+            tab.canvas.set_zoom_factor(percent / 100.0)
 
     def _on_current_tab_changed(self, idx: int) -> None:
         if idx >= 0:
