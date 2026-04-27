@@ -37,3 +37,6 @@ Video/
 # Bundled ffmpeg binaries (too large for git; install via PATH or bin/)
 bin/
 
+# Brainstorming visual companion (mockups + state)
+.superpowers/
+
