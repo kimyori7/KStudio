@@ -15,10 +15,10 @@ import logging
 from pathlib import Path
 import pygetwindow as gw
 
-from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import Qt, QUrl, Slot
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QSplitter, QToolBar,
+    QMainWindow, QWidget, QVBoxLayout, QSplitter, QToolBar, QFileDialog,
     QMessageBox, QApplication, QSystemTrayIcon, QInputDialog,
 )
 
@@ -50,6 +50,23 @@ from .overlay.recording_border import RecordingBorder
 from .overlay.adjustable_region import AdjustableRegionBorder
 from .overlay.mini_control import MiniControl
 from screen_recorder.screenshot.controller import ScreenshotController
+from screen_recorder.screenshot.capture import save_png
+from screen_recorder.core.filename import build_filename, resolve_collision
+
+from .screenshot_tab import ScreenshotTab
+from .video_tab import VideoTab
+from .annotation.tools.select import SelectTool
+from .annotation.tools.rect import RectTool
+from .annotation.tools.arrow import ArrowTool
+from .annotation.tools.text import TextTool
+
+
+_TOOL_MAP = {
+    "select": SelectTool,
+    "rect": RectTool,
+    "arrow": ArrowTool,
+    "text": TextTool,
+}
 
 
 class MainWindow(QMainWindow):
@@ -193,7 +210,12 @@ class MainWindow(QMainWindow):
         self.mode_controller.mode_changed.connect(self._on_mode_changed)
         self.tab_area.snapshot_requested.connect(self._on_video_snapshot)
         self.tab_area.entry_closed.connect(self._on_tab_closed_by_user)
+        self.tab_area.currentChanged.connect(self._on_active_tab_changed)
         self.library_panel.entry_open_requested.connect(self._open_entry)
+
+        # 영상 탭 프레임 → 스크린샷 단축키
+        QShortcut(QKeySequence("Ctrl+Shift+P"), self,
+                  activated=self._snapshot_current_video_frame)
 
         # 도구 팔레트
         self.tool_palette.tool_changed.connect(self._on_tool_changed)
@@ -506,19 +528,113 @@ class MainWindow(QMainWindow):
         if self._border is not None and hasattr(self._border, "set_mode"):
             self._border.set_mode(mode_key)
 
-    # ---------- Task 17 placeholder ----------
+    # ---------- 스크린샷 편집 액션 ----------
+
+    def _current_screenshot_tab(self) -> ScreenshotTab | None:
+        w = self.tab_area.currentWidget()
+        return w if isinstance(w, ScreenshotTab) else None
+
+    def _apply_tool_to_current_tab(self, tool_id: str) -> None:
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        color = QColor(self.app_settings.annotation.last_color)
+        th = self.app_settings.annotation.last_thickness
+        stack = tab.undo_stack
+        if tool_id == "select":
+            tab.canvas.set_tool(SelectTool())
+        elif tool_id == "rect":
+            tab.canvas.set_tool(RectTool(color, th, tab.canvas.shift_held, stack))
+        elif tool_id == "arrow":
+            tab.canvas.set_tool(ArrowTool(color, th, tab.canvas.shift_held, stack))
+        elif tool_id == "text":
+            tab.canvas.set_tool(TextTool(
+                color, stack,
+                on_commit=lambda: self.tool_palette.set_current_tool("select"),
+            ))
+        self.annotation_toolbar.set_undo_enabled(tab.undo_stack.canUndo())
+        self.annotation_toolbar.set_redo_enabled(tab.undo_stack.canRedo())
+
+    def _on_tool_changed(self, tool_id: str) -> None:
+        self._apply_tool_to_current_tab(tool_id)
+
+    def _on_color_changed(self, color) -> None:
+        self.app_settings.annotation.last_color = color.name(QColor.HexRgb)
+        self._apply_tool_to_current_tab(self.tool_palette.current_tool())
+
+    def _on_thickness_changed(self, step: int) -> None:
+        self.app_settings.annotation.last_thickness = step
+        self._apply_tool_to_current_tab(self.tool_palette.current_tool())
+
+    def _on_undo(self) -> None:
+        tab = self._current_screenshot_tab()
+        if tab:
+            tab.undo_stack.undo()
+
+    def _on_redo(self) -> None:
+        tab = self._current_screenshot_tab()
+        if tab:
+            tab.undo_stack.redo()
+
+    def _on_original(self) -> None:
+        tab = self._current_screenshot_tab()
+        if tab:
+            tab.canvas.set_hundred_percent_mode()
+
+    def _on_zoom_input(self, percent: int) -> None:
+        tab = self._current_screenshot_tab()
+        if tab:
+            tab.canvas.set_zoom_factor(percent / 100.0)
 
     def _save_current_screenshot(self) -> None:
-        pass
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        if tab.is_saved() and tab.undo_stack.isClean():
+            return
+        if tab.is_saved():
+            path = tab.saved_path()
+        else:
+            save_dir = self.app_settings.screenshot.save_dir or str(Path.home() / "Pictures" / "KStudio")
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            from datetime import datetime
+            base = build_filename(
+                pattern=self.app_settings.screenshot.filename_pattern,
+                when=datetime.now(),
+                mode="screenshot",
+                target=tab.source_label(),
+                extension=self.app_settings.screenshot.format,
+            )
+            path = resolve_collision(Path(save_dir) / base)
+        save_png(tab.image(), path)
+        tab.mark_saved(path)
 
     def _save_as_current_screenshot(self) -> None:
-        pass
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        suggested = (
+            tab.saved_path()
+            or Path(self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio") / "screenshot.png"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "다른 이름으로 저장", str(suggested), "PNG (*.png)"
+        )
+        if not path:
+            return
+        save_png(tab.image(), Path(path))
+        tab.mark_saved(Path(path))
 
     def _copy_current_screenshot(self) -> None:
-        pass
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        QApplication.clipboard().setImage(tab.image())
 
     def _open_save_folder(self) -> None:
-        pass
+        save_dir = self.app_settings.screenshot.save_dir or str(Path.home() / "Pictures" / "KStudio")
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(save_dir))
 
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)
@@ -526,26 +642,22 @@ class MainWindow(QMainWindow):
         # 단축키가 바뀌었을 수 있으므로 재등록
         self._reregister_hotkey()
 
-    def _on_color_changed(self, color) -> None:
-        pass
+    # ---------- 탭 전환 시 옵션바·도구 동기화 ----------
 
-    def _on_thickness_changed(self, step: int) -> None:
-        pass
+    def _on_active_tab_changed(self) -> None:
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        self.annotation_toolbar.set_current_color(QColor(self.app_settings.annotation.last_color))
+        self.annotation_toolbar.set_current_thickness_step(self.app_settings.annotation.last_thickness)
+        self.annotation_toolbar.set_zoom_label(tab.canvas.current_zoom())
 
-    def _on_undo(self) -> None:
-        pass
+    # ---------- 영상 탭 단축키 ----------
 
-    def _on_redo(self) -> None:
-        pass
-
-    def _on_original(self) -> None:
-        pass
-
-    def _on_zoom_input(self, percent: int) -> None:
-        pass
-
-    def _on_tool_changed(self, tool_id: str) -> None:
-        pass
+    def _snapshot_current_video_frame(self) -> None:
+        w = self.tab_area.currentWidget()
+        if isinstance(w, VideoTab):
+            w._on_snapshot()
 
     # ---------- 캡처 액션 ----------
 
