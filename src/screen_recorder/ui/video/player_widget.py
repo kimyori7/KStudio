@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl, Signal, QSize
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QImage, QMovie, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -45,6 +45,13 @@ class PlayerWidget(QStackedWidget):
         self.addWidget(self._gif_label)     # index 1
 
     def load(self, path: Path) -> None:
+        if self._movie is not None:
+            self._movie.stop()
+            try:
+                self._movie.frameChanged.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            self._movie = None
         self._path = Path(path)
         self._is_gif = self._path.suffix.lower() in GIF_EXTS
         if self._is_gif:
@@ -58,6 +65,17 @@ class PlayerWidget(QStackedWidget):
         else:
             self._media.setSource(QUrl.fromLocalFile(str(self._path)))
             self.setCurrentIndex(0)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """위젯 닫힐 때 QMovie 를 확실히 정지·연결 해제해 dangling signal 방지."""
+        if self._movie is not None:
+            self._movie.stop()
+            try:
+                self._movie.frameChanged.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            self._movie = None
+        super().closeEvent(event)
 
     def is_loaded(self) -> bool:
         return self._path is not None
@@ -104,6 +122,7 @@ class PlayerWidget(QStackedWidget):
     def stop(self) -> None:
         if self._is_gif and self._movie is not None:
             self._movie.stop()
+            self.playing_changed.emit(False)
         else:
             self._media.stop()
 
@@ -148,6 +167,7 @@ class PlayerWidget(QStackedWidget):
                 return
             self._movie.jumpToFrame((cur + direction) % total)
         else:
+            # QMediaPlayer 는 정확한 프레임 단위 step 이 없음 — 33ms (~30fps) 점프로 근사
             step_ms = 33 if direction > 0 else -33
             self.seek_ms(self.position_ms() + step_ms)
 
@@ -175,6 +195,8 @@ class PlayerWidget(QStackedWidget):
         """현재 표시 중인 프레임을 QImage 로 추출."""
         if self._is_gif and self._movie is not None:
             return self._movie.currentImage()
+        # MP4: QVideoWidget 의 현재 표시 내용을 grab — Qt 6.5+ 에서는 QVideoSink 권장이지만
+        # 시점 정확도는 step_frame 의 한계(±33ms)로 양해.
         pix: QPixmap = self._video_widget.grab()
         return pix.toImage()
 
@@ -182,6 +204,7 @@ class PlayerWidget(QStackedWidget):
         self.playing_changed.emit(state == QMediaPlayer.PlayingState)
 
     def _gif_total_ms(self) -> int:
+        # 가변 지연 GIF 미지원 — nextFrameDelay() 를 전체 공통 간격으로 간주
         if self._movie is None:
             return 0
         n = self._movie.frameCount()

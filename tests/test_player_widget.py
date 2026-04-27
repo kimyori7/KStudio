@@ -8,16 +8,20 @@ from screen_recorder.ui.video.player_widget import PlayerWidget
 
 @pytest.fixture
 def gif_file(tmp_path):
-    """간단한 2프레임 GIF 만들어서 경로 리턴."""
+    """Pillow 으로 생성한 유효한 2프레임 GIF (8×8, 100ms/frame)."""
     p = tmp_path / "test.gif"
-    GIF89A_2FRAME = bytes.fromhex(
-        "474946383961" "0800" "0800" "f000" "00"
-        "ff0000" "ffffff"
-        "21f9040000000000" "2c00000000080008000000" "020205840000"
-        "21f9040a0a0000" "2c00000000080008000000" "020205840000"
-        "3b"
+    from PIL import Image
+    import io
+    frames = [
+        Image.new("RGB", (8, 8), color=(255, 0, 0)).convert("P"),
+        Image.new("RGB", (8, 8), color=(255, 255, 255)).convert("P"),
+    ]
+    buf = io.BytesIO()
+    frames[0].save(
+        buf, format="GIF", save_all=True,
+        append_images=[frames[1]], loop=0, duration=100,
     )
-    p.write_bytes(GIF89A_2FRAME)
+    p.write_bytes(buf.getvalue())
     return p
 
 
@@ -60,8 +64,13 @@ def test_step_frame_forward_advances_position(qtbot, gif_file):
     w = PlayerWidget()
     qtbot.addWidget(w)
     w.load(gif_file)
+    # QMovie 는 이벤트 루프가 돌기 전까지 frameCount 가 완전히 확정되지 않음
+    qtbot.waitUntil(lambda: w._movie.frameCount() > 1, timeout=1000)
+    before = w.position_ms()
     w.step_frame(+1)
-    assert w.position_ms() >= 0
+    after = w.position_ms()
+    # GIF 의 2프레임 사이를 이동했으므로 position 이 증가
+    assert after > before
 
 
 def test_current_frame_returns_qimage(qtbot, gif_file):
@@ -71,3 +80,28 @@ def test_current_frame_returns_qimage(qtbot, gif_file):
     img = w.current_frame()
     assert isinstance(img, QImage)
     assert not img.isNull()
+
+
+def test_pause_emits_playing_false(qtbot, gif_file):
+    w = PlayerWidget()
+    qtbot.addWidget(w)
+    w.load(gif_file)
+    w.play()  # need to be playing first
+    # QMovie.start() 는 비동기 — 이벤트 루프가 돌아야 Running 상태가 됨
+    from PySide6.QtGui import QMovie
+    qtbot.waitUntil(lambda: w._movie.state() == QMovie.Running, timeout=1000)
+    received = []
+    w.playing_changed.connect(received.append)
+    w.pause()
+    assert received == [False]
+
+
+def test_stop_on_gif_emits_playing_false(qtbot, gif_file):
+    w = PlayerWidget()
+    qtbot.addWidget(w)
+    w.load(gif_file)
+    w.play()
+    received = []
+    w.playing_changed.connect(received.append)
+    w.stop()
+    assert received == [False]
