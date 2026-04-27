@@ -4,10 +4,16 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QImage, QAction, QKeySequence, QGuiApplication
+from PySide6.QtGui import QColor, QImage, QAction, QKeySequence, QShortcut, QGuiApplication
 from PySide6.QtWidgets import (
     QMainWindow, QTabWidget, QToolBar, QFileDialog, QMessageBox,
 )
+
+from .annotation_toolbar import AnnotationToolbar
+from .annotation.tools.select import SelectTool
+from .annotation.tools.rect import RectTool
+from .annotation.tools.arrow import ArrowTool
+from .annotation.tools.text import TextTool
 
 from ..core.settings import AppSettings
 from ..core.filename import build_filename, resolve_collision
@@ -37,6 +43,26 @@ class ScreenshotViewer(QMainWindow):
 
         self._build_toolbar()
 
+        # 편집 툴바 (Phase 2) — 기존 툴바 아래에 새 줄로 추가
+        self.annotation_toolbar = AnnotationToolbar(self)
+        self.addToolBarBreak()
+        self.addToolBar(self.annotation_toolbar)
+        self.annotation_toolbar.tool_changed.connect(self._on_tool_changed)
+        self.annotation_toolbar.color_changed.connect(self._on_color_changed)
+        self.annotation_toolbar.thickness_changed.connect(self._on_thickness_changed)
+        self.annotation_toolbar.undo_requested.connect(self._on_undo)
+        self.annotation_toolbar.redo_requested.connect(self._on_redo)
+        self.annotation_toolbar.fit_requested.connect(self._on_fit)
+        self.annotation_toolbar.hundred_percent_requested.connect(self._on_hundred)
+
+        QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._on_undo)
+        QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._on_redo)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self._on_redo)
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=self._on_fit)
+        QShortcut(QKeySequence("Ctrl+1"), self, activated=self._on_hundred)
+
+        self._tabs.currentChanged.connect(self._on_current_tab_changed)
+
         # 마지막 창 위치/크기 복원
         s = settings.screenshot
         if s.viewer_x >= 0 and s.viewer_y >= 0 and s.viewer_w > 0 and s.viewer_h > 0:
@@ -54,6 +80,7 @@ class ScreenshotViewer(QMainWindow):
         idx = self._tabs.addTab(tab, "")
         self._refresh_tab_title_for(tab)
         self._tabs.setCurrentIndex(idx)
+        self._apply_tool_to_current_tab()  # 새 탭에 현재 도구 반영
 
         # 최소화 상태였으면 복원 + 포커스 (D9)
         if self.isMinimized():
@@ -80,9 +107,24 @@ class ScreenshotViewer(QMainWindow):
         tab = self.current_tab()
         if tab is None:
             return
+
+        # 이미 저장되어 있고 변경도 없으면 무시 (no-op)
+        if tab.is_saved() and tab.undo_stack.isClean():
+            return
+
+        # 이미 저장된 적 있으면 같은 경로에 덮어쓰기
+        if tab.is_saved():
+            path = tab.saved_path()
+            try:
+                save_png(tab.image(), path)
+                tab.mark_saved(path)
+                show_toast(self, f"저장됨: {path.name}", 1500)
+            except IOError as e:
+                QMessageBox.warning(self, "저장 실패", str(e))
+            return
+
+        # 최초 저장 — Phase 1 로직 그대로
         if self._settings.screenshot.save_dir == "":
-            # 저장 폴더가 아직 지정되지 않았으면 기본 경로(~/Pictures/KStudio)를
-            # 자동 생성하고 settings 에도 기록한다. 사용자는 나중에 패널에서 바꿀 수 있다.
             default_dir = Path.home() / "Pictures" / "KStudio"
             try:
                 default_dir.mkdir(parents=True, exist_ok=True)
@@ -173,14 +215,14 @@ class ScreenshotViewer(QMainWindow):
             return
         label = tab.source_label()
         base = f"{label} {idx + 1}"
-        title = base if tab.is_saved() else f"● {base}"
+        title = base if not tab.needs_save() else f"● {base}"
         self._tabs.setTabText(idx, title)
 
     def _unsaved_count(self) -> int:
         return sum(
             1 for i in range(self._tabs.count())
             if isinstance(self._tabs.widget(i), ScreenshotTab)
-            and not self._tabs.widget(i).is_saved()
+            and self._tabs.widget(i).needs_save()
         )
 
     def _drop_all_tabs(self) -> None:
@@ -244,3 +286,58 @@ class ScreenshotViewer(QMainWindow):
         super().showEvent(e)
         # 자기 창이 다음 스크린샷 캡처에 찍히지 않도록 제외
         exclude_from_capture(self)
+
+    def _apply_tool_to_current_tab(self) -> None:
+        tab = self.current_tab()
+        if tab is None:
+            return
+        tool_id = self.annotation_toolbar.current_tool_id()
+        color = self.annotation_toolbar.current_color()
+        th = self.annotation_toolbar.current_thickness_step()
+        if tool_id == "select":
+            tab.canvas.set_tool(SelectTool())
+        elif tool_id == "rect":
+            tab.canvas.set_tool(RectTool(color, th, tab.canvas.shift_held))
+        elif tool_id == "arrow":
+            tab.canvas.set_tool(ArrowTool(color, th, tab.canvas.shift_held))
+        elif tool_id == "text":
+            tab.canvas.set_tool(TextTool(color))
+
+        # Undo/Redo 버튼 활성 상태
+        self.annotation_toolbar.set_undo_enabled(tab.undo_stack.canUndo())
+        self.annotation_toolbar.set_redo_enabled(tab.undo_stack.canRedo())
+
+    def _on_tool_changed(self, tool_id: str) -> None:
+        self._apply_tool_to_current_tab()
+
+    def _on_color_changed(self, color: QColor) -> None:
+        self._apply_tool_to_current_tab()
+
+    def _on_thickness_changed(self, step: int) -> None:
+        self._apply_tool_to_current_tab()
+
+    def _on_undo(self) -> None:
+        tab = self.current_tab()
+        if tab and tab.undo_stack.canUndo():
+            tab.undo_stack.undo()
+            self._apply_tool_to_current_tab()  # 버튼 활성 상태 갱신
+
+    def _on_redo(self) -> None:
+        tab = self.current_tab()
+        if tab and tab.undo_stack.canRedo():
+            tab.undo_stack.redo()
+            self._apply_tool_to_current_tab()
+
+    def _on_fit(self) -> None:
+        tab = self.current_tab()
+        if tab:
+            tab.canvas.set_fit_mode()
+
+    def _on_hundred(self) -> None:
+        tab = self.current_tab()
+        if tab:
+            tab.canvas.set_hundred_percent_mode()
+
+    def _on_current_tab_changed(self, idx: int) -> None:
+        if idx >= 0:
+            self._apply_tool_to_current_tab()
