@@ -1,4 +1,4 @@
-"""영상 설정 패널 — 영상 / GIF / 사운드 3개 섹션을 QGroupBox로 묶어 표시."""
+"""영상 설정 패널 — 영상 / 사운드 / GIF 3개 섹션을 QGroupBox로 묶어 표시."""
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QWidget, QFormLayout, QComboBox, QSpinBox, QSlider, QHBoxLayout, QCheckBox,
@@ -46,8 +46,8 @@ class VideoPanel(QWidget):
         root.setSpacing(10)
 
         root.addWidget(self._build_video_box())
-        root.addWidget(self._build_gif_box())
         root.addWidget(self._build_sound_box())
+        root.addWidget(self._build_gif_box())
         root.addStretch(1)
 
     # ---------- 영상 ----------
