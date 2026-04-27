@@ -62,6 +62,10 @@ def show_toast(parent: QWidget, text: str, duration_ms: int = 1000) -> None:
         global _active_toast
         try:
             t.close()
+        except RuntimeError:
+            # parent 창이 이미 소멸돼 t 의 C++ 객체가 deleteLater 로 사라진 경우.
+            # PySide6 가 RuntimeError("Internal C++ object already deleted") 던짐.
+            pass
         finally:
             if _active_toast is t:
                 _active_toast = None
