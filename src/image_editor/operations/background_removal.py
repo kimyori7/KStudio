@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage, QUndoCommand
 
 from ..layer_model import LayerStack
@@ -14,7 +14,6 @@ def _default_remove_bg(image: QImage) -> QImage:
     예외 시 호출자가 try/except 로 잡음.
     """
     from PIL import Image
-    import io
     from rembg import remove
 
     # QImage → PIL → rembg → PIL(RGBA) → mask QImage(Grayscale8)
