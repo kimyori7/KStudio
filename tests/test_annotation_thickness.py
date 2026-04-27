@@ -1,5 +1,5 @@
 import pytest
-from screen_recorder.ui.annotation.thickness import (
+from image_editor.thickness import (
     thickness_to_pixels,
     THICKNESS_STEPS,
     DEFAULT_THICKNESS_STEP,

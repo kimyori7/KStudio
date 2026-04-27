@@ -1,6 +1,6 @@
 from PySide6.QtGui import QImage, QColor
 
-from screen_recorder.ui.annotation.canvas import AnnotationCanvas
+from image_editor.legacy_canvas import AnnotationCanvas
 
 
 def _img(w=400, h=200) -> QImage:

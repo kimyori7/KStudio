@@ -1,9 +1,9 @@
 from PySide6.QtCore import QRectF, QPointF
 from PySide6.QtGui import QColor, QImage, QUndoStack
 
-from screen_recorder.ui.annotation.scene import AnnotationScene
-from screen_recorder.ui.annotation.items.rect import RectAnnotationItem
-from screen_recorder.ui.annotation.tools.select import SelectTool
+from image_editor.scene import AnnotationScene
+from image_editor.items.rect import RectAnnotationItem
+from image_editor.tools.select import SelectTool
 
 
 def _scene():
@@ -33,7 +33,7 @@ def test_select_tool_click_on_item_selects_it(qtbot):
     assert r.isSelected() is True
 
 
-from screen_recorder.ui.annotation.tools.rect import RectTool
+from image_editor.tools.rect import RectTool
 
 
 def test_rect_tool_drag_creates_rect(qtbot):
@@ -78,8 +78,8 @@ def test_rect_tool_shift_forces_square(qtbot):
     assert r.rect().height() == 40
 
 
-from screen_recorder.ui.annotation.tools.arrow import ArrowTool
-from screen_recorder.ui.annotation.items.arrow import ArrowAnnotationItem
+from image_editor.tools.arrow import ArrowTool
+from image_editor.items.arrow import ArrowAnnotationItem
 
 
 def test_arrow_tool_drag_creates_arrow(qtbot):
@@ -105,8 +105,8 @@ def test_arrow_tool_tiny_drag_cancelled(qtbot):
     assert len([a for a in scene.annotations() if isinstance(a, ArrowAnnotationItem)]) == 0
 
 
-from screen_recorder.ui.annotation.tools.text import TextTool
-from screen_recorder.ui.annotation.items.text import TextAnnotationItem
+from image_editor.tools.text import TextTool
+from image_editor.items.text import TextAnnotationItem
 
 
 def test_text_tool_click_creates_editing_text(qtbot):

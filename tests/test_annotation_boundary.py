@@ -1,8 +1,8 @@
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QColor, QImage
 
-from screen_recorder.ui.annotation.scene import AnnotationScene
-from screen_recorder.ui.annotation.items.rect import RectAnnotationItem
+from image_editor.scene import AnnotationScene
+from image_editor.items.rect import RectAnnotationItem
 
 
 def _scene():

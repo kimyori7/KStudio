@@ -6,7 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QImage, QUndoStack
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from .annotation.canvas import AnnotationCanvas
+from image_editor.legacy_canvas import AnnotationCanvas
 
 
 class ScreenshotTab(QWidget):

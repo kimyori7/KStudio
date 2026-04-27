@@ -1,9 +1,9 @@
 from PySide6.QtCore import QRectF, QPointF
 from PySide6.QtGui import QImage, QColor
 
-from screen_recorder.ui.annotation.scene import AnnotationScene
-from screen_recorder.ui.annotation.items.rect import RectAnnotationItem
-from screen_recorder.ui.annotation.items.arrow import ArrowAnnotationItem
+from image_editor.scene import AnnotationScene
+from image_editor.items.rect import RectAnnotationItem
+from image_editor.items.arrow import ArrowAnnotationItem
 
 
 def _img(w=100, h=80) -> QImage:

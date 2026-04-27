@@ -2,7 +2,7 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QGraphicsScene
 
-from screen_recorder.ui.annotation.items.rect import RectAnnotationItem
+from image_editor.items.rect import RectAnnotationItem
 
 
 def test_rect_item_holds_rect_color_thickness(qtbot):
@@ -43,7 +43,7 @@ def test_rect_item_set_thickness_updates(qtbot):
 
 
 from PySide6.QtCore import QPointF
-from screen_recorder.ui.annotation.items.arrow import ArrowAnnotationItem
+from image_editor.items.arrow import ArrowAnnotationItem
 
 
 def test_arrow_item_holds_endpoints(qtbot):
@@ -68,7 +68,7 @@ def test_arrow_set_endpoints(qtbot):
     assert a.end() == QPointF(50, 50)
 
 
-from screen_recorder.ui.annotation.items.text import TextAnnotationItem
+from image_editor.items.text import TextAnnotationItem
 
 
 def test_text_item_holds_pos_and_text(qtbot):

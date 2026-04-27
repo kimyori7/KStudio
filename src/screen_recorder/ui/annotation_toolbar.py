@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QColorDialog, QHBoxLayout, QLabel, QPushButton, QSpinBox, QToolBar, QWidget,
 )
 
-from .annotation.thickness import THICKNESS_STEPS, DEFAULT_THICKNESS_STEP
+from image_editor.thickness import THICKNESS_STEPS, DEFAULT_THICKNESS_STEP
 
 PRESET_COLORS: tuple[str, ...] = (
     "#E53935",  # 빨강 (기본)
@@ -178,7 +178,7 @@ class AnnotationToolbar(QToolBar):
         label.setStyleSheet("color: #aaa; padding: 0 4px 0 0;")
         layout.addWidget(label)
 
-        from .annotation.thickness import thickness_to_pixels
+        from image_editor.thickness import thickness_to_pixels
         self._thickness_buttons: dict[int, QPushButton] = {}
         thickness_qss = (
             "QPushButton { background: #2c2c2c; border: 1px solid #555; }"

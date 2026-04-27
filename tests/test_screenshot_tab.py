@@ -3,8 +3,8 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QColor
 
 from screen_recorder.ui.screenshot_tab import ScreenshotTab
-from screen_recorder.ui.annotation.items.rect import RectAnnotationItem
-from screen_recorder.ui.annotation.commands import AddAnnotationCommand
+from image_editor.items.rect import RectAnnotationItem
+from image_editor.commands import AddAnnotationCommand
 
 
 def _img(w=50, h=50, color=QColor(255, 0, 0)) -> QImage:

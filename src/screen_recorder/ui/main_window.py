@@ -55,10 +55,10 @@ from screen_recorder.core.filename import build_filename, resolve_collision
 
 from .screenshot_tab import ScreenshotTab
 from .video_tab import VideoTab
-from .annotation.tools.select import SelectTool
-from .annotation.tools.rect import RectTool
-from .annotation.tools.arrow import ArrowTool
-from .annotation.tools.text import TextTool
+from image_editor.tools.select import SelectTool
+from image_editor.tools.rect import RectTool
+from image_editor.tools.arrow import ArrowTool
+from image_editor.tools.text import TextTool
 
 
 _TOOL_MAP = {

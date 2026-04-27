@@ -1,9 +1,9 @@
 from PySide6.QtCore import QRectF, QPointF
 from PySide6.QtGui import QColor, QImage, QUndoStack
 
-from screen_recorder.ui.annotation.scene import AnnotationScene
-from screen_recorder.ui.annotation.items.rect import RectAnnotationItem
-from screen_recorder.ui.annotation.commands import (
+from image_editor.scene import AnnotationScene
+from image_editor.items.rect import RectAnnotationItem
+from image_editor.commands import (
     AddAnnotationCommand,
     RemoveAnnotationCommand,
     MoveAnnotationCommand,
