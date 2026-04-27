@@ -79,3 +79,11 @@ def test_annotation_settings_roundtrip(tmp_path):
 
     assert loaded.annotation.last_color == "#123456"
     assert loaded.annotation.last_thickness == 4
+
+
+def test_player_settings_defaults():
+    from screen_recorder.core.settings import AppSettings
+    s = AppSettings()
+    assert s.player.skip_seconds == 1
+    assert s.player.skip_medium_seconds == 5
+    assert s.player.skip_large_seconds == 10

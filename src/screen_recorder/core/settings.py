@@ -80,6 +80,13 @@ class PreferencesSettings:
 
 
 @dataclass
+class PlayerSettings:
+    skip_seconds: int = 1            # ← / →
+    skip_medium_seconds: int = 5     # Shift + ← / →
+    skip_large_seconds: int = 10     # Ctrl + ← / →
+
+
+@dataclass
 class AppSettings:
     general: GeneralSettings = field(default_factory=GeneralSettings)
     video: VideoSettings = field(default_factory=VideoSettings)
@@ -89,6 +96,7 @@ class AppSettings:
     preferences: PreferencesSettings = field(default_factory=PreferencesSettings)
     screenshot: ScreenshotSettings = field(default_factory=ScreenshotSettings)
     annotation: AnnotationSettings = field(default_factory=AnnotationSettings)
+    player: PlayerSettings = field(default_factory=PlayerSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:
