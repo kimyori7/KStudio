@@ -29,6 +29,7 @@ class TextAnnotationItem(QGraphicsTextItem):
         self._apply_color()
         self.setFlag(QGraphicsTextItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsTextItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsTextItem.ItemSendsGeometryChanges, True)
 
     # --- accessors ---
     def pos_f(self) -> QPointF:
@@ -71,6 +72,18 @@ class TextAnnotationItem(QGraphicsTextItem):
 
     def _apply_color(self) -> None:
         self.setDefaultTextColor(self._props.color())
+
+    def itemChange(self, change, value):
+        if change == QGraphicsTextItem.ItemPositionChange and self.scene() is not None:
+            from .base import clamp_position_to_scene
+            clamped = clamp_position_to_scene(
+                self.boundingRect(),
+                value,
+                self.scene().sceneRect(),
+            )
+            if clamped != value:
+                return clamped
+        return super().itemChange(change, value)
 
     def keyPressEvent(self, event):
         # Ctrl+Enter도 줄바꿈, Enter는 Qt 기본(=줄바꿈). ESC는 편집 종료.

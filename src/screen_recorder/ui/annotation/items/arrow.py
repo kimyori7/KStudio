@@ -122,6 +122,15 @@ class ArrowAnnotationItem(QGraphicsItem):
         self.update()
 
     def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and self.scene() is not None:
+            from .base import clamp_position_to_scene
+            clamped = clamp_position_to_scene(
+                self.boundingRect(),
+                value,
+                self.scene().sceneRect(),
+            )
+            if clamped != value:
+                return clamped
         if change == QGraphicsItem.ItemSelectedHasChanged:
             if value:
                 self._create_handles()
