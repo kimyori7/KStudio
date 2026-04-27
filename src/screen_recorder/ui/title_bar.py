@@ -60,7 +60,7 @@ class CustomTitleBar(QWidget):
 
     HEIGHT = 32
 
-    def __init__(self, title: str = "Screen Recorder"):
+    def __init__(self, title: str = "KStudio"):
         super().__init__()
         self.setObjectName("CustomTitleBar")
         self.setFixedHeight(self.HEIGHT)

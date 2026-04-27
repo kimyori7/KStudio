@@ -23,7 +23,7 @@ class TrayController(QObject):
             if style is not None:
                 icon = style.standardIcon(QStyle.SP_MediaPlay)
         self.tray = QSystemTrayIcon(icon, parent)
-        self.tray.setToolTip("Screen Recorder")
+        self.tray.setToolTip("KStudio")
 
         menu = QMenu()
         show_action = QAction("창 보이기", menu); show_action.triggered.connect(self.show_main.emit)

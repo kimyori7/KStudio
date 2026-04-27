@@ -8,7 +8,7 @@ from typing import get_type_hints
 
 @dataclass
 class GeneralSettings:
-    output_dir: str = ""  # 빈 문자열이면 ~/Videos/ScreenRecorder
+    output_dir: str = ""  # 빈 문자열이면 ~/Videos/KStudio
     filename_pattern: str = "rec_{date}_{time}"
     mode: str = "video"     # "video" | "gif"
     target: str = "fullscreen"  # "fullscreen" | "window" | "region"
@@ -54,7 +54,7 @@ class HotkeySettings:
 
 @dataclass
 class ScreenshotSettings:
-    save_dir: str = ""  # 빈 문자열이면 ~/Pictures/ScreenRecorder
+    save_dir: str = ""  # 빈 문자열이면 ~/Pictures/KStudio
     filename_pattern: str = "screenshot_{date}_{time}"
     format: str = "png"
     magnifier_enabled: bool = True

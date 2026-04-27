@@ -42,7 +42,7 @@ from .screenshot_viewer import ScreenshotViewer
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings, ffmpeg_path: Path):
         super().__init__()
-        self.setWindowTitle("Screen Recorder")
+        self.setWindowTitle("KStudio")
         self.setWindowIcon(app_icon())
         self.resize(800, 550)
 
@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
 
         # 커스텀 타이틀바
-        self.title_bar = CustomTitleBar("Screen Recorder")
+        self.title_bar = CustomTitleBar("KStudio")
         self.title_bar.minimize_clicked.connect(self.showMinimized)
         self.title_bar.close_clicked.connect(self.close)
         outer.addWidget(self.title_bar)

@@ -81,9 +81,9 @@ class ScreenshotViewer(QMainWindow):
         if tab is None:
             return
         if self._settings.screenshot.save_dir == "":
-            # 저장 폴더가 아직 지정되지 않았으면 기본 경로(~/Pictures/ScreenRecorder)를
+            # 저장 폴더가 아직 지정되지 않았으면 기본 경로(~/Pictures/KStudio)를
             # 자동 생성하고 settings 에도 기록한다. 사용자는 나중에 패널에서 바꿀 수 있다.
-            default_dir = Path.home() / "Pictures" / "ScreenRecorder"
+            default_dir = Path.home() / "Pictures" / "KStudio"
             try:
                 default_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
@@ -112,7 +112,7 @@ class ScreenshotViewer(QMainWindow):
         tab = self.current_tab()
         if tab is None:
             return
-        default_dir = self._settings.screenshot.save_dir or str(Path.home() / "Pictures" / "ScreenRecorder")
+        default_dir = self._settings.screenshot.save_dir or str(Path.home() / "Pictures" / "KStudio")
         path_str, _ = QFileDialog.getSaveFileName(
             self, "다른 이름으로 저장",
             str(Path(default_dir) / f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"),

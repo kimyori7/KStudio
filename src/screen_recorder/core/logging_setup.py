@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def setup_logging(log_dir: Path | None = None) -> Path:
-    log_dir = log_dir or (Path.home() / "AppData" / "Local" / "ScreenRecorder" / "logs")
+    log_dir = log_dir or (Path.home() / "AppData" / "Local" / "KStudio" / "logs")
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "app.log"
 

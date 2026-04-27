@@ -14,17 +14,17 @@ from screen_recorder.core.settings import AppSettings, load, save
 from screen_recorder.ui.main_window import MainWindow
 
 
-SETTINGS_PATH = Path.home() / "AppData" / "Local" / "ScreenRecorder" / "settings.json"
+SETTINGS_PATH = Path.home() / "AppData" / "Local" / "KStudio" / "settings.json"
 
 
 def main() -> int:
     from screen_recorder.core.logging_setup import setup_logging
     setup_logging()
     import logging
-    logging.info("Screen Recorder started")
+    logging.info("KStudio started")
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Screen Recorder")
+    app.setApplicationName("KStudio")
     from screen_recorder.ui.app_icon import app_icon
     from screen_recorder.ui.theme import apply_theme
     app.setWindowIcon(app_icon())

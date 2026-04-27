@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller build spec for Screen Recorder (onedir, Windowed)."""
+"""PyInstaller build spec for KStudio (onedir, Windowed)."""
 
 from pathlib import Path
 
@@ -42,7 +42,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="ScreenRecorder",
+    name="KStudio",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -63,5 +63,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="ScreenRecorder",
+    name="KStudio",
 )

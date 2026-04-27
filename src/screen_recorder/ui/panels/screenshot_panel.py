@@ -161,7 +161,7 @@ class ScreenshotPanel(QWidget):
     def _resolve_save_dir(self) -> Path:
         if self.settings.save_dir:
             return Path(self.settings.save_dir)
-        return Path.home() / "Pictures" / "ScreenRecorder"
+        return Path.home() / "Pictures" / "KStudio"
 
     def _rewatch(self) -> None:
         existing = self._watcher.directories()

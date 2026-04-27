@@ -195,7 +195,7 @@ class GeneralPanel(QWidget):
     def _resolve_output_dir(self) -> Path:
         if self.settings.output_dir:
             return Path(self.settings.output_dir)
-        return Path.home() / "Videos" / "ScreenRecorder"
+        return Path.home() / "Videos" / "KStudio"
 
     def _rewatch(self) -> None:
         existing = self._watcher.directories()
