@@ -34,6 +34,9 @@ class ArrowAnnotationItem(QGraphicsItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self._start_on_drag_start: QPointF | None = None
+        self._end_on_drag_start: QPointF | None = None
+        self._undo_push_callback = None
 
     # --- endpoints ---
     def start(self) -> QPointF:
@@ -133,12 +136,16 @@ class ArrowAnnotationItem(QGraphicsItem):
             lambda p: self._on_handle_drag("start", p),
             Qt.CrossCursor,
             parent=self,
+            on_press=self._on_handle_press,
+            on_release=self._on_handle_release,
         )
         end_h = Handle(
             self._end,
             lambda p: self._on_handle_drag("end", p),
             Qt.CrossCursor,
             parent=self,
+            on_press=self._on_handle_press,
+            on_release=self._on_handle_release,
         )
         self._handles.extend([start_h, end_h])
 
@@ -160,3 +167,24 @@ class ArrowAnnotationItem(QGraphicsItem):
         if len(hs) == 2:
             hs[0].setPos(self._start)
             hs[1].setPos(self._end)
+
+    def _on_handle_press(self) -> None:
+        self._start_on_drag_start = QPointF(self._start)
+        self._end_on_drag_start = QPointF(self._end)
+
+    def _on_handle_release(self) -> None:
+        if self._start_on_drag_start is None or self._end_on_drag_start is None:
+            return
+        os_, oe_ = self._start_on_drag_start, self._end_on_drag_start
+        ns_, ne_ = QPointF(self._start), QPointF(self._end)
+        self._start_on_drag_start = None
+        self._end_on_drag_start = None
+        if os_ == ns_ and oe_ == ne_:
+            return
+        cb = self._undo_push_callback
+        if cb is not None:
+            from ..commands import ChangeArrowEndpointsCommand
+            self.set_start(os_)
+            self.set_end(oe_)
+            self._reposition_handles()
+            cb(ChangeArrowEndpointsCommand(self, os_, oe_, ns_, ne_))

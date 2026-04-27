@@ -27,6 +27,8 @@ class RectAnnotationItem(QGraphicsItem):
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self._rect_on_drag_start: QRectF | None = None
+        self._undo_push_callback = None  # scene 이 add_annotation 시 주입
 
     # --- properties ---
     def rect(self) -> QRectF:
@@ -100,6 +102,8 @@ class RectAnnotationItem(QGraphicsItem):
                 lambda p, t=tag: self._on_handle_drag(t, p),
                 cursor,
                 parent=self,
+                on_press=self._on_handle_press,
+                on_release=self._on_handle_release,
             )
             self._handles.append(h)
 
@@ -138,3 +142,22 @@ class RectAnnotationItem(QGraphicsItem):
         ]
         for h, p in zip(self._handles, positions):
             h.setPos(p)
+
+    def _on_handle_press(self) -> None:
+        self._rect_on_drag_start = QRectF(self._rect)
+
+    def _on_handle_release(self) -> None:
+        if self._rect_on_drag_start is None:
+            return
+        old = self._rect_on_drag_start
+        new = QRectF(self._rect)
+        self._rect_on_drag_start = None
+        if old == new:
+            return
+        cb = self._undo_push_callback
+        if cb is not None:
+            from ..commands import ChangeRectCommand
+            # 현재 rect 를 old 로 되돌린 뒤 커맨드가 redo 로 new 적용 (stack 등록)
+            self.set_rect(old)
+            self._reposition_handles()
+            cb(ChangeRectCommand(self, old, new))

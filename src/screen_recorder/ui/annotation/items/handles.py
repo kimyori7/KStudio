@@ -17,6 +17,8 @@ class Handle(QGraphicsRectItem):
         on_drag,  # Callable[[QPointF], None]
         cursor_shape: Qt.CursorShape,
         parent: QGraphicsItem,
+        on_press=None,   # Callable[[], None] | None
+        on_release=None, # Callable[[], None] | None
     ) -> None:
         s = HANDLE_SIZE
         super().__init__(QRectF(-s / 2, -s / 2, s, s), parent)
@@ -27,14 +29,19 @@ class Handle(QGraphicsRectItem):
         self.setCursor(cursor_shape)
         self.setData(0, "handle")
         self._on_drag = on_drag
+        self._on_press = on_press
+        self._on_release = on_release
 
     def mouseMoveEvent(self, event):
         new_scene_pos = self.mapToScene(event.pos())
         self._on_drag(new_scene_pos)
 
     def mousePressEvent(self, event):
-        # 부모 아이템이 드래그로 이동하지 않도록 이벤트 흡수
+        if self._on_press:
+            self._on_press()
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        if self._on_release:
+            self._on_release()
         event.accept()

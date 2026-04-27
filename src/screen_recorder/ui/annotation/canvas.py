@@ -36,6 +36,7 @@ class AnnotationCanvas(QGraphicsView):
 
         self._tool: Tool = SelectTool()
         self._shift_held = False
+        self._undo_stack = None
 
     # --- scene proxy ---
     def scene(self) -> AnnotationScene:
@@ -57,6 +58,21 @@ class AnnotationCanvas(QGraphicsView):
 
     def shift_held(self) -> bool:
         return self._shift_held
+
+    def set_undo_stack(self, stack) -> None:
+        self._undo_stack = stack
+
+    def undo_stack(self):
+        return self._undo_stack
+
+    def _delete_selected(self) -> None:
+        from .commands import RemoveAnnotationCommand
+        if self._undo_stack is None:
+            return
+        for it in self._scene.annotations():
+            if it.isSelected():
+                self._undo_stack.push(RemoveAnnotationCommand(self._scene, it))
+                return  # 단일 선택이라 하나만
 
     # --- zoom ---
     def set_fit_mode(self) -> None:
@@ -120,6 +136,8 @@ class AnnotationCanvas(QGraphicsView):
             self._shift_held = True
         elif event.key() == Qt.Key_Escape:
             self._tool.key_escape(self._scene)
+        elif event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self._delete_selected()
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:

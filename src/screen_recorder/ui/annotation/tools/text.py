@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QUndoStack
 
+from ..commands import AddAnnotationCommand
 from ..items.text import TextAnnotationItem
 from ..scene import AnnotationScene
 from .base import Tool
@@ -12,8 +13,9 @@ from .base import Tool
 class TextTool(Tool):
     name = "text"
 
-    def __init__(self, color: QColor) -> None:
+    def __init__(self, color: QColor, undo_stack: QUndoStack) -> None:
         self._color = QColor(color)
+        self._undo_stack = undo_stack
         self._active: TextAnnotationItem | None = None
 
     def set_color(self, color: QColor) -> None:
@@ -28,22 +30,25 @@ class TextTool(Tool):
         self._active = t
 
     def mouse_release(self, scene: AnnotationScene, scene_pos: QPointF) -> None:
-        pass  # 편집은 Canvas 측 포커스 아웃 / ESC 에서 종료
+        pass
 
     def commit_active(self, scene: AnnotationScene) -> None:
-        """현재 편집 중 텍스트를 확정. 빈 텍스트면 제거."""
         if self._active is None:
             return
-        self._active.exit_edit_mode()
-        if self._active.text().strip() == "":
-            scene.remove_annotation(self._active)
+        active = self._active
         self._active = None
+        active.exit_edit_mode()
+        if active.text().strip() == "":
+            scene.remove_annotation(active)
+            return
+        # 텍스트는 mouse_press 시 이미 scene 에 추가됨 — 일단 제거 후 AddAnnotationCommand 로 재추가 (Undo 가능)
+        scene.remove_annotation(active)
+        self._undo_stack.push(AddAnnotationCommand(scene, active))
 
     def deactivated(self, scene: AnnotationScene) -> None:
         self.commit_active(scene)
 
     def double_click(self, scene: AnnotationScene, scene_pos: QPointF) -> None:
-        # 선택 도구에서 더블클릭이 들어와도 TextAnnotationItem 위면 재편집
         for it in scene.items(scene_pos):
             if isinstance(it, TextAnnotationItem):
                 it.enter_edit_mode()

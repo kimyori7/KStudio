@@ -4,8 +4,9 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QUndoStack
 
+from ..commands import AddAnnotationCommand
 from ..items.rect import RectAnnotationItem
 from ..scene import AnnotationScene
 from .base import Tool
@@ -21,10 +22,12 @@ class RectTool(Tool):
         color: QColor,
         thickness_step: int,
         shift_held: Callable[[], bool],
+        undo_stack: QUndoStack,
     ) -> None:
         self._color = QColor(color)
         self._thickness_step = int(thickness_step)
         self._shift_held = shift_held
+        self._undo_stack = undo_stack
         self._draft: RectAnnotationItem | None = None
         self._origin: QPointF | None = None
 
@@ -53,12 +56,16 @@ class RectTool(Tool):
         if self._draft is None:
             return
         rect = self._compute_rect(scene_pos)
-        if rect.width() < MIN_DRAG_PX and rect.height() < MIN_DRAG_PX:
-            scene.remove_annotation(self._draft)
-        else:
-            self._draft.set_rect(rect)
+        # 드래프트는 mouse_press 에서 직접 add 했으니 일단 제거 →
+        # 너무 작으면 거기서 끝, 충분히 크면 AddAnnotationCommand 로 다시 추가 (Undo 가능)
+        scene.remove_annotation(self._draft)
+        draft = self._draft
         self._draft = None
         self._origin = None
+        if rect.width() < MIN_DRAG_PX and rect.height() < MIN_DRAG_PX:
+            return
+        draft.set_rect(rect)
+        self._undo_stack.push(AddAnnotationCommand(scene, draft))
 
     def key_escape(self, scene: AnnotationScene) -> None:
         if self._draft is not None:

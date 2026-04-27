@@ -64,9 +64,11 @@ class ChangeRectCommand(QUndoCommand):
 
     def redo(self) -> None:
         self._item.set_rect(self._new)
+        self._item._reposition_handles()
 
     def undo(self) -> None:
         self._item.set_rect(self._old)
+        self._item._reposition_handles()
 
 
 class ChangeArrowEndpointsCommand(QUndoCommand):
@@ -82,10 +84,14 @@ class ChangeArrowEndpointsCommand(QUndoCommand):
         self._ns = QPointF(new_start); self._ne = QPointF(new_end)
 
     def redo(self) -> None:
-        self._item.set_start(self._ns); self._item.set_end(self._ne)
+        self._item.set_start(self._ns)
+        self._item.set_end(self._ne)
+        self._item._reposition_handles()
 
     def undo(self) -> None:
-        self._item.set_start(self._os); self._item.set_end(self._oe)
+        self._item.set_start(self._os)
+        self._item.set_end(self._oe)
+        self._item._reposition_handles()
 
 
 class ChangeColorCommand(QUndoCommand):

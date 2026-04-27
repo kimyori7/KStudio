@@ -299,14 +299,15 @@ class ScreenshotViewer(QMainWindow):
         tool_id = self.annotation_toolbar.current_tool_id()
         color = self.annotation_toolbar.current_color()
         th = self.annotation_toolbar.current_thickness_step()
+        stack = tab.undo_stack
         if tool_id == "select":
             tab.canvas.set_tool(SelectTool())
         elif tool_id == "rect":
-            tab.canvas.set_tool(RectTool(color, th, tab.canvas.shift_held))
+            tab.canvas.set_tool(RectTool(color, th, tab.canvas.shift_held, stack))
         elif tool_id == "arrow":
-            tab.canvas.set_tool(ArrowTool(color, th, tab.canvas.shift_held))
+            tab.canvas.set_tool(ArrowTool(color, th, tab.canvas.shift_held, stack))
         elif tool_id == "text":
-            tab.canvas.set_tool(TextTool(color))
+            tab.canvas.set_tool(TextTool(color, stack))
 
         # Undo/Redo 버튼 활성 상태
         self.annotation_toolbar.set_undo_enabled(tab.undo_stack.canUndo())

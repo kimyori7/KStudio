@@ -20,6 +20,7 @@ class ScreenshotTab(QWidget):
         self.canvas = AnnotationCanvas(image)
         self.undo_stack = QUndoStack(self)
         self.undo_stack.setUndoLimit(0)  # 무제한
+        self.canvas.set_undo_stack(self.undo_stack)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

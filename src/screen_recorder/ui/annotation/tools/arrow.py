@@ -5,8 +5,9 @@ import math
 from typing import Callable
 
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QUndoStack
 
+from ..commands import AddAnnotationCommand
 from ..items.arrow import ArrowAnnotationItem
 from ..scene import AnnotationScene
 from .base import Tool
@@ -21,10 +22,12 @@ class ArrowTool(Tool):
         color: QColor,
         thickness_step: int,
         shift_held: Callable[[], bool],
+        undo_stack: QUndoStack,
     ) -> None:
         self._color = QColor(color)
         self._thickness_step = int(thickness_step)
         self._shift_held = shift_held
+        self._undo_stack = undo_stack
         self._draft: ArrowAnnotationItem | None = None
         self._origin: QPointF | None = None
 
@@ -50,15 +53,18 @@ class ArrowTool(Tool):
     def mouse_release(self, scene: AnnotationScene, scene_pos: QPointF) -> None:
         if self._draft is None or self._origin is None:
             return
+        origin = self._origin
+        draft = self._draft
         end = self._compute_end(scene_pos)
-        dx = abs(end.x() - self._origin.x())
-        dy = abs(end.y() - self._origin.y())
-        if dx < MIN_DRAG_PX and dy < MIN_DRAG_PX:
-            scene.remove_annotation(self._draft)
-        else:
-            self._draft.set_end(end)
         self._draft = None
         self._origin = None
+        scene.remove_annotation(draft)
+        dx = abs(end.x() - origin.x())
+        dy = abs(end.y() - origin.y())
+        if dx < MIN_DRAG_PX and dy < MIN_DRAG_PX:
+            return
+        draft.set_end(end)
+        self._undo_stack.push(AddAnnotationCommand(scene, draft))
 
     def key_escape(self, scene: AnnotationScene) -> None:
         if self._draft is not None:
@@ -73,7 +79,6 @@ class ArrowTool(Tool):
         dx = current.x() - self._origin.x()
         dy = current.y() - self._origin.y()
         angle = math.atan2(dy, dx)
-        # 45도 스냅
         snap = round(angle / (math.pi / 4)) * (math.pi / 4)
         length = math.hypot(dx, dy)
         return QPointF(
