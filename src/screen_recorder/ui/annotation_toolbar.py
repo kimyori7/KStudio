@@ -1,4 +1,10 @@
-"""편집 툴바 — 도구 선택 / 팔레트 / 두께 / Undo / 뷰 버튼."""
+"""편집 툴바 — 옵션바 전용 (색·두께·undo·줌).
+
+NOTE: 도구 그룹(`tool_changed`, `set_current_tool`, `current_tool_id`,
+`tool_ids`, TOOL_IDS/LABELS/SHORTCUTS 등)은 신규 ToolPalette 로 이전됐다.
+현재 코드에 남아있는 이유는 구버전 ScreenshotViewer 가 아직 사용 중이기 때문.
+ScreenshotViewer 가 제거되는 Task 18 에서 도구 그룹도 함께 제거한다.
+"""
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
