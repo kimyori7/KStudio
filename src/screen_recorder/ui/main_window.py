@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
-        self.library_panel = LibraryPanel(self.library_model)
+        self.library_panel = LibraryPanel(self.library_model, self.mode_controller)
         self.record_status_panel = RecordStatusPanel()
         right_layout.addWidget(self.library_panel, stretch=1)
         right_layout.addWidget(self.record_status_panel)
@@ -216,6 +216,7 @@ class MainWindow(QMainWindow):
         self.mode_controller.mode_changed.connect(self._on_mode_changed)
         self.tab_area.snapshot_requested.connect(self._on_video_snapshot)
         self.tab_area.entry_closed.connect(self._on_tab_closed_by_user)
+        self.tab_area.tab_added.connect(self._on_tab_added)
         self.tab_area.currentChanged.connect(self._on_active_tab_changed)
         self.library_panel.entry_open_requested.connect(self._open_entry)
 
@@ -545,6 +546,11 @@ class MainWindow(QMainWindow):
     def _on_tab_closed_by_user(self, entry_id: int) -> None:
         # 라이브러리에는 그대로 남겨둔다 (탭만 닫힘).
         pass
+
+    def _on_tab_added(self, widget, mode) -> None:
+        """새 탭이 추가되면 그 탭의 시그널을 옵션바 등에 연결."""
+        if isinstance(widget, ScreenshotTab):
+            widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
 
     def _on_video_snapshot(self, image: QImage, label_at: str) -> None:
         """영상 탭에서 '현재 프레임 → 스크린샷' 요청."""

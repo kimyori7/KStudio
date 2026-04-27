@@ -30,8 +30,10 @@ class TextTool(Tool):
         self._color = QColor(color)
 
     def mouse_press(self, scene: AnnotationScene, scene_pos: QPointF) -> None:
-        # 다른 텍스트를 편집 중이었다면 먼저 확정
-        self.commit_active(scene)
+        # 다른 텍스트를 편집 중이었다면 먼저 확정 — 단, 콜백은 호출하지 않음.
+        # 사용자는 "또 다른 텍스트 박스를 만들겠다" 는 의도로 새 위치를 클릭한 것이므로
+        # 도구 전환을 일으키지 않아야 한다. ESC/focusOut 으로 빠질 때만 콜백 발화.
+        self.commit_active(scene, fire_callback=False)
         t = TextAnnotationItem(scene_pos, "", self._color)
         scene.add_annotation(t)
         # 텍스트가 ESC 또는 focus 상실로 편집 종료될 때 자동으로 commit_active 호출되게 연결.
@@ -44,7 +46,7 @@ class TextTool(Tool):
     def mouse_release(self, scene: AnnotationScene, scene_pos: QPointF) -> None:
         pass
 
-    def commit_active(self, scene: AnnotationScene) -> None:
+    def commit_active(self, scene: AnnotationScene, fire_callback: bool = True) -> None:
         if self._active is None:
             return
         active = self._active
@@ -58,7 +60,7 @@ class TextTool(Tool):
             # 텍스트는 mouse_press 시 이미 scene 에 추가됨 — 일단 제거 후 AddAnnotationCommand 로 재추가 (Undo 가능)
             scene.remove_annotation(active)
             self._undo_stack.push(AddAnnotationCommand(scene, active))
-        if self._on_commit is not None:
+        if fire_callback and self._on_commit is not None:
             self._on_commit()
 
     def deactivated(self, scene: AnnotationScene) -> None:

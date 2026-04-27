@@ -18,6 +18,7 @@ class TabArea(QTabWidget):
 
     entry_closed = Signal(int)             # entry id (탭이 사용자에 의해 닫힐 때)
     snapshot_requested = Signal(QImage, str)   # 영상 탭의 프레임 스냅샷
+    tab_added = Signal(QWidget, object)    # (widget, AppMode) — 외부에서 시그널 와이어링용
 
     def __init__(self, mode_controller: ModeController, player_settings: PlayerSettings) -> None:
         super().__init__()
@@ -48,6 +49,7 @@ class TabArea(QTabWidget):
         idx = self.addTab(widget, label)
         self._tabs.append((widget, mode, entry_id))
         self.setCurrentIndex(idx)
+        self.tab_added.emit(widget, mode)
         # 새 탭 추가는 모드 자동 전환을 트리거
         self._mode.set_mode(mode)
         return idx
@@ -90,11 +92,17 @@ class TabArea(QTabWidget):
         for i, (_, m, _) in enumerate(self._tabs):
             self.setTabVisible(i, m is mode)
         # 현재 탭이 숨겨졌다면 보이는 첫 탭으로 이동
-        if self.currentIndex() >= 0 and not self.isTabVisible(self.currentIndex()):
+        cur_idx = self.currentIndex()
+        if cur_idx >= 0 and not self.isTabVisible(cur_idx):
             for i in range(self.count()):
                 if self.isTabVisible(i):
                     self.setCurrentIndex(i)
-                    break
+                    return
+            # 그 모드의 탭이 하나도 없음 — 위젯 본문도 직접 숨김
+            # (setTabVisible 은 탭 헤더만 숨기고 currentWidget 은 그대로 보이는 Qt 동작)
+            cur_w = self.widget(cur_idx)
+            if cur_w is not None:
+                cur_w.hide()
 
     def _on_current_changed(self, idx: int) -> None:
         if idx < 0 or idx >= len(self._tabs):
