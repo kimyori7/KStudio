@@ -87,6 +87,26 @@ class PlayerSettings:
 
 
 @dataclass
+class EditorShortcuts:
+    # 도구
+    tool_select: str = "V"
+    tool_crop: str = "C"
+    tool_arrow: str = "A"
+    tool_rect: str = "R"
+    tool_text: str = "T"
+    # 연산
+    op_background_removal: str = "Ctrl+Shift+B"
+    # 파일
+    file_save: str = "Ctrl+S"
+    file_save_as: str = "Ctrl+Shift+S"
+    file_export_png: str = "Ctrl+E"
+    file_open: str = "Ctrl+O"
+    # 보기
+    view_actual_size: str = "Ctrl+0"
+    view_fit: str = "Ctrl+1"
+
+
+@dataclass
 class AppSettings:
     general: GeneralSettings = field(default_factory=GeneralSettings)
     video: VideoSettings = field(default_factory=VideoSettings)
@@ -97,6 +117,7 @@ class AppSettings:
     screenshot: ScreenshotSettings = field(default_factory=ScreenshotSettings)
     annotation: AnnotationSettings = field(default_factory=AnnotationSettings)
     player: PlayerSettings = field(default_factory=PlayerSettings)
+    editor_shortcuts: EditorShortcuts = field(default_factory=EditorShortcuts)
 
 
 def save(settings: AppSettings, path: Path) -> None:

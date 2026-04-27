@@ -87,3 +87,14 @@ def test_player_settings_defaults():
     assert s.player.skip_seconds == 1
     assert s.player.skip_medium_seconds == 5
     assert s.player.skip_large_seconds == 10
+
+
+def test_editor_shortcuts_defaults():
+    from screen_recorder.core.settings import AppSettings
+    s = AppSettings()
+    assert s.editor_shortcuts.tool_select == "V"
+    assert s.editor_shortcuts.tool_crop == "C"
+    assert s.editor_shortcuts.op_background_removal == "Ctrl+Shift+B"
+    assert s.editor_shortcuts.file_save == "Ctrl+S"
+    assert s.editor_shortcuts.file_export_png == "Ctrl+E"
+    assert s.editor_shortcuts.view_actual_size == "Ctrl+0"
