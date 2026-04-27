@@ -70,3 +70,28 @@ def test_rect_tool_shift_forces_square(qtbot):
     # shift → 정사각형, 짧은 변 기준 (40)
     assert r.rect().width() == 40
     assert r.rect().height() == 40
+
+
+from screen_recorder.ui.annotation.tools.arrow import ArrowTool
+from screen_recorder.ui.annotation.items.arrow import ArrowAnnotationItem
+
+
+def test_arrow_tool_drag_creates_arrow(qtbot):
+    scene = _scene()
+    tool = ArrowTool(color=QColor("#000"), thickness_step=2, shift_held=lambda: False)
+    tool.mouse_press(scene, QPointF(10, 10))
+    tool.mouse_move(scene, QPointF(100, 50))
+    tool.mouse_release(scene, QPointF(100, 50))
+    arrows = [a for a in scene.annotations() if isinstance(a, ArrowAnnotationItem)]
+    assert len(arrows) == 1
+    assert arrows[0].start() == QPointF(10, 10)
+    assert arrows[0].end() == QPointF(100, 50)
+
+
+def test_arrow_tool_tiny_drag_cancelled(qtbot):
+    scene = _scene()
+    tool = ArrowTool(color=QColor("#000"), thickness_step=2, shift_held=lambda: False)
+    tool.mouse_press(scene, QPointF(10, 10))
+    tool.mouse_move(scene, QPointF(11, 11))
+    tool.mouse_release(scene, QPointF(11, 11))
+    assert len([a for a in scene.annotations() if isinstance(a, ArrowAnnotationItem)]) == 0
