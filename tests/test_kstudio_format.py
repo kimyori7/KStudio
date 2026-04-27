@@ -81,3 +81,35 @@ def test_corrupt_zip_raises(tmp_path: Path):
     bad.write_bytes(b"NOT A ZIP")
     with pytest.raises(Exception):
         read_kstudio(bad)
+
+
+def test_id_seq_synced_after_load(tmp_path: Path, qtbot):
+    """로드 후 next_id() 가 기존 레이어 id 와 충돌하지 않아야 함."""
+    from image_editor.layer_model import LayerStack
+    from image_editor.layers.image_layer import ImageLayer
+    from image_editor.format import write_kstudio, read_kstudio
+    stack = LayerStack(QSize(20, 20))
+    stack.add_layer(ImageLayer(id=1, name="a", pixmap=_solid(20, 20)))
+    stack.add_layer(ImageLayer(id=2, name="b", pixmap=_solid(20, 20)))
+    out = tmp_path / "x.kstudio"
+    write_kstudio(stack, out)
+
+    loaded = read_kstudio(out)
+    new_id = loaded.next_id()
+    assert new_id > 2  # must not collide with loaded ids 1, 2
+
+
+def test_future_format_version_rejected(tmp_path: Path, qtbot):
+    """미래 포맷 버전 파일은 ValueError 로 거부."""
+    from image_editor.format import read_kstudio
+    import zipfile, json
+    out = tmp_path / "future.kstudio"
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("manifest.json", json.dumps({
+            "format_version": 99,
+            "canvas_size": [10, 10],
+            "active_layer_id": None,
+            "layers": [],
+        }))
+    with pytest.raises(ValueError, match="더 새 버전"):
+        read_kstudio(out)

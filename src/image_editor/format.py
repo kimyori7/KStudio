@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -218,6 +219,12 @@ def read_kstudio(path: Path) -> "LayerStack":
     path = Path(path)
     with zipfile.ZipFile(path, "r") as z:
         manifest = json.loads(z.read("manifest.json").decode("utf-8"))
+        version = manifest.get("format_version", 1)
+        if version > FORMAT_VERSION:
+            raise ValueError(
+                f"이 파일은 더 새 버전의 KStudio 포맷(v{version})입니다. "
+                f"현재 지원: v{FORMAT_VERSION}."
+            )
         canvas_size = QSize(*manifest["canvas_size"])
         stack = LayerStack(canvas_size)
         for ldata in manifest["layers"]:
@@ -251,4 +258,7 @@ def read_kstudio(path: Path) -> "LayerStack":
                 stack.add_layer(layer)
         if manifest.get("active_layer_id") is not None:
             stack.set_active_layer(manifest["active_layer_id"])
+    # _id_seq 동기화: 로드된 레이어 id 와 충돌 없도록 max+1 부터 재시작
+    max_id = max((l.id for l in stack.layers), default=0)
+    stack._id_seq = count(max_id + 1)
     return stack
