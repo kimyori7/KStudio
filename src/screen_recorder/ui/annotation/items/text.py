@@ -30,6 +30,9 @@ class TextAnnotationItem(QGraphicsTextItem):
         self.setFlag(QGraphicsTextItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsTextItem.ItemIsMovable, True)
         self.setFlag(QGraphicsTextItem.ItemSendsGeometryChanges, True)
+        # 외부(주로 TextTool)가 편집 종료(ESC, focusOut) 시점을 알 수 있게 하는 콜백.
+        # 호출 후 자동으로 None 으로 비워져 재진입(commit_active → exit_edit_mode → cb → ...) 방지.
+        self.on_edit_finished = None  # type: Callable[[], None] | None
 
     # --- accessors ---
     def pos_f(self) -> QPointF:
@@ -65,10 +68,22 @@ class TextAnnotationItem(QGraphicsTextItem):
         self.setTextCursor(cursor)
 
     def exit_edit_mode(self) -> None:
+        if self.textInteractionFlags() == Qt.NoTextInteraction:
+            return  # 이미 편집 모드 아니면 콜백 재호출 방지
         self.setTextInteractionFlags(Qt.NoTextInteraction)
         cursor = self.textCursor()
         cursor.clearSelection()
         self.setTextCursor(cursor)
+        cb = self.on_edit_finished
+        self.on_edit_finished = None
+        if cb is not None:
+            cb()
+
+    def focusOutEvent(self, event):
+        # 박스 외 클릭/포커스 이동 시 자동 편집 종료
+        super().focusOutEvent(event)
+        if self.textInteractionFlags() != Qt.NoTextInteraction:
+            self.exit_edit_mode()
 
     def _apply_color(self) -> None:
         self.setDefaultTextColor(self._props.color())

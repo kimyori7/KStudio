@@ -30,7 +30,7 @@ class ScreenshotViewer(QMainWindow):
 
     def __init__(self, settings: AppSettings):
         super().__init__()
-        self.setWindowTitle("Screenshot Viewer")
+        self.setWindowTitle("KPhotoShop")
         self.setWindowIcon(app_icon())
 
         self._settings = settings
@@ -73,7 +73,7 @@ class ScreenshotViewer(QMainWindow):
         if s.viewer_x >= 0 and s.viewer_y >= 0 and s.viewer_w > 0 and s.viewer_h > 0:
             self.setGeometry(s.viewer_x, s.viewer_y, s.viewer_w, s.viewer_h)
         else:
-            self.resize(900, 700)
+            self.resize(1170, 910)  # 기본 크기 (Phase 1 의 900×700 에서 30% 키움)
 
     # ---------- 외부 API ----------
 
@@ -201,16 +201,19 @@ class ScreenshotViewer(QMainWindow):
 
         self._act_save = QAction("저장", self)
         self._act_save.setShortcut(QKeySequence("Ctrl+S"))
+        self._act_save.setToolTip("저장 (Ctrl+S) — 같은 파일에 덮어쓰기")
         self._act_save.triggered.connect(self.save_current_tab)
         tb.addAction(self._act_save)
 
         self._act_save_as = QAction("다른 이름으로", self)
         self._act_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._act_save_as.setToolTip("다른 이름으로 저장 (Ctrl+Shift+S)")
         self._act_save_as.triggered.connect(self.save_current_tab_as)
         tb.addAction(self._act_save_as)
 
         self._act_copy = QAction("복사", self)
         self._act_copy.setShortcut(QKeySequence("Ctrl+C"))
+        self._act_copy.setToolTip("이미지 클립보드 복사 (Ctrl+C) — 다른 앱에 Ctrl+V 로 붙여넣기")
         self._act_copy.triggered.connect(self.copy_current_to_clipboard)
         tb.addAction(self._act_copy)
 
@@ -307,7 +310,8 @@ class ScreenshotViewer(QMainWindow):
         elif tool_id == "arrow":
             tab.canvas.set_tool(ArrowTool(color, th, tab.canvas.shift_held, stack))
         elif tool_id == "text":
-            tab.canvas.set_tool(TextTool(color, stack))
+            # 텍스트 한 개 완성되면(ESC 또는 박스 외 클릭) 자동으로 선택 도구로 복귀.
+            tab.canvas.set_tool(TextTool(color, stack, on_commit=self._after_text_commit))
 
         # Undo/Redo 버튼 활성 상태
         self.annotation_toolbar.set_undo_enabled(tab.undo_stack.canUndo())
@@ -349,3 +353,7 @@ class ScreenshotViewer(QMainWindow):
     def _on_current_tab_changed(self, idx: int) -> None:
         if idx >= 0:
             self._apply_tool_to_current_tab()
+
+    def _after_text_commit(self) -> None:
+        """텍스트 도구로 한 개 입력 완료 후 자동으로 선택 도구로 복귀."""
+        self.annotation_toolbar.set_current_tool("select")

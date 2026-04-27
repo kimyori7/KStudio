@@ -134,11 +134,18 @@ class AnnotationToolbar(QToolBar):
         self._color_buttons: list[QPushButton] = []
         for hexcolor in PRESET_COLORS:
             btn = QPushButton()
-            btn.setFixedSize(20, 20)
+            btn.setFixedSize(22, 22)
             btn.setCheckable(True)
+            btn.setToolTip(f"{hexcolor}")
+            # 선택된 색상: 흰색(2px) → 검정(2px) 이중 테두리 — 어떤 색상 위에서도 명확히 보임
             btn.setStyleSheet(
                 f"QPushButton {{ background: {hexcolor}; border: 1px solid #555; }}"
-                f"QPushButton:checked {{ border: 2px solid #000; }}"
+                f"QPushButton:hover {{ border: 1px solid #fff; }}"
+                f"QPushButton:checked {{"
+                f"  border: 2px solid #fff;"
+                f"  outline: 2px solid #000;"
+                f"  margin: 0px;"
+                f"}}"
             )
             btn.clicked.connect(lambda _, c=hexcolor: self.set_current_color(QColor(c)))
             layout.addWidget(btn)
@@ -146,8 +153,8 @@ class AnnotationToolbar(QToolBar):
         self._color_buttons[0].setChecked(True)
 
         custom = QPushButton("…")
-        custom.setFixedSize(24, 20)
-        custom.setToolTip("더 많은 색…")
+        custom.setFixedSize(26, 22)
+        custom.setToolTip("더 많은 색… (커스텀 색상 선택)")
         custom.clicked.connect(self._on_custom_color)
         layout.addWidget(custom)
 
@@ -158,11 +165,24 @@ class AnnotationToolbar(QToolBar):
         layout = QHBoxLayout(container)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
+        from .annotation.thickness import thickness_to_pixels
         self._thickness_buttons: dict[int, QPushButton] = {}
+        # 두께 버튼: 체크 시 강한 파란 배경으로 명확히 강조
+        thickness_qss = (
+            "QPushButton { background: #2c2c2c; color: #ddd; border: 1px solid #555; }"
+            "QPushButton:hover { background: #3a3a3a; border: 1px solid #888; }"
+            "QPushButton:checked {"
+            "  background: #1976d2; color: white;"
+            "  border: 2px solid #fff;"
+            "  font-weight: bold;"
+            "}"
+        )
         for step in THICKNESS_STEPS:
             btn = QPushButton(str(step))
-            btn.setFixedSize(24, 20)
+            btn.setFixedSize(26, 22)
             btn.setCheckable(True)
+            btn.setToolTip(f"두께 {step}단계 ({thickness_to_pixels(step)}px)")
+            btn.setStyleSheet(thickness_qss)
             if step == DEFAULT_THICKNESS_STEP:
                 btn.setChecked(True)
             btn.clicked.connect(lambda _, s=step: self.set_current_thickness_step(s))
