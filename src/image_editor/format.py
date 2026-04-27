@@ -16,8 +16,8 @@ import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QSize, Qt
+from PySide6.QtGui import QColor, QImage
 
 if TYPE_CHECKING:
     from .layer_model import LayerStack
@@ -153,3 +153,102 @@ def write_kstudio(stack: "LayerStack", path: Path) -> None:
         z.writestr("thumbnail.png", _qimage_to_png_bytes(thumb))
         for fn, blob in blob_files.items():
             z.writestr(fn, blob)
+
+
+# ---------------------------------------------------------------------------
+# Reader (Task 13)
+# ---------------------------------------------------------------------------
+
+
+def _png_bytes_to_qimage(blob: bytes) -> QImage:
+    """PNG 바이트 → QImage. 실패 시 null QImage 반환."""
+    img = QImage()
+    img.loadFromData(QByteArray(blob), "PNG")
+    return img
+
+
+def _deserialize_annotation_items(layer, data: dict) -> None:
+    """JSON dict → AnnotationLayer items.
+
+    좌표는 scene 공간 그대로 — pos()=(0,0) 인 상태로 아이템 로컬 geometry 에
+    저장한다 (Task 12 writer 가 평탄화한 형식에 맞춤).
+    """
+    from PySide6.QtCore import QPointF, QRectF
+
+    from .items.arrow import ArrowAnnotationItem
+    from .items.rect import RectAnnotationItem
+    from .items.text import TextAnnotationItem
+
+    for it in data.get("items", []):
+        kind = it.get("type")
+        if kind == "arrow":
+            start = QPointF(*it["from"])
+            end = QPointF(*it["to"])
+            color = QColor(it.get("color", "#FF0000"))
+            thickness = int(it.get("thickness", 2))
+            arr = ArrowAnnotationItem(start, end, color, thickness)
+            layer.add_item(arr)
+        elif kind == "rect":
+            r = it["rect"]
+            rect = QRectF(r[0], r[1], r[2], r[3])
+            color = QColor(it.get("color", "#FFFF00"))
+            thickness = int(it.get("thickness", 2))
+            ri = RectAnnotationItem(rect, color, thickness)
+            layer.add_item(ri)
+        elif kind == "text":
+            pos = QPointF(*it["pos"])
+            text = it.get("text", "")
+            color = QColor(it.get("color", "#000000"))
+            ti = TextAnnotationItem(pos, text, color)
+            # font_size 는 forward-compat 정보로만 저장됨 — TextAnnotationItem 은
+            # 고정 폰트(FONT_POINT_SIZE=18)를 사용하므로 적용하지 않는다.
+            layer.add_item(ti)
+
+
+def read_kstudio(path: Path) -> "LayerStack":
+    """`.kstudio` ZIP → LayerStack 복원.
+
+    잘못된 ZIP 이거나 manifest.json 이 없으면 zipfile.BadZipFile 또는 KeyError 가
+    발생한다 (호출 측에서 캐치).
+    """
+    from .layer_model import LayerStack
+    from .layers.annotation_layer import AnnotationLayer
+    from .layers.image_layer import ImageLayer
+
+    path = Path(path)
+    with zipfile.ZipFile(path, "r") as z:
+        manifest = json.loads(z.read("manifest.json").decode("utf-8"))
+        canvas_size = QSize(*manifest["canvas_size"])
+        stack = LayerStack(canvas_size)
+        for ldata in manifest["layers"]:
+            if ldata["type"] == "image":
+                pix = _png_bytes_to_qimage(z.read(ldata["image_path"]))
+                mask = None
+                if ldata.get("mask_path"):
+                    mask = _png_bytes_to_qimage(z.read(ldata["mask_path"]))
+                offset_xy = ldata.get("offset", [0, 0])
+                offset = QPoint(int(offset_xy[0]), int(offset_xy[1]))
+                layer = ImageLayer(
+                    id=ldata["id"],
+                    name=ldata["name"],
+                    pixmap=pix,
+                    mask=mask,
+                    offset=offset,
+                    visible=ldata.get("visible", True),
+                    opacity=ldata.get("opacity", 1.0),
+                )
+                stack.add_layer(layer)
+            elif ldata["type"] == "annotation":
+                layer = AnnotationLayer(
+                    id=ldata["id"],
+                    name=ldata["name"],
+                    canvas_size=canvas_size,
+                    visible=ldata.get("visible", True),
+                    opacity=ldata.get("opacity", 1.0),
+                )
+                data = json.loads(z.read(ldata["data_path"]).decode("utf-8"))
+                _deserialize_annotation_items(layer, data)
+                stack.add_layer(layer)
+        if manifest.get("active_layer_id") is not None:
+            stack.set_active_layer(manifest["active_layer_id"])
+    return stack
