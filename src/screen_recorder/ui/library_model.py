@@ -12,8 +12,11 @@ from PySide6.QtGui import QImage
 
 
 class EntryKind(Enum):
-    SCREENSHOT = "screenshot"
+    IMAGE = "image"
     VIDEO = "video"
+    # 하위 호환: 코드 베이스 안에서 "screenshot" 문자열로 비교하는 경우가 있을 수 있음.
+    # 의미 동일이므로 새로 SCREENSHOT 별칭 유지 (값은 동일).
+    SCREENSHOT = "image"
 
 
 @dataclass
@@ -26,6 +29,7 @@ class LibraryEntry:
     created_at: datetime = field(default_factory=datetime.now)
     path: Optional[Path] = None
     duration_ms: int = 0
+    origin: str = "captured"   # "captured" | "opened"
 
 
 class LibraryModel(QObject):
@@ -40,7 +44,7 @@ class LibraryModel(QObject):
 
     def add(self, kind: EntryKind, *, thumbnail: QImage, source_label: str,
             display_name: str = "", path: Optional[Path] = None,
-            duration_ms: int = 0) -> LibraryEntry:
+            duration_ms: int = 0, origin: str = "captured") -> LibraryEntry:
         entry = LibraryEntry(
             id=next(self._id_seq),
             kind=kind,
@@ -49,6 +53,7 @@ class LibraryModel(QObject):
             display_name=display_name,
             path=path,
             duration_ms=duration_ms,
+            origin=origin,
         )
         self._entries.append(entry)
         self.entry_added.emit(entry)

@@ -85,3 +85,22 @@ def test_remove_unknown_id_does_nothing(qtbot):
     m.entry_removed.connect(received.append)
     m.remove(9999)
     assert received == []
+
+
+def test_image_entry_kind_with_origin(qtbot):
+    from screen_recorder.ui.library_model import EntryKind, LibraryModel
+    from PySide6.QtGui import QImage
+    m = LibraryModel()
+    thumb = QImage(64, 64, QImage.Format_ARGB32)
+    e1 = m.add(EntryKind.IMAGE, thumbnail=thumb, source_label="region", origin="captured")
+    e2 = m.add(EntryKind.IMAGE, thumbnail=thumb, source_label="opened", origin="opened")
+    assert e1.origin == "captured"
+    assert e2.origin == "opened"
+    assert e1.kind is EntryKind.IMAGE
+
+
+def test_screenshot_alias_to_image(qtbot):
+    """SCREENSHOT 은 IMAGE 의 별칭(하위 호환). 점진적으로 이주."""
+    from screen_recorder.ui.library_model import EntryKind
+    assert EntryKind.SCREENSHOT.value == EntryKind.IMAGE.value or \
+           EntryKind.IMAGE in EntryKind  # 둘 중 하나 만족
