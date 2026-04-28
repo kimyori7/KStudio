@@ -28,13 +28,7 @@ class AnnotationScene(QGraphicsScene):
 
     def add_annotation(self, item: QGraphicsItem) -> None:
         self.addItem(item)
-        # 핸들 드래그 결과를 stack 에 push 할 콜백 주입
-        from .legacy_canvas import AnnotationCanvas  # 순환 import 회피용 지연 import
-        for view in self.views():
-            if isinstance(view, AnnotationCanvas) and view.undo_stack() is not None:
-                if hasattr(item, "_undo_push_callback"):
-                    item._undo_push_callback = view.undo_stack().push
-                break
+        # NOTE: 핸들 드래그 → undo push 콜백 주입은 EditTab.undo_stack 레벨에서 처리
 
     def remove_annotation(self, item: QGraphicsItem) -> None:
         if item.scene() is self:
