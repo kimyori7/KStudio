@@ -37,6 +37,11 @@ class TabArea(QTabWidget):
         idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=f"📸 {source_label}")
         return idx
 
+    def add_image_tab(self, tab: EditTab, *, entry_id: int, label: str) -> int:
+        """이미 구성된 EditTab 을 그대로 추가 (파일 열기 흐름)."""
+        idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=label)
+        return idx
+
     def add_video(self, *, path: Path, source_label: str, duration_ms: int, entry_id: int) -> int:
         tab = VideoTab(path=path, source_label=source_label,
                        duration_ms=duration_ms, player_settings=self._player_settings)

@@ -1,4 +1,4 @@
-"""KStudio 메뉴 바 — 파일/편집/보기/녹화/도움말."""
+"""KStudio 메뉴 바 — 파일/편집/이미지/보기/녹화/도움말."""
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
@@ -8,14 +8,18 @@ from PySide6.QtWidgets import QMenuBar
 
 class KStudioMenuBar(QMenuBar):
     # 파일
+    open_requested = Signal()
     save_requested = Signal()
     save_as_requested = Signal()
+    export_requested = Signal(str)        # "png" | "jpg" | "webp"
     open_save_folder_requested = Signal()
     quit_requested = Signal()
     # 편집
     undo_requested = Signal()
     redo_requested = Signal()
     preferences_requested = Signal()
+    # 이미지
+    background_remove_requested = Signal()
     # 보기
     original_zoom_requested = Signal()
     library_visibility_toggled = Signal(bool)
@@ -33,16 +37,41 @@ class KStudioMenuBar(QMenuBar):
 
     def _build(self) -> None:
         m_file = self.addMenu("파일")
+        self.open_action = QAction("열기…", self)
+        self.open_action.setShortcut(QKeySequence("Ctrl+O"))
+        self.open_action.triggered.connect(self.open_requested.emit)
+        m_file.addAction(self.open_action)
+
+        m_file.addSeparator()
+
         self.save_action = QAction("저장", self)
         self.save_action.setShortcut(QKeySequence("Ctrl+S"))
         self.save_action.triggered.connect(self.save_requested.emit)
         m_file.addAction(self.save_action)
 
-        self.save_as_action = QAction("다른 이름으로 저장", self)
+        self.save_as_action = QAction("다른 이름으로 저장…", self)
         self.save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.save_as_action.triggered.connect(self.save_as_requested.emit)
         m_file.addAction(self.save_as_action)
 
+        # 내보내기 서브메뉴
+        self.export_menu = m_file.addMenu("내보내기")
+        self.export_menu_action = self.export_menu.menuAction()
+        m_export = self.export_menu
+        self.export_png_action = QAction("PNG", self)
+        self.export_png_action.setShortcut(QKeySequence("Ctrl+E"))
+        self.export_png_action.triggered.connect(lambda: self.export_requested.emit("png"))
+        m_export.addAction(self.export_png_action)
+
+        self.export_jpg_action = QAction("JPG", self)
+        self.export_jpg_action.triggered.connect(lambda: self.export_requested.emit("jpg"))
+        m_export.addAction(self.export_jpg_action)
+
+        self.export_webp_action = QAction("WebP", self)
+        self.export_webp_action.triggered.connect(lambda: self.export_requested.emit("webp"))
+        m_export.addAction(self.export_webp_action)
+
+        m_file.addSeparator()
         self.open_folder_action = QAction("저장 폴더 열기", self)
         self.open_folder_action.triggered.connect(self.open_save_folder_requested.emit)
         m_file.addAction(self.open_folder_action)
@@ -68,6 +97,12 @@ class KStudioMenuBar(QMenuBar):
         self.preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         self.preferences_action.triggered.connect(self.preferences_requested.emit)
         m_edit.addAction(self.preferences_action)
+
+        m_image = self.addMenu("이미지")
+        self.background_remove_action = QAction("배경 제거 (누끼)", self)
+        self.background_remove_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        self.background_remove_action.triggered.connect(self.background_remove_requested.emit)
+        m_image.addAction(self.background_remove_action)
 
         m_view = self.addMenu("보기")
         self.original_action = QAction("원본 (100%)", self)
@@ -105,3 +140,49 @@ class KStudioMenuBar(QMenuBar):
         self.about_action = QAction("정보", self)
         self.about_action.triggered.connect(self.about_requested.emit)
         m_help.addAction(self.about_action)
+
+
+def build_menu_bar(parent) -> dict[str, list[QAction]]:
+    """KStudioMenuBar 인스턴스를 만들어 parent 에 부착한 뒤,
+    메뉴 그룹별 QAction 목록을 dict 로 반환한다.
+
+    테스트나 외부 와이어링에서 메뉴 항목을 이름으로 찾기 쉽도록 만든 헬퍼.
+    실제 메뉴 동작은 `KStudioMenuBar` 의 시그널 기반 구조를 그대로 사용한다.
+    """
+    mb = KStudioMenuBar()
+    parent.setMenuBar(mb)
+    parent.menu_bar = mb  # type: ignore[attr-defined]
+    return {
+        "file": [
+            mb.open_action,
+            mb.save_action,
+            mb.save_as_action,
+            mb.export_menu_action,
+            mb.export_png_action,
+            mb.export_jpg_action,
+            mb.export_webp_action,
+            mb.open_folder_action,
+            mb.quit_action,
+        ],
+        "edit": [
+            mb.undo_action,
+            mb.redo_action,
+            mb.preferences_action,
+        ],
+        "image": [
+            mb.background_remove_action,
+        ],
+        "view": [
+            mb.original_action,
+            mb.library_visible_action,
+            mb.status_visible_action,
+        ],
+        "record": [
+            mb.record_start_action,
+            mb.record_stop_action,
+            mb.record_pause_action,
+        ],
+        "help": [
+            mb.about_action,
+        ],
+    }

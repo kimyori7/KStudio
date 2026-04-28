@@ -30,7 +30,11 @@ from screen_recorder.capture.targets import (
     FullScreenTarget, RegionTarget, WindowTarget, Rect,
 )
 
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QPainter
+
+from image_editor.format import write_kstudio
+from image_editor.layers.image_layer import ImageLayer
+from image_editor.operations.background_removal import BackgroundRemovalCommand
 
 from .menu_bar import KStudioMenuBar
 from .global_toolbar import GlobalToolbar
@@ -198,13 +202,16 @@ class MainWindow(QMainWindow):
         self.global_toolbar.copy_clicked.connect(self._copy_current_screenshot)
 
         # 메뉴
-        self.menu_bar.save_requested.connect(self._save_current_screenshot)
-        self.menu_bar.save_as_requested.connect(self._save_as_current_screenshot)
+        self.menu_bar.open_requested.connect(self._on_file_open)
+        self.menu_bar.save_requested.connect(self._on_file_save)
+        self.menu_bar.save_as_requested.connect(self._on_file_save_as)
+        self.menu_bar.export_requested.connect(self._on_export)
         self.menu_bar.open_save_folder_requested.connect(self._open_save_folder)
         self.menu_bar.quit_requested.connect(self.close)
         self.menu_bar.preferences_requested.connect(self._open_preferences)
         self.menu_bar.undo_requested.connect(self._on_undo)
         self.menu_bar.redo_requested.connect(self._on_redo)
+        self.menu_bar.background_remove_requested.connect(self._on_remove_background)
         self.menu_bar.original_zoom_requested.connect(self._on_original)
         self.menu_bar.library_visibility_toggled.connect(self.library_panel.setVisible)
         self.menu_bar.record_status_visibility_toggled.connect(self.record_status_panel.setVisible)
@@ -759,21 +766,131 @@ class MainWindow(QMainWindow):
             entry.path = path
             self.library_model.rename(entry.id, path.name)
 
-    def _save_as_current_screenshot(self) -> None:
-        tab = self._current_screenshot_tab()
-        if tab is None:
-            return
-        suggested = (
-            tab.saved_path()
-            or Path(self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio") / "screenshot.png"
-        )
-        path, _ = QFileDialog.getSaveFileName(
-            self, "다른 이름으로 저장", str(suggested), "PNG (*.png)"
+    # ---------- 파일 메뉴 핸들러 (열기 / 저장 / 다른 이름으로 / 내보내기) ----------
+
+    def _on_file_open(self) -> None:
+        """파일 → 열기. .kstudio / 일반 raster 모두 지원."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "이미지/프로젝트 열기", "",
+            "지원 파일 (*.kstudio *.png *.jpg *.jpeg *.webp *.bmp);;모든 파일 (*.*)",
         )
         if not path:
             return
-        save_png(tab.image(), Path(path))
-        tab.mark_saved(Path(path))
+        p = Path(path)
+        try:
+            tab = EditTab.from_file(p)
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, "열기 실패", str(e))
+            return
+
+        # 라이브러리에 항목 추가 (origin="opened")
+        thumb = tab.image().scaled(
+            128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation,
+        )
+        entry = self.library_model.add(
+            EntryKind.IMAGE,
+            thumbnail=thumb,
+            source_label="opened",
+            display_name=p.name,
+            path=p,
+            origin="opened",
+        )
+        self.tab_area.add_image_tab(tab, entry_id=entry.id, label=f"📂 {p.name}")
+        self.mode_controller.set_mode(AppMode.IMAGE)
+        self._restore_window_for_capture()
+
+    def _on_file_save(self) -> None:
+        """현재 편집 탭을 .kstudio 로 저장. 처음이면 Save As 흐름으로 위임."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        target = tab.saved_path()
+        if target is None or target.suffix.lower() != ".kstudio":
+            self._on_file_save_as()
+            return
+        try:
+            write_kstudio(tab.stack, target)
+        except OSError as e:
+            QMessageBox.warning(self, "저장 실패", str(e))
+            return
+        tab.mark_saved(target)
+
+    def _on_file_save_as(self) -> None:
+        """현재 편집 탭을 .kstudio 로 다른 이름 저장."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        suggested = tab.saved_path() or Path(
+            self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio"
+        ) / "project.kstudio"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "다른 이름으로 저장", str(suggested), "KStudio (*.kstudio)"
+        )
+        if not path:
+            return
+        p = Path(path)
+        if p.suffix.lower() != ".kstudio":
+            p = p.with_suffix(".kstudio")
+        try:
+            write_kstudio(tab.stack, p)
+        except OSError as e:
+            QMessageBox.warning(self, "저장 실패", str(e))
+            return
+        tab.mark_saved(p)
+
+    def _on_export(self, fmt: str) -> None:
+        """PNG/JPG/WebP 로 평탄화 내보내기."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        fmt = fmt.lower()
+        ext = fmt
+        suggested = Path(
+            self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio"
+        ) / f"export.{ext}"
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"{fmt.upper()} 로 내보내기", str(suggested),
+            f"{fmt.upper()} (*.{ext})",
+        )
+        if not path:
+            return
+        p = Path(path)
+        if p.suffix.lower() != f".{ext}":
+            p = p.with_suffix(f".{ext}")
+        img = tab.image()
+        if fmt == "jpg":
+            # JPG 는 알파 미지원 — 흰 배경 위에 합성
+            bg = QImage(img.size(), QImage.Format_RGB32)
+            bg.fill(Qt.white)
+            painter = QPainter(bg)
+            painter.drawImage(0, 0, img)
+            painter.end()
+            ok = bg.save(str(p), "JPG")
+        else:
+            ok = img.save(str(p), fmt.upper())
+        if not ok:
+            QMessageBox.warning(self, "내보내기 실패", f"{p}")
+
+    def _on_remove_background(self) -> None:
+        """현재 활성 ImageLayer 의 배경을 rembg 로 제거 (마스크 추가)."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        active = tab.stack.active_layer()
+        if not isinstance(active, ImageLayer):
+            QMessageBox.information(
+                self, "배경 제거",
+                "이미지 레이어가 선택되어 있어야 합니다.",
+            )
+            return
+        cmd = BackgroundRemovalCommand(tab.stack, layer_id=active.id)
+
+        def on_finish(success: bool) -> None:
+            if success:
+                tab.undo_stack.push(cmd)
+
+        cmd.finished.connect(on_finish)
+        cmd.run_async()
 
     def _copy_current_screenshot(self) -> None:
         tab = self._current_screenshot_tab()
