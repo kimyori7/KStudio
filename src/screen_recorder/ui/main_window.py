@@ -53,7 +53,7 @@ from screen_recorder.screenshot.controller import ScreenshotController
 from screen_recorder.screenshot.capture import save_png
 from screen_recorder.core.filename import build_filename, resolve_collision
 
-from .screenshot_tab import ScreenshotTab
+from .edit_tab import EditTab
 from .video_tab import VideoTab
 from image_editor.tools.select import SelectTool
 from image_editor.tools.rect import RectTool
@@ -593,7 +593,7 @@ class MainWindow(QMainWindow):
 
     def _on_tab_added(self, widget, mode) -> None:
         """새 탭이 추가되면 그 탭의 시그널을 옵션바 등에 연결."""
-        if isinstance(widget, ScreenshotTab):
+        if isinstance(widget, EditTab):
             widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
 
     def _entry_for_current_tab(self):
@@ -670,9 +670,9 @@ class MainWindow(QMainWindow):
 
     # ---------- 스크린샷 편집 액션 ----------
 
-    def _current_screenshot_tab(self) -> ScreenshotTab | None:
+    def _current_screenshot_tab(self) -> EditTab | None:
         w = self.tab_area.currentWidget()
-        return w if isinstance(w, ScreenshotTab) else None
+        return w if isinstance(w, EditTab) else None
 
     def _apply_tool_to_current_tab(self, tool_id: str) -> None:
         tab = self._current_screenshot_tab()

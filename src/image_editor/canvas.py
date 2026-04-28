@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Dict, Optional
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsItemGroup, QGraphicsPixmapItem,
@@ -21,6 +21,8 @@ ZOOM_STEP = 1.15
 
 
 class LayerCanvas(QGraphicsView):
+    zoom_changed = Signal(float)   # 새 배율 (1.0 = 100%) — 옵션바 줌 라벨 갱신용
+
     def __init__(self, stack: LayerStack) -> None:
         self._stack = stack
         self._scene = QGraphicsScene()
@@ -35,6 +37,7 @@ class LayerCanvas(QGraphicsView):
         self._stack.canvas_size_changed.connect(self._sync_scene_rect)
         self._tool: Optional[Tool] = None
         self._zoom: float = 1.0
+        self._shift_held: bool = False
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -133,6 +136,10 @@ class LayerCanvas(QGraphicsView):
     def zoom_factor(self) -> float:
         return self._zoom
 
+    def current_zoom(self) -> float:
+        """현재 배율 (1.0 = 100%). zoom_factor 의 alias — 외부 호환용."""
+        return self._zoom
+
     def set_zoom(self, factor: float) -> None:
         factor = max(ZOOM_MIN, min(ZOOM_MAX, factor))
         if abs(factor - self._zoom) < 1e-6:
@@ -140,6 +147,17 @@ class LayerCanvas(QGraphicsView):
         ratio = factor / self._zoom
         self._zoom = factor
         self.scale(ratio, ratio)
+        self.zoom_changed.emit(self._zoom)
+
+    def set_zoom_factor(self, factor: float) -> None:
+        """절대 배율 지정 — 외부 호환용 (set_zoom 의 alias)."""
+        self.set_zoom(factor)
+
+    def set_hundred_percent_mode(self) -> None:
+        """배율을 100% 로 리셋."""
+        self.resetTransform()
+        self._zoom = 1.0
+        self.zoom_changed.emit(self._zoom)
 
     def zoom_in_at_cursor(self) -> None:
         self.set_zoom(self._zoom * ZOOM_STEP)
@@ -151,6 +169,10 @@ class LayerCanvas(QGraphicsView):
         self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
         # fitInView 가 transform 을 직접 바꾸므로 _zoom 동기화
         self._zoom = self.transform().m11()
+        self.zoom_changed.emit(self._zoom)
+
+    def shift_held(self) -> bool:
+        return self._shift_held
 
     # --- 이벤트 ---
     def wheelEvent(self, event: QWheelEvent) -> None:
@@ -188,9 +210,16 @@ class LayerCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(e)
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
+        if e.key() == Qt.Key_Shift:
+            self._shift_held = True
         if self._tool is not None:
             if e.key() == Qt.Key_Escape:
                 self._tool.key_escape(self._scene)
             elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
                 self._tool.key_enter(self._scene)
         super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e: QKeyEvent) -> None:
+        if e.key() == Qt.Key_Shift:
+            self._shift_held = False
+        super().keyReleaseEvent(e)

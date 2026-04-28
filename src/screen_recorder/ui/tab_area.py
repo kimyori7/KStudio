@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QTabWidget, QWidget
 
 from ..core.settings import PlayerSettings
 from .mode_controller import AppMode, ModeController
-from .screenshot_tab import ScreenshotTab
+from .edit_tab import EditTab
 from .video_tab import VideoTab
 
 
@@ -33,7 +33,7 @@ class TabArea(QTabWidget):
 
     # ---------- 추가 ----------
     def add_screenshot(self, *, image: QImage, source_label: str, entry_id: int) -> int:
-        tab = ScreenshotTab(image, source_label=source_label)
+        tab = EditTab.from_screenshot(image, source_label=source_label)
         idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=f"📸 {source_label}")
         return idx
 
