@@ -366,11 +366,10 @@ class MainWindow(QMainWindow):
             sc.activated.connect(slot)
             self._editor_shortcuts.append(sc)
 
-        _add(es.tool_select, lambda: self._activate_editor_tool("select"))
+        # Note: select/rect/arrow/text 단축키는 ToolPalette 가 자체 QShortcut 으로
+        # 보유하고 있으므로 MainWindow 에서 또 등록하면 'Ambiguous shortcut overload'
+        # 가 발생한다. 여기서는 Crop 만 등록 (ToolPalette 에 없는 도구).
         _add(es.tool_crop,   lambda: self._activate_editor_tool("crop"))
-        _add(es.tool_arrow,  lambda: self._activate_editor_tool("arrow"))
-        _add(es.tool_rect,   lambda: self._activate_editor_tool("rect"))
-        _add(es.tool_text,   lambda: self._activate_editor_tool("text"))
         _add(es.op_background_removal, self._on_remove_background)
         _add(es.file_save,    self._on_file_save)
         _add(es.file_save_as, self._on_file_save_as)
