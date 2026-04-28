@@ -98,3 +98,9 @@ def test_set_target_updates_button_state(qtbot):
     tb.set_target("window")
     assert tb._target_btns["window"].isChecked()
     assert tb.current_target() == "window"
+
+
+def test_global_toolbar_has_remove_bg_button(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    assert tb.find_action("remove_bg") is not None

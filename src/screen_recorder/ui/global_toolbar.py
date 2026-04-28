@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QComboBox, QFrame, QLabel, QButtonGroup,
 )
@@ -39,6 +39,8 @@ class GlobalToolbar(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("GlobalToolbar")
+        # key → QAction 등록부 (find_action 으로 외부에서 시그널 연결).
+        self._actions_by_key: dict[str, QAction] = {}
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(4)
@@ -134,6 +136,15 @@ class GlobalToolbar(QWidget):
         self.copy_btn.clicked.connect(self.copy_clicked.emit)
         layout.addWidget(self.copy_btn)
 
+        # 누끼 (배경 제거) — QAction 으로 노출해 외부에서 트리거 시그널 연결.
+        self.remove_bg_btn = QPushButton("✨ 배경 제거")
+        self.remove_bg_btn.setToolTip("활성 ImageLayer 의 배경을 제거 (Ctrl+Shift+B)")
+        self._action_remove_bg = QAction("✨ 배경 제거", self)
+        self._action_remove_bg.setToolTip("활성 ImageLayer 의 배경을 제거 (Ctrl+Shift+B)")
+        self.remove_bg_btn.clicked.connect(self._action_remove_bg.trigger)
+        layout.addWidget(self.remove_bg_btn)
+        self._actions_by_key["remove_bg"] = self._action_remove_bg
+
         # ---------- 양쪽 공통 ----------
         self.preferences_btn = QPushButton("⚙")
         self.preferences_btn.setFixedWidth(32)
@@ -148,6 +159,10 @@ class GlobalToolbar(QWidget):
         self.set_recording_state(RecorderState.IDLE)
 
     # ---------- 외부 API ----------
+    def find_action(self, key: str) -> QAction | None:
+        """key → QAction 조회. 외부에서 trigger 시그널을 핸들러에 연결할 때 사용."""
+        return self._actions_by_key.get(key)
+
     def set_mode(self, mode: AppMode) -> None:
         self._current_mode = mode
         if mode is AppMode.VIDEO:
@@ -217,6 +232,7 @@ class GlobalToolbar(QWidget):
         self.capture_full_btn.setVisible(is_image)
         self.save_btn.setVisible(is_image)
         self.copy_btn.setVisible(is_image)
+        self.remove_bg_btn.setVisible(is_image)
 
         # 분리자: 영상 모드에서만 의미 있는 것들
         self._sep2.setVisible(is_video)

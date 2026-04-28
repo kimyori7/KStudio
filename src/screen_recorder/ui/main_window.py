@@ -15,10 +15,10 @@ import logging
 from pathlib import Path
 import pygetwindow as gw
 
-from PySide6.QtCore import Qt, QUrl, Slot
+from PySide6.QtCore import Qt, QSize, QUrl, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QSplitter, QToolBar, QFileDialog,
+    QMainWindow, QWidget, QVBoxLayout, QSplitter, QToolBar, QDockWidget, QFileDialog,
     QMessageBox, QApplication, QSystemTrayIcon, QInputDialog,
 )
 
@@ -33,14 +33,18 @@ from screen_recorder.capture.targets import (
 from PySide6.QtGui import QImage, QPainter
 
 from image_editor.format import write_kstudio
+from image_editor.layer_model import LayerStack
 from image_editor.layers.image_layer import ImageLayer
 from image_editor.operations.background_removal import BackgroundRemovalCommand
+from image_editor.operations.crop import CropCommand
+from image_editor.tools.crop import CropTool
 
 from .menu_bar import KStudioMenuBar
 from .global_toolbar import GlobalToolbar
 from .annotation_toolbar import AnnotationToolbar
 from .tool_palette import ToolPalette
 from .tab_area import TabArea
+from .docks.layers_panel import LayersPanel
 from .docks.library_panel import LibraryPanel
 from .docks.record_status_panel import RecordStatusPanel
 from .library_model import LibraryModel, EntryKind
@@ -145,6 +149,13 @@ class MainWindow(QMainWindow):
         self.status_bar.setFixedHeight(28)
         outer.addWidget(self.status_bar)
 
+        # ---------- 레이어 도크 (활성 EditTab 의 LayerStack 에 바인딩) ----------
+        self.layers_panel = LayersPanel(self._dummy_stack())
+        self.layers_dock = QDockWidget("레이어", self)
+        self.layers_dock.setObjectName("LayersDock")
+        self.layers_dock.setWidget(self.layers_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.layers_dock)
+
         # ---------- 컨트롤러 & 부수 모듈 ----------
         self.controller = RecorderController(self.app_settings, self.ffmpeg_path)
         self.hotkeys = HotkeyManager(host_widget=self)
@@ -163,6 +174,11 @@ class MainWindow(QMainWindow):
 
         # ---------- 단축키 등록 ----------
         self._register_all_hotkeys()
+        self._editor_shortcuts: list[QShortcut] = []
+        # EditorShortcuts 가 차지하는 키들은 메뉴 QAction 의 단축키와 겹치므로
+        # 메뉴 단축키를 비우고 QShortcut 으로 일원화한다 (EditorShortcuts = 단일 소스).
+        self._clear_menu_shortcuts_owned_by_editor()
+        self._register_editor_shortcuts()
 
         # ---------- 시그널 와이어링 ----------
         self._wire_signals()
@@ -200,6 +216,10 @@ class MainWindow(QMainWindow):
         self.global_toolbar.preferences_clicked.connect(self._open_preferences)
         self.global_toolbar.save_clicked.connect(self._save_current_screenshot)
         self.global_toolbar.copy_clicked.connect(self._copy_current_screenshot)
+        # 누끼 (배경 제거) — QAction 으로 노출, 단축키와 동일 핸들러로 라우팅.
+        ra = self.global_toolbar.find_action("remove_bg")
+        if ra is not None:
+            ra.triggered.connect(self._on_remove_background)
 
         # 메뉴
         self.menu_bar.open_requested.connect(self._on_file_open)
@@ -314,6 +334,79 @@ class MainWindow(QMainWindow):
             self.hotkeys.set_bindings(bindings)
         except Exception:
             pass
+
+    # ---------- 편집기 단축키 (EditorShortcuts) ----------
+    def _clear_menu_shortcuts_owned_by_editor(self) -> None:
+        """EditorShortcuts 가 관리하는 키와 겹치는 메뉴 QAction 단축키를 비운다.
+
+        QAction.setShortcut + 동일 키의 QShortcut 이 같은 윈도우에 공존하면 Qt
+        가 'Ambiguous shortcut overload' 경고를 내며 둘 다 발화하지 않는다.
+        EditorShortcuts 가 단일 소스가 되도록 메뉴 쪽 단축키를 제거한다.
+        (메뉴 항목 자체는 그대로 클릭 가능 — 단축키 표시만 사라진다.)
+        """
+        for act_name in (
+            "open_action", "save_action", "save_as_action", "export_png_action",
+            "background_remove_action", "original_action",
+        ):
+            a = getattr(self.menu_bar, act_name, None)
+            if a is not None:
+                a.setShortcut(QKeySequence())
+
+    def _register_editor_shortcuts(self) -> None:
+        """EditorShortcuts 설정값을 QShortcut 으로 등록 (재호출 시 기존 것 정리)."""
+        for s in self._editor_shortcuts:
+            s.setParent(None)
+        self._editor_shortcuts.clear()
+        es = self.app_settings.editor_shortcuts
+
+        def _add(seq_str: str, slot) -> None:
+            if not seq_str:
+                return
+            sc = QShortcut(QKeySequence(seq_str), self)
+            sc.activated.connect(slot)
+            self._editor_shortcuts.append(sc)
+
+        _add(es.tool_select, lambda: self._activate_editor_tool("select"))
+        _add(es.tool_crop,   lambda: self._activate_editor_tool("crop"))
+        _add(es.tool_arrow,  lambda: self._activate_editor_tool("arrow"))
+        _add(es.tool_rect,   lambda: self._activate_editor_tool("rect"))
+        _add(es.tool_text,   lambda: self._activate_editor_tool("text"))
+        _add(es.op_background_removal, self._on_remove_background)
+        _add(es.file_save,    self._on_file_save)
+        _add(es.file_save_as, self._on_file_save_as)
+        _add(es.file_export_png, lambda: self._on_export("png"))
+        _add(es.file_open,    self._on_file_open)
+        _add(es.view_actual_size, self._on_view_actual_size)
+        _add(es.view_fit,     self._on_view_fit)
+
+    def _activate_editor_tool(self, name: str) -> None:
+        """단축키로 도구 활성화 — 도구 팔레트 경로와 동일하게 처리."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        if name == "crop":
+            tool = CropTool()
+            tool.commit_requested.connect(lambda r, t=tab: self._on_crop_committed(t, r))
+            tab.canvas.set_tool(tool)
+            return
+        # select / rect / arrow / text 는 도구 팔레트와 동일한 경로 사용.
+        if name in ("select", "rect", "arrow", "text"):
+            self.tool_palette.set_current_tool(name)
+            self._apply_tool_to_current_tab(name)
+
+    def _on_crop_committed(self, tab: EditTab, rect) -> None:
+        cmd = CropCommand(tab.stack, rect)
+        tab.undo_stack.push(cmd)
+
+    def _on_view_actual_size(self) -> None:
+        tab = self._current_screenshot_tab()
+        if tab is not None:
+            tab.canvas.set_zoom_factor(1.0)
+
+    def _on_view_fit(self) -> None:
+        tab = self._current_screenshot_tab()
+        if tab is not None:
+            tab.canvas.fit_to_view()
 
     # ---------- 대상 / 테두리 ----------
 
@@ -906,18 +999,31 @@ class MainWindow(QMainWindow):
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)
         dialog.exec()
-        # 단축키가 바뀌었을 수 있으므로 재등록
+        # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()
+        self._register_editor_shortcuts()
 
     # ---------- 탭 전환 시 옵션바·도구 동기화 ----------
 
     def _on_active_tab_changed(self) -> None:
         tab = self._current_screenshot_tab()
         if tab is None:
+            # 활성 탭이 EditTab 이 아니면 레이어 패널은 더미 stack 으로 리셋.
+            self._rebind_layers_panel(self._dummy_stack())
             return
         self.annotation_toolbar.set_current_color(QColor(self.app_settings.annotation.last_color))
         self.annotation_toolbar.set_current_thickness_step(self.app_settings.annotation.last_thickness)
         self.annotation_toolbar.set_zoom_label(tab.canvas.current_zoom())
+        self._rebind_layers_panel(tab.stack)
+
+    def _dummy_stack(self) -> LayerStack:
+        return LayerStack(QSize(1, 1))
+
+    def _rebind_layers_panel(self, stack: LayerStack) -> None:
+        """LayersPanel 을 새 stack 으로 재바인딩 (도크 위젯 교체)."""
+        new_panel = LayersPanel(stack)
+        self.layers_dock.setWidget(new_panel)
+        self.layers_panel = new_panel
 
     # ---------- 영상 탭 단축키 ----------
 

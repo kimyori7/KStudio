@@ -17,6 +17,26 @@ from screen_recorder.ui.main_window import MainWindow
 SETTINGS_PATH = Path.home() / "AppData" / "Local" / "KStudio" / "settings.json"
 
 
+def build_main_window(
+    settings: AppSettings | None = None,
+    ffmpeg_path: Path | None = None,
+) -> MainWindow:
+    """테스트·재사용 가능한 MainWindow 빌더.
+
+    - settings 가 None 이면 디스크에서 로드 (없으면 기본).
+    - ffmpeg_path 가 None 이면 find_ffmpeg() 시도, 못 찾으면 더미 경로.
+      (테스트 모드에선 ffmpeg 가 없는 환경에서도 창은 떠야 하므로 더미 허용.)
+    """
+    if settings is None:
+        try:
+            settings = load(SETTINGS_PATH)
+        except (OSError, ValueError):
+            settings = AppSettings()
+    if ffmpeg_path is None:
+        ffmpeg_path = find_ffmpeg() or Path("ffmpeg.exe")
+    return MainWindow(settings=settings, ffmpeg_path=ffmpeg_path)
+
+
 def main() -> int:
     from screen_recorder.core.logging_setup import setup_logging
     setup_logging()
