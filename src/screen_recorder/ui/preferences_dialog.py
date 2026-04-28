@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from ..core.settings import AppSettings
 from .panels.screenshot_panel import ScreenshotPanel
 from .panels.video_panel import VideoPanel
-from .panels.hotkey_panel import HotkeyPanel
+from .panels.shortcuts_panel import ShortcutsPanel
 from .panels.preferences_panel import PreferencesPanel
 from .panels.player_panel import PlayerPanel
 
@@ -19,7 +19,7 @@ _CATEGORIES = [
     ("저장 / 파일명", "screenshot"),
     ("영상·GIF·사운드", "video"),
     ("영상 플레이어", "player"),
-    ("단축키", "hotkey"),
+    ("단축키", "shortcuts"),
     ("일반", "general"),
 ]
 
@@ -49,13 +49,13 @@ class PreferencesDialog(QDialog):
         self.screenshot_panel = ScreenshotPanel(settings.screenshot, settings.general)
         self.video_panel = VideoPanel(settings.video, settings.gif, settings.sound)
         self.player_panel = PlayerPanel(settings.player)
-        self.hotkey_panel = HotkeyPanel(settings.hotkey)
+        self.shortcuts_panel = ShortcutsPanel(settings.hotkey, settings.editor_shortcuts)
         self.preferences_panel = PreferencesPanel(settings.preferences)
 
         self.stack.addWidget(self.screenshot_panel)
         self.stack.addWidget(self.video_panel)
         self.stack.addWidget(self.player_panel)
-        self.stack.addWidget(self.hotkey_panel)
+        self.stack.addWidget(self.shortcuts_panel)
         self.stack.addWidget(self.preferences_panel)
 
         self.category_list.currentRowChanged.connect(self.stack.setCurrentIndex)
