@@ -3,11 +3,19 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QPushButton, QLabel, QSlider, QComboBox,
+    QComboBox, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSlider, QWidget,
 )
 
 
 _SPEEDS = [("0.5×", 0.5), ("1.0×", 1.0), ("1.5×", 1.5), ("2.0×", 2.0)]
+_CUSTOM_SPEED_LABEL = "사용자 지정…"
+
+
+def _bump_font_size(btn: QPushButton, points: int) -> None:
+    """버튼 텍스트 폰트를 키운다 (이모지 아이콘 가독성용)."""
+    f = btn.font()
+    f.setPointSize(points)
+    btn.setFont(f)
 
 
 def _format_ms(ms: int) -> str:
@@ -63,32 +71,38 @@ class PlayerControls(QWidget):
         self.speed_combo = QComboBox()
         for label, _ in _SPEEDS:
             self.speed_combo.addItem(label)
+        self.speed_combo.addItem(_CUSTOM_SPEED_LABEL)   # 맨 끝: 사용자 지정 입력
         self.speed_combo.setCurrentText("1.0×")
         self.speed_combo.currentTextChanged.connect(self._on_speed_changed)
         layout.addWidget(self.speed_combo)
 
+        # 프레임 스텝/스냅샷/풀스크린 — 아이콘 가독성을 위해 크게.
         self.frame_back_btn = QPushButton("◀")
-        self.frame_back_btn.setFixedWidth(32)
+        self.frame_back_btn.setFixedSize(40, 32)
         self.frame_back_btn.setToolTip("이전 프레임 (,)")
         self.frame_back_btn.clicked.connect(lambda: self.frame_step.emit(-1))
+        _bump_font_size(self.frame_back_btn, 16)
         layout.addWidget(self.frame_back_btn)
 
         self.frame_forward_btn = QPushButton("▶")
-        self.frame_forward_btn.setFixedWidth(32)
+        self.frame_forward_btn.setFixedSize(40, 32)
         self.frame_forward_btn.setToolTip("다음 프레임 (.)")
         self.frame_forward_btn.clicked.connect(lambda: self.frame_step.emit(+1))
+        _bump_font_size(self.frame_forward_btn, 16)
         layout.addWidget(self.frame_forward_btn)
 
         self.snapshot_btn = QPushButton("📸")
-        self.snapshot_btn.setFixedWidth(34)
+        self.snapshot_btn.setFixedSize(40, 32)
         self.snapshot_btn.setToolTip("현재 프레임 → 스크린샷 탭 (Ctrl+Shift+P)")
         self.snapshot_btn.clicked.connect(self.snapshot_request.emit)
+        _bump_font_size(self.snapshot_btn, 16)
         layout.addWidget(self.snapshot_btn)
 
         self.fullscreen_btn = QPushButton("⛶")
-        self.fullscreen_btn.setFixedWidth(32)
+        self.fullscreen_btn.setFixedSize(40, 32)
         self.fullscreen_btn.setToolTip("풀스크린 (F)")
         self.fullscreen_btn.clicked.connect(self.fullscreen_toggled.emit)
+        _bump_font_size(self.fullscreen_btn, 16)
         layout.addWidget(self.fullscreen_btn)
 
         self._duration_ms = 0
@@ -121,17 +135,50 @@ class PlayerControls(QWidget):
         self.mute_btn.setText("🔇" if muted else "🔊")
 
     def set_speed(self, rate: float) -> None:
+        # 프리셋과 매칭되면 그 라벨, 아니면 사용자 지정 라벨로 임시 추가.
         for label, val in _SPEEDS:
             if abs(val - rate) < 1e-3:
                 self.speed_combo.setCurrentText(label)
                 return
+        custom = f"{rate:.2f}×"
+        # 사용자 지정 라벨 위치(맨 끝 - 1) 에 임시 추가
+        idx_custom = self.speed_combo.findText(_CUSTOM_SPEED_LABEL)
+        # 기존 사용자 지정 결과 라벨이 있으면 갱신, 없으면 삽입
+        existing = self.speed_combo.findText(custom)
+        if existing >= 0:
+            self.speed_combo.setCurrentIndex(existing)
+        else:
+            insert_at = idx_custom if idx_custom >= 0 else self.speed_combo.count()
+            self.speed_combo.insertItem(insert_at, custom)
+            self.speed_combo.setCurrentText(custom)
 
     # ---------- 내부 ----------
     def _on_speed_changed(self, label: str) -> None:
+        if label == _CUSTOM_SPEED_LABEL:
+            # 입력 다이얼로그 → 0.1~16.0 배수
+            value, ok = QInputDialog.getDouble(
+                self, "재생 속도 지정", "배수:", 1.0, 0.1, 16.0, 2,
+            )
+            if not ok:
+                # 취소 시 1.0× 로 복귀
+                self.speed_combo.blockSignals(True)
+                self.speed_combo.setCurrentText("1.0×")
+                self.speed_combo.blockSignals(False)
+                self.speed_changed.emit(1.0)
+                return
+            self.set_speed(value)
+            self.speed_changed.emit(value)
+            return
         for lbl, v in _SPEEDS:
             if lbl == label:
                 self.speed_changed.emit(v)
                 return
+        # 사용자가 추가한 임시 라벨 ("1.30×" 등)
+        try:
+            v = float(label.replace("×", "").strip())
+            self.speed_changed.emit(v)
+        except ValueError:
+            pass
 
     def _refresh_time_label(self) -> None:
         self.time_label.setText(

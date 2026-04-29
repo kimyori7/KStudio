@@ -73,7 +73,9 @@ def test_cancel_region_does_not_emit_captured(qtbot):
     assert captured_calls == []
 
 
-def test_main_window_is_hidden_then_restored(qtbot):
+def test_main_window_not_touched_during_capture(qtbot):
+    """캡처 시 메인 창 상태를 건드리지 않는다 — WDA_EXCLUDEFROMCAPTURE + RegionSelector
+    가 알아서 가려주므로 hide/minimize/opacity 모두 불필요. 깜박임 부작용 회피."""
     main = MagicMock()
     main.isMinimized.return_value = False
     main.isMaximized.return_value = False
@@ -84,21 +86,6 @@ def test_main_window_is_hidden_then_restored(qtbot):
         with qtbot.waitSignal(ctrl.captured, timeout=2000):
             ctrl.capture_full()
 
-    main.hide.assert_called()
-    # 복원 — showNormal 이든 show 든 한 번은 호출되어야 함
-    assert main.showNormal.called or main.show.called
-
-
-def test_maximized_main_window_restored_to_maximized(qtbot):
-    main = MagicMock()
-    main.isMinimized.return_value = False
-    main.isMaximized.return_value = True
-    main.isVisible.return_value = True
-    ctrl = ScreenshotController(main_window=main, viewer_getter=lambda: None)
-
-    with patch("screen_recorder.screenshot.controller.snapshot_virtual_desktop", return_value=_fake_image()):
-        with qtbot.waitSignal(ctrl.captured, timeout=2000):
-            ctrl.capture_full()
-
-    main.hide.assert_called()
-    main.showMaximized.assert_called()
+    main.hide.assert_not_called()
+    main.showMinimized.assert_not_called()
+    main.setWindowOpacity.assert_not_called()

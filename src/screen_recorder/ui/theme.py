@@ -46,6 +46,37 @@ QStackedWidget > QWidget {
     background-color: #1F2125;
 }
 
+/* ----- Dock 위젯 (라이브러리 / 레이어 / 녹화 상태) ----- */
+QDockWidget {
+    color: #E8E8EA;
+    font-weight: 600;
+    titlebar-close-icon: none;
+    titlebar-normal-icon: none;
+}
+QDockWidget::title {
+    /* 배경을 메인보다 진하게 — 패널 영역과 시각적으로 분리 */
+    background-color: #2C313B;
+    padding: 6px 10px;
+    border-bottom: 1px solid #3C414B;
+    text-align: left;
+}
+QDockWidget::close-button, QDockWidget::float-button {
+    /* 버튼이 잘 보이도록 밝은 배경 + 둥근 모서리 */
+    background-color: #3C414B;
+    border: 1px solid #4A5060;
+    border-radius: 3px;
+    padding: 2px;
+    icon-size: 12px;
+}
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {
+    background-color: #E53935;
+    border: 1px solid #FF5C58;
+}
+QDockWidget::float-button:hover {
+    background-color: #4FC3F7;
+    border: 1px solid #6FD7FF;
+}
+
 /* ----- 입력 위젯 ----- */
 QLineEdit, QSpinBox, QComboBox, QKeySequenceEdit {
     background-color: #2A2E36;

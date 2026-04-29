@@ -1,8 +1,8 @@
 from pathlib import Path
 import pytest
 from PySide6.QtGui import QShortcut
-from PySide6.QtWidgets import QDockWidget
 from screen_recorder.ui.main_window import MainWindow
+from screen_recorder.ui.docks.layers_panel import LayersPanel
 from screen_recorder.core.settings import AppSettings
 
 
@@ -24,12 +24,15 @@ def test_main_window_constructs(qtbot, ffmpeg_stub):
     assert w.tool_palette is not None
 
 
-def test_layers_panel_dock_present(qtbot):
+def test_layers_panel_in_dock_widget(qtbot):
+    """LayersPanel 은 dock 안에 들어 있다 (사용자가 위치 자유 조정 가능)."""
     from screen_recorder.app.main import build_main_window
     win = build_main_window()
     qtbot.addWidget(win)
-    docks = [d.windowTitle() for d in win.findChildren(QDockWidget)]
-    assert any("레이어" in d for d in docks)
+    panels = win.findChildren(LayersPanel)
+    assert len(panels) >= 1
+    # layers_dock 의 widget 으로 등록되어 있어야 함
+    assert win.layers_dock.widget() is win.layers_panel
 
 
 def test_editor_shortcuts_registered(qtbot):

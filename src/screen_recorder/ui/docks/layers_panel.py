@@ -2,11 +2,28 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction, QColor, QPixmap
+from PySide6.QtGui import QAction, QColor, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem, QMenu, QPushButton,
     QSlider, QVBoxLayout, QWidget,
 )
+
+
+class _LayerListWidget(QListWidget):
+    """Del/Backspace 누르면 활성 레이어 삭제."""
+
+    def __init__(self, panel: "LayersPanel") -> None:
+        super().__init__()
+        self._panel = panel
+
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self._panel.remove_active_layer()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+from PySide6.QtWidgets import QLabel
 
 from image_editor.layer_model import LayerStack
 from image_editor.layers.annotation_layer import AnnotationLayer
@@ -19,12 +36,31 @@ class LayersPanel(QWidget):
         self._stack = stack
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
+        title = QLabel("📚 레이어")
+        title.setStyleSheet("color: #A0A4AB; font-weight: bold; padding: 2px 4px;")
+        root.addWidget(title)
 
-        self._list = QListWidget()
+        self._list = _LayerListWidget(self)
         self._list.setSelectionMode(QListWidget.SingleSelection)
+        # 활성 레이어 시인성: 진한 강조색 + 좌측 인디케이터.
+        self._list.setStyleSheet("""
+            QListWidget { background-color: #1A1C20; border: 1px solid #3C414B; border-radius: 4px; }
+            QListWidget::item { padding: 6px 8px; border-left: 3px solid transparent; color: #CFD3DA; }
+            QListWidget::item:hover { background-color: #2A2E36; }
+            QListWidget::item:selected { background-color: #2E5D8A; color: #FFFFFF;
+                                         border-left: 3px solid #4FC3F7; font-weight: 600; }
+        """)
         self._list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._show_context_menu)
         self._list.itemDoubleClicked.connect(self._on_double_click)
+        # 드래그 앤 드롭으로 레이어 순서 바꾸기
+        self._list.setDragEnabled(True)
+        self._list.setAcceptDrops(True)
+        self._list.setDragDropMode(QListWidget.InternalMove)
+        self._list.setDefaultDropAction(Qt.MoveAction)
+        # rowsMoved 시그널은 model 의 것을 사용
+        self._list.model().rowsMoved.connect(self._on_rows_moved)
+        self._reordering = False
         root.addWidget(self._list)
 
         opacity_row = QHBoxLayout()
@@ -76,7 +112,7 @@ class LayersPanel(QWidget):
 
     def add_annotation_layer(self) -> None:
         new_id = self._stack.next_id()
-        layer = AnnotationLayer(id=new_id, name="주석", canvas_size=self._stack.canvas_size)
+        layer = AnnotationLayer(id=new_id, name="레이어", canvas_size=self._stack.canvas_size)
         self._stack.add_layer(layer, above=self._stack.active_layer_id)
         self._stack.set_active_layer(new_id)
 
@@ -108,6 +144,9 @@ class LayersPanel(QWidget):
         return self._stack.get_layer(lid)
 
     def _refresh(self) -> None:
+        # drag-drop reorder 가 트리거한 모델 갱신 도중엔 list 를 다시 그리면 무한 루프.
+        if self._reordering:
+            return
         self._list.blockSignals(True)
         self._list.clear()
         for layer in reversed(self._stack.layers):
@@ -136,6 +175,28 @@ class LayersPanel(QWidget):
         lid = self._list.item(row).data(Qt.UserRole)
         if lid != self._stack.active_layer_id:
             self._stack.set_active_layer(lid)
+
+    def _on_rows_moved(self, *_args) -> None:
+        """드래그-드롭으로 list 행 순서가 바뀐 직후 호출 — 새 순서를 LayerStack 으로 동기화.
+
+        list 위쪽 = 가장 위 레이어 = stack 의 마지막 인덱스. 즉 list 와 stack 은 역순.
+        """
+        new_ids_top_first: list[int] = []
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            lid = it.data(Qt.UserRole)
+            if lid is not None:
+                new_ids_top_first.append(int(lid))
+        # stack 인덱스: 0=맨 아래, len-1=맨 위. list 와 역순.
+        new_ids_bottom_first = list(reversed(new_ids_top_first))
+        self._reordering = True
+        try:
+            for target_idx, lid in enumerate(new_ids_bottom_first):
+                self._stack.move_layer(lid, target_idx)
+        finally:
+            self._reordering = False
+        # 마지막에 한 번 갱신
+        self._refresh()
 
     def _on_double_click(self, item: QListWidgetItem) -> None:
         row = self._list.row(item)

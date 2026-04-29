@@ -21,7 +21,8 @@ class RegionSelector(QWidget):
         super().__init__()
         self.setWindowFlag(Qt.FramelessWindowHint)
         self.setWindowFlag(Qt.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # WA_TranslucentBackground 는 사용 안 함 — 스냅샷을 불투명 배경으로 그려서
+        # 메인 창에 가려져 있던 부분도 사용자가 볼 수 있게 한다.
 
         # 가상 데스크톱 전체 덮기 (모든 모니터)
         bounds = virtual_desktop_bounds()
@@ -34,6 +35,8 @@ class RegionSelector(QWidget):
         self._origin: QPoint | None = None
         self._end: QPoint | None = None
         self._rect = QRect()
+        # 배경에 그릴 가상 데스크톱 스냅샷 — set_source_image 로 주입.
+        self._source_image: QImage | None = None
 
         self._magnifier: Magnifier | None = None
         if show_magnifier:
@@ -43,9 +46,16 @@ class RegionSelector(QWidget):
     # ---------- 외부 API ----------
 
     def set_source_image(self, img: QImage) -> None:
-        """확대경에 쓸 소스 이미지(가상 데스크톱 스냅샷) 주입."""
+        """배경 + 확대경 둘 다 사용할 가상 데스크톱 스냅샷 주입.
+
+        이 스냅에는 WDA_EXCLUDEFROMCAPTURE 가 적용된 메인 창이 포함되지 않으므로,
+        오버레이가 이 스냅을 배경에 그리면 사용자는 '메인 창에 가려져 있던 부분'을
+        볼 수 있다 (메인 창은 시점적으로 sel 위에 가려짐).
+        """
+        self._source_image = img
         if self._magnifier is not None:
             self._magnifier.set_source(img)
+        self.update()
 
     # ---------- 이벤트 ----------
 
@@ -138,14 +148,22 @@ class RegionSelector(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        # 반투명 어두움으로 화면 전체 덮기
+        # 1) 배경: 캡처된 스냅샷 (메인 창은 WDA 로 제외되어 있음 → 가려졌던 부분도 보임)
+        if self._source_image is not None and not self._source_image.isNull():
+            p.drawImage(0, 0, self._source_image)
+        else:
+            p.fillRect(self.rect(), QColor(0, 0, 0))
+
+        # 2) 어두운 마스크 — 선택 영역만 원본이 환하게 보이도록
         p.fillRect(self.rect(), QColor(0, 0, 0, 110))
 
         if self._rect.isValid():
-            # 선택 영역만 원본 노출 (clear composition)
+            # 선택 영역의 어두움 제거 → 그 자리에 다시 원본 스냅 그려서 환하게.
             p.setCompositionMode(QPainter.CompositionMode_Clear)
             p.fillRect(self._rect, Qt.transparent)
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            if self._source_image is not None and not self._source_image.isNull():
+                p.drawImage(self._rect, self._source_image, self._rect)
 
             # 점선 테두리
             pen = QPen(QColor("#FFB300"), 2, Qt.DashLine)

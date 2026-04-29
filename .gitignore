@@ -41,3 +41,6 @@ bin/
 # Brainstorming visual companion (mockups + state)
 .superpowers/
 
+
+# Claude Code local settings
+.claude/

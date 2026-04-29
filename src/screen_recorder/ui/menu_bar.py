@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QMenuBar
 
 class KStudioMenuBar(QMenuBar):
     # 파일
+    new_requested = Signal()
     open_requested = Signal()
     save_requested = Signal()
     save_as_requested = Signal()
@@ -22,8 +23,11 @@ class KStudioMenuBar(QMenuBar):
     background_remove_requested = Signal()
     # 보기
     original_zoom_requested = Signal()
-    library_visibility_toggled = Signal(bool)
     record_status_visibility_toggled = Signal(bool)
+    # 창
+    tool_palette_visibility_toggled = Signal(bool)
+    layers_visibility_toggled = Signal(bool)
+    library_visibility_toggled = Signal(bool)
     # 녹화
     record_start_requested = Signal()
     record_stop_requested = Signal()
@@ -37,6 +41,11 @@ class KStudioMenuBar(QMenuBar):
 
     def _build(self) -> None:
         m_file = self.addMenu("파일")
+        self.new_action = QAction("새로 만들기…", self)
+        self.new_action.setShortcut(QKeySequence("Ctrl+N"))
+        self.new_action.triggered.connect(self.new_requested.emit)
+        m_file.addAction(self.new_action)
+
         self.open_action = QAction("열기…", self)
         self.open_action.setShortcut(QKeySequence("Ctrl+O"))
         self.open_action.triggered.connect(self.open_requested.emit)
@@ -110,18 +119,33 @@ class KStudioMenuBar(QMenuBar):
         self.original_action.triggered.connect(self.original_zoom_requested.emit)
         m_view.addAction(self.original_action)
 
-        m_view.addSeparator()
-        self.library_visible_action = QAction("라이브러리 표시", self)
+        # 창 — 패널 가시성 토글 모음
+        m_window = self.addMenu("창")
+        self.tool_palette_visible_action = QAction("도구 팔레트", self)
+        self.tool_palette_visible_action.setCheckable(True)
+        self.tool_palette_visible_action.setChecked(True)
+        self.tool_palette_visible_action.toggled.connect(self.tool_palette_visibility_toggled.emit)
+        m_window.addAction(self.tool_palette_visible_action)
+
+        self.library_visible_action = QAction("라이브러리", self)
         self.library_visible_action.setCheckable(True)
         self.library_visible_action.setChecked(True)
         self.library_visible_action.toggled.connect(self.library_visibility_toggled.emit)
-        m_view.addAction(self.library_visible_action)
+        m_window.addAction(self.library_visible_action)
 
-        self.status_visible_action = QAction("녹화 상태 표시", self)
+        m_window.addSeparator()
+        # 모드별 전용 dock — 비-적용 모드에서는 자동으로 비활성화
+        self.layers_visible_action = QAction("레이어 (이미지 모드 전용)", self)
+        self.layers_visible_action.setCheckable(True)
+        self.layers_visible_action.setChecked(True)
+        self.layers_visible_action.toggled.connect(self.layers_visibility_toggled.emit)
+        m_window.addAction(self.layers_visible_action)
+
+        self.status_visible_action = QAction("녹화 상태 (영상 모드 전용)", self)
         self.status_visible_action.setCheckable(True)
         self.status_visible_action.setChecked(True)
         self.status_visible_action.toggled.connect(self.record_status_visibility_toggled.emit)
-        m_view.addAction(self.status_visible_action)
+        m_window.addAction(self.status_visible_action)
 
         m_record = self.addMenu("녹화")
         self.record_start_action = QAction("녹화 시작", self)
@@ -154,6 +178,7 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
     parent.menu_bar = mb  # type: ignore[attr-defined]
     return {
         "file": [
+            mb.new_action,
             mb.open_action,
             mb.save_action,
             mb.save_as_action,
@@ -174,7 +199,11 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
         ],
         "view": [
             mb.original_action,
+        ],
+        "window": [
+            mb.tool_palette_visible_action,
             mb.library_visible_action,
+            mb.layers_visible_action,
             mb.status_visible_action,
         ],
         "record": [

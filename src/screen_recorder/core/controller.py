@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import queue
+import threading
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
@@ -137,31 +138,66 @@ class RecorderController(QObject):
             return
         self._set_state(RecorderState.IDLE)
 
-        # 오디오 thread가 만든 raw 임시 파일 경로 (있다면) 기억해두고 끝에서 정리
-        audio_raw_path = self._audio_thread.output_path if self._audio_thread else None
-
+        # 캡처 스레드 중단 신호만 보내고 join 은 백그라운드에서 (UI 안 막히게).
         if self._video_thread:
             self._video_thread.stop()
-            self._video_thread.join(timeout=3.0)
         if self._audio_thread:
             self._audio_thread.stop()
-            self._audio_thread.join(timeout=3.0)
         if self._video_queue is not None:
             self._video_queue.put(None)
-        if self._encoder:
-            self._encoder.join(timeout=60.0)
 
-        # 인코더가 .raw를 못 지웠을 수도 있으므로 (has_audio=False 경로 등) 보강 정리
+        # 백그라운드에서 join + 결과 emit. 스냅샷 변수로 캡처 (instance 멤버 즉시 nil 가능).
+        v_thread = self._video_thread
+        a_thread = self._audio_thread
+        encoder = self._encoder
+        audio_raw_path = a_thread.output_path if a_thread else None
+        out_path = self._output_path
+
+        # 다음 녹화 시작 전 정리 (참조 끊기)
+        self._video_thread = None
+        self._audio_thread = None
+        self._encoder = None
+        self._video_queue = None
+        self._output_path = None
+
+        threading.Thread(
+            target=self._finalize_stop_async,
+            args=(v_thread, a_thread, encoder, audio_raw_path, out_path),
+            daemon=True,
+            name="RecorderStopFinalizer",
+        ).start()
+
+    def _finalize_stop_async(
+        self,
+        v_thread,
+        a_thread,
+        encoder,
+        audio_raw_path,
+        out_path,
+    ) -> None:
+        """백그라운드에서 join + recording_finished emit (UI 스레드 차단 방지)."""
+        if v_thread is not None:
+            try:
+                v_thread.join(timeout=3.0)
+            except RuntimeError:
+                pass
+        if a_thread is not None:
+            try:
+                a_thread.join(timeout=3.0)
+            except RuntimeError:
+                pass
+        if encoder is not None:
+            try:
+                encoder.join(timeout=60.0)
+            except RuntimeError:
+                pass
+
         if audio_raw_path is not None:
             try:
                 Path(audio_raw_path).unlink(missing_ok=True)
             except OSError:
                 pass
 
-        if self._output_path:
-            self.recording_finished.emit(str(self._output_path))
-
-        self._video_thread = None
-        self._audio_thread = None
-        self._encoder = None
-        self._video_queue = None
+        # Qt Signal 은 thread-safe — 자동으로 main thread 슬롯에 dispatch.
+        if out_path:
+            self.recording_finished.emit(str(out_path))

@@ -4,7 +4,8 @@ from __future__ import annotations
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QColorDialog, QHBoxLayout, QLabel, QPushButton, QSpinBox, QToolBar, QWidget,
+    QButtonGroup, QColorDialog, QHBoxLayout, QLabel, QPushButton, QSlider,
+    QSpinBox, QStackedWidget, QToolBar, QWidget,
 )
 
 from image_editor.thickness import THICKNESS_STEPS, DEFAULT_THICKNESS_STEP
@@ -28,6 +29,11 @@ class AnnotationToolbar(QToolBar):
     redo_requested = Signal()
     original_requested = Signal()  # 1.0 배율로 복귀
     zoom_input_changed = Signal(int)  # 사용자가 줌 입력값 변경 (단위: %)
+    # 컨텍스트 도구 옵션 — 선택된 도구가 magic_wand / mask_brush 일 때만 보임.
+    tolerance_changed = Signal(int)       # 마술봉 색 허용 범위
+    brush_size_changed = Signal(int)      # 마스크 브러시 크기
+    brush_mode_changed = Signal(str)      # "erase" 또는 "add"
+    raster_size_changed = Signal(int)     # 래스터 브러시/지우개 크기
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("편집", parent)
@@ -68,6 +74,10 @@ class AnnotationToolbar(QToolBar):
         self._zoom_spin.valueChanged.connect(self._on_zoom_spin_changed)
         self.addWidget(self._zoom_spin)
 
+        # 컨텍스트 옵션 (마술봉 / 마스크 브러시 활성 시에만 보임)
+        self.addSeparator()
+        self._build_context_options()
+
     # --- API ---
     def preset_colors(self) -> tuple[str, ...]:
         return PRESET_COLORS
@@ -76,13 +86,14 @@ class AnnotationToolbar(QToolBar):
         return QColor(self._current_color)
 
     def set_current_color(self, color: QColor) -> None:
-        if QColor(color) == self._current_color:
-            return
+        # 색이 같아도 버튼 체크 상태 동기화는 매번 수행 (앱 재시작 시 테두리 미표시 버그 방지).
+        same = QColor(color) == self._current_color
         self._current_color = QColor(color)
         target_hex = self._current_color.name().lower()
         for i, btn in enumerate(self._color_buttons):
             btn.setChecked(PRESET_COLORS[i].lower() == target_hex)
-        self.color_changed.emit(QColor(self._current_color))
+        if not same:
+            self.color_changed.emit(QColor(self._current_color))
 
     def current_thickness_step(self) -> int:
         return self._current_thickness
@@ -111,6 +122,146 @@ class AnnotationToolbar(QToolBar):
 
     def _on_zoom_spin_changed(self, percent: int) -> None:
         self.zoom_input_changed.emit(percent)
+
+    # --- 컨텍스트 옵션 (마술봉 / 마스크 브러시 / 래스터 브러시) ---
+    def set_active_tool(self, tool_id: str) -> None:
+        """현재 도구에 맞춰 컨텍스트 옵션 가시성 갱신."""
+        if tool_id == "magic_wand":
+            self._context_stack.setCurrentWidget(self._magic_wand_panel)
+            self._context_action.setVisible(True)
+        elif tool_id == "mask_brush":
+            self._context_stack.setCurrentWidget(self._mask_brush_panel)
+            self._context_action.setVisible(True)
+        elif tool_id in ("brush", "eraser"):
+            self._context_stack.setCurrentWidget(self._raster_brush_panel)
+            self._context_action.setVisible(True)
+        else:
+            self._context_action.setVisible(False)
+
+    def set_tolerance(self, value: int) -> None:
+        self._tolerance_slider.blockSignals(True)
+        self._tolerance_slider.setValue(value)
+        self._tolerance_label.setText(f"정도: {value}")
+        self._tolerance_slider.blockSignals(False)
+
+    def set_brush_size(self, value: int) -> None:
+        self._brush_size_slider.blockSignals(True)
+        self._brush_size_slider.setValue(value)
+        self._brush_size_label.setText(f"크기: {value}px")
+        self._brush_size_slider.blockSignals(False)
+
+    def set_brush_mode(self, mode: str) -> None:
+        if mode == "add":
+            self._brush_add_btn.setChecked(True)
+        else:
+            self._brush_erase_btn.setChecked(True)
+
+    def _build_context_options(self) -> None:
+        self._context_stack = QStackedWidget(self)
+        self._context_stack.setFixedHeight(28)
+
+        # 마술봉 패널: tolerance 슬라이더
+        self._magic_wand_panel = QWidget()
+        mw_layout = QHBoxLayout(self._magic_wand_panel)
+        mw_layout.setContentsMargins(4, 0, 4, 0)
+        mw_layout.setSpacing(6)
+        self._tolerance_label = QLabel("정도: 32")
+        self._tolerance_label.setStyleSheet("color: #c8c8c8;")
+        self._tolerance_label.setFixedWidth(64)
+        self._tolerance_slider = QSlider(Qt.Horizontal)
+        self._tolerance_slider.setRange(1, 128)
+        self._tolerance_slider.setValue(32)
+        self._tolerance_slider.setFixedWidth(160)
+        self._tolerance_slider.setToolTip(
+            "마술봉 색 허용 범위 — 값이 클수록 더 많은 색을 같은 영역으로 봄"
+        )
+        self._tolerance_slider.valueChanged.connect(self._on_tolerance_slider_changed)
+        mw_layout.addWidget(self._tolerance_label)
+        mw_layout.addWidget(self._tolerance_slider)
+        mw_layout.addStretch(1)
+
+        # 마스크 브러시 패널: 크기 + 모드 토글
+        self._mask_brush_panel = QWidget()
+        mb_layout = QHBoxLayout(self._mask_brush_panel)
+        mb_layout.setContentsMargins(4, 0, 4, 0)
+        mb_layout.setSpacing(6)
+        self._brush_size_label = QLabel("크기: 30px")
+        self._brush_size_label.setStyleSheet("color: #c8c8c8;")
+        self._brush_size_label.setFixedWidth(72)
+        self._brush_size_slider = QSlider(Qt.Horizontal)
+        self._brush_size_slider.setRange(1, 200)
+        self._brush_size_slider.setValue(30)
+        self._brush_size_slider.setFixedWidth(140)
+        self._brush_size_slider.setToolTip("브러시 크기 (px)")
+        self._brush_size_slider.valueChanged.connect(self._on_brush_size_slider_changed)
+        mb_layout.addWidget(self._brush_size_label)
+        mb_layout.addWidget(self._brush_size_slider)
+
+        # 모드 토글: 지우기 / 되살리기
+        self._brush_mode_group = QButtonGroup(self)
+        self._brush_mode_group.setExclusive(True)
+        mode_qss = (
+            "QPushButton { background: #2c2c2c; border: 1px solid #555; padding: 2px 8px; }"
+            "QPushButton:hover { background: #3a3a3a; border: 1px solid #888; }"
+            "QPushButton:checked { background: #1976d2; border: 2px solid #fff; }"
+        )
+        self._brush_erase_btn = QPushButton("🚫 지우기")
+        self._brush_erase_btn.setCheckable(True)
+        self._brush_erase_btn.setChecked(True)
+        self._brush_erase_btn.setStyleSheet(mode_qss)
+        self._brush_erase_btn.setToolTip("칠한 영역을 투명하게 (배경 제거)")
+        self._brush_add_btn = QPushButton("✏ 되살리기")
+        self._brush_add_btn.setCheckable(True)
+        self._brush_add_btn.setStyleSheet(mode_qss)
+        self._brush_add_btn.setToolTip("자동 누끼/마술봉이 잘못 지운 영역을 다시 보이게")
+        self._brush_mode_group.addButton(self._brush_erase_btn)
+        self._brush_mode_group.addButton(self._brush_add_btn)
+        self._brush_erase_btn.toggled.connect(self._on_brush_mode_toggled)
+        self._brush_add_btn.toggled.connect(self._on_brush_mode_toggled)
+        mb_layout.addWidget(self._brush_erase_btn)
+        mb_layout.addWidget(self._brush_add_btn)
+        mb_layout.addStretch(1)
+
+        # 래스터 브러시 / 지우개 패널: 사이즈만
+        self._raster_brush_panel = QWidget()
+        rb_layout = QHBoxLayout(self._raster_brush_panel)
+        rb_layout.setContentsMargins(4, 0, 4, 0)
+        rb_layout.setSpacing(6)
+        self._raster_size_label = QLabel("크기: 20px")
+        self._raster_size_label.setStyleSheet("color: #c8c8c8;")
+        self._raster_size_label.setFixedWidth(72)
+        self._raster_size_slider = QSlider(Qt.Horizontal)
+        self._raster_size_slider.setRange(1, 200)
+        self._raster_size_slider.setValue(20)
+        self._raster_size_slider.setFixedWidth(160)
+        self._raster_size_slider.setToolTip("브러시/지우개 크기 (px)")
+        self._raster_size_slider.valueChanged.connect(self._on_raster_size_slider_changed)
+        rb_layout.addWidget(self._raster_size_label)
+        rb_layout.addWidget(self._raster_size_slider)
+        rb_layout.addStretch(1)
+
+        self._context_stack.addWidget(self._magic_wand_panel)
+        self._context_stack.addWidget(self._mask_brush_panel)
+        self._context_stack.addWidget(self._raster_brush_panel)
+        self._context_action = self.addWidget(self._context_stack)
+        self._context_action.setVisible(False)
+
+    def _on_tolerance_slider_changed(self, value: int) -> None:
+        self._tolerance_label.setText(f"정도: {value}")
+        self.tolerance_changed.emit(value)
+
+    def _on_brush_size_slider_changed(self, value: int) -> None:
+        self._brush_size_label.setText(f"크기: {value}px")
+        self.brush_size_changed.emit(value)
+
+    def _on_brush_mode_toggled(self, _checked: bool) -> None:
+        # toggled 가 두 버튼에서 두 번 발화되므로 erase 가 체크됐는지로만 판단
+        mode = "erase" if self._brush_erase_btn.isChecked() else "add"
+        self.brush_mode_changed.emit(mode)
+
+    def _on_raster_size_slider_changed(self, value: int) -> None:
+        self._raster_size_label.setText(f"크기: {value}px")
+        self.raster_size_changed.emit(value)
 
     # --- internal build ---
     def _build_palette(self) -> None:

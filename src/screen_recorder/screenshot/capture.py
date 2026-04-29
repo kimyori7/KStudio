@@ -43,6 +43,20 @@ def snapshot_virtual_desktop() -> QImage:
     return canvas
 
 
+def snapshot_monitor(index: int) -> QImage:
+    """단일 모니터 스냅샷. index 가 -1 이면 전체 가상 데스크톱 (= snapshot_virtual_desktop).
+
+    범위 밖 인덱스면 빈 QImage 반환.
+    """
+    if index < 0:
+        return snapshot_virtual_desktop()
+    screens = QGuiApplication.screens()
+    if not (0 <= index < len(screens)):
+        return QImage()
+    pixmap = screens[index].grabWindow(0)
+    return pixmap.toImage()
+
+
 def crop_to_rect(src: QImage, rect: QRect) -> QImage:
     """이미지를 사각형으로 자른다. 범위 밖이면 교집합만 반환."""
     if src.isNull():

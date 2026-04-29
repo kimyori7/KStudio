@@ -19,6 +19,7 @@ class TabArea(QTabWidget):
     entry_closed = Signal(int)             # entry id (탭이 사용자에 의해 닫힐 때)
     snapshot_requested = Signal(QImage, str)   # 영상 탭의 프레임 스냅샷
     tab_added = Signal(QWidget, object)    # (widget, AppMode) — 외부에서 시그널 와이어링용
+    video_duration_resolved = Signal(int, int)   # (entry_id, duration_ms) — player 로드 후
 
     def __init__(self, mode_controller: ModeController, player_settings: PlayerSettings) -> None:
         super().__init__()
@@ -32,9 +33,12 @@ class TabArea(QTabWidget):
         self._mode.mode_changed.connect(self._refresh_visibility)
 
     # ---------- 추가 ----------
-    def add_screenshot(self, *, image: QImage, source_label: str, entry_id: int) -> int:
+    def add_screenshot(self, *, image: QImage, source_label: str, entry_id: int,
+                        display_name: str | None = None) -> int:
         tab = EditTab.from_screenshot(image, source_label=source_label)
-        idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=f"📸 {source_label}")
+        # 탭 라벨 — 실제 파일명(display_name)이 있으면 그걸로, 없으면 source_label fallback.
+        label_text = display_name if display_name else source_label
+        idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=f"📸 {label_text}")
         return idx
 
     def add_image_tab(self, tab: EditTab, *, entry_id: int, label: str) -> int:
@@ -42,13 +46,47 @@ class TabArea(QTabWidget):
         idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=label)
         return idx
 
-    def add_video(self, *, path: Path, source_label: str, duration_ms: int, entry_id: int) -> int:
+    def add_video(self, *, path: Path, source_label: str, duration_ms: int, entry_id: int,
+                   display_name: str | None = None,
+                   thumbnail: Optional[QImage] = None) -> int:
         tab = VideoTab(path=path, source_label=source_label,
-                       duration_ms=duration_ms, player_settings=self._player_settings)
+                       duration_ms=duration_ms, player_settings=self._player_settings,
+                       thumbnail=thumbnail)
         tab.snapshot_requested.connect(self.snapshot_requested.emit)
+        label_text = display_name if display_name else source_label
+        # 탭 생성 시점엔 duration_ms 가 0 일 수 있음 (인코더가 막 끝낸 영상은 메타가 늦게
+        # 채워짐). VideoTab.duration_resolved 가 player 로드 후 실제 길이를 알려주면
+        # 탭 라벨을 다시 쓴다.
+        suffix = self._format_video_duration(duration_ms)
         idx = self._add_tab(tab, AppMode.VIDEO, entry_id,
-                            label=f"🎞 {source_label} ({duration_ms // 1000}s)")
+                            label=f"🎞 {label_text}{suffix}")
+        # 라벨 갱신용 컨텍스트 보존
+        tab.duration_resolved.connect(
+            lambda ms, t=tab, base=label_text: self._on_video_duration_resolved(t, base, ms)
+        )
         return idx
+
+    @staticmethod
+    def _format_video_duration(ms: int) -> str:
+        if ms <= 0:
+            return ""
+        s = ms // 1000
+        if s < 60:
+            return f" ({s}s)"
+        return f" ({s // 60}m{s % 60:02d}s)"
+
+    def _on_video_duration_resolved(self, tab: VideoTab, base_label: str, duration_ms: int) -> None:
+        """player 가 영상 메타를 다 읽고 실제 duration 을 알려줬을 때 호출 — 탭 라벨 갱신 +
+        뷰어가 보여주는 라이브러리 항목도 자체 시그널로 갱신되도록 외부에 알림."""
+        idx = self.indexOf(tab)
+        if idx < 0:
+            return
+        suffix = self._format_video_duration(duration_ms)
+        self.setTabText(idx, f"🎞 {base_label}{suffix}")
+        # entry_id 알아내서 외부 (main_window) 가 라이브러리 모델에 반영하도록
+        eid = self._tabs[idx][2] if 0 <= idx < len(self._tabs) else None
+        if eid is not None:
+            self.video_duration_resolved.emit(int(eid), int(duration_ms))
 
     def _add_tab(self, widget: QWidget, mode: AppMode, entry_id: int, *, label: str) -> int:
         idx = self.addTab(widget, label)

@@ -77,6 +77,11 @@ class PreferencesSettings:
     minimize_to_tray: bool = True
     use_mini_control: bool = True
     language: str = "ko"
+    # 메인 윈도우 dock 레이아웃 — QMainWindow.saveState() 결과를 base64 로 직렬화한 문자열.
+    # 빈 문자열이면 기본 레이아웃 사용. 이미지/영상 모드별로 분리해 저장.
+    dock_state_b64: str = ""              # 호환성 (구버전 단일 키) — image 가 비었을 때 fallback
+    dock_state_image_b64: str = ""        # 이미지 모드 dock 레이아웃
+    dock_state_video_b64: str = ""        # 영상 모드 dock 레이아웃
 
 
 @dataclass

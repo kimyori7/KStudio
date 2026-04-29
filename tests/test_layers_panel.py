@@ -86,7 +86,7 @@ def test_add_annotation_button(qtbot):
     panel = LayersPanel(stack)
     qtbot.addWidget(panel)
     panel.add_annotation_layer()
-    assert any(l.name == "주석" for l in stack.layers)
+    assert any(l.name == "레이어" for l in stack.layers)
 
 
 def test_remove_active_layer_button(qtbot):

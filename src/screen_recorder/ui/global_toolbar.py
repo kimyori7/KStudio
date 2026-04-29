@@ -8,10 +8,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.state import RecorderState
+from .drag_save_button import DragSaveButton
 from .mode_controller import AppMode
 
 
-_TARGETS = [("fullscreen", "🖥 전체화면"), ("window", "🪟 특정 창"), ("region", "▭ 지정 영역")]
+# 사용자 선호 순서: 지정 영역 → 특정 창 → 전체 화면 (모니터 선택은 전체화면 옆에 짝지음).
+_TARGETS = [("region", "▭ 지정 영역"), ("window", "🪟 특정 창"), ("fullscreen", "🖥 전체화면")]
 _FORMATS = [("video", "영상"), ("gif", "GIF")]
 
 
@@ -98,15 +100,14 @@ class GlobalToolbar(QWidget):
         self._current_target_key = "fullscreen"
         self._target_btns["fullscreen"].setChecked(True)
 
-        self._sep3 = self._make_sep()
-        layout.addWidget(self._sep3)
-
-        # ---------- 영상 모드: 모니터 (개수 가변이라 콤보 유지) ----------
-        self._monitor_label = QLabel("모니터:")
+        # ---------- 모니터 콤보 (전체화면 전용) — 전체화면 버튼 바로 옆 ----------
+        self._monitor_label = QLabel(" 🖥")
+        self._monitor_label.setToolTip("전체화면 캡처/녹화 시 사용할 모니터 — 전체 모니터 또는 1개 선택")
         layout.addWidget(self._monitor_label)
         self.monitor_combo = QComboBox()
+        self.monitor_combo.setToolTip("전체화면용 모니터 선택")
         self._refresh_monitors()
-        self.monitor_combo.currentIndexChanged.connect(self.monitor_changed.emit)
+        self.monitor_combo.currentIndexChanged.connect(self._on_monitor_combo_changed)
         layout.addWidget(self.monitor_combo)
 
         self._sep4 = self._make_sep()
@@ -128,6 +129,10 @@ class GlobalToolbar(QWidget):
         layout.addStretch(1)
 
         # ---------- 이미지 모드: 글로벌 액션 ----------
+        # 드래그-저장 버튼 (저장 버튼 왼쪽) — 폴더에 드래그&드롭하면 PNG 저장.
+        self.drag_save_btn = DragSaveButton()
+        layout.addWidget(self.drag_save_btn)
+
         self.save_btn = QPushButton("💾 저장")
         self.save_btn.clicked.connect(self.save_clicked.emit)
         layout.addWidget(self.save_btn)
@@ -136,13 +141,10 @@ class GlobalToolbar(QWidget):
         self.copy_btn.clicked.connect(self.copy_clicked.emit)
         layout.addWidget(self.copy_btn)
 
-        # 누끼 (배경 제거) — QAction 으로 노출해 외부에서 트리거 시그널 연결.
-        self.remove_bg_btn = QPushButton("✨ 배경 제거")
-        self.remove_bg_btn.setToolTip("활성 ImageLayer 의 배경을 제거 (Ctrl+Shift+B)")
+        # 누끼 (배경 제거) 는 좌측 ToolPalette '✨ 자동 누끼' 와 메뉴 '이미지>배경 제거' 로 옮김.
+        # 외부 (메뉴 등) 에서 trigger 할 수 있도록 QAction 만 유지 (UI 버튼은 제거).
         self._action_remove_bg = QAction("✨ 배경 제거", self)
         self._action_remove_bg.setToolTip("활성 ImageLayer 의 배경을 제거 (Ctrl+Shift+B)")
-        self.remove_bg_btn.clicked.connect(self._action_remove_bg.trigger)
-        layout.addWidget(self.remove_bg_btn)
         self._actions_by_key["remove_bg"] = self._action_remove_bg
 
         # ---------- 양쪽 공통 ----------
@@ -200,11 +202,16 @@ class GlobalToolbar(QWidget):
         return self._current_format_key
 
     def set_monitor_index(self, idx: int) -> None:
-        if 0 <= idx < self.monitor_combo.count():
-            self.monitor_combo.setCurrentIndex(idx)
+        """idx 는 모니터 번호 (-1 = 전체 모니터). 콤보 항목과 매칭되는 것을 선택."""
+        for i in range(self.monitor_combo.count()):
+            if self.monitor_combo.itemData(i) == idx:
+                self.monitor_combo.setCurrentIndex(i)
+                return
 
     def current_monitor_index(self) -> int:
-        return self.monitor_combo.currentIndex()
+        """현재 선택된 모니터 (-1 = 전체 모니터)."""
+        data = self.monitor_combo.currentData()
+        return int(data) if data is not None else -1
 
     # ---------- 가시성 통합 관리 ----------
     def _refresh_widgets_visibility(self) -> None:
@@ -219,24 +226,25 @@ class GlobalToolbar(QWidget):
         self.pause_btn.setVisible(is_video and active)
         self.stop_btn.setVisible(is_video and active)
 
-        # 영상 모드 전용 — 대상 토글, 모니터, 형식 토글
+        # 영상 모드 전용 — 대상 토글, 형식 토글
         for btn in self._target_btns.values():
             btn.setVisible(is_video)
-        self._monitor_label.setVisible(is_video)
-        self.monitor_combo.setVisible(is_video)
         for btn in self._format_btns.values():
             btn.setVisible(is_video)
+        # 모니터 선택은 양쪽 모드에서 모두 의미 있음 (영상=전체화면 녹화 대상,
+        # 이미지=전체 캡처 대상). 항상 표시.
+        self._monitor_label.setVisible(True)
+        self.monitor_combo.setVisible(True)
 
         # 이미지 모드 전용 — 캡처 + 액션
         self.capture_region_btn.setVisible(is_image)
         self.capture_full_btn.setVisible(is_image)
         self.save_btn.setVisible(is_image)
         self.copy_btn.setVisible(is_image)
-        self.remove_bg_btn.setVisible(is_image)
+        self.drag_save_btn.setVisible(is_image)
 
-        # 분리자: 영상 모드에서만 의미 있는 것들
+        # 분리자: 영상 모드에서만 의미 있는 것들 (sep3 는 모니터 콤보 합치며 제거)
         self._sep2.setVisible(is_video)
-        self._sep3.setVisible(is_video)
         self._sep4.setVisible(is_video)
 
     # ---------- 내부 ----------
@@ -259,11 +267,25 @@ class GlobalToolbar(QWidget):
     def _refresh_monitors(self) -> None:
         screens = QGuiApplication.screens() or []
         self.monitor_combo.clear()
+        # 첫 항목 = "전체 모니터" (가상 데스크톱 전체) — userData -1
+        self.monitor_combo.addItem("전체 모니터", -1)
         for i, s in enumerate(screens):
             g = s.geometry()
             self.monitor_combo.addItem(f"{i + 1}: {g.width()}×{g.height()}", i)
         if not screens:
             self.monitor_combo.addItem("1", 0)
+
+    def _on_monitor_combo_changed(self, idx: int) -> None:
+        # 콤보의 itemData 가 실제 모니터 인덱스 (-1 = 전체 모니터).
+        data = self.monitor_combo.itemData(idx)
+        if data is None:
+            return
+        self.monitor_changed.emit(int(data))
+
+    def selected_monitor_index(self) -> int:
+        """현재 선택된 모니터 인덱스 (-1 = 전체 모니터)."""
+        data = self.monitor_combo.currentData()
+        return int(data) if data is not None else -1
 
     def _on_target_btn_clicked(self, key: str) -> None:
         if key == self._current_target_key:

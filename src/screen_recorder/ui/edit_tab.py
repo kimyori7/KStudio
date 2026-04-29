@@ -11,6 +11,7 @@ from image_editor.format import read_kstudio
 from image_editor.layer_model import LayerStack
 from image_editor.layers.annotation_layer import AnnotationLayer
 from image_editor.layers.image_layer import ImageLayer
+from image_editor.selection import SelectionModel
 
 
 class EditTab(QWidget):
@@ -23,6 +24,8 @@ class EditTab(QWidget):
         self._saved_path: Path | None = None
 
         self.canvas = LayerCanvas(stack)
+        self.selection = SelectionModel(self)
+        self.canvas.attach_selection(self.selection)
         self.undo_stack = QUndoStack(self)
         self.undo_stack.setUndoLimit(0)
 
@@ -39,7 +42,20 @@ class EditTab(QWidget):
         size = image.size()
         stack = LayerStack(size)
         stack.add_layer(ImageLayer(id=stack.next_id(), name="사진", pixmap=image))
-        stack.add_layer(AnnotationLayer(id=stack.next_id(), name="주석", canvas_size=size))
+        stack.add_layer(AnnotationLayer(id=stack.next_id(), name="레이어", canvas_size=size))
+        return cls(stack, source_label=source_label)
+
+    @classmethod
+    def from_blank(cls, size: QSize, *, fill_white: bool = True,
+                   source_label: str = "new") -> "EditTab":
+        """빈 캔버스를 만든다 — 새로 만들기 다이얼로그용."""
+        if size.width() <= 0 or size.height() <= 0:
+            raise ValueError(f"잘못된 캔버스 크기: {size.width()}×{size.height()}")
+        bg = QImage(size, QImage.Format_ARGB32)
+        bg.fill(Qt.white if fill_white else Qt.transparent)
+        stack = LayerStack(size)
+        stack.add_layer(ImageLayer(id=stack.next_id(), name="배경", pixmap=bg))
+        stack.add_layer(AnnotationLayer(id=stack.next_id(), name="레이어", canvas_size=size))
         return cls(stack, source_label=source_label)
 
     @classmethod
@@ -58,7 +74,7 @@ class EditTab(QWidget):
         size = img.size()
         stack = LayerStack(size)
         stack.add_layer(ImageLayer(id=stack.next_id(), name=path.name, pixmap=img))
-        stack.add_layer(AnnotationLayer(id=stack.next_id(), name="주석", canvas_size=size))
+        stack.add_layer(AnnotationLayer(id=stack.next_id(), name="레이어", canvas_size=size))
         return cls(stack, source_label="opened")
 
     # --- 외부 API (구 ScreenshotTab 호환) ---

@@ -3,14 +3,61 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QImage, QMovie, QPixmap
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import QStackedWidget, QLabel
+from PySide6.QtCore import Qt, QUrl, Signal, QTimer
+from PySide6.QtGui import QImage, QMovie, QPixmap, QPainter
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
+from PySide6.QtWidgets import QStackedWidget, QLabel, QWidget
 
 
 GIF_EXTS = {".gif"}
+
+
+class _VideoSurface(QWidget):
+    """QVideoSink → QPainter 소프트 렌더.
+
+    QVideoWidget 은 Windows D3D11 native HWND 를 생성해 QLabel HUD 가 가려지므로,
+    모든 렌더링을 Qt raster pipeline 으로 통일해 오버레이를 가능하게 한다.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
+        self._frame: QImage = QImage()
+        self._thumbnail: QImage = QImage()
+        self._sink = QVideoSink(self)
+        self._sink.videoFrameChanged.connect(self._on_frame)
+
+    @property
+    def video_sink(self) -> QVideoSink:
+        return self._sink
+
+    def set_thumbnail(self, img: QImage) -> None:
+        self._thumbnail = img
+        if self._frame.isNull():
+            self.update()
+
+    def clear_frame(self) -> None:
+        self._frame = QImage()
+        self.update()
+
+    def current_image(self) -> QImage:
+        return self._frame.copy() if not self._frame.isNull() else QImage()
+
+    def _on_frame(self, frame) -> None:
+        img = frame.toImage()
+        if not img.isNull():
+            self._frame = img
+            self.update()
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.fillRect(self.rect(), Qt.black)
+        src = self._frame if not self._frame.isNull() else self._thumbnail
+        if not src.isNull():
+            scaled = src.scaled(self.size(), Qt.KeepAspectRatio, Qt.FastTransformation)
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            p.drawImage(x, y, scaled)
 
 
 class PlayerWidget(QStackedWidget):
@@ -26,11 +73,11 @@ class PlayerWidget(QStackedWidget):
         self._is_gif = False
 
         # MP4 백엔드
-        self._video_widget = QVideoWidget()
+        self._video_surface = _VideoSurface()
         self._media = QMediaPlayer(self)
         self._audio = QAudioOutput(self)
         self._media.setAudioOutput(self._audio)
-        self._media.setVideoOutput(self._video_widget)
+        self._media.setVideoSink(self._video_surface.video_sink)
         self._media.playbackStateChanged.connect(self._on_media_state)
         self._media.positionChanged.connect(lambda v: self.position_changed.emit(int(v)))
         self._media.durationChanged.connect(lambda v: self.duration_changed.emit(int(v)))
@@ -41,8 +88,68 @@ class PlayerWidget(QStackedWidget):
         self._gif_label.setStyleSheet("background-color: black;")
         self._movie: Optional[QMovie] = None
 
-        self.addWidget(self._video_widget)  # index 0
-        self.addWidget(self._gif_label)     # index 1
+        self.addWidget(self._video_surface)  # index 0
+        self.addWidget(self._gif_label)      # index 1
+
+        # ---------- HUD 오버레이 (좌상: 액션 토스트, 우상: 현재 시각) ----------
+        # 영상 위에 떠있는 작은 라벨들 — QStackedWidget 의 자식으로 두고 raise_() 로 항상 위.
+        hud_style = (
+            "QLabel { background: rgba(0,0,0,170); color: white; "
+            "padding: 4px 10px; border-radius: 6px; font-weight: bold; "
+            "font-size: 12pt; }"
+        )
+        self._action_hud = QLabel(self)
+        self._action_hud.setStyleSheet(hud_style)
+        self._action_hud.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._action_hud.hide()
+        self._action_hud_timer = QTimer(self)
+        self._action_hud_timer.setSingleShot(True)
+        self._action_hud_timer.setInterval(900)
+        self._action_hud_timer.timeout.connect(self._action_hud.hide)
+
+        self._time_hud = QLabel("0.00초", self)
+        self._time_hud.setStyleSheet(hud_style)
+        self._time_hud.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._time_hud.hide()  # 영상 로드 전엔 숨김
+
+        # 시각 HUD 자동 갱신
+        self.position_changed.connect(self._on_position_for_hud)
+        self.duration_changed.connect(self._on_duration_for_hud)
+
+    # ---------- HUD ----------
+    def flash_action(self, text: str) -> None:
+        """좌상단에 액션 토스트를 잠깐 띄운다 (앞으로/뒤로/프레임 등)."""
+        self._action_hud.setText(text)
+        self._action_hud.adjustSize()
+        self._reposition_huds()
+        self._action_hud.show()
+        self._action_hud.raise_()
+        self._action_hud_timer.start()
+
+    def _on_position_for_hud(self, ms: int) -> None:
+        seconds = max(0, ms) / 1000.0
+        self._time_hud.setText(f"{seconds:.2f}초")
+        self._time_hud.adjustSize()
+        self._reposition_huds()
+
+    def _on_duration_for_hud(self, ms: int) -> None:
+        if ms > 0:
+            self._time_hud.show()
+            self._time_hud.raise_()
+
+    def _reposition_huds(self) -> None:
+        margin = 12
+        self._action_hud.move(margin, margin)
+        self._time_hud.move(
+            max(margin, self.width() - self._time_hud.width() - margin),
+            margin,
+        )
+        self._action_hud.raise_()
+        self._time_hud.raise_()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._reposition_huds()
 
     def load(self, path: Path) -> None:
         if self._movie is not None:
@@ -63,6 +170,7 @@ class PlayerWidget(QStackedWidget):
             self.setCurrentIndex(1)
             self.duration_changed.emit(self._gif_total_ms())
         else:
+            self._video_surface.clear_frame()
             self._media.setSource(QUrl.fromLocalFile(str(self._path)))
             self.setCurrentIndex(0)
 
@@ -79,6 +187,10 @@ class PlayerWidget(QStackedWidget):
 
     def is_loaded(self) -> bool:
         return self._path is not None
+
+    def set_thumbnail(self, img: QImage) -> None:
+        """재생 전 미리보기 이미지 설정. 첫 프레임 도착 전까지 표시."""
+        self._video_surface.set_thumbnail(img)
 
     def is_gif(self) -> bool:
         return self._is_gif
@@ -195,10 +307,7 @@ class PlayerWidget(QStackedWidget):
         """현재 표시 중인 프레임을 QImage 로 추출."""
         if self._is_gif and self._movie is not None:
             return self._movie.currentImage()
-        # MP4: QVideoWidget 의 현재 표시 내용을 grab — Qt 6.5+ 에서는 QVideoSink 권장이지만
-        # 시점 정확도는 step_frame 의 한계(±33ms)로 양해.
-        pix: QPixmap = self._video_widget.grab()
-        return pix.toImage()
+        return self._video_surface.current_image()
 
     def _on_media_state(self, state) -> None:
         self.playing_changed.emit(state == QMediaPlayer.PlayingState)

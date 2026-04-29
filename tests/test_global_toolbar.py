@@ -100,7 +100,9 @@ def test_set_target_updates_button_state(qtbot):
     assert tb.current_target() == "window"
 
 
-def test_global_toolbar_has_remove_bg_button(qtbot):
+def test_global_toolbar_has_remove_bg_action_no_button(qtbot):
+    """배경 제거 버튼은 ToolPalette 로 옮겨졌고 GlobalToolbar 에는 QAction 만 남아있다."""
     tb = GlobalToolbar()
     qtbot.addWidget(tb)
     assert tb.find_action("remove_bg") is not None
+    assert not hasattr(tb, "remove_bg_btn")

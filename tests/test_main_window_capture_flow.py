@@ -31,6 +31,9 @@ def w(qtbot, tmp_path):
     f = tmp_path / "ffmpeg.exe"
     f.write_bytes(b"")
     s = AppSettings()
+    # 라이브러리 시작 시 디스크 스캔이 사용자 실제 저장 폴더를 읽지 않도록 tmp_path 격리.
+    s.screenshot.save_dir = str(tmp_path / "shots")
+    s.general.output_dir = str(tmp_path / "videos")
     win = MainWindow(s, f)
     qtbot.addWidget(win)
     return win

@@ -2,11 +2,19 @@
 from __future__ import annotations
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QSize, QPoint
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent
 from PySide6.QtGui import QPixmap, QIcon, QAction
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QMenu,
+    QProxyStyle, QStyle,
 )
+
+
+class _FastTooltipStyle(QProxyStyle):
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.SH_ToolTip_WakeUpDelay:
+            return 500
+        return super().styleHint(hint, option, widget, returnData)
 
 from ..library_model import LibraryEntry, LibraryModel, EntryKind
 from ..mode_controller import AppMode, ModeController
@@ -44,6 +52,8 @@ class LibraryPanel(QWidget):
         self.list_widget.itemChanged.connect(self._on_item_changed)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
+        self.list_widget.installEventFilter(self)
+        self.list_widget.setStyle(_FastTooltipStyle(self.list_widget.style()))
         layout.addWidget(self.list_widget, stretch=1)
 
         for e in self._model.entries():
@@ -62,8 +72,8 @@ class LibraryPanel(QWidget):
         item = QListWidgetItem()
         item.setData(Qt.UserRole, entry.id)
         item.setData(Qt.UserRole + 1, entry.kind)
-        # 표시 텍스트는 display_name 우선, 없으면 source_label + 시간 (구버전 fallback)
         item.setText(self._render_text(entry))
+        item.setToolTip(entry.display_name or entry.source_label)
         item.setFlags(item.flags() | Qt.ItemIsEditable)
         if not entry.thumbnail.isNull():
             item.setIcon(QIcon(QPixmap.fromImage(entry.thumbnail).scaled(
@@ -89,6 +99,19 @@ class LibraryPanel(QWidget):
         suffix = _format_duration(entry.duration_ms) if entry.kind is EntryKind.VIDEO else ""
         return f"{prefix} {base}{suffix}"
 
+    def focus_entry(self, entry_id: int) -> None:
+        """외부에서 호출 — 해당 entry 의 list item 을 선택 상태로 (탭과 동기화)."""
+        item = self._items_by_id.get(entry_id)
+        if item is None:
+            return
+        # itemClicked 가 다시 발화하지 않도록 차단 (currentItemChanged 와 itemClicked 분리)
+        self.list_widget.blockSignals(True)
+        try:
+            self.list_widget.setCurrentItem(item)
+            self.list_widget.scrollToItem(item)
+        finally:
+            self.list_widget.blockSignals(False)
+
     def _remove_by_id(self, entry_id: int) -> None:
         item = self._items_by_id.pop(entry_id, None)
         if item is None:
@@ -108,6 +131,11 @@ class LibraryPanel(QWidget):
         self.list_widget.blockSignals(True)
         try:
             item.setText(self._render_text(entry))
+            item.setToolTip(entry.display_name or entry.source_label)
+            if not entry.thumbnail.isNull():
+                item.setIcon(QIcon(QPixmap.fromImage(entry.thumbnail).scaled(
+                    48, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )))
         finally:
             self.list_widget.blockSignals(False)
 
@@ -153,6 +181,17 @@ class LibraryPanel(QWidget):
         # NOTE: rename_requested 만 emit 하면 MainWindow 에서 prompt 하지 않고 인라인 텍스트 사용해야 함.
         # 단순화: 인라인 편집 결과를 직접 모델에 반영하고, 디스크 rename 만 MainWindow 에 위임.
         self._model.rename(entry.id, new_display)
+
+    def eventFilter(self, obj, event: QEvent) -> bool:
+        if obj is self.list_widget and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Delete:
+                item = self.list_widget.currentItem()
+                if item is not None:
+                    eid = item.data(Qt.UserRole)
+                    if eid is not None:
+                        self.entry_delete_requested.emit(int(eid))
+                return True
+        return super().eventFilter(obj, event)
 
     def _on_context_menu(self, pos: QPoint) -> None:
         item = self.list_widget.itemAt(pos)

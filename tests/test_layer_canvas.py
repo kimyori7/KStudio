@@ -45,8 +45,9 @@ def test_add_annotation_layer_creates_group(qtbot):
     qtbot.addWidget(canvas)
     layer = AnnotationLayer(id=2, name="annot", canvas_size=QSize(50, 50))
     stack.add_layer(layer)
-    groups = [i for i in canvas.scene().items() if isinstance(i, QGraphicsItemGroup)]
-    assert len(groups) == 1
+    # AnnotationLayer 도 QGraphicsPixmapItem 으로 표시 (자체 scene 을 픽스맵으로 렌더).
+    pixs = [i for i in canvas.scene().items() if isinstance(i, QGraphicsPixmapItem)]
+    assert len(pixs) == 1
 
 
 def test_remove_layer_removes_item(qtbot):

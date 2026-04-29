@@ -15,11 +15,15 @@ import logging
 from pathlib import Path
 import pygetwindow as gw
 
-from PySide6.QtCore import Qt, QSize, QUrl, Slot
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QRect, QSize, QUrl, Slot
+from PySide6.QtGui import (
+    QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication,
+    QKeySequence, QShortcut,
+)
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QSplitter, QToolBar, QDockWidget, QFileDialog,
-    QMessageBox, QApplication, QSystemTrayIcon, QInputDialog,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QToolBar,
+    QDockWidget, QFileDialog, QMessageBox, QApplication, QSystemTrayIcon,
+    QInputDialog, QProgressDialog,
 )
 
 from screen_recorder.core.controller import RecorderController
@@ -34,10 +38,17 @@ from PySide6.QtGui import QImage, QPainter
 
 from image_editor.format import write_kstudio
 from image_editor.layer_model import LayerStack
+from image_editor.layers.annotation_layer import AnnotationLayer
 from image_editor.layers.image_layer import ImageLayer
 from image_editor.operations.background_removal import BackgroundRemovalCommand
 from image_editor.operations.crop import CropCommand
+from image_editor.operations.magic_wand import MagicWandCommand
+from image_editor.operations.mask_paint import MaskPaintCommand
+from image_editor.operations.raster_paint import RasterPaintCommand
 from image_editor.tools.crop import CropTool
+from image_editor.tools.magic_wand import MagicWandTool
+from image_editor.tools.mask_brush import MaskBrushTool
+from image_editor.tools.raster_brush import RasterBrushTool
 
 from .menu_bar import KStudioMenuBar
 from .global_toolbar import GlobalToolbar
@@ -64,6 +75,7 @@ from screen_recorder.core.filename import build_filename, resolve_collision
 from .edit_tab import EditTab
 from .video_tab import VideoTab
 from image_editor.tools.select import SelectTool
+from image_editor.tools.selection import SelectionTool
 from image_editor.tools.rect import RectTool
 from image_editor.tools.arrow import ArrowTool
 from image_editor.tools.text import TextTool
@@ -77,6 +89,23 @@ _TOOL_MAP = {
 }
 
 
+from PySide6.QtCore import QEvent, QObject
+
+
+class _DockCloseFilter(QObject):
+    """dock 의 X 버튼 close 만 잡아 menu_check 를 false 로. setVisible(False) 는 안 잡힘."""
+    def __init__(self, dock_action_map: dict) -> None:
+        super().__init__()
+        self._map = dock_action_map
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Close:
+            action = self._map.get(obj)
+            if action is not None:
+                action.setChecked(False)
+        return False  # 이벤트 자체는 통과 (dock 정상 close)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings, ffmpeg_path: Path):
         super().__init__()
@@ -84,6 +113,8 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
         # 일반 OS 창 프레임 사용 (frameless 해제 — 메뉴 바를 위해)
         self.setWindowFlags(Qt.Window)
+        # 외부에서 파일을 드래그 앤 드롭하면 자동으로 열도록 허용.
+        self.setAcceptDrops(True)
 
         # 마지막 위치/크기 복원 (없으면 기본 1280×820)
         s = settings.screenshot
@@ -91,6 +122,8 @@ class MainWindow(QMainWindow):
             self.setGeometry(s.viewer_x, s.viewer_y, s.viewer_w, s.viewer_h)
         else:
             self.resize(1280, 820)
+        # 창을 작게 만드는 것이 차단되지 않도록 최소 크기 명시 (캡처 후 lockup 방지).
+        self.setMinimumSize(480, 320)
 
         self.app_settings = settings
         self.ffmpeg_path = ffmpeg_path
@@ -98,6 +131,12 @@ class MainWindow(QMainWindow):
         # ---------- 모델 / 컨트롤러 멤버 ----------
         self.library_model = LibraryModel()
         self.mode_controller = ModeController()
+        # 마술봉 / 마스크 브러시 / 래스터 브러시 라이브 파라미터 (옵션 툴바 슬라이더와 동기화)
+        self._magic_wand_tolerance = 32
+        self._mask_brush_size = 30
+        self._mask_brush_mode = "erase"
+        self._raster_brush_size = 20
+        self._current_special_tool = None  # 활성 brush/wand/mask-brush 참조
 
         # ---------- 메뉴 바 ----------
         self.menu_bar = KStudioMenuBar()
@@ -115,46 +154,54 @@ class MainWindow(QMainWindow):
         self.addToolBarBreak()
         self.addToolBar(self.annotation_toolbar)
 
-        # ---------- 본체 ----------
+        # ---------- 본체 (QDockWidget 기반) ----------
+        # 중앙: 도구 팔레트 + 탭 영역. 나머지 패널은 dock 으로 분리해 자유 배치.
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        splitter = QSplitter(Qt.Horizontal)
-
+        center_row = QHBoxLayout()
+        center_row.setContentsMargins(0, 0, 0, 0)
+        center_row.setSpacing(0)
         self.tool_palette = ToolPalette()
-        splitter.addWidget(self.tool_palette)
-
+        center_row.addWidget(self.tool_palette)
         self.tab_area = TabArea(self.mode_controller, self.app_settings.player)
-        splitter.addWidget(self.tab_area)
-        splitter.setStretchFactor(1, 1)
-
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(0)
-        self.library_panel = LibraryPanel(self.library_model, self.mode_controller)
-        self.record_status_panel = RecordStatusPanel()
-        right_layout.addWidget(self.library_panel, stretch=1)
-        right_layout.addWidget(self.record_status_panel)
-        right.setFixedWidth(220)
-        splitter.addWidget(right)
-
-        outer.addWidget(splitter, stretch=1)
+        center_row.addWidget(self.tab_area, stretch=1)
+        outer.addLayout(center_row, stretch=1)
 
         # 상태바
         self.status_bar = StatusBar()
         self.status_bar.setFixedHeight(28)
         outer.addWidget(self.status_bar)
 
-        # ---------- 레이어 도크 (활성 EditTab 의 LayerStack 에 바인딩) ----------
+        # ---------- 도크들 (라이브러리 / 레이어 / 녹화상태) ----------
+        # 사용자가 떼어내거나 좌·우로 옮기거나 부동(floating)으로 띄울 수 있다.
+        # objectName 은 saveState/restoreState 에서 매칭에 쓰이므로 고정값.
+        self.library_panel = LibraryPanel(self.library_model, self.mode_controller)
+        self.library_dock = QDockWidget("라이브러리", self)
+        self.library_dock.setObjectName("LibraryDock")
+        self.library_dock.setWidget(self.library_panel)
+        self.library_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.library_dock)
+
         self.layers_panel = LayersPanel(self._dummy_stack())
         self.layers_dock = QDockWidget("레이어", self)
         self.layers_dock.setObjectName("LayersDock")
         self.layers_dock.setWidget(self.layers_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.layers_dock)
+        self.layers_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.layers_dock)
+
+        self.record_status_panel = RecordStatusPanel()
+        self.record_status_dock = QDockWidget("녹화 상태", self)
+        self.record_status_dock.setObjectName("RecordStatusDock")
+        self.record_status_dock.setWidget(self.record_status_panel)
+        self.record_status_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.record_status_dock)
+
+        # 호환성: 기존 코드에서 _left_dock_container 참조 가능 — 더이상 의미 없으나 None 으로 둔다.
+        self._left_dock_container = None
 
         # ---------- 컨트롤러 & 부수 모듈 ----------
         self.controller = RecorderController(self.app_settings, self.ffmpeg_path)
@@ -200,6 +247,19 @@ class MainWindow(QMainWindow):
         self.record_status_panel.set_target(self.global_toolbar.current_target())
         self.record_status_panel.set_mode(self.app_settings.general.mode)
 
+        # 초기 모드에 맞춰 좌측 패널 가시성 동기화 (영상 모드면 레이어 숨김 등)
+        self._on_mode_changed(self.mode_controller.mode())
+        # 저장된 마지막 색/두께를 옵션바에 즉시 반영 (앱 재시작 시 테두리 표시 동기화).
+        self.annotation_toolbar.set_current_color(QColor(self.app_settings.annotation.last_color))
+        self.annotation_toolbar.set_current_thickness_step(self.app_settings.annotation.last_thickness)
+
+        # dock 레이아웃 복원 — 사용자가 직전 세션에 옮긴 위치/크기/floating 상태 그대로.
+        self._restore_dock_state()
+
+        # 저장 폴더 스캔 → 라이브러리에 기존 파일들을 미리 채움.
+        # 이미지/영상 모두 포함, 모드 필터는 LibraryPanel 이 알아서 처리.
+        self._populate_library_from_disk()
+
     # ---------- 시그널 와이어링 ----------
 
     def _wire_signals(self) -> None:
@@ -216,12 +276,16 @@ class MainWindow(QMainWindow):
         self.global_toolbar.preferences_clicked.connect(self._open_preferences)
         self.global_toolbar.save_clicked.connect(self._save_current_screenshot)
         self.global_toolbar.copy_clicked.connect(self._copy_current_screenshot)
+        # 드래그-저장 버튼 — 현재 활성 EditTab 의 이미지를 제공.
+        self.global_toolbar.drag_save_btn.image_provider = self._current_image_for_drag
+        self.global_toolbar.drag_save_btn.filename_provider = self._current_filename_for_drag
         # 누끼 (배경 제거) — QAction 으로 노출, 단축키와 동일 핸들러로 라우팅.
         ra = self.global_toolbar.find_action("remove_bg")
         if ra is not None:
             ra.triggered.connect(self._on_remove_background)
 
         # 메뉴
+        self.menu_bar.new_requested.connect(self._on_file_new)
         self.menu_bar.open_requested.connect(self._on_file_open)
         self.menu_bar.save_requested.connect(self._on_file_save)
         self.menu_bar.save_as_requested.connect(self._on_file_save_as)
@@ -233,8 +297,18 @@ class MainWindow(QMainWindow):
         self.menu_bar.redo_requested.connect(self._on_redo)
         self.menu_bar.background_remove_requested.connect(self._on_remove_background)
         self.menu_bar.original_zoom_requested.connect(self._on_original)
-        self.menu_bar.library_visibility_toggled.connect(self.library_panel.setVisible)
-        self.menu_bar.record_status_visibility_toggled.connect(self.record_status_panel.setVisible)
+        # dock 토글 — 메뉴 체크 → dock 가시성 (단방향).
+        # NOTE: 양방향 동기화는 BUG: restoreState() 가 dock 을 transient 하게 hide 하면
+        # visibilityChanged 가 발화해 menu_check 가 False 로 떨어진다. 이후
+        # _enforce_dock_visibility 가 menu_check (=False) 를 읽어 dock 을 계속 숨긴 채로
+        # 둠. 양방향이 아니라 menu_check = single source of truth.
+        self.menu_bar.library_visibility_toggled.connect(self.library_dock.setVisible)
+        self.menu_bar.tool_palette_visibility_toggled.connect(self._on_tool_palette_visibility_toggled)
+        self.menu_bar.layers_visibility_toggled.connect(self._on_layers_visibility_toggled)
+        self.menu_bar.record_status_visibility_toggled.connect(self._on_record_status_visibility_toggled)
+        # 사용자가 dock 의 X 버튼을 직접 눌러 닫는 경우만 menu_check 갱신.
+        # closeEvent 는 user 액션에만 발화하고 setVisible(False) 에는 발화하지 않음.
+        self._wire_dock_user_close()
         self.menu_bar.record_start_requested.connect(self._on_start_clicked)
         self.menu_bar.record_stop_requested.connect(self._on_stop_clicked)
         self.menu_bar.record_pause_requested.connect(self._on_pause_clicked)
@@ -245,6 +319,7 @@ class MainWindow(QMainWindow):
         self.tab_area.entry_closed.connect(self._on_tab_closed_by_user)
         self.tab_area.tab_added.connect(self._on_tab_added)
         self.tab_area.currentChanged.connect(self._on_active_tab_changed)
+        self.tab_area.video_duration_resolved.connect(self._on_video_duration_resolved)
         self.library_panel.entry_open_requested.connect(self._open_entry)
         self.library_panel.entry_delete_requested.connect(self._on_library_delete)
         self.library_panel.entry_open_folder_requested.connect(self._on_library_open_folder)
@@ -253,9 +328,22 @@ class MainWindow(QMainWindow):
         # 영상 탭 프레임 → 스크린샷 단축키
         QShortcut(QKeySequence("Ctrl+Shift+P"), self,
                   activated=self._snapshot_current_video_frame)
+        # Ctrl+C → selection 이 있으면 그 영역만, 아니면 전체 합성 이미지를 클립보드.
+        QShortcut(QKeySequence("Ctrl+C"), self,
+                  activated=self._copy_current_screenshot)
+        # Ctrl+X → selection 영역 잘라내기 (클립보드 복사 후 ImageLayer 에서 지움).
+        QShortcut(QKeySequence("Ctrl+X"), self,
+                  activated=self._cut_current_selection)
+        # Ctrl+A → 전체 선택. 캔버스 전체 영역을 selection 으로 설정.
+        QShortcut(QKeySequence("Ctrl+A"), self,
+                  activated=self._on_select_all)
+        # Ctrl+D → 선택 해제.
+        QShortcut(QKeySequence("Ctrl+D"), self,
+                  activated=self._on_deselect_all)
 
         # 도구 팔레트
         self.tool_palette.tool_changed.connect(self._on_tool_changed)
+        self.tool_palette.action_triggered.connect(self._on_palette_action)
 
         # 옵션바
         self.annotation_toolbar.color_changed.connect(self._on_color_changed)
@@ -264,6 +352,11 @@ class MainWindow(QMainWindow):
         self.annotation_toolbar.redo_requested.connect(self._on_redo)
         self.annotation_toolbar.original_requested.connect(self._on_original)
         self.annotation_toolbar.zoom_input_changed.connect(self._on_zoom_input)
+        # 컨텍스트 옵션 — 마술봉 / 마스크 브러시 / 래스터 브러시
+        self.annotation_toolbar.tolerance_changed.connect(self._on_tolerance_changed)
+        self.annotation_toolbar.brush_size_changed.connect(self._on_brush_size_changed)
+        self.annotation_toolbar.brush_mode_changed.connect(self._on_brush_mode_changed)
+        self.annotation_toolbar.raster_size_changed.connect(self._on_raster_size_changed)
 
         # 컨트롤러
         self.controller.state_changed.connect(self._on_state_changed)
@@ -272,7 +365,7 @@ class MainWindow(QMainWindow):
 
         # 트레이
         self.tray.show_main.connect(self.showNormal)
-        self.tray.quit_requested.connect(QApplication.instance().quit)
+        self.tray.quit_requested.connect(self._force_quit_app)
         self.tray.toggle_record.connect(self._on_hotkey_toggle)
         self.tray.screenshot_region.connect(self._on_shot_region_action)
         self.tray.screenshot_full.connect(self._on_shot_full_action)
@@ -386,6 +479,9 @@ class MainWindow(QMainWindow):
         if name == "crop":
             tool = CropTool()
             tool.commit_requested.connect(lambda r, t=tab: self._on_crop_committed(t, r))
+            tool.cursor_requested.connect(
+                lambda shape, t=tab: t.canvas.viewport().setCursor(Qt.CursorShape(shape))
+            )
             tab.canvas.set_tool(tool)
             return
         # select / rect / arrow / text 는 도구 팔레트와 동일한 경로 사용.
@@ -597,8 +693,20 @@ class MainWindow(QMainWindow):
             source_label=label,
             display_name=display,
         )
-        self.tab_area.add_screenshot(image=image, source_label=label, entry_id=entry.id)
+        self.tab_area.add_screenshot(image=image, source_label=label, entry_id=entry.id,
+                                      display_name=display)
         self._restore_window_for_capture()
+        # 새 캡처 후엔 항상 '선택' 도구로 리셋 (이전에 쓰던 brush/wand 등이 무한히 남는 문제 방지).
+        self._reset_to_select_tool()
+
+    def _reset_to_select_tool(self) -> None:
+        """현재 활성 EditTab 의 도구를 select 로 리셋 — 캡처/녹화 직후 호출."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        self.tool_palette.set_current_tool("select")
+        self._apply_tool_to_current_tab("select")
+        self.annotation_toolbar.set_active_tool("select")
 
     def _build_screenshot_display_name(self, source_label: str) -> str:
         """파일명 규칙으로 디스크 저장 시 사용할 파일명을 미리 만든다 (캡처 즉시 라이브러리 표시용)."""
@@ -612,10 +720,44 @@ class MainWindow(QMainWindow):
         )
 
     def _restore_window_for_capture(self) -> None:
+        # 캡처/녹화 완료 후 창을 항상 앞으로 올리고 포커스 부여.
+        # RegionSelector 가 fullscreen 을 덮고 있다가 닫히면 KStudio 창이 뒤로 밀려
+        # 있으므로, hidden/minimized 여부와 무관하게 raise+activate 한다.
         if self.isHidden() or self.isMinimized():
             self.showNormal()
-            self.raise_()
-            self.activateWindow()
+        self.raise_()
+        self.activateWindow()
+        # dock 가시성 안전망 — restoreState/모드전환 등에서 부주의하게 닫힌 dock 복구.
+        self._enforce_dock_visibility()
+
+    def _wire_dock_user_close(self) -> None:
+        """dock 의 X 버튼 클릭만 감지해 menu_check 를 갱신.
+
+        eventFilter 로 QEvent.Close 를 감시. close 이벤트는 user 가 X 버튼 또는
+        close() 명시 호출 시에만 발생하며, setVisible(False) 나 restoreState() 같은
+        암묵적 hide 에는 발생하지 않는다.
+        """
+        self._dock_close_filter = _DockCloseFilter({
+            self.library_dock: self.menu_bar.library_visible_action,
+            self.layers_dock:  self.menu_bar.layers_visible_action,
+            self.record_status_dock: self.menu_bar.status_visible_action,
+        })
+        for dock in (self.library_dock, self.layers_dock, self.record_status_dock):
+            dock.installEventFilter(self._dock_close_filter)
+
+    def _enforce_dock_visibility(self) -> None:
+        """메뉴 체크 상태 + 모드 기준으로 dock 가시성을 강제 복구.
+
+        Qt 의 minimize/restore, restoreState, mode 전환 등에서 dock 이 의도치 않게
+        숨겨지는 경우의 안전망. 사용자가 명시적으로 끈 dock 은 메뉴 체크가 false 라
+        그대로 hidden 유지된다.
+        - library: 모드 무관 (메뉴 체크만)
+        - layers: 이미지 모드 전용 (영상 모드면 자동 숨김)
+        - record_status: 영상 모드 전용 (이미지 모드면 자동 숨김)
+        """
+        self.library_dock.setVisible(self.menu_bar.library_visible_action.isChecked())
+        self.layers_dock.setVisible(self._layers_panel_visible_state())
+        self.record_status_dock.setVisible(self._record_status_visible_state())
 
     def _estimate_duration_ms(self, path: Path) -> int:
         """간단한 추정 — 0 으로 시작하면 PlayerWidget.duration_changed 가 정확한 값을 채워준다."""
@@ -629,9 +771,12 @@ class MainWindow(QMainWindow):
             return placeholder
         try:
             import subprocess
+            import sys
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 tmp = Path(f.name)
+            # Windows: CREATE_NO_WINDOW 로 콘솔 깜박임 방지.
+            no_window = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             try:
                 # 첫 프레임 1장 추출. -ss 0 + -frames:v 1. -y 로 덮어쓰기.
                 # GIF 도 같은 명령으로 첫 프레임 추출됨.
@@ -639,6 +784,7 @@ class MainWindow(QMainWindow):
                     [str(self.ffmpeg_path), "-y", "-loglevel", "error",
                      "-i", str(path), "-frames:v", "1", str(tmp)],
                     check=True, capture_output=True, timeout=10,
+                    creationflags=no_window,
                 )
                 img = QImage(str(tmp))
                 if not img.isNull():
@@ -660,31 +806,84 @@ class MainWindow(QMainWindow):
         if entry is None:
             return
         if entry.kind is EntryKind.SCREENSHOT:
-            self.tab_area.add_screenshot(
-                image=entry.thumbnail, source_label=entry.source_label, entry_id=entry.id
-            )
+            # path 가 있으면 디스크에서 로드 (origin="opened" 또는 저장된 캡처)
+            # — 라이브러리의 thumbnail 은 다운스케일 본일 수 있으므로 원본을 우선.
+            if entry.path is not None and entry.path.exists():
+                try:
+                    tab = EditTab.from_file(entry.path)
+                except (ValueError, OSError) as e:
+                    QMessageBox.warning(self, "열기 실패", str(e))
+                    return
+                self.tab_area.add_image_tab(
+                    tab, entry_id=entry.id, label=f"📂 {entry.path.name}"
+                )
+            else:
+                self.tab_area.add_screenshot(
+                    image=entry.thumbnail, source_label=entry.source_label, entry_id=entry.id
+                )
         else:
             if entry.path is None:
                 return
             self.tab_area.add_video(
                 path=entry.path, source_label=entry.source_label,
                 duration_ms=entry.duration_ms, entry_id=entry.id,
+                thumbnail=entry.thumbnail,
             )
 
     def _on_mode_changed(self, mode: AppMode) -> None:
+        # 모드 전환 직전 dock 레이아웃 저장 (이전 모드 기준).
+        prev_mode = getattr(self, "_last_mode", None)
+        if prev_mode is not None and prev_mode is not mode:
+            self._save_dock_state_for_mode(prev_mode)
+        self._last_mode = mode
         self.global_toolbar.set_mode(mode)
         is_image = (mode is AppMode.IMAGE)
-        self.tool_palette.setVisible(is_image)
+        # ToolPalette: 이미지 모드 + 창 메뉴 체크 둘 다일 때만
+        tp_checked = self.menu_bar.tool_palette_visible_action.isChecked()
+        self.tool_palette.setVisible(is_image and tp_checked)
         self.annotation_toolbar.setVisible(is_image)
+        # 새 모드의 dock 레이아웃 복원 — 영상↔이미지 전환 시 사용자가 모드별로 떼어둔
+        # 패널 배치를 그대로 유지.
+        self._restore_dock_state_for_mode(mode)
+        # restoreState 후 dock 가시성을 메뉴 체크 기준으로 강제 — restoreState 가 visibility
+        # 도 같이 복원해 사용자가 닫지 않은 dock 도 닫는 부작용 방지.
+        self._enforce_dock_visibility()
+        # 영상 모드면 레이어 패널 비활성화 (모드 무관 호출 — 안전망).
+        self._apply_layers_panel_enabled_state()
+        # 모드 전용 dock 의 메뉴 항목 enable/disable 갱신.
+        self._apply_mode_aware_menu_enabled()
 
     def _on_mode_button_clicked(self, mode: AppMode) -> None:
-        """사용자가 모드 토글 버튼을 직접 클릭 — 그 모드의 가장 최근 탭으로 점프."""
+        """사용자가 모드 토글 버튼을 직접 클릭 — 그 모드의 가장 최근 탭으로 점프.
+
+        주의: 모드 전환은 _open_entry 의 부수효과(currentChanged → mode_controller)
+        에 의존하면 안 된다. focus_entry 가 이미 current 인 탭이면 no-op 이라 모드 시그널이
+        발화되지 않아 다른 UI 들이 갱신 안 됨. 항상 명시적으로 set_mode 를 호출.
+        """
+        self.mode_controller.set_mode(mode)
         target_kind = EntryKind.VIDEO if mode is AppMode.VIDEO else EntryKind.SCREENSHOT
         entries = self.library_model.entries(kind=target_kind)
-        if not entries:
-            self.mode_controller.set_mode(mode)
+        if entries:
+            self._open_entry(entries[0].id)
+
+    def _on_video_duration_resolved(self, entry_id: int, duration_ms: int) -> None:
+        """영상 player 가 로드 후 실제 duration 을 알려주면 라이브러리 항목도 갱신.
+
+        탭 라벨은 TabArea 가 자체적으로 갱신하지만, 라이브러리 항목의 duration suffix
+        는 LibraryModel 의 entry.duration_ms 로 만들어지므로 여기서 모델을 업데이트하고
+        패널에 텍스트 재렌더 신호를 보낸다.
+        """
+        entry = self.library_model.get(entry_id)
+        if entry is None or duration_ms <= 0:
             return
-        self._open_entry(entries[0].id)
+        if entry.duration_ms == duration_ms:
+            return
+        entry.duration_ms = duration_ms
+        # 라이브러리 패널이 텍스트를 다시 렌더하도록 entry_renamed 시그널 (display_name 변동 없이도 텍스트 재계산).
+        try:
+            self.library_model.entry_renamed.emit(entry_id, entry.display_name)
+        except Exception:
+            pass
 
     def _on_tab_closed_by_user(self, entry_id: int) -> None:
         # 라이브러리에는 그대로 남겨둔다 (탭만 닫힘).
@@ -777,25 +976,208 @@ class MainWindow(QMainWindow):
         tab = self._current_screenshot_tab()
         if tab is None:
             return
+        # 도구별 마우스 커서 — 사용자가 도형 그리기 모드임을 인지하도록.
+        cursor_map = {
+            "rect": Qt.CrossCursor,
+            "arrow": Qt.CrossCursor,
+            "text": Qt.IBeamCursor,
+            "crop": Qt.CrossCursor,
+            "magic_wand": Qt.PointingHandCursor,
+            "select": Qt.ArrowCursor,
+            "selection": Qt.CrossCursor,
+            "brush": Qt.BlankCursor,       # 링이 위치 표시
+            "eraser": Qt.BlankCursor,
+            "mask_brush": Qt.BlankCursor,
+        }
+        tab.canvas.viewport().setCursor(cursor_map.get(tool_id, Qt.ArrowCursor))
         color = QColor(self.app_settings.annotation.last_color)
         th = self.app_settings.annotation.last_thickness
         stack = tab.undo_stack
+        # 주석 도구는 활성 AnnotationLayer 의 자체 scene 으로 이벤트 라우팅 필요.
+        ann_scene = self._active_annotation_scene(tab)
         if tool_id == "select":
-            tab.canvas.set_tool(SelectTool())
+            tab.canvas.set_tool(SelectTool(), target_scene=ann_scene)
+        elif tool_id == "selection":
+            # selection 도구는 캔버스의 메인 scene 으로 (annotation 이 아님 — selection 은
+            # 모든 레이어 위에 떠 있는 글로벌 사각 영역).
+            sel_tool = SelectionTool(tab.selection)
+            sel_tool.cursor_requested.connect(
+                lambda shape, t=tab: t.canvas.viewport().setCursor(Qt.CursorShape(shape))
+            )
+            tab.canvas.set_tool(sel_tool)
+            self._current_special_tool = None
         elif tool_id == "rect":
-            tab.canvas.set_tool(RectTool(color, th, tab.canvas.shift_held, stack))
+            tab.canvas.set_tool(
+                RectTool(color, th, tab.canvas.shift_held, stack),
+                target_scene=ann_scene,
+            )
         elif tool_id == "arrow":
-            tab.canvas.set_tool(ArrowTool(color, th, tab.canvas.shift_held, stack))
+            tab.canvas.set_tool(
+                ArrowTool(color, th, tab.canvas.shift_held, stack),
+                target_scene=ann_scene,
+            )
         elif tool_id == "text":
-            tab.canvas.set_tool(TextTool(
-                color, stack,
-                on_commit=lambda: self.tool_palette.set_current_tool("select"),
-            ))
+            tab.canvas.set_tool(
+                TextTool(
+                    color, stack,
+                    on_commit=lambda: self.tool_palette.set_current_tool("select"),
+                ),
+                target_scene=ann_scene,
+            )
+        elif tool_id == "crop":
+            crop_tool = CropTool()
+            crop_tool.commit_requested.connect(
+                lambda r, t=tab: self._on_crop_committed(t, r)
+            )
+            crop_tool.cursor_requested.connect(
+                lambda shape, t=tab: t.canvas.viewport().setCursor(Qt.CursorShape(shape))
+            )
+            tab.canvas.set_tool(crop_tool)
+            self._current_special_tool = None
+        elif tool_id == "brush":
+            brush = RasterBrushTool(tab.stack, color=color,
+                                    size=self._raster_brush_size, mode="paint")
+            brush.stroke_completed.connect(
+                lambda lid, prev, new, t=tab: self._on_raster_paint_completed(t, lid, prev, new, "브러시")
+            )
+            tab.canvas.set_tool(brush)
+            self._current_special_tool = brush
+        elif tool_id == "eraser":
+            eraser = RasterBrushTool(tab.stack, color=color,
+                                     size=self._raster_brush_size, mode="erase")
+            eraser.stroke_completed.connect(
+                lambda lid, prev, new, t=tab: self._on_raster_paint_completed(t, lid, prev, new, "지우개")
+            )
+            tab.canvas.set_tool(eraser)
+            self._current_special_tool = eraser
+        elif tool_id == "magic_wand":
+            tool = MagicWandTool(tolerance=self._magic_wand_tolerance)
+            tool.click_at.connect(
+                lambda pt, tol, t=tab: self._on_magic_wand_clicked(t, pt, tol)
+            )
+            tab.canvas.set_tool(tool)
+            self._current_special_tool = tool
+        elif tool_id == "mask_brush":
+            tool = MaskBrushTool(tab.stack, brush_size=self._mask_brush_size,
+                                 mode=self._mask_brush_mode)
+            tool.stroke_completed.connect(
+                lambda lid, prev, new, t=tab: self._on_mask_brush_completed(t, lid, prev, new)
+            )
+            tab.canvas.set_tool(tool)
+            self._current_special_tool = tool
+        else:
+            self._current_special_tool = None
         self.annotation_toolbar.set_undo_enabled(tab.undo_stack.canUndo())
         self.annotation_toolbar.set_redo_enabled(tab.undo_stack.canRedo())
 
+    def _active_annotation_scene(self, tab: EditTab):
+        """현재 탭에서 사용할 AnnotationScene 을 고른다.
+
+        활성 레이어가 AnnotationLayer 면 그 scene, 아니면 가장 위 AnnotationLayer 의 scene.
+        AnnotationLayer 가 하나도 없으면 None.
+        """
+        active = tab.stack.active_layer()
+        if isinstance(active, AnnotationLayer):
+            return active.scene
+        for layer in reversed(tab.stack.layers):
+            if isinstance(layer, AnnotationLayer):
+                return layer.scene
+        return None
+
+    def _on_magic_wand_clicked(self, tab: EditTab, pt, tolerance: int) -> None:
+        layer = tab.stack.active_layer()
+        if not isinstance(layer, ImageLayer):
+            return
+        # scene 좌표 → layer-local
+        lx = pt.x() - layer.offset.x()
+        ly = pt.y() - layer.offset.y()
+        cmd = MagicWandCommand(tab.stack, layer.id, lx, ly, tolerance)
+        tab.undo_stack.push(cmd)
+        # marching ants — 마술봉이 영향 준 픽셀들의 bounding rect 를 selection 으로.
+        affected = cmd.affected_layer_rect()
+        if affected is not None:
+            scene_rect = QRect(affected)
+            scene_rect.translate(int(layer.offset.x()), int(layer.offset.y()))
+            tab.selection.set_rect(scene_rect)
+
+    def _on_mask_brush_completed(self, tab: EditTab, layer_id: int, prev, new) -> None:
+        cmd = MaskPaintCommand(tab.stack, layer_id, prev, new)
+        tab.undo_stack.push(cmd)
+
+    def _on_raster_paint_completed(self, tab: EditTab, layer_id: int, prev, new,
+                                   text: str = "브러시") -> None:
+        cmd = RasterPaintCommand(tab.stack, layer_id, prev, new, text=text)
+        tab.undo_stack.push(cmd)
+
     def _on_tool_changed(self, tool_id: str) -> None:
         self._apply_tool_to_current_tab(tool_id)
+        # 옵션바의 컨텍스트 패널을 도구에 맞춰 토글
+        self.annotation_toolbar.set_active_tool(tool_id)
+
+    def _on_tolerance_changed(self, value: int) -> None:
+        self._magic_wand_tolerance = value
+        if isinstance(self._current_special_tool, MagicWandTool):
+            self._current_special_tool.tolerance = value
+
+    def _on_brush_size_changed(self, value: int) -> None:
+        self._mask_brush_size = value
+        if isinstance(self._current_special_tool, MaskBrushTool):
+            self._current_special_tool.brush_size = value
+
+    def _on_brush_mode_changed(self, mode: str) -> None:
+        self._mask_brush_mode = mode
+        if isinstance(self._current_special_tool, MaskBrushTool):
+            self._current_special_tool.mode = mode
+
+    def _on_raster_size_changed(self, value: int) -> None:
+        self._raster_brush_size = value
+        if isinstance(self._current_special_tool, RasterBrushTool):
+            self._current_special_tool.set_size(value)
+
+    def _on_select_all(self) -> None:
+        """Ctrl+A — selection 도구로 전환 + 캔버스 전체를 selection 으로 설정.
+
+        도구를 selection 으로 바꿔야 사용자가 모서리/가장자리 핸들을 잡고 영역을
+        조정할 수 있다.
+        """
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        size = tab.stack.canvas_size
+        tab.selection.set_rect(QRect(0, 0, size.width(), size.height()))
+        # 도구 팔레트도 selection 으로 토글 — set_current_tool 이 _apply_tool_to_current_tab 호출.
+        if self.tool_palette.current_tool() != "selection":
+            self.tool_palette.set_current_tool("selection")
+            # set_current_tool 이 tool_changed 시그널을 emit 하지만 동일 도구일 땐 안 함.
+            # 새로 그렸으니 _apply_tool_to_current_tab 도 호출 (시그널 의존 안 함).
+            self._apply_tool_to_current_tab("selection")
+            self.annotation_toolbar.set_active_tool("selection")
+
+    def _on_deselect_all(self) -> None:
+        """Ctrl+D — 선택 해제."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        tab.selection.clear()
+
+    def _on_palette_action(self, action_id: str) -> None:
+        """ToolPalette 의 액션 버튼 (one-shot) 라우팅."""
+        if action_id == "auto_bg":
+            self._on_remove_background()
+
+    # ---------- 드래그-저장 버튼 콜백 ----------
+    def _current_image_for_drag(self):
+        tab = self._current_screenshot_tab()
+        return None if tab is None else tab.image()
+
+    def _current_filename_for_drag(self) -> str:
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return "image.png"
+        sp = tab.saved_path()
+        if sp is not None:
+            return Path(sp).stem + ".png"
+        return f"{tab.source_label()}.png"
 
     def _on_color_changed(self, color) -> None:
         self.app_settings.annotation.last_color = color.name(QColor.HexRgb)
@@ -860,22 +1242,68 @@ class MainWindow(QMainWindow):
 
     # ---------- 파일 메뉴 핸들러 (열기 / 저장 / 다른 이름으로 / 내보내기) ----------
 
+    # 지원하는 확장자 (드래그 앤 드롭 / 메뉴 열기 공통).
+    IMAGE_EXTS = {".kstudio", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    VIDEO_EXTS = {".mp4", ".gif", ".webm", ".mov", ".avi", ".mkv"}
+
+    def _on_file_new(self) -> None:
+        """파일 → 새로 만들기. 클립보드 크기 또는 사용자 입력 사이즈로 빈 EditTab 생성."""
+        from .new_canvas_dialog import NewCanvasDialog
+        dlg = NewCanvasDialog(self)
+        if dlg.exec() != dlg.Accepted:
+            return
+        size = dlg.size()
+        try:
+            tab = EditTab.from_blank(size)
+        except ValueError as e:
+            QMessageBox.warning(self, "새로 만들기 실패", str(e))
+            return
+        thumb = tab.image().scaled(
+            128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation,
+        )
+        label = f"새 캔버스 {size.width()}×{size.height()}"
+        entry = self.library_model.add(
+            EntryKind.IMAGE,
+            thumbnail=thumb,
+            source_label="new",
+            display_name=label,
+            origin="opened",
+        )
+        self.tab_area.add_image_tab(tab, entry_id=entry.id, label=f"🆕 {label}")
+        self.mode_controller.set_mode(AppMode.IMAGE)
+        self._restore_window_for_capture()
+
     def _on_file_open(self) -> None:
-        """파일 → 열기. .kstudio / 일반 raster 모두 지원."""
+        """파일 → 열기. .kstudio / 일반 raster / 영상 모두 지원."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "이미지/프로젝트 열기", "",
-            "지원 파일 (*.kstudio *.png *.jpg *.jpeg *.webp *.bmp);;모든 파일 (*.*)",
+            self, "파일 열기", "",
+            "지원 파일 (*.kstudio *.png *.jpg *.jpeg *.webp *.bmp "
+            "*.mp4 *.gif *.webm *.mov *.avi *.mkv);;모든 파일 (*.*)",
         )
         if not path:
             return
-        p = Path(path)
+        self._open_path(Path(path))
+
+    def _open_path(self, p: Path) -> None:
+        """확장자 기준으로 이미지/영상 분기."""
+        ext = p.suffix.lower()
+        if ext in self.IMAGE_EXTS:
+            self._open_image_path(p)
+        elif ext in self.VIDEO_EXTS:
+            self._open_video_path(p)
+        else:
+            QMessageBox.warning(
+                self, "지원하지 않는 파일",
+                f"지원하지 않는 형식입니다: {p.suffix}",
+            )
+
+    def _open_image_path(self, p: Path) -> None:
+        """이미지 또는 .kstudio 파일을 새 EditTab 으로 연다."""
         try:
             tab = EditTab.from_file(p)
         except (ValueError, OSError) as e:
             QMessageBox.warning(self, "열기 실패", str(e))
             return
-
-        # 라이브러리에 항목 추가 (origin="opened")
         thumb = tab.image().scaled(
             128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation,
         )
@@ -889,6 +1317,57 @@ class MainWindow(QMainWindow):
         )
         self.tab_area.add_image_tab(tab, entry_id=entry.id, label=f"📂 {p.name}")
         self.mode_controller.set_mode(AppMode.IMAGE)
+        self._restore_window_for_capture()
+
+    # ---------- 드래그 앤 드롭 (외부 파일 → 탭) ----------
+    def dragEnterEvent(self, e: QDragEnterEvent) -> None:
+        md = e.mimeData()
+        if md.hasUrls():
+            for u in md.urls():
+                ext = Path(u.toLocalFile()).suffix.lower()
+                if ext in self.IMAGE_EXTS or ext in self.VIDEO_EXTS:
+                    e.acceptProposedAction()
+                    return
+        super().dragEnterEvent(e)
+
+    def dropEvent(self, e: QDropEvent) -> None:
+        md = e.mimeData()
+        if not md.hasUrls():
+            super().dropEvent(e)
+            return
+        opened = 0
+        for u in md.urls():
+            local = u.toLocalFile()
+            if not local:
+                continue
+            p = Path(local)
+            if not p.is_file():
+                continue
+            ext = p.suffix.lower()
+            if ext in self.IMAGE_EXTS or ext in self.VIDEO_EXTS:
+                self._open_path(p)
+                opened += 1
+        if opened > 0:
+            e.acceptProposedAction()
+        else:
+            super().dropEvent(e)
+
+    def _open_video_path(self, p: Path) -> None:
+        """영상 파일을 새 VideoTab 으로 연다."""
+        entry = self.library_model.add(
+            EntryKind.VIDEO,
+            thumbnail=QImage(),
+            source_label="opened",
+            display_name=p.name,
+            path=p,
+            duration_ms=0,
+            origin="opened",
+        )
+        self.tab_area.add_video(
+            path=p, source_label="opened",
+            duration_ms=0, entry_id=entry.id,
+        )
+        self.mode_controller.set_mode(AppMode.VIDEO)
         self._restore_window_for_capture()
 
     def _on_file_save(self) -> None:
@@ -964,7 +1443,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "내보내기 실패", f"{p}")
 
     def _on_remove_background(self) -> None:
-        """현재 활성 ImageLayer 의 배경을 rembg 로 제거 (마스크 추가)."""
+        """현재 활성 ImageLayer 의 배경을 rembg 로 제거 (마스크 추가).
+
+        rembg 가 모델 로딩 + 추론에 수 초~수십 초 걸릴 수 있어 사용자가 실행 여부를
+        알 수 있도록 indeterminate QProgressDialog 를 띄운다. 작업은 QThreadPool 백그라운드.
+        """
         tab = self._current_screenshot_tab()
         if tab is None:
             return
@@ -977,18 +1460,80 @@ class MainWindow(QMainWindow):
             return
         cmd = BackgroundRemovalCommand(tab.stack, layer_id=active.id)
 
+        progress = QProgressDialog("배경 제거 중... (rembg 모델 추론)", None, 0, 0, self)
+        progress.setWindowTitle("배경 제거")
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+
         def on_finish(success: bool) -> None:
+            progress.close()
             if success:
                 tab.undo_stack.push(cmd)
 
+        def on_failed(msg: str) -> None:
+            progress.close()
+            QMessageBox.warning(self, "배경 제거 실패", msg)
+
         cmd.finished.connect(on_finish)
+        cmd.failed.connect(on_failed)
         cmd.run_async()
 
     def _copy_current_screenshot(self) -> None:
         tab = self._current_screenshot_tab()
         if tab is None:
             return
-        QApplication.clipboard().setImage(tab.image())
+        QApplication.clipboard().setImage(self._image_for_clipboard(tab))
+
+    def _image_for_clipboard(self, tab: "EditTab") -> QImage:
+        """selection 이 있으면 그 영역만, 없으면 전체 합성 이미지를 반환."""
+        full = tab.image()
+        if not tab.selection.has_selection():
+            return full
+        rect = tab.selection.rect()
+        if rect is None:
+            return full
+        # 캔버스 영역 안으로 클램프
+        canvas_rect = QRect(0, 0, full.width(), full.height())
+        clipped = rect.intersected(canvas_rect)
+        if clipped.width() <= 0 or clipped.height() <= 0:
+            return full
+        return full.copy(clipped)
+
+    def _cut_current_selection(self) -> None:
+        """Ctrl+X — selection 영역을 클립보드에 복사한 뒤 활성 ImageLayer 에서 지움.
+
+        selection 이 없으면 전체 합성 복사만 (지우지는 않음).
+        """
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        QApplication.clipboard().setImage(self._image_for_clipboard(tab))
+        if not tab.selection.has_selection():
+            return
+        rect = tab.selection.rect()
+        if rect is None:
+            return
+        # 활성 레이어가 ImageLayer 이면 그 영역을 transparent 로 만든다.
+        # AnnotationLayer 면 동작 없음 (벡터 영역 잘라내기는 별도 기능).
+        layer = tab.stack.active_layer()
+        if not isinstance(layer, ImageLayer):
+            return
+        # 레이어 좌표로 변환
+        local_rect = QRect(rect)
+        local_rect.translate(-int(layer.offset.x()), -int(layer.offset.y()))
+        prev_pixmap = QImage(layer.pixmap).copy()
+        new_pixmap = QImage(layer.pixmap).copy()
+        painter = QPainter(new_pixmap)
+        try:
+            painter.setCompositionMode(QPainter.CompositionMode_Clear)
+            painter.fillRect(local_rect, Qt.transparent)
+        finally:
+            painter.end()
+        cmd = RasterPaintCommand(tab.stack, layer.id, prev_pixmap, new_pixmap, text="잘라내기")
+        tab.undo_stack.push(cmd)
+        tab.selection.clear()
 
     def _open_save_folder(self) -> None:
         save_dir = self.app_settings.screenshot.save_dir or str(Path.home() / "Pictures" / "KStudio")
@@ -1005,6 +1550,11 @@ class MainWindow(QMainWindow):
     # ---------- 탭 전환 시 옵션바·도구 동기화 ----------
 
     def _on_active_tab_changed(self) -> None:
+        # 라이브러리에서 현재 탭에 해당하는 항목 강조 (탭 → 라이브러리 동기화).
+        eid = self.tab_area.current_entry_id()
+        if eid is not None:
+            self.library_panel.focus_entry(eid)
+
         tab = self._current_screenshot_tab()
         if tab is None:
             # 활성 탭이 EditTab 이 아니면 레이어 패널은 더미 stack 으로 리셋.
@@ -1019,10 +1569,118 @@ class MainWindow(QMainWindow):
         return LayerStack(QSize(1, 1))
 
     def _rebind_layers_panel(self, stack: LayerStack) -> None:
-        """LayersPanel 을 새 stack 으로 재바인딩 (도크 위젯 교체)."""
+        """LayersPanel 을 새 stack 으로 재바인딩 (dock 안에서 교체)."""
         new_panel = LayersPanel(stack)
+        # 메뉴 토글 상태에 맞춰 dock 가시성 동기화
+        self.layers_dock.setVisible(self._layers_panel_visible_state())
+        old = self.layers_panel
         self.layers_dock.setWidget(new_panel)
         self.layers_panel = new_panel
+        old.deleteLater()
+        # 영상 모드면 새로 만든 panel 도 disabled 로
+        self._apply_layers_panel_enabled_state()
+
+    def _layers_panel_visible_state(self) -> bool:
+        """레이어 dock 이 보여야 하는지 — 메뉴 체크 + 이미지 모드.
+
+        영상 모드에서는 레이어가 의미 없어 dock 자체를 숨김 (영역 회수).
+        """
+        in_image_mode = self.mode_controller.mode() is AppMode.IMAGE
+        return in_image_mode and self.menu_bar.layers_visible_action.isChecked()
+
+    def _record_status_visible_state(self) -> bool:
+        """녹화 상태 dock 이 보여야 하는지 — 메뉴 체크 + 영상 모드.
+
+        이미지 모드에서는 녹화가 의미 없어 dock 자체를 숨김 (영역 회수).
+        """
+        in_video_mode = self.mode_controller.mode() is AppMode.VIDEO
+        return in_video_mode and self.menu_bar.status_visible_action.isChecked()
+
+    def _apply_layers_panel_enabled_state(self) -> None:
+        """현재 모드에 따라 layers_panel 의 활성/비활성 상태 적용 (영상 모드면 disabled)."""
+        is_image = self.mode_controller.mode() is AppMode.IMAGE
+        self.layers_panel.setEnabled(is_image)
+
+    def _apply_mode_aware_menu_enabled(self) -> None:
+        """모드 전용 dock 의 메뉴 항목을 비-적용 모드에서 비활성화 (체크 상태는 보존)."""
+        is_image = self.mode_controller.mode() is AppMode.IMAGE
+        self.menu_bar.layers_visible_action.setEnabled(is_image)
+        self.menu_bar.status_visible_action.setEnabled(not is_image)
+        # 이미지 > 배경 제거 — 영상 모드에서는 의미 없음.
+        self.menu_bar.background_remove_action.setEnabled(is_image)
+
+    def _on_tool_palette_visibility_toggled(self, checked: bool) -> None:
+        is_image = self.mode_controller.mode() is AppMode.IMAGE
+        self.tool_palette.setVisible(checked and is_image)
+
+    def _on_layers_visibility_toggled(self, _checked: bool) -> None:
+        # 메뉴 체크 + 이미지 모드 둘 다 만족할 때만 보임.
+        self.layers_dock.setVisible(self._layers_panel_visible_state())
+
+    def _on_record_status_visibility_toggled(self, _checked: bool) -> None:
+        # 메뉴 체크 + 영상 모드 둘 다 만족할 때만 보임.
+        self.record_status_dock.setVisible(self._record_status_visible_state())
+
+    # ---------- dock 레이아웃 영속화 (모드별 분리) ----------
+    def _current_mode_state_attr(self) -> str:
+        return ("dock_state_image_b64" if self.mode_controller.mode() is AppMode.IMAGE
+                else "dock_state_video_b64")
+
+    def _save_dock_state(self) -> None:
+        """현재 모드에 해당하는 dock 레이아웃을 base64 로 저장."""
+        try:
+            import base64
+            state = bytes(self.saveState())
+            attr = self._current_mode_state_attr()
+            setattr(self.app_settings.preferences, attr, base64.b64encode(state).decode("ascii"))
+            # 호환 필드(구버전): 이미지 모드 상태를 그대로 미러링.
+            if attr == "dock_state_image_b64":
+                self.app_settings.preferences.dock_state_b64 = (
+                    self.app_settings.preferences.dock_state_image_b64
+                )
+        except Exception:
+            pass
+
+    def _apply_dock_state_b64(self, b64: str) -> bool:
+        if not b64:
+            return False
+        try:
+            import base64
+            from PySide6.QtCore import QByteArray
+            data = QByteArray(base64.b64decode(b64))
+            return bool(self.restoreState(data))
+        except Exception:
+            return False
+
+    def _restore_dock_state(self) -> None:
+        """초기 진입 모드의 dock 레이아웃을 복원. fallback: dock_state_b64."""
+        prefs = self.app_settings.preferences
+        b64 = (prefs.dock_state_image_b64
+               if self.mode_controller.mode() is AppMode.IMAGE
+               else prefs.dock_state_video_b64)
+        if not self._apply_dock_state_b64(b64):
+            self._apply_dock_state_b64(prefs.dock_state_b64)
+        self._last_mode = self.mode_controller.mode()
+
+    def _save_dock_state_for_mode(self, mode: AppMode) -> None:
+        try:
+            import base64
+            state = bytes(self.saveState())
+            attr = ("dock_state_image_b64" if mode is AppMode.IMAGE
+                    else "dock_state_video_b64")
+            setattr(self.app_settings.preferences, attr,
+                    base64.b64encode(state).decode("ascii"))
+        except Exception:
+            pass
+
+    def _restore_dock_state_for_mode(self, mode: AppMode) -> None:
+        prefs = self.app_settings.preferences
+        b64 = (prefs.dock_state_image_b64 if mode is AppMode.IMAGE
+               else prefs.dock_state_video_b64)
+        # 영상 모드는 기본적으로 layers 가 숨김 — 영상 모드 첫 진입에 저장된 게 없으면
+        # restoreState 안 하고 _on_mode_changed 의 layers_dock.setVisible 이 알아서 처리.
+        if b64:
+            self._apply_dock_state_b64(b64)
 
     # ---------- 영상 탭 단축키 ----------
 
@@ -1037,7 +1695,9 @@ class MainWindow(QMainWindow):
         self._screenshot_ctrl.capture_region()
 
     def _on_shot_full_action(self) -> None:
-        self._screenshot_ctrl.capture_full()
+        # 글로벌 툴바의 모니터 콤보에서 선택된 인덱스 사용 (-1 = 전체 모니터).
+        idx = self.global_toolbar.current_monitor_index()
+        self._screenshot_ctrl.capture_full(monitor_index=idx)
 
     def _on_hotkey_shot_region(self) -> None:
         from PySide6.QtCore import QMetaObject
@@ -1063,12 +1723,15 @@ class MainWindow(QMainWindow):
         self.status_bar.set_paused(state == RecorderState.PAUSED)
 
     def _on_finished(self, path: str):
+        # 썸네일은 ffmpeg 호출 (최대 10초 블로킹) — 백그라운드에서 처리하고
+        # 우선 placeholder 로 라이브러리/탭 즉시 추가해 UI 응답성 유지.
         p = Path(path)
         duration_ms = self._estimate_duration_ms(p)
-        thumb = self._extract_first_frame(p)
+        placeholder = QImage(64, 36, QImage.Format_ARGB32)
+        placeholder.fill(0xFF222222)
         entry = self.library_model.add(
             EntryKind.VIDEO,
-            thumbnail=thumb,
+            thumbnail=placeholder,
             source_label=self.global_toolbar.current_target(),
             display_name=p.name,        # 실제 저장된 파일명을 라이브러리에 그대로 표시
             path=p,
@@ -1077,20 +1740,158 @@ class MainWindow(QMainWindow):
         self.tab_area.add_video(
             path=p, source_label=entry.source_label,
             duration_ms=duration_ms, entry_id=entry.id,
+            display_name=p.name,
+            thumbnail=entry.thumbnail,
         )
         self._restore_window_for_capture()
         self.tray.tray.showMessage("녹화 완료", str(p), QSystemTrayIcon.Information, 5000)
+        # 썸네일은 백그라운드에서 추출 → 끝나면 LibraryModel 갱신.
+        self._extract_thumbnail_async(p, entry.id)
+
+    def _populate_library_from_disk(self) -> None:
+        """앱 시작 시 저장 폴더의 기존 파일을 라이브러리에 미리 등록.
+
+        이미지 폴더(screenshot.save_dir)는 이미지/.kstudio, 영상 폴더(general.output_dir)는
+        영상/GIF 를 스캔. 두 폴더가 같아도 확장자로 분기하므로 안전.
+        썸네일: 이미지는 즉시 디스크에서 로드, 영상은 placeholder 후 백그라운드 ffmpeg 추출.
+        모드 필터는 LibraryPanel 이 EntryKind 로 자동 처리.
+        """
+        img_dir = Path(
+            self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio"
+        )
+        vid_dir = Path(
+            self.app_settings.general.output_dir or Path.home() / "Videos" / "KStudio"
+        )
+
+        candidates: list[tuple[Path, EntryKind, float]] = []
+        for d, exts, kind in (
+            (img_dir, self.IMAGE_EXTS, EntryKind.IMAGE),
+            (vid_dir, self.VIDEO_EXTS, EntryKind.VIDEO),
+        ):
+            try:
+                if not d.exists() or not d.is_dir():
+                    continue
+                for p in d.iterdir():
+                    if not p.is_file():
+                        continue
+                    if p.suffix.lower() not in exts:
+                        continue
+                    try:
+                        mtime = p.stat().st_mtime
+                    except OSError:
+                        continue
+                    candidates.append((p, kind, mtime))
+            except OSError as e:
+                logging.getLogger(__name__).warning("library scan failed for %s: %s", d, e)
+
+        # 오래된 → 최신 순으로 add 하면 LibraryPanel 이 새 항목을 top 에 끼워 넣어
+        # 결과적으로 최신이 맨 위에 온다.
+        candidates.sort(key=lambda t: t[2])
+
+        placeholder = QImage(64, 36, QImage.Format_ARGB32)
+        placeholder.fill(0xFF222222)
+
+        for p, kind, _ in candidates:
+            if kind is EntryKind.IMAGE:
+                # .kstudio 는 직접 QImage 로 못 읽음 — placeholder.
+                if p.suffix.lower() == ".kstudio":
+                    thumb = placeholder
+                else:
+                    img = QImage(str(p))
+                    if img.isNull():
+                        thumb = placeholder
+                    else:
+                        thumb = img.scaled(
+                            128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation,
+                        )
+                self.library_model.add(
+                    EntryKind.IMAGE,
+                    thumbnail=thumb,
+                    source_label="opened",
+                    display_name=p.name,
+                    path=p,
+                    origin="opened",
+                )
+            else:
+                entry = self.library_model.add(
+                    EntryKind.VIDEO,
+                    thumbnail=placeholder,
+                    source_label="opened",
+                    display_name=p.name,
+                    path=p,
+                    duration_ms=0,
+                    origin="opened",
+                )
+                # 백그라운드에서 첫 프레임 썸네일 추출 → 라이브러리 항목 갱신.
+                self._extract_thumbnail_async(p, entry.id)
+
+    def _extract_thumbnail_async(self, path: Path, entry_id: int) -> None:
+        """ffmpeg 으로 첫 프레임 썸네일을 비동기 추출 → LibraryModel 갱신."""
+        import threading
+        def _worker():
+            img = self._extract_first_frame(path)
+            if img.isNull():
+                return
+            # 메인 스레드에서 모델 업데이트하도록 dispatch.
+            from PySide6.QtCore import QMetaObject, Qt as Qt2, Q_ARG
+            QMetaObject.invokeMethod(
+                self, "_apply_thumbnail",
+                Qt2.QueuedConnection,
+                Q_ARG(int, entry_id),
+                Q_ARG(QImage, img),
+            )
+        threading.Thread(target=_worker, daemon=True, name="ThumbnailExtract").start()
+
+    @Slot(int, QImage)
+    def _apply_thumbnail(self, entry_id: int, image: QImage) -> None:
+        """백그라운드 썸네일 추출 결과를 라이브러리 엔트리에 반영."""
+        entry = self.library_model.get(entry_id)
+        if entry is None:
+            return
+        entry.thumbnail = image
+        # 라이브러리 패널이 갱신되도록 entry_renamed 또는 직접 view refresh —
+        # 가장 간단한 방법: model 의 entry_added 처럼 re-emit 은 어려우므로,
+        # rename 시그널을 같은 이름으로 emit 해 list 갱신을 유도.
+        try:
+            self.library_model.entry_renamed.emit(entry_id, entry.display_name)
+        except Exception:
+            pass
 
     def _on_error(self, msg: str):
         QMessageBox.warning(self, "에러", msg)
 
+    def _force_quit_app(self) -> None:
+        """트레이 메뉴 '종료' 또는 명시적 quit 경로 — 진짜로 앱을 끝낸다."""
+        self._force_quit = True
+        # close() 가 closeEvent 를 발생시키며 _force_quit 플래그로 분기.
+        self.close()
+        QApplication.instance().quit()
+
     def closeEvent(self, e):
+        # X 버튼은 트레이로 숨김 (실제 종료는 트레이 메뉴 '종료').
+        if not getattr(self, "_force_quit", False):
+            e.ignore()
+            self.hide()
+            # 트레이 안내는 최초 1회만 — 매번 띄우면 알람 피로도 증가.
+            if not getattr(self, "_tray_hint_shown", False):
+                try:
+                    self.tray.tray.showMessage(
+                        "KStudio",
+                        "트레이에서 계속 실행 중입니다. 종료하려면 트레이 아이콘 우클릭 → '종료'.",
+                        QSystemTrayIcon.Information, 3000,
+                    )
+                except Exception:
+                    pass
+                self._tray_hint_shown = True
+            return
+        # 실제 종료 경로 — 녹화 중이면 사용자에게 확인.
         if self.controller.state != RecorderState.IDLE:
             ret = QMessageBox.question(self, "종료", "녹화 중입니다. 정지하고 닫을까요?")
             if ret == QMessageBox.Yes:
                 self._on_stop_clicked()
             else:
                 e.ignore()
+                self._force_quit = False  # 종료 취소 시 플래그 리셋
                 return
         # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출)
         g = self.geometry()
@@ -1098,6 +1899,8 @@ class MainWindow(QMainWindow):
         self.app_settings.screenshot.viewer_y = g.y()
         self.app_settings.screenshot.viewer_w = g.width()
         self.app_settings.screenshot.viewer_h = g.height()
+        # dock 레이아웃 영속화 — 현재 모드 기준.
+        self._save_dock_state_for_mode(self.mode_controller.mode())
         self.hotkeys.unregister()
         self._hide_border()
         e.accept()

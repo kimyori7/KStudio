@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 class LayerStack(QObject):
     layers_changed = Signal()                 # 추가/삭제/순서/표시·숨김/속성 변경
+    layer_pixmap_changed = Signal(int)        # 단일 레이어 픽스맵만 갱신 (브러시 등 핫패스용)
     canvas_size_changed = Signal()
     active_layer_changed = Signal(int)        # active_layer_id (None 이면 -1)
 
@@ -100,3 +101,7 @@ class LayerStack(QObject):
     def notify_layer_changed(self) -> None:
         """레이어 속성(visible/opacity/이름/내부 상태) 이 외부에서 바뀌었을 때 호출."""
         self.layers_changed.emit()
+
+    def notify_pixmap_changed(self, layer_id: int) -> None:
+        """단일 레이어의 픽스맵만 바뀐 핫패스 (브러시/지우개 등) — 전체 rebuild 회피."""
+        self.layer_pixmap_changed.emit(layer_id)

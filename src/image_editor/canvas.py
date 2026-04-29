@@ -13,6 +13,7 @@ from .layer_model import LayerStack
 from .layers.annotation_layer import AnnotationLayer
 from .layers.base import Layer
 from .layers.image_layer import ImageLayer
+from .selection import SelectionModel, SelectionOverlay
 from .tools.base import Tool
 
 ZOOM_MIN = 0.25
@@ -32,11 +33,17 @@ class LayerCanvas(QGraphicsView):
         self.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # 브러시 도구의 커서 미리보기 링이 hover 로 따라오도록 mouse tracking 활성.
+        self.viewport().setMouseTracking(True)
         self._sync_scene_rect()
         self._stack.layers_changed.connect(self._rebuild_items)
+        self._stack.layer_pixmap_changed.connect(self._refresh_single_layer)
         self._stack.canvas_size_changed.connect(self._sync_scene_rect)
         self._tool: Optional[Tool] = None
+        self._tool_scene: QGraphicsScene = self._scene
         self._zoom: float = 1.0
+        # 큰 이미지 로드 시 창 축소가 막히는 문제 방지 — 캔버스의 최소 크기는 작게.
+        self.setMinimumSize(0, 0)
         self._shift_held: bool = False
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
@@ -57,6 +64,8 @@ class LayerCanvas(QGraphicsView):
         for lid in existing_ids - wanted_ids:
             it = self._items.pop(lid)
             self._scene.removeItem(it)
+            # AnnotationLayer.scene 에 연결한 changed 핸들러 정리
+            self._disconnect_annotation_scene(lid)
         # 추가/갱신
         for z, layer in enumerate(self._stack.layers):
             it = self._items.get(layer.id)
@@ -64,15 +73,14 @@ class LayerCanvas(QGraphicsView):
                 it = self._make_item(layer)
                 self._items[layer.id] = it
                 self._scene.addItem(it)
+                # AnnotationLayer 는 scene.changed 에 연결해 시각 자동 갱신
+                if isinstance(layer, AnnotationLayer):
+                    self._connect_annotation_scene(layer)
             self._update_item(it, layer, z)
 
     def _make_item(self, layer: Layer) -> QGraphicsItem:
-        if isinstance(layer, ImageLayer):
-            return QGraphicsPixmapItem()
-        if isinstance(layer, AnnotationLayer):
-            return QGraphicsItemGroup()
-        # 알 수 없는 타입은 placeholder
-        return QGraphicsItemGroup()
+        # 모든 레이어를 QGraphicsPixmapItem 으로 — AnnotationLayer 도 pixmap 으로 렌더링.
+        return QGraphicsPixmapItem()
 
     def _update_item(self, it: QGraphicsItem, layer: Layer, z: int) -> None:
         it.setVisible(bool(layer.visible))
@@ -82,19 +90,63 @@ class LayerCanvas(QGraphicsView):
             pix = QPixmap.fromImage(layer.composed_pixmap())
             it.setPixmap(pix)
             it.setPos(layer.offset)
-        elif isinstance(layer, AnnotationLayer) and isinstance(it, QGraphicsItemGroup):
-            # AnnotationLayer 는 자체 scene 을 갖고 있어 직접 그려넣기는 어려움.
-            # 1차 전략: AnnotationLayer 의 아이템들을 group 의 자식으로 직접 추가/동기화.
-            current_children = set(it.childItems())
-            wanted = set(layer.items())
-            for child in current_children - wanted:
-                it.removeFromGroup(child)
-            for child in wanted - current_children:
-                # child 가 AnnotationLayer 의 scene 에 속한 상태에선 중복 추가 안 됨.
-                # 1차 단순화: 아이템을 layer.scene 에서 떼어 group 에 붙임.
-                if child.scene() is layer.scene:
-                    layer.scene.removeItem(child)
-                it.addToGroup(child)
+        elif isinstance(layer, AnnotationLayer) and isinstance(it, QGraphicsPixmapItem):
+            # AnnotationLayer 자체 scene 의 모든 아이템을 한 장 이미지로 렌더링.
+            rendered = layer.render(self._stack.canvas_size)
+            it.setPixmap(QPixmap.fromImage(rendered))
+            it.setPos(0, 0)
+
+    def _connect_annotation_scene(self, layer: "AnnotationLayer") -> None:
+        """AnnotationLayer 의 scene.changed → 해당 레이어 픽스맵 즉시 재렌더."""
+        scene = layer.scene
+        layer_id = layer.id
+        # 동일 layer 가 이미 연결되어 있으면 무시 (rebuild 시 중복 방지)
+        existing = self._scene_conns.get(layer_id) if hasattr(self, "_scene_conns") else None
+        if existing is not None:
+            return
+        if not hasattr(self, "_scene_conns"):
+            self._scene_conns: Dict[int, "tuple"] = {}
+
+        def _refresh(_rects=None) -> None:
+            it = self._items.get(layer_id)
+            l = self._stack.get_layer(layer_id)
+            if it is None or l is None:
+                return
+            rendered = l.render(self._stack.canvas_size)
+            if isinstance(it, QGraphicsPixmapItem):
+                it.setPixmap(QPixmap.fromImage(rendered))
+
+        scene.changed.connect(_refresh)
+        self._scene_conns[layer_id] = (scene, _refresh)
+
+    def _refresh_single_layer(self, layer_id: int) -> None:
+        """layer_pixmap_changed 신호 핸들러 — 한 레이어의 픽스맵만 갱신.
+
+        브러시/지우개 등 매 mouse_move 마다 호출되는 핫패스이므로 전체 rebuild 대신
+        해당 레이어 아이템만 업데이트 (1080p 풀합성 비용 회피).
+        """
+        layer = self._stack.get_layer(layer_id)
+        if layer is None:
+            return
+        it = self._items.get(layer_id)
+        if it is None:
+            return
+        # z 인덱스는 변하지 않으므로 _update_item 의 visible/opacity/픽스맵 갱신만 필요.
+        # _stack.layers 에서 z 를 다시 찾는 것은 O(n) 이라 그냥 현재 zValue 유지.
+        z = int(it.zValue())
+        self._update_item(it, layer, z)
+
+    def _disconnect_annotation_scene(self, layer_id: int) -> None:
+        if not hasattr(self, "_scene_conns"):
+            return
+        pair = self._scene_conns.pop(layer_id, None)
+        if pair is None:
+            return
+        scene, slot = pair
+        try:
+            scene.changed.disconnect(slot)
+        except (TypeError, RuntimeError):
+            pass
 
     # --- 합성 출력 ---
     def composite(self) -> QImage:
@@ -113,17 +165,32 @@ class LayerCanvas(QGraphicsView):
         return out
 
     # --- 도구 ---
-    def set_tool(self, tool: Optional[Tool]) -> None:
-        if self._tool is tool:
+    def set_tool(self, tool: Optional[Tool], *,
+                 target_scene: Optional[QGraphicsScene] = None) -> None:
+        """tool 을 활성 도구로 지정. target_scene 을 주면 도구의 mouse/key 이벤트가
+        그 scene 에 라우팅됨 (예: 활성 AnnotationLayer 의 자체 scene). None 이면
+        뷰의 기본 scene 을 사용한다."""
+        if self._tool is tool and target_scene is self._tool_scene:
             return
         if self._tool is not None:
-            self._tool.deactivated(self._scene)
+            self._tool.deactivated(self._tool_scene)
         self._tool = tool
+        self._tool_scene = target_scene if target_scene is not None else self._scene
         if tool is not None:
-            tool.activated(self._scene)
+            tool.activated(self._tool_scene)
 
     def current_tool(self) -> Optional[Tool]:
         return self._tool
+
+    def attach_selection(self, model: SelectionModel) -> None:
+        """SelectionModel 을 캔버스의 메인 scene 위 marching-ants 오버레이로 시각화."""
+        if getattr(self, "_selection_overlay", None) is not None:
+            self._selection_overlay.detach()
+        self._selection_overlay = SelectionOverlay(self._scene, model, parent=self)
+        self._selection_model = model
+
+    def selection_model(self) -> Optional["SelectionModel"]:
+        return getattr(self, "_selection_model", None)
 
     def active_layer_id(self) -> Optional[int]:
         return self._stack.active_layer_id
@@ -188,25 +255,25 @@ class LayerCanvas(QGraphicsView):
     def mousePressEvent(self, e: QMouseEvent) -> None:
         if self._tool is not None:
             scene_pos = self.mapToScene(e.position().toPoint())
-            self._tool.mouse_press(self._scene, scene_pos)
+            self._tool.mouse_press(self._tool_scene, scene_pos)
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e: QMouseEvent) -> None:
         if self._tool is not None:
             scene_pos = self.mapToScene(e.position().toPoint())
-            self._tool.mouse_move(self._scene, scene_pos)
+            self._tool.mouse_move(self._tool_scene, scene_pos)
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e: QMouseEvent) -> None:
         if self._tool is not None:
             scene_pos = self.mapToScene(e.position().toPoint())
-            self._tool.mouse_release(self._scene, scene_pos)
+            self._tool.mouse_release(self._tool_scene, scene_pos)
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:
         if self._tool is not None:
             scene_pos = self.mapToScene(e.position().toPoint())
-            self._tool.double_click(self._scene, scene_pos)
+            self._tool.double_click(self._tool_scene, scene_pos)
         super().mouseDoubleClickEvent(e)
 
     def keyPressEvent(self, e: QKeyEvent) -> None:
