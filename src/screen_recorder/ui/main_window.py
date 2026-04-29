@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 import pygetwindow as gw
 
-from PySide6.QtCore import Qt, QRect, QSize, QUrl, Slot
+from PySide6.QtCore import Qt, QFileSystemWatcher, QRect, QSize, QTimer, QUrl, Slot
 from PySide6.QtGui import (
     QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication,
     QKeySequence, QShortcut,
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from screen_recorder.core.controller import RecorderController
-from screen_recorder.core.settings import AppSettings
+from screen_recorder.core.settings import AppSettings, default_image_dir, default_video_dir
 from screen_recorder.core.state import RecorderState
 from screen_recorder.hotkey.manager import HotkeyManager
 from screen_recorder.capture.targets import (
@@ -260,6 +260,9 @@ class MainWindow(QMainWindow):
         # 이미지/영상 모두 포함, 모드 필터는 LibraryPanel 이 알아서 처리.
         self._populate_library_from_disk()
 
+        # 외부에서 파일이 삭제/이동되면 라이브러리에서도 자동 제거.
+        self._setup_library_disk_watcher()
+
     # ---------- 시그널 와이어링 ----------
 
     def _wire_signals(self) -> None:
@@ -334,6 +337,8 @@ class MainWindow(QMainWindow):
         # Ctrl+X → selection 영역 잘라내기 (클립보드 복사 후 ImageLayer 에서 지움).
         QShortcut(QKeySequence("Ctrl+X"), self,
                   activated=self._cut_current_selection)
+        # Del 처리는 LayerCanvas.keyPressEvent → EditTab.delete_selection 으로 위임.
+        # WindowShortcut 으로 등록하면 LayersPanel 의 Del 을 가로채므로 여기에 추가하지 않는다.
         # Ctrl+A → 전체 선택. 캔버스 전체 영역을 selection 으로 설정.
         QShortcut(QKeySequence("Ctrl+A"), self,
                   activated=self._on_select_all)
@@ -477,6 +482,8 @@ class MainWindow(QMainWindow):
         if tab is None:
             return
         if name == "crop":
+            # 새 크롭 시작 — 기존 selection(marching ants) 은 혼란스러우니 정리.
+            tab.selection.clear()
             tool = CropTool()
             tool.commit_requested.connect(lambda r, t=tab: self._on_crop_committed(t, r))
             tool.cursor_requested.connect(
@@ -492,6 +499,11 @@ class MainWindow(QMainWindow):
     def _on_crop_committed(self, tab: EditTab, rect) -> None:
         cmd = CropCommand(tab.stack, rect)
         tab.undo_stack.push(cmd)
+        # 크롭 후 캔버스 크기가 바뀌면 이전 CropTool 인스턴스의 overlay/handles 가 옛
+        # 좌표에 남아 위치가 어긋나 보임. 캔버스의 현재 도구가 여전히 CropTool 이면
+        # 새 인스턴스로 갈아 끼워 깨끗한 상태로 다시 활성 — 사용자가 곧바로 다시 크롭 가능.
+        if isinstance(tab.canvas.current_tool(), CropTool):
+            self._apply_tool_to_current_tab("crop")
 
     def _on_view_actual_size(self) -> None:
         tab = self._current_screenshot_tab()
@@ -946,9 +958,9 @@ class MainWindow(QMainWindow):
         if entry.path is not None and entry.path.exists():
             folder = entry.path.parent
         elif entry.kind is EntryKind.VIDEO:
-            folder = Path(self.app_settings.general.output_dir or Path.home() / "Videos" / "KStudio")
+            folder = Path(self.app_settings.general.output_dir or default_video_dir())
         else:
-            folder = Path(self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio")
+            folder = Path(self.app_settings.screenshot.save_dir or default_image_dir())
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
@@ -993,6 +1005,10 @@ class MainWindow(QMainWindow):
         color = QColor(self.app_settings.annotation.last_color)
         th = self.app_settings.annotation.last_thickness
         stack = tab.undo_stack
+        # rect/arrow/text/select 는 vector 아이템을 다루는 AnnotationLayer.scene 을 필요로 함.
+        # 캡처/새 캔버스에서는 주석 레이어를 자동 생성하지 않으므로 도구 선택 시점에 만들어 준다.
+        if tool_id in ("select", "rect", "arrow", "text"):
+            self._ensure_annotation_layer(tab)
         # 주석 도구는 활성 AnnotationLayer 의 자체 scene 으로 이벤트 라우팅 필요.
         ann_scene = self._active_annotation_scene(tab)
         if tool_id == "select":
@@ -1025,6 +1041,8 @@ class MainWindow(QMainWindow):
                 target_scene=ann_scene,
             )
         elif tool_id == "crop":
+            # 새 크롭 시작 — 기존 selection 은 정리.
+            tab.selection.clear()
             crop_tool = CropTool()
             crop_tool.commit_requested.connect(
                 lambda r, t=tab: self._on_crop_committed(t, r)
@@ -1035,6 +1053,10 @@ class MainWindow(QMainWindow):
             tab.canvas.set_tool(crop_tool)
             self._current_special_tool = None
         elif tool_id == "brush":
+            # 사용자가 LayersPanel 에서 AnnotationLayer 를 활성화한 상태로 브러시를
+            # 누르면 도구가 무시되어 "브러시 작동 안 함" 으로 보임 — 가장 위 ImageLayer
+            # 로 자동 전환해 호환성 확보.
+            self._ensure_active_image_layer(tab)
             brush = RasterBrushTool(tab.stack, color=color,
                                     size=self._raster_brush_size, mode="paint")
             brush.stroke_completed.connect(
@@ -1043,6 +1065,7 @@ class MainWindow(QMainWindow):
             tab.canvas.set_tool(brush)
             self._current_special_tool = brush
         elif tool_id == "eraser":
+            self._ensure_active_image_layer(tab)
             eraser = RasterBrushTool(tab.stack, color=color,
                                      size=self._raster_brush_size, mode="erase")
             eraser.stroke_completed.connect(
@@ -1051,9 +1074,16 @@ class MainWindow(QMainWindow):
             tab.canvas.set_tool(eraser)
             self._current_special_tool = eraser
         elif tool_id == "magic_wand":
-            tool = MagicWandTool(tolerance=self._magic_wand_tolerance)
-            tool.click_at.connect(
-                lambda pt, tol, t=tab: self._on_magic_wand_clicked(t, pt, tol)
+            self._ensure_active_image_layer(tab)
+            tool = MagicWandTool(tab.stack, tolerance=self._magic_wand_tolerance)
+            tool.commit_requested.connect(
+                lambda lid, mask, aff, t=tab: self._on_magic_wand_committed(t, lid, mask, aff)
+            )
+            tool.preview_changed.connect(
+                lambda lid, aff, t=tab: self._on_magic_wand_preview(t, lid, aff)
+            )
+            tool.cancelled.connect(
+                lambda t=tab: t.selection.clear()
             )
             tab.canvas.set_tool(tool)
             self._current_special_tool = tool
@@ -1070,6 +1100,41 @@ class MainWindow(QMainWindow):
         self.annotation_toolbar.set_undo_enabled(tab.undo_stack.canUndo())
         self.annotation_toolbar.set_redo_enabled(tab.undo_stack.canRedo())
 
+    @staticmethod
+    def _ensure_annotation_layer(tab: EditTab) -> "AnnotationLayer":
+        """AnnotationLayer 가 없으면 가장 위에 하나 추가하고 그 인스턴스를 반환.
+
+        새 캡처/새 캔버스에서는 주석 레이어를 자동 생성하지 않아 레이어 패널이 단순한데,
+        rect/arrow/text 도구는 vector 아이템을 담을 scene 이 필요해 선택 시점에 자동
+        생성한다 (Photoshop 의 "shape tool" 이 자동으로 shape layer 를 만들 듯).
+        활성 레이어는 사용자의 선택을 보존 — 자동 생성된 주석 레이어로 옮기지 않는다.
+        """
+        for layer in tab.stack.layers:
+            if isinstance(layer, AnnotationLayer):
+                return layer
+        new_id = tab.stack.next_id()
+        layer = AnnotationLayer(
+            id=new_id, name="레이어", canvas_size=tab.stack.canvas_size
+        )
+        tab.stack.add_layer(layer)
+        return layer
+
+    @staticmethod
+    def _ensure_active_image_layer(tab: EditTab) -> None:
+        """활성 레이어가 ImageLayer 가 아니면 가장 위 ImageLayer 로 활성을 옮긴다.
+
+        브러시/지우개는 ImageLayer 픽셀에만 작동하는데 사용자가 LayersPanel 에서
+        AnnotationLayer 를 클릭하면 활성이 그쪽으로 가 도구가 무반응이 된다 — 도구를
+        고른 시점에 자동 보정해 사용성을 올린다.
+        """
+        active = tab.stack.active_layer()
+        if isinstance(active, ImageLayer):
+            return
+        for layer in reversed(tab.stack.layers):
+            if isinstance(layer, ImageLayer):
+                tab.stack.set_active_layer(layer.id)
+                return
+
     def _active_annotation_scene(self, tab: EditTab):
         """현재 탭에서 사용할 AnnotationScene 을 고른다.
 
@@ -1084,19 +1149,31 @@ class MainWindow(QMainWindow):
                 return layer.scene
         return None
 
-    def _on_magic_wand_clicked(self, tab: EditTab, pt, tolerance: int) -> None:
-        layer = tab.stack.active_layer()
-        if not isinstance(layer, ImageLayer):
+    def _on_magic_wand_preview(self, tab: EditTab, layer_id: int, affected_local) -> None:
+        """마술봉이 미리보기 상태로 들어가거나 빠질 때 호출.
+
+        affected_local 이 None 이면 미리보기 해제 — selection 도 같이 정리.
+        있으면 layer-local rect 를 scene 좌표로 변환해 marching-ants 로 표시.
+        """
+        layer = tab.stack.get_layer(layer_id)
+        if not isinstance(layer, ImageLayer) or affected_local is None:
+            tab.selection.clear()
             return
-        # scene 좌표 → layer-local
-        lx = pt.x() - layer.offset.x()
-        ly = pt.y() - layer.offset.y()
-        cmd = MagicWandCommand(tab.stack, layer.id, lx, ly, tolerance)
+        scene_rect = QRect(affected_local)
+        scene_rect.translate(int(layer.offset.x()), int(layer.offset.y()))
+        tab.selection.set_rect(scene_rect)
+
+    def _on_magic_wand_committed(self, tab: EditTab, layer_id: int,
+                                 new_mask, affected_local) -> None:
+        """미리보기를 사용자가 Enter/Delete 로 확정 — 마스크 교체 커맨드 push."""
+        from image_editor.operations.magic_wand import MagicWandApplyCommand
+        cmd = MagicWandApplyCommand(tab.stack, layer_id, new_mask)
         tab.undo_stack.push(cmd)
-        # marching ants — 마술봉이 영향 준 픽셀들의 bounding rect 를 selection 으로.
-        affected = cmd.affected_layer_rect()
-        if affected is not None:
-            scene_rect = QRect(affected)
+        # 확정 후 marching ants 는 잠깐 더 표시 — 사용자에게 어디가 사라졌는지 시각화.
+        # 사용자가 다른 곳을 클릭하거나 ESC 하면 자연스럽게 해제됨.
+        layer = tab.stack.get_layer(layer_id)
+        if isinstance(layer, ImageLayer) and affected_local is not None:
+            scene_rect = QRect(affected_local)
             scene_rect.translate(int(layer.offset.x()), int(layer.offset.y()))
             tab.selection.set_rect(scene_rect)
 
@@ -1216,7 +1293,7 @@ class MainWindow(QMainWindow):
         if tab.is_saved():
             path = tab.saved_path()
         else:
-            save_dir = self.app_settings.screenshot.save_dir or str(Path.home() / "Pictures" / "KStudio")
+            save_dir = self.app_settings.screenshot.save_dir or str(default_image_dir())
             Path(save_dir).mkdir(parents=True, exist_ok=True)
             # 라이브러리 entry 의 display_name 이 있으면 그걸 우선 사용 (사용자가 변경했을 수 있음)
             entry = self._entry_for_current_tab()
@@ -1247,14 +1324,17 @@ class MainWindow(QMainWindow):
     VIDEO_EXTS = {".mp4", ".gif", ".webm", ".mov", ".avi", ".mkv"}
 
     def _on_file_new(self) -> None:
-        """파일 → 새로 만들기. 클립보드 크기 또는 사용자 입력 사이즈로 빈 EditTab 생성."""
+        """파일 → 새로 만들기. 클립보드 크기 또는 사용자 입력 사이즈로 빈 EditTab 생성.
+
+        배경은 다이얼로그의 라디오 버튼(투명/흰색) 선택을 따라간다 — 기본은 투명.
+        """
         from .new_canvas_dialog import NewCanvasDialog
         dlg = NewCanvasDialog(self)
         if dlg.exec() != dlg.Accepted:
             return
         size = dlg.size()
         try:
-            tab = EditTab.from_blank(size)
+            tab = EditTab.from_blank(size, fill_white=dlg.fill_white())
         except ValueError as e:
             QMessageBox.warning(self, "새로 만들기 실패", str(e))
             return
@@ -1371,43 +1451,91 @@ class MainWindow(QMainWindow):
         self._restore_window_for_capture()
 
     def _on_file_save(self) -> None:
-        """현재 편집 탭을 .kstudio 로 저장. 처음이면 Save As 흐름으로 위임."""
+        """현재 편집 탭을 저장. 저장 경로가 있으면 그 포맷으로 그대로 덮어쓰기,
+        없으면 Save As 흐름으로 위임. .kstudio / png / jpg / webp 모두 지원."""
         tab = self._current_screenshot_tab()
         if tab is None:
             return
         target = tab.saved_path()
-        if target is None or target.suffix.lower() != ".kstudio":
+        if target is None:
             self._on_file_save_as()
             return
-        try:
-            write_kstudio(tab.stack, target)
-        except OSError as e:
-            QMessageBox.warning(self, "저장 실패", str(e))
+        if not self._save_tab_to_path(tab, target):
             return
         tab.mark_saved(target)
 
     def _on_file_save_as(self) -> None:
-        """현재 편집 탭을 .kstudio 로 다른 이름 저장."""
+        """현재 편집 탭을 다른 이름으로 저장. PNG 가 기본, .kstudio/JPG/WebP/BMP 도 선택 가능."""
         tab = self._current_screenshot_tab()
         if tab is None:
             return
         suggested = tab.saved_path() or Path(
-            self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio"
-        ) / "project.kstudio"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "다른 이름으로 저장", str(suggested), "KStudio (*.kstudio)"
+            self.app_settings.screenshot.save_dir or default_image_dir()
+        ) / "image.png"
+        # PNG 를 가장 먼저 두어 다이얼로그 기본 필터가 되도록 한다 (사용자가 가장 자주 쓰는 포맷).
+        filters = (
+            "PNG (*.png);;"
+            "KStudio (*.kstudio);;"
+            "JPEG (*.jpg *.jpeg);;"
+            "WebP (*.webp);;"
+            "BMP (*.bmp)"
+        )
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "다른 이름으로 저장", str(suggested), filters
         )
         if not path:
             return
         p = Path(path)
-        if p.suffix.lower() != ".kstudio":
-            p = p.with_suffix(".kstudio")
-        try:
-            write_kstudio(tab.stack, p)
-        except OSError as e:
-            QMessageBox.warning(self, "저장 실패", str(e))
+        # 사용자가 확장자를 안 적었으면 선택한 필터에 맞는 기본 확장자 부여.
+        if not p.suffix:
+            p = p.with_suffix(self._default_ext_for_filter(selected_filter))
+        if not self._save_tab_to_path(tab, p):
             return
         tab.mark_saved(p)
+
+    @staticmethod
+    def _default_ext_for_filter(selected_filter: str) -> str:
+        sf = (selected_filter or "").lower()
+        if "kstudio" in sf:
+            return ".kstudio"
+        if "png" in sf:
+            return ".png"
+        if "jpeg" in sf or "jpg" in sf:
+            return ".jpg"
+        if "webp" in sf:
+            return ".webp"
+        if "bmp" in sf:
+            return ".bmp"
+        return ".png"
+
+    def _save_tab_to_path(self, tab: "EditTab", p: Path) -> bool:
+        """확장자에 따라 .kstudio(레이어 보존) 또는 raster 평탄화로 저장."""
+        ext = p.suffix.lower()
+        try:
+            if ext == ".kstudio":
+                write_kstudio(tab.stack, p)
+            elif ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+                img = tab.image()
+                fmt = "JPG" if ext in (".jpg", ".jpeg") else ext[1:].upper()
+                if fmt == "JPG":
+                    # JPG 알파 미지원 — 흰 배경 합성
+                    bg = QImage(img.size(), QImage.Format_RGB32)
+                    bg.fill(Qt.white)
+                    painter = QPainter(bg)
+                    painter.drawImage(0, 0, img)
+                    painter.end()
+                    if not bg.save(str(p), "JPG"):
+                        raise OSError(f"이미지 저장 실패: {p}")
+                else:
+                    if not img.save(str(p), fmt):
+                        raise OSError(f"이미지 저장 실패: {p}")
+            else:
+                QMessageBox.warning(self, "저장 실패", f"지원하지 않는 형식입니다: {ext}")
+                return False
+        except OSError as e:
+            QMessageBox.warning(self, "저장 실패", str(e))
+            return False
+        return True
 
     def _on_export(self, fmt: str) -> None:
         """PNG/JPG/WebP 로 평탄화 내보내기."""
@@ -1417,7 +1545,7 @@ class MainWindow(QMainWindow):
         fmt = fmt.lower()
         ext = fmt
         suggested = Path(
-            self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio"
+            self.app_settings.screenshot.save_dir or default_image_dir()
         ) / f"export.{ext}"
         path, _ = QFileDialog.getSaveFileName(
             self, f"{fmt.upper()} 로 내보내기", str(suggested),
@@ -1510,33 +1638,15 @@ class MainWindow(QMainWindow):
         if tab is None:
             return
         QApplication.clipboard().setImage(self._image_for_clipboard(tab))
-        if not tab.selection.has_selection():
-            return
-        rect = tab.selection.rect()
-        if rect is None:
-            return
-        # 활성 레이어가 ImageLayer 이면 그 영역을 transparent 로 만든다.
-        # AnnotationLayer 면 동작 없음 (벡터 영역 잘라내기는 별도 기능).
-        layer = tab.stack.active_layer()
-        if not isinstance(layer, ImageLayer):
-            return
-        # 레이어 좌표로 변환
-        local_rect = QRect(rect)
-        local_rect.translate(-int(layer.offset.x()), -int(layer.offset.y()))
-        prev_pixmap = QImage(layer.pixmap).copy()
-        new_pixmap = QImage(layer.pixmap).copy()
-        painter = QPainter(new_pixmap)
-        try:
-            painter.setCompositionMode(QPainter.CompositionMode_Clear)
-            painter.fillRect(local_rect, Qt.transparent)
-        finally:
-            painter.end()
-        cmd = RasterPaintCommand(tab.stack, layer.id, prev_pixmap, new_pixmap, text="잘라내기")
-        tab.undo_stack.push(cmd)
-        tab.selection.clear()
+        # delete_selection 은 selection 이 없으면 no-op — has_selection 가드는 그쪽이 해 줌.
+        tab.delete_selection(command_text="잘라내기")
 
     def _open_save_folder(self) -> None:
-        save_dir = self.app_settings.screenshot.save_dir or str(Path.home() / "Pictures" / "KStudio")
+        """File → 저장 폴더 열기. 현재 모드에 맞는 폴더(이미지/영상) 를 탐색기로 연다."""
+        if self.mode_controller.mode() is AppMode.VIDEO:
+            save_dir = self.app_settings.general.output_dir or str(default_video_dir())
+        else:
+            save_dir = self.app_settings.screenshot.save_dir or str(default_image_dir())
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(save_dir))
 
@@ -1757,10 +1867,10 @@ class MainWindow(QMainWindow):
         모드 필터는 LibraryPanel 이 EntryKind 로 자동 처리.
         """
         img_dir = Path(
-            self.app_settings.screenshot.save_dir or Path.home() / "Pictures" / "KStudio"
+            self.app_settings.screenshot.save_dir or default_image_dir()
         )
         vid_dir = Path(
-            self.app_settings.general.output_dir or Path.home() / "Videos" / "KStudio"
+            self.app_settings.general.output_dir or default_video_dir()
         )
 
         candidates: list[tuple[Path, EntryKind, float]] = []
@@ -1825,6 +1935,55 @@ class MainWindow(QMainWindow):
                 # 백그라운드에서 첫 프레임 썸네일 추출 → 라이브러리 항목 갱신.
                 self._extract_thumbnail_async(p, entry.id)
 
+    def _setup_library_disk_watcher(self) -> None:
+        """이미지/영상 저장 폴더를 watch — 외부에서 파일이 삭제/이동되면 라이브러리에서도 제거.
+
+        QFileSystemWatcher.directoryChanged 는 폴더 안 어떤 변화든(생성/삭제/이름 변경)
+        한 번씩 발화. 짧은 시간 내 여러 번 발화할 수 있어 디바운스 타이머로 묶어 처리.
+        """
+        img_dir = Path(self.app_settings.screenshot.save_dir or default_image_dir())
+        vid_dir = Path(self.app_settings.general.output_dir or default_video_dir())
+        # mkdir 은 _populate_library_from_disk 단계에서 안 한다 — 여기서도 강제 생성 안 함.
+        # 폴더가 아직 없으면 watch 못 함 → 첫 저장 후엔 watch 가 필요해질 수 있는데,
+        # 그땐 다음 앱 실행에서 잡힘. 단순성 우선.
+        self._library_disk_watcher = QFileSystemWatcher(self)
+        watched: list[str] = []
+        for d in (img_dir, vid_dir):
+            try:
+                if d.exists() and d.is_dir():
+                    watched.append(str(d))
+            except OSError:
+                continue
+        if watched:
+            self._library_disk_watcher.addPaths(watched)
+        # 디바운스: 윈도우에서 파일 한 번 삭제해도 directoryChanged 가 2~3 회 발화하기도 함.
+        self._library_prune_timer = QTimer(self)
+        self._library_prune_timer.setSingleShot(True)
+        self._library_prune_timer.setInterval(150)
+        self._library_prune_timer.timeout.connect(self._prune_library_missing_files)
+        self._library_disk_watcher.directoryChanged.connect(
+            lambda _path: self._library_prune_timer.start()
+        )
+
+    def _prune_library_missing_files(self) -> None:
+        """디스크에서 사라진 파일이 가리키는 라이브러리 항목을 제거.
+
+        - path 가 None 인 항목(아직 저장되지 않은 세션 캡처/편집)은 건드리지 않는다.
+        - 열려 있는 탭은 그대로 두어 미저장 작업이 사라지지 않도록 한다 — 사용자가
+          다시 저장하면 다음 외부 변화 감지 때 라이브러리에 다시 추가될 수 있음.
+        - 디스크 파일은 이미 외부에서 사라졌으므로 send2trash 호출 불필요.
+        """
+        for entry in list(self.library_model.entries()):
+            if entry.path is None:
+                continue
+            try:
+                still_there = entry.path.exists()
+            except OSError:
+                still_there = False
+            if still_there:
+                continue
+            self.library_model.remove(entry.id)
+
     def _extract_thumbnail_async(self, path: Path, entry_id: int) -> None:
         """ffmpeg 으로 첫 프레임 썸네일을 비동기 추출 → LibraryModel 갱신."""
         import threading
@@ -1856,6 +2015,11 @@ class MainWindow(QMainWindow):
             self.library_model.entry_renamed.emit(entry_id, entry.display_name)
         except Exception:
             pass
+        # 녹화 직후 만들어진 VideoTab 은 placeholder 썸네일로 시작하므로 실제 첫 프레임이
+        # 추출되면 플레이어에도 반영해야 한다 (그렇지 않으면 첫 재생 전까지 회색 화면).
+        widget = self.tab_area.tab_widget_for_entry(entry_id)
+        if widget is not None and hasattr(widget, "player"):
+            widget.player.set_thumbnail(image)
 
     def _on_error(self, msg: str):
         QMessageBox.warning(self, "에러", msg)

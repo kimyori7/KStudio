@@ -23,6 +23,7 @@ ZOOM_STEP = 1.15
 
 class LayerCanvas(QGraphicsView):
     zoom_changed = Signal(float)   # 새 배율 (1.0 = 100%) — 옵션바 줌 라벨 갱신용
+    delete_selection_requested = Signal()  # Del 키 — selection 영역 삭제 요청
 
     def __init__(self, stack: LayerStack) -> None:
         self._stack = stack
@@ -87,9 +88,30 @@ class LayerCanvas(QGraphicsView):
         it.setOpacity(float(layer.opacity))
         it.setZValue(z)
         if isinstance(layer, ImageLayer) and isinstance(it, QGraphicsPixmapItem):
-            pix = QPixmap.fromImage(layer.composed_pixmap())
-            it.setPixmap(pix)
-            it.setPos(layer.offset)
+            cs = self._stack.canvas_size
+            # 빠른 경로 — offset 이 0 이고 픽스맵이 캔버스 크기와 같으면 클리핑이
+            # 필요 없어 캔버스 크기 버퍼 합성을 건너뛴다 (브러시/지우개 핫패스의
+            # ~24MB/frame 메모리 트래픽을 절약 — 1080p 에서 큰 차이).
+            needs_clip = (
+                layer.offset.x() != 0 or layer.offset.y() != 0
+                or layer.pixmap.width() != cs.width()
+                or layer.pixmap.height() != cs.height()
+            )
+            if needs_clip:
+                # offset 이 음수이거나 크기가 다르면 캔버스 영역 밖 픽셀을 잘라낸다
+                # (Crop 후 overflow 방지). opacity 는 item.setOpacity 에서 처리하므로
+                # 여기서는 적용하지 않음.
+                buf = QImage(cs, QImage.Format_ARGB32)
+                buf.fill(Qt.transparent)
+                p = QPainter(buf)
+                try:
+                    p.drawImage(layer.offset, layer.composed_pixmap())
+                finally:
+                    p.end()
+                it.setPixmap(QPixmap.fromImage(buf))
+            else:
+                it.setPixmap(QPixmap.fromImage(layer.composed_pixmap()))
+            it.setPos(0, 0)
         elif isinstance(layer, AnnotationLayer) and isinstance(it, QGraphicsPixmapItem):
             # AnnotationLayer 자체 scene 의 모든 아이템을 한 장 이미지로 렌더링.
             rendered = layer.render(self._stack.canvas_size)
@@ -284,6 +306,21 @@ class LayerCanvas(QGraphicsView):
                 self._tool.key_escape(self._scene)
             elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
                 self._tool.key_enter(self._scene)
+        # Del — 도구가 자체적으로 처리하면(예: 마술봉 보류 → 확정) 그 결과를 우선.
+        # 그렇지 않으면 캔버스의 selection 영역 삭제로 폴백.
+        if e.key() == Qt.Key_Delete:
+            consumed = False
+            if self._tool is not None:
+                consumed = bool(self._tool.key_delete(self._scene))
+            if not consumed:
+                sel = self.selection_model()
+                if sel is not None and sel.has_selection():
+                    self.delete_selection_requested.emit()
+                    e.accept()
+                    return
+            else:
+                e.accept()
+                return
         super().keyPressEvent(e)
 
     def keyReleaseEvent(self, e: QKeyEvent) -> None:

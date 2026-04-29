@@ -39,3 +39,8 @@ class Tool:
     def key_enter(self, scene: AnnotationScene) -> None:
         """Enter / Return 키 눌림. 기본 동작 없음 (CropTool 등에서 override)."""
         pass
+
+    def key_delete(self, scene: AnnotationScene) -> bool:
+        """Delete 키 눌림. 도구가 처리했으면 True 를 반환 — 캔버스의 selection 삭제
+        흐름이 무시되어야 한다는 신호. False 면 캔버스 기본 동작(selection 영역 삭제)."""
+        return False

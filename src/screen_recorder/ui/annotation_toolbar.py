@@ -137,6 +137,14 @@ class AnnotationToolbar(QToolBar):
             self._context_action.setVisible(True)
         else:
             self._context_action.setVisible(False)
+        # px 기반 도구는 단계별 두께 셀렉터 대신 px 슬라이더를 사용하므로 두께 컨트롤
+        # 자체를 비활성화 — 사용자에게 어떤 컨트롤이 적용되는지 명확히 한다.
+        px_tool = tool_id in ("brush", "eraser", "mask_brush")
+        self._thickness_container.setEnabled(not px_tool)
+        # 시각적 약화 — disabled 상태가 더 잘 보이도록 흐리게.
+        self._thickness_container.setStyleSheet(
+            "" if not px_tool else "QWidget { color: #555; } QPushButton { color: #555; }"
+        )
 
     def set_tolerance(self, value: int) -> None:
         self._tolerance_slider.blockSignals(True)
@@ -146,9 +154,11 @@ class AnnotationToolbar(QToolBar):
 
     def set_brush_size(self, value: int) -> None:
         self._brush_size_slider.blockSignals(True)
+        self._brush_size_spin.blockSignals(True)
         self._brush_size_slider.setValue(value)
-        self._brush_size_label.setText(f"크기: {value}px")
+        self._brush_size_spin.setValue(value)
         self._brush_size_slider.blockSignals(False)
+        self._brush_size_spin.blockSignals(False)
 
     def set_brush_mode(self, mode: str) -> None:
         if mode == "add":
@@ -185,17 +195,23 @@ class AnnotationToolbar(QToolBar):
         mb_layout = QHBoxLayout(self._mask_brush_panel)
         mb_layout.setContentsMargins(4, 0, 4, 0)
         mb_layout.setSpacing(6)
-        self._brush_size_label = QLabel("크기: 30px")
-        self._brush_size_label.setStyleSheet("color: #c8c8c8;")
-        self._brush_size_label.setFixedWidth(72)
+        mb_layout.addWidget(QLabel("크기:"))
         self._brush_size_slider = QSlider(Qt.Horizontal)
         self._brush_size_slider.setRange(1, 200)
         self._brush_size_slider.setValue(30)
         self._brush_size_slider.setFixedWidth(140)
-        self._brush_size_slider.setToolTip("브러시 크기 (px)")
+        self._brush_size_slider.setToolTip("브러시 크기 (px) — 슬라이더 또는 우측 입력")
         self._brush_size_slider.valueChanged.connect(self._on_brush_size_slider_changed)
-        mb_layout.addWidget(self._brush_size_label)
+        # 우측 직접 입력 스핀박스 (슬라이더와 양방향 동기화)
+        self._brush_size_spin = QSpinBox()
+        self._brush_size_spin.setRange(1, 200)
+        self._brush_size_spin.setValue(30)
+        self._brush_size_spin.setSuffix("px")
+        self._brush_size_spin.setFixedWidth(72)
+        self._brush_size_spin.setToolTip("크기 직접 입력 (1~200 px)")
+        self._brush_size_spin.valueChanged.connect(self._on_brush_size_spin_changed)
         mb_layout.addWidget(self._brush_size_slider)
+        mb_layout.addWidget(self._brush_size_spin)
 
         # 모드 토글: 지우기 / 되살리기
         self._brush_mode_group = QButtonGroup(self)
@@ -222,22 +238,27 @@ class AnnotationToolbar(QToolBar):
         mb_layout.addWidget(self._brush_add_btn)
         mb_layout.addStretch(1)
 
-        # 래스터 브러시 / 지우개 패널: 사이즈만
+        # 래스터 브러시 / 지우개 패널: 사이즈 (슬라이더 + 직접 입력)
         self._raster_brush_panel = QWidget()
         rb_layout = QHBoxLayout(self._raster_brush_panel)
         rb_layout.setContentsMargins(4, 0, 4, 0)
         rb_layout.setSpacing(6)
-        self._raster_size_label = QLabel("크기: 20px")
-        self._raster_size_label.setStyleSheet("color: #c8c8c8;")
-        self._raster_size_label.setFixedWidth(72)
+        rb_layout.addWidget(QLabel("크기:"))
         self._raster_size_slider = QSlider(Qt.Horizontal)
         self._raster_size_slider.setRange(1, 200)
         self._raster_size_slider.setValue(20)
-        self._raster_size_slider.setFixedWidth(160)
-        self._raster_size_slider.setToolTip("브러시/지우개 크기 (px)")
+        self._raster_size_slider.setFixedWidth(140)
+        self._raster_size_slider.setToolTip("브러시/지우개 크기 (px) — 슬라이더 또는 우측 입력")
         self._raster_size_slider.valueChanged.connect(self._on_raster_size_slider_changed)
-        rb_layout.addWidget(self._raster_size_label)
+        self._raster_size_spin = QSpinBox()
+        self._raster_size_spin.setRange(1, 200)
+        self._raster_size_spin.setValue(20)
+        self._raster_size_spin.setSuffix("px")
+        self._raster_size_spin.setFixedWidth(72)
+        self._raster_size_spin.setToolTip("크기 직접 입력 (1~200 px)")
+        self._raster_size_spin.valueChanged.connect(self._on_raster_size_spin_changed)
         rb_layout.addWidget(self._raster_size_slider)
+        rb_layout.addWidget(self._raster_size_spin)
         rb_layout.addStretch(1)
 
         self._context_stack.addWidget(self._magic_wand_panel)
@@ -251,7 +272,15 @@ class AnnotationToolbar(QToolBar):
         self.tolerance_changed.emit(value)
 
     def _on_brush_size_slider_changed(self, value: int) -> None:
-        self._brush_size_label.setText(f"크기: {value}px")
+        self._brush_size_spin.blockSignals(True)
+        self._brush_size_spin.setValue(value)
+        self._brush_size_spin.blockSignals(False)
+        self.brush_size_changed.emit(value)
+
+    def _on_brush_size_spin_changed(self, value: int) -> None:
+        self._brush_size_slider.blockSignals(True)
+        self._brush_size_slider.setValue(value)
+        self._brush_size_slider.blockSignals(False)
         self.brush_size_changed.emit(value)
 
     def _on_brush_mode_toggled(self, _checked: bool) -> None:
@@ -260,7 +289,15 @@ class AnnotationToolbar(QToolBar):
         self.brush_mode_changed.emit(mode)
 
     def _on_raster_size_slider_changed(self, value: int) -> None:
-        self._raster_size_label.setText(f"크기: {value}px")
+        self._raster_size_spin.blockSignals(True)
+        self._raster_size_spin.setValue(value)
+        self._raster_size_spin.blockSignals(False)
+        self.raster_size_changed.emit(value)
+
+    def _on_raster_size_spin_changed(self, value: int) -> None:
+        self._raster_size_slider.blockSignals(True)
+        self._raster_size_slider.setValue(value)
+        self._raster_size_slider.blockSignals(False)
         self.raster_size_changed.emit(value)
 
     # --- internal build ---
@@ -322,6 +359,10 @@ class AnnotationToolbar(QToolBar):
 
     def _build_thickness(self) -> None:
         container = QWidget(self)
+        # 컨테이너 참조를 보관해 px 기반 도구(브러시/지우개/마스크 브러시) 선택 시
+        # 비활성화한다 — 그 도구들은 두께 단계 대신 px 슬라이더를 쓰므로 어떤 컨트롤이
+        # 적용되는지 사용자가 헷갈리지 않도록 함.
+        self._thickness_container = container
         layout = QHBoxLayout(container)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)

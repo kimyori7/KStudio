@@ -8,7 +8,7 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from .settings import AppSettings
+from .settings import AppSettings, default_video_dir
 from .state import RecorderState, can_transition, InvalidTransition
 from .filename import build_filename, resolve_collision
 from ..capture.targets import CaptureTarget
@@ -50,7 +50,7 @@ class RecorderController(QObject):
     def _output_dir(self) -> Path:
         if self.settings.general.output_dir:
             return Path(self.settings.general.output_dir)
-        return Path.home() / "Videos" / "KStudio"
+        return default_video_dir()
 
     def _build_output_path(self, mode: str, target_label: str, extension: str) -> Path:
         out_dir = self._output_dir()

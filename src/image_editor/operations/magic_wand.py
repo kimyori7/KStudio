@@ -104,6 +104,40 @@ def compute_magic_wand_mask_with_rect(
     return new_mask, affected
 
 
+class MagicWandApplyCommand(QUndoCommand):
+    """미리 계산된 마스크를 ImageLayer.mask 로 교체하는 undo 커맨드.
+
+    MagicWandTool 이 두 단계 (preview → confirm) 로 동작할 때 confirm 단계에서 사용.
+    이미 새 마스크가 계산돼 있으므로 redo 시점에 다시 BFS 를 돌리지 않는다.
+    """
+
+    def __init__(self, stack: LayerStack, layer_id: int, new_mask: QImage,
+                 *, text: str = "마술봉") -> None:
+        super().__init__(text)
+        self._stack = stack
+        self._layer_id = layer_id
+        self._new_mask = new_mask
+        self._prev_mask: Optional[QImage] = None
+        self._captured = False
+
+    def redo(self) -> None:
+        layer = self._stack.get_layer(self._layer_id)
+        if not isinstance(layer, ImageLayer):
+            return
+        if not self._captured:
+            self._prev_mask = layer.mask
+            self._captured = True
+        layer.mask = self._new_mask
+        self._stack.layers_changed.emit()
+
+    def undo(self) -> None:
+        layer = self._stack.get_layer(self._layer_id)
+        if not isinstance(layer, ImageLayer):
+            return
+        layer.mask = self._prev_mask
+        self._stack.layers_changed.emit()
+
+
 class MagicWandCommand(QUndoCommand):
     """클릭 위치 기준 flood-fill 로 마스크에서 영역을 빼는 undo 커맨드."""
 

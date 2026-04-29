@@ -12,7 +12,8 @@ def _solid(w, h):
     return img
 
 
-def test_activate_shows_overlay_covering_canvas(qtbot):
+def test_activate_starts_with_empty_rect(qtbot):
+    """활성화 직후엔 사각형이 비어 있어야 한다 — 사용자가 드래그해서 만들어야 함."""
     from image_editor.layer_model import LayerStack
     from image_editor.layers.image_layer import ImageLayer
     from image_editor.canvas import LayerCanvas
@@ -23,7 +24,8 @@ def test_activate_shows_overlay_covering_canvas(qtbot):
     qtbot.addWidget(canvas)
     tool = CropTool()
     canvas.set_tool(tool)
-    assert tool.current_rect() == QRect(0, 0, 100, 80)
+    r = tool.current_rect()
+    assert r.width() == 0 and r.height() == 0
 
 
 def test_drag_changes_rect(qtbot):

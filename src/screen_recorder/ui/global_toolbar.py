@@ -1,7 +1,7 @@
 """글로벌 툴바 — 모드 토글 + 모드별 액션 (영상: 녹화 / 이미지: 캡처·저장·복사)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QComboBox, QFrame, QLabel, QButtonGroup,
@@ -10,6 +10,43 @@ from PySide6.QtWidgets import (
 from ..core.state import RecorderState
 from .drag_save_button import DragSaveButton
 from .mode_controller import AppMode
+from .overlay.monitor_identifier import MonitorIdentifier
+
+
+class _MonitorComboBox(QComboBox):
+    """드롭다운을 열면 각 모니터 중앙에 큰 번호를 띄우는 콤보박스.
+
+    Windows 의 "디스플레이 설정 → 식별" 처럼 어느 쪽이 몇 번 모니터인지 시각적으로
+    알려준다. 모니터가 2 개 이상일 때만 띄움 (1 개면 불필요).
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._identifiers: list[MonitorIdentifier] = []
+
+    def showPopup(self) -> None:
+        screens = QGuiApplication.screens()
+        if len(screens) >= 2:
+            for ident in self._identifiers:
+                ident.close()
+            self._identifiers = [
+                MonitorIdentifier(s, i + 1) for i, s in enumerate(screens)
+            ]
+            for ident in self._identifiers:
+                ident.show()
+                ident.raise_()
+        super().showPopup()
+
+    def hidePopup(self) -> None:
+        super().hidePopup()
+        # hidePopup 직후엔 사용자가 모니터를 잘 보고 골랐는지 확인할 시간이 필요 없음 —
+        # 메뉴가 닫히는 순간 오버레이도 닫는다.
+        self._close_identifiers()
+
+    def _close_identifiers(self) -> None:
+        for ident in self._identifiers:
+            ident.close()
+        self._identifiers.clear()
 
 
 # 사용자 선호 순서: 지정 영역 → 특정 창 → 전체 화면 (모니터 선택은 전체화면 옆에 짝지음).
@@ -104,7 +141,7 @@ class GlobalToolbar(QWidget):
         self._monitor_label = QLabel(" 🖥")
         self._monitor_label.setToolTip("전체화면 캡처/녹화 시 사용할 모니터 — 전체 모니터 또는 1개 선택")
         layout.addWidget(self._monitor_label)
-        self.monitor_combo = QComboBox()
+        self.monitor_combo = _MonitorComboBox()
         self.monitor_combo.setToolTip("전체화면용 모니터 선택")
         self._refresh_monitors()
         self.monitor_combo.currentIndexChanged.connect(self._on_monitor_combo_changed)

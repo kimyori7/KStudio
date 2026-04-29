@@ -9,6 +9,7 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.window=false")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from screen_recorder.app import windows_assoc
 from screen_recorder.core.ffmpeg_check import find_ffmpeg
 from screen_recorder.core.settings import AppSettings, load, save
 from screen_recorder.ui.main_window import MainWindow
@@ -79,6 +80,18 @@ def main() -> int:
     app.aboutToQuit.connect(on_about_to_quit)
 
     win.show()
+
+    # 패키지된 빌드라면 .kstudio 확장자 연결을 한 번 갱신 (HKCU, idempotent).
+    windows_assoc.ensure_associated()
+
+    # 명령행으로 들어온 파일 경로가 있으면 새 탭으로 연다 (탐색기 더블클릭 흐름).
+    for arg in sys.argv[1:]:
+        if not arg or arg.startswith("-"):
+            continue
+        p = Path(arg)
+        if p.is_file():
+            win._open_path(p)
+
     return app.exec()
 
 

@@ -118,7 +118,8 @@ class CropTool(Tool):
         self._has_rect = False
         if self._overlay is None:
             self._overlay = _OverlayItem()
-            self._overlay.setRect(scene.sceneRect())
+            # 활성화 직후엔 영역 미지정 — 사용자가 드래그해야 사각형이 생김.
+            self._overlay.setRect(QRectF())
             scene.addItem(self._overlay)
 
     def deactivated(self, scene: QGraphicsScene) -> None:

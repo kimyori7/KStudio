@@ -1,11 +1,11 @@
 """우측 도크 — 레이어 패널 (목록·👁·이름·불투명도·+/−/↑↓·우클릭)."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
-    QHBoxLayout, QInputDialog, QListWidget, QListWidgetItem, QMenu, QPushButton,
-    QSlider, QVBoxLayout, QWidget,
+    QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMenu,
+    QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 
@@ -23,7 +23,57 @@ class _LayerListWidget(QListWidget):
             return
         super().keyPressEvent(e)
 
-from PySide6.QtWidgets import QLabel
+
+class _LayerRow(QWidget):
+    """한 레이어의 행 위젯 — 좌측 눈 아이콘(클릭 토글) + 이름 라벨.
+
+    행 높이/폰트 크기는 QListWidget 의 기본 stylesheet 가 너무 빡빡해 텍스트가 위·아래로
+    잘려 보이는 것을 방지하기 위해 명시적으로 지정한다.
+    """
+
+    visibility_toggled = Signal(int)   # layer_id
+
+    ROW_HEIGHT = 30
+    NORMAL_COLOR = "#E6E8EB"   # 기본 텍스트 — 어두운 패널 위에서 잘 읽히도록 거의 흰색
+    HIDDEN_COLOR = "#6B6F77"   # 숨김 상태일 때 흐린 회색
+
+    def __init__(self, layer_id: int, name: str, visible: bool) -> None:
+        super().__init__()
+        self._layer_id = layer_id
+        self.setMinimumHeight(self.ROW_HEIGHT)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 6, 4)
+        layout.setSpacing(8)
+
+        self._eye = QToolButton()
+        self._eye.setAutoRaise(True)
+        self._eye.setFixedSize(22, 22)
+        self._eye.setCursor(Qt.PointingHandCursor)
+        self._eye.setStyleSheet(
+            "QToolButton { padding: 0; border: none; background: transparent;"
+            " font-size: 14px; }"
+        )
+        self._eye.clicked.connect(lambda: self.visibility_toggled.emit(self._layer_id))
+        layout.addWidget(self._eye)
+
+        self._label = QLabel(name)
+        self._label.setTextInteractionFlags(Qt.NoTextInteraction)
+        layout.addWidget(self._label, stretch=1)
+        # _label 이 만들어진 뒤에야 set_visible_icon 호출 가능 (라벨 스타일을 같이 갱신).
+        self.set_visible_icon(visible)
+
+    def set_visible_icon(self, visible: bool) -> None:
+        # 눈 / 닫힌 눈 (보이기 / 숨기기) — 작은 아이콘 폰트 글자로 표현.
+        self._eye.setText("👁" if visible else "🚫")
+        self._eye.setToolTip("보이기 끄기" if visible else "보이기 켜기")
+        # 라벨 색상을 명시적으로 지정 — QListWidget item 색상이 상속되지 않아
+        # 기본 검정으로 떨어지면 어두운 배경에서 안 보이는 문제 방지.
+        color = self.HIDDEN_COLOR if not visible else self.NORMAL_COLOR
+        self._label.setStyleSheet(f"color: {color};")
+
+    def set_label(self, name: str) -> None:
+        self._label.setText(name)
+
 
 from image_editor.layer_model import LayerStack
 from image_editor.layers.annotation_layer import AnnotationLayer
@@ -42,13 +92,15 @@ class LayersPanel(QWidget):
 
         self._list = _LayerListWidget(self)
         self._list.setSelectionMode(QListWidget.SingleSelection)
-        # 활성 레이어 시인성: 진한 강조색 + 좌측 인디케이터.
+        # 활성 레이어 시인성: 진한 강조색 + 좌측 인디케이터. item 자체엔 padding 을
+        # 주지 않는다 — 행 위젯(_LayerRow) 이 자체 contentsMargin/spacing 을 가지므로
+        # 두 군데서 합쳐지면 텍스트가 잘려 보임.
         self._list.setStyleSheet("""
             QListWidget { background-color: #1A1C20; border: 1px solid #3C414B; border-radius: 4px; }
-            QListWidget::item { padding: 6px 8px; border-left: 3px solid transparent; color: #CFD3DA; }
+            QListWidget::item { padding: 0; border-left: 3px solid transparent; color: #CFD3DA; }
             QListWidget::item:hover { background-color: #2A2E36; }
-            QListWidget::item:selected { background-color: #2E5D8A; color: #FFFFFF;
-                                         border-left: 3px solid #4FC3F7; font-weight: 600; }
+            QListWidget::item:selected { background-color: #2E5D8A;
+                                         border-left: 3px solid #4FC3F7; }
         """)
         self._list.setContextMenuPolicy(Qt.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._show_context_menu)
@@ -150,10 +202,14 @@ class LayersPanel(QWidget):
         self._list.blockSignals(True)
         self._list.clear()
         for layer in reversed(self._stack.layers):
-            label = ("● " if layer.visible else "○ ") + layer.name
-            item = QListWidgetItem(label)
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, layer.id)
+            row = _LayerRow(layer.id, layer.name, bool(layer.visible))
+            row.visibility_toggled.connect(self._on_visibility_button)
+            # 명시적 행 높이 — 기본 sizeHint 가 너무 작아 글자가 잘려 보이는 문제 방지.
+            item.setSizeHint(QSize(row.sizeHint().width(), _LayerRow.ROW_HEIGHT))
             self._list.addItem(item)
+            self._list.setItemWidget(item, row)
         self._sync_selection(self._stack.active_layer_id if self._stack.active_layer_id is not None else -1)
         self._list.blockSignals(False)
         # 불투명도 슬라이더
@@ -162,6 +218,14 @@ class LayersPanel(QWidget):
             self._opacity.blockSignals(True)
             self._opacity.setValue(int(active.opacity * 100))
             self._opacity.blockSignals(False)
+
+    def _on_visibility_button(self, layer_id: int) -> None:
+        """행의 👁 버튼 클릭 — 해당 레이어 visible 토글 (활성 레이어 변경하지 않음)."""
+        layer = self._stack.get_layer(layer_id)
+        if layer is None:
+            return
+        layer.visible = not layer.visible
+        self._stack.notify_layer_changed()
 
     def _sync_selection(self, layer_id: int) -> None:
         for i in range(self._list.count()):

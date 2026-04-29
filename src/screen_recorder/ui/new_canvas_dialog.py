@@ -1,4 +1,4 @@
-"""'새로 만들기' 다이얼로그 — 폭/높이 입력 후 빈 EditTab 생성용 사이즈 결정.
+"""'새로 만들기' 다이얼로그 — 폭/높이 + 배경(흰색/투명) 입력 후 빈 EditTab 생성.
 
 클립보드에 이미지가 있으면 그 크기를 자동 입력 후보로 표시.
 """
@@ -7,8 +7,8 @@ from __future__ import annotations
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QPushButton,
-    QSpinBox, QVBoxLayout, QWidget,
+    QButtonGroup, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
+    QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 
@@ -70,6 +70,28 @@ class NewCanvasDialog(QDialog):
             btn_row.addWidget(btn_apply_cb)
             layout.addLayout(btn_row)
 
+        # 배경 — 투명(기본) / 흰색
+        bg_row = QHBoxLayout()
+        bg_label = QLabel("배경:")
+        bg_label.setFixedWidth(40)
+        self._bg_transparent = QRadioButton("투명")
+        self._bg_transparent.setToolTip(
+            "투명 배경 — PNG 알파를 보존. 누끼/지우개로 비운 영역이 그대로 투명."
+        )
+        self._bg_white = QRadioButton("흰색")
+        self._bg_white.setToolTip(
+            "흰 배경 — JPG 등 알파 미지원 포맷이나 종이 위에 그리는 작업에 적합."
+        )
+        self._bg_transparent.setChecked(True)
+        self._bg_group = QButtonGroup(self)
+        self._bg_group.addButton(self._bg_transparent)
+        self._bg_group.addButton(self._bg_white)
+        bg_row.addWidget(bg_label)
+        bg_row.addWidget(self._bg_transparent)
+        bg_row.addWidget(self._bg_white)
+        bg_row.addStretch(1)
+        layout.addLayout(bg_row)
+
         # OK/Cancel
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText("만들기")
@@ -80,6 +102,10 @@ class NewCanvasDialog(QDialog):
 
     def size(self) -> QSize:
         return QSize(self.width_spin.value(), self.height_spin.value())
+
+    def fill_white(self) -> bool:
+        """선택된 배경이 흰색이면 True, 투명이면 False."""
+        return self._bg_white.isChecked()
 
     @staticmethod
     def _clipboard_image_size() -> QSize:

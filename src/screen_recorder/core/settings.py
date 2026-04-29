@@ -6,9 +6,19 @@ from pathlib import Path
 from typing import get_type_hints
 
 
+def default_image_dir() -> Path:
+    """이미지/스크린샷 기본 저장 폴더 — 사용자 홈\\KStudio\\Image."""
+    return Path.home() / "KStudio" / "Image"
+
+
+def default_video_dir() -> Path:
+    """영상 녹화 기본 저장 폴더 — 사용자 홈\\KStudio\\Video."""
+    return Path.home() / "KStudio" / "Video"
+
+
 @dataclass
 class GeneralSettings:
-    output_dir: str = ""  # 빈 문자열이면 ~/Videos/KStudio
+    output_dir: str = ""  # 빈 문자열이면 ~/KStudio/Video
     filename_pattern: str = "rec_{date}_{time}"
     mode: str = "video"     # "video" | "gif"
     target: str = "fullscreen"  # "fullscreen" | "window" | "region"
@@ -54,7 +64,7 @@ class HotkeySettings:
 
 @dataclass
 class ScreenshotSettings:
-    save_dir: str = ""  # 빈 문자열이면 ~/Pictures/KStudio
+    save_dir: str = ""  # 빈 문자열이면 ~/KStudio/Image
     filename_pattern: str = "screenshot_{date}_{time}"
     format: str = "png"
     magnifier_enabled: bool = True

@@ -11,7 +11,12 @@ from PySide6.QtWidgets import (
     QFileDialog, QGroupBox, QComboBox,
 )
 
-from ...core.settings import ScreenshotSettings, GeneralSettings
+from ...core.settings import (
+    GeneralSettings,
+    ScreenshotSettings,
+    default_image_dir,
+    default_video_dir,
+)
 
 
 _FORMAT_LABELS = [("png", "PNG")]
@@ -39,7 +44,7 @@ class ScreenshotPanel(QWidget):
             screenshot.save_dir, "_browse_image_dir"
         )
         self.img_dir_edit.setPlaceholderText(
-            f"기본값: {Path.home() / 'Pictures' / 'KStudio'}"
+            f"기본값: {default_image_dir()}"
         )
         img_form.addRow("저장 폴더:", img_dir_row)
 
@@ -71,7 +76,7 @@ class ScreenshotPanel(QWidget):
                 general.output_dir, "_browse_video_dir"
             )
             self.vid_dir_edit.setPlaceholderText(
-                f"기본값: {Path.home() / 'Videos' / 'KStudio'}"
+                f"기본값: {default_video_dir()}"
             )
             vid_form.addRow("저장 폴더:", vid_dir_row)
 
