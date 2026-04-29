@@ -1005,9 +1005,11 @@ class MainWindow(QMainWindow):
         color = QColor(self.app_settings.annotation.last_color)
         th = self.app_settings.annotation.last_thickness
         stack = tab.undo_stack
-        # rect/arrow/text/select 는 vector 아이템을 다루는 AnnotationLayer.scene 을 필요로 함.
-        # 캡처/새 캔버스에서는 주석 레이어를 자동 생성하지 않으므로 도구 선택 시점에 만들어 준다.
-        if tool_id in ("select", "rect", "arrow", "text"):
+        # 새 vector 아이템을 만드는 도구만 AnnotationLayer 자동 생성 — select 는 기존
+        # 아이템을 잡는 도구라 레이어가 없으면 그냥 빈 동작이면 충분하다. 캡처 직후
+        # _reset_to_select_tool 가 select 로 돌려놓을 때 의도치 않게 빈 주석 레이어가
+        # 생성되는 문제를 막기 위함.
+        if tool_id in ("rect", "arrow", "text"):
             self._ensure_annotation_layer(tab)
         # 주석 도구는 활성 AnnotationLayer 의 자체 scene 으로 이벤트 라우팅 필요.
         ann_scene = self._active_annotation_scene(tab)

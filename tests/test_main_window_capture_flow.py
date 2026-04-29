@@ -59,3 +59,17 @@ def test_library_click_opens_existing_tab(w):
     assert w.tab_area.current_entry_id() != e.id
     w._open_entry(e.id)
     assert w.tab_area.current_entry_id() == e.id
+
+
+def test_screenshot_does_not_auto_create_annotation_layer(w):
+    """캡처 직후엔 select 도구로 리셋되지만, AnnotationLayer 가 자동 생성되면 안 된다.
+
+    select 는 기존 아이템을 조작하는 도구라 레이어가 없으면 빈 동작이면 충분.
+    rect/arrow/text 처음 누를 때만 주석 레이어가 자동 생성되어야 한다.
+    """
+    from image_editor.layers.annotation_layer import AnnotationLayer
+    w._on_screenshot_captured(_img(), "region")
+    tab = w._current_screenshot_tab()
+    assert tab is not None
+    has_ann = any(isinstance(l, AnnotationLayer) for l in tab.stack.layers)
+    assert has_ann is False, "캡처 직후 AnnotationLayer 가 자동 생성되면 안 됨"
