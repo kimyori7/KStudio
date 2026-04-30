@@ -111,6 +111,13 @@ class _DockCloseFilter(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings, ffmpeg_path: Path):
         super().__init__()
+        # 초기화 중에는 디스크 persist 를 막는다 — Qt 위젯이 setCurrentIndex /
+        # set_target 같은 프로그램 호출에도 currentIndexChanged 등 일부 시그널을
+        # 발화시켜 핸들러(_on_fullscreen_monitor_changed 등)가 _persist_settings 를
+        # 호출함. 그러면 테스트가 임시로 설정한 save_dir(예: pytest tmp) 가
+        # 사용자 실제 settings.json 에 기록돼 영구 오염됨. 사용자 의도 변경은
+        # __init__ 종료 후에만 발생하므로 그때부터 persist 허용.
+        self._initializing = True
         self.setWindowTitle("KStudio")
         self.setWindowIcon(app_icon())
         # 일반 OS 창 프레임 사용 (frameless 해제 — 메뉴 바를 위해)
@@ -273,6 +280,9 @@ class MainWindow(QMainWindow):
 
         # 외부에서 파일이 삭제/이동되면 라이브러리에서도 자동 제거.
         self._setup_library_disk_watcher()
+
+        # 초기화 끝 — 이제부터 사용자 액션에 의한 persist 허용.
+        self._initializing = False
 
     # ---------- 시그널 와이어링 ----------
 
@@ -552,7 +562,12 @@ class MainWindow(QMainWindow):
         self._persist_settings()
 
     def _persist_settings(self) -> None:
-        """app_settings 를 즉시 디스크에 저장. 자주 바뀌지 않는 설정에서만 호출."""
+        """app_settings 를 즉시 디스크에 저장. 자주 바뀌지 않는 설정에서만 호출.
+        __init__ 중 (_initializing=True) 에는 no-op — Qt 가 위젯 초기 setChecked /
+        setCurrentIndex 에 대해 자체 시그널을 발화시켜 핸들러가 의도치 않은 디스크
+        쓰기를 일으키는 것을 막는다."""
+        if getattr(self, "_initializing", False):
+            return
         try:
             save_settings(self.app_settings, settings_path())
         except OSError as e:
