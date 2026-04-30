@@ -113,9 +113,12 @@ class ScreenshotPanel(QWidget):
         return edit, row
 
     def _browse_image_dir(self) -> None:
+        # 입력란이 비어있으면 기본 저장 폴더 (~/KStudio/Image) 부터 보이게 — Path.home()
+        # 으로 떨어지면 사용자가 매번 KStudio 폴더로 이동해야 함. 폴더가 없으면 미리 생성.
+        initial = self.img_dir_edit.text().strip() or str(default_image_dir())
+        Path(initial).mkdir(parents=True, exist_ok=True)
         path = self._pick_directory(
-            "이미지 저장 폴더",
-            self.img_dir_edit.text() or str(Path.home()),
+            "이미지 저장 폴더", initial,
             name_filter="이미지 (*.png *.jpg *.jpeg *.bmp *.kstudio);;모든 파일 (*)",
         )
         if path:
@@ -123,9 +126,10 @@ class ScreenshotPanel(QWidget):
             self._sync()
 
     def _browse_video_dir(self) -> None:
+        initial = self.vid_dir_edit.text().strip() or str(default_video_dir())
+        Path(initial).mkdir(parents=True, exist_ok=True)
         path = self._pick_directory(
-            "영상 저장 폴더",
-            self.vid_dir_edit.text() or str(Path.home()),
+            "영상 저장 폴더", initial,
             name_filter="영상 (*.mp4 *.gif *.mkv *.mov *.webm);;모든 파일 (*)",
         )
         if path:
