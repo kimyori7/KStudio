@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Dict, Optional
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter, QPixmap, QWheelEvent
+from PySide6.QtGui import (
+    QBrush, QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPixmap, QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QGraphicsItem, QGraphicsItemGroup, QGraphicsPixmapItem,
     QGraphicsScene, QGraphicsView,
@@ -19,6 +21,35 @@ from .tools.base import Tool
 ZOOM_MIN = 0.25
 ZOOM_MAX = 4.0
 ZOOM_STEP = 1.15
+
+# 투명 영역 시각화 — Photoshop 스타일 격자무늬. 캔버스 sceneRect 안쪽만 그림.
+_CHECKER_SIZE = 10
+_CHECKER_LIGHT = QColor("#3A3F46")    # 다크 테마 — 매우 어두운 회색
+_CHECKER_DARK = QColor("#2C3138")     # 그보다 살짝 더 어두운 회색
+
+
+def _make_checkerboard_brush() -> QBrush:
+    """sceneRect 위 투명 영역에 깔리는 격자무늬 brush — 한 번 만들어 재사용."""
+    s = _CHECKER_SIZE
+    pm = QPixmap(s * 2, s * 2)
+    p = QPainter(pm)
+    try:
+        p.fillRect(0, 0, s * 2, s * 2, _CHECKER_LIGHT)
+        p.fillRect(0, 0, s, s, _CHECKER_DARK)
+        p.fillRect(s, s, s, s, _CHECKER_DARK)
+    finally:
+        p.end()
+    return QBrush(pm)
+
+
+_CHECKER_BRUSH: QBrush | None = None
+
+
+def _checkerboard_brush() -> QBrush:
+    global _CHECKER_BRUSH
+    if _CHECKER_BRUSH is None:
+        _CHECKER_BRUSH = _make_checkerboard_brush()
+    return _CHECKER_BRUSH
 
 
 class LayerCanvas(QGraphicsView):
@@ -51,6 +82,25 @@ class LayerCanvas(QGraphicsView):
         self.setFocusPolicy(Qt.StrongFocus)
         self._stack.active_layer_changed.connect(self._on_active_changed)
         self._rebuild_items()
+
+    # --- 배경 페인팅 ---
+    def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
+        """sceneRect 안쪽엔 투명 격자무늬, 바깥쪽은 뷰포트 기본색.
+
+        scene 의 sceneRect 가 캔버스 영역. 그 안쪽만 격자로 채워야 캔버스 외부와 시각적으로
+        구분됨. 격자는 zoom 과 무관한 device-pixel 단위로 그리도록 painter transform 을
+        잠깐 reset — 안 그러면 zoom 시 격자가 같이 늘어나 점이 커 보임.
+        """
+        super().drawBackground(painter, rect)
+        scene_rect = self.scene().sceneRect()
+        clip = rect.intersected(scene_rect)
+        if clip.isEmpty():
+            return
+        # device 좌표 기준으로 격자 크기 고정 (zoom 무관).
+        painter.save()
+        painter.setBrushOrigin(0, 0)
+        painter.fillRect(clip, _checkerboard_brush())
+        painter.restore()
 
     # --- 모델 → 뷰 ---
     def _sync_scene_rect(self) -> None:

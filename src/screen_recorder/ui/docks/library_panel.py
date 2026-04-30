@@ -119,6 +119,10 @@ class LibraryPanel(QWidget):
         row = self.list_widget.row(item)
         if row >= 0:
             self.list_widget.takeItem(row)
+        # 영상 탭이 닫히는 동안 (수백 ms) Qt 가 list 위젯 repaint 를 늦추는 경우가 있어
+        # 즉각 반영되도록 viewport 강제 갱신. 사용자가 Del 후 같은 모드 안에서도 제거를
+        # 바로 눈으로 확인할 수 있게 하기 위함.
+        self.list_widget.viewport().update()
 
     def _on_entry_renamed(self, entry_id: int, _new_name: str) -> None:
         item = self._items_by_id.get(entry_id)

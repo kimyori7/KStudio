@@ -877,6 +877,11 @@ class MainWindow(QMainWindow):
         entries = self.library_model.entries(kind=target_kind)
         if entries:
             self._open_entry(entries[0].id)
+        # 영상 모드면 추가로 한 번 더 포커스 — _open_entry 가 이미 current 인 탭에서
+        # focus_entry 를 호출하면 currentChanged 가 발화 안 해 _focus_current_video_tab
+        # 이 자동으로 안 돌 수 있다.
+        if mode is AppMode.VIDEO:
+            self._focus_current_video_tab()
 
     def _on_video_duration_resolved(self, entry_id: int, duration_ms: int) -> None:
         """영상 player 가 로드 후 실제 duration 을 알려주면 라이브러리 항목도 갱신.
@@ -938,18 +943,25 @@ class MainWindow(QMainWindow):
         entry = self.library_model.get(entry_id)
         if entry is None:
             return
-        # 디스크 파일이 있으면 휴지통으로
-        if entry.path is not None and entry.path.exists():
+        # 라이브러리에서 먼저 제거 — 사용자에게 즉각적인 UI 피드백을 주기 위함.
+        # send2trash 와 영상 탭 close 는 Windows 에서 수백 ms 걸릴 수 있는데, 그 동안
+        # 라이브러리에 항목이 남아 있으면 "Del 안 먹은 듯" 한 인상을 줌.
+        path = entry.path
+        kind = entry.kind
+        idx = self.tab_area.find_index_by_entry(entry_id)
+        self.library_model.remove(entry_id)
+        # 같이 열려 있던 탭 닫기 (영상이면 player 해제도 같이).
+        if idx >= 0:
+            self.tab_area._on_close_requested(idx)
+        # 디스크 파일이 있으면 휴지통으로 (실패해도 라이브러리에서는 이미 빠짐).
+        if path is not None and path.exists():
             try:
                 from send2trash import send2trash
-                send2trash(str(entry.path))
+                send2trash(str(path))
             except Exception as e:
-                logging.getLogger(__name__).warning("send2trash failed: %s", e)
-        # 열려 있는 탭도 같이 닫기
-        idx = self.tab_area.find_index_by_entry(entry_id)
-        if idx >= 0:
-            self.tab_area._on_close_requested(idx)  # 내부 close — entry_closed 도 발화
-        self.library_model.remove(entry_id)
+                logging.getLogger(__name__).warning(
+                    "send2trash failed for %s (%s): %s", path, kind, e,
+                )
 
     def _on_library_open_folder(self, entry_id: int) -> None:
         entry = self.library_model.get(entry_id)
@@ -1609,21 +1621,64 @@ class MainWindow(QMainWindow):
         self.app_settings.annotation.bg_removal_model = model_name
         cmd = BackgroundRemovalCommand(tab.stack, layer_id=active.id, model_name=model_name)
 
-        progress = QProgressDialog(
-            f"배경 제거 중... ({model_name} 추론)", None, 0, 0, self,
+        # 진행 상황 — 모델 캐시 여부에 따라 다운로드 / 추론 2 단계로 안내.
+        from .bg_removal_dialog import (
+            is_model_downloaded as _bg_is_cached,
+            model_size_mb as _bg_size,
+            rembg_cache_dir as _bg_cache_dir,
         )
-        progress.setWindowTitle("배경 제거")
+        from PySide6.QtCore import QTimer
+        was_cached = _bg_is_cached(model_name)
+        if was_cached:
+            initial_text = f"배경 제거 추론 중... ({model_name})"
+        else:
+            initial_text = (
+                f"모델 다운로드 중... ({model_name}, 약 {_bg_size(model_name)} MB)\n"
+                "처음 한 번만 받으면 다음부터는 빨라집니다."
+            )
+        progress = QProgressDialog(initial_text, None, 0, 100, self)
+        progress.setWindowTitle("자동 누끼")
         progress.setWindowModality(Qt.ApplicationModal)
         progress.setMinimumDuration(0)
         progress.setCancelButton(None)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        # 다운로드 진행률은 실제로 받기 어려우니(rembg/pooch 콜백 후킹이 비호환적),
+        # 다운로드 단계는 indeterminate(0,0), 추론 단계는 indeterminate(0,0) 으로 둠.
+        # 단계가 바뀌는 것만 텍스트로 명확히 알림.
+        progress.setRange(0, 0)
         progress.show()
 
+        # 캐시 폴더에 .onnx 가 등장하면 다운로드가 끝났다는 신호 — 그때 텍스트를
+        # "추론 중" 으로 갈음. 250ms 마다 polling.
+        check_path = _bg_cache_dir() / f"{model_name}.onnx"
+        download_done = [was_cached]   # mutable flag for nested closure
+
+        timer = QTimer(self)
+        timer.setInterval(250)
+
+        def _poll() -> None:
+            if download_done[0]:
+                return
+            try:
+                if check_path.exists() and check_path.stat().st_size > 0:
+                    download_done[0] = True
+                    progress.setLabelText(f"배경 제거 추론 중... ({model_name})")
+            except OSError:
+                pass
+
+        timer.timeout.connect(_poll)
+        if not was_cached:
+            timer.start()
+
         def on_finish(success: bool) -> None:
+            timer.stop()
             progress.close()
             if success:
                 tab.undo_stack.push(cmd)
 
         def on_failed(msg: str) -> None:
+            timer.stop()
             progress.close()
             QMessageBox.warning(self, "배경 제거 실패", msg)
 
@@ -1692,11 +1747,20 @@ class MainWindow(QMainWindow):
         if tab is None:
             # 활성 탭이 EditTab 이 아니면 레이어 패널은 더미 stack 으로 리셋.
             self._rebind_layers_panel(self._dummy_stack())
+            # 영상 탭이면 즉시 포커스를 줘 사용자가 별도 클릭 없이 Space 로 재생 가능.
+            self._focus_current_video_tab()
             return
         self.annotation_toolbar.set_current_color(QColor(self.app_settings.annotation.last_color))
         self.annotation_toolbar.set_current_thickness_step(self.app_settings.annotation.last_thickness)
         self.annotation_toolbar.set_zoom_label(tab.canvas.current_zoom())
         self._rebind_layers_panel(tab.stack)
+
+    def _focus_current_video_tab(self) -> None:
+        """현재 활성 탭이 VideoTab 이면 포커스를 그 위젯으로 — Space 단축키 즉시 발화."""
+        from .video_tab import VideoTab
+        widget = self.tab_area.currentWidget()
+        if isinstance(widget, VideoTab):
+            widget.setFocus()
 
     def _dummy_stack(self) -> LayerStack:
         return LayerStack(QSize(1, 1))
