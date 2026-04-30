@@ -176,14 +176,29 @@ class PlayerWidget(QStackedWidget):
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """위젯 닫힐 때 QMovie 를 확실히 정지·연결 해제해 dangling signal 방지."""
+        self.release_file_handles()
+        super().closeEvent(event)
+
+    def release_file_handles(self) -> None:
+        """현재 로드된 미디어의 OS 파일 핸들을 즉시 해제.
+
+        Windows 에서 send2trash / os.remove 직전에 호출 — QMediaPlayer 와
+        QMovie 가 둘 다 파일을 잡고 있으면 sharing violation 발생. closeEvent
+        는 deleteLater→destruct 경로에서 발화하지 않으므로 명시 호출 필요.
+        """
+        try:
+            self._media.stop()
+            self._media.setSource(QUrl())
+        except (RuntimeError, AttributeError):
+            pass
         if self._movie is not None:
-            self._movie.stop()
             try:
+                self._movie.stop()
                 self._movie.frameChanged.disconnect()
             except (TypeError, RuntimeError):
                 pass
+            self._gif_label.setMovie(None)
             self._movie = None
-        super().closeEvent(event)
 
     def is_loaded(self) -> bool:
         return self._path is not None

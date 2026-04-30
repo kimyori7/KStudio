@@ -1055,15 +1055,15 @@ class MainWindow(QMainWindow):
         kind = entry.kind
         idx = self.tab_area.find_index_by_entry(entry_id)
 
-        # 영상 파일은 QMediaPlayer 가 핸들을 잡고 있어 그대로 send2trash 호출하면
-        # Windows 가 "다른 프로그램이 사용 중" 으로 거부 → 파일이 폴더에 남는다.
-        # 탭 닫기 전에 명시적으로 setSource(QUrl()) 로 핸들을 해제해 주고,
-        # processEvents 로 deferred deletion·media-pipeline tear-down 을 한 번 굴린다.
+        # 영상/GIF 파일은 QMediaPlayer / QMovie 가 핸들을 잡고 있어 그대로 send2trash
+        # 를 호출하면 Windows 가 "다른 프로그램이 사용 중" (sharing violation) 으로 거부.
+        # 탭 닫기 전에 release_file_handles() 로 두 백엔드의 핸들을 모두 명시 해제하고,
+        # processEvents 로 deferred deletion · media-pipeline tear-down 을 한 번 굴린다.
         widget = self.tab_area.tab_widget_for_entry(entry_id)
         if isinstance(widget, VideoTab):
             try:
                 widget.player.stop()
-                widget.player._media.setSource(QUrl())
+                widget.player.release_file_handles()
             except (RuntimeError, AttributeError):
                 pass
 
