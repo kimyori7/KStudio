@@ -206,7 +206,12 @@ class MainWindow(QMainWindow):
         self.layers_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.layers_dock)
 
-        self.record_status_panel = RecordStatusPanel()
+        self.record_status_panel = RecordStatusPanel(
+            video=self.app_settings.video,
+            gif=self.app_settings.gif,
+            sound=self.app_settings.sound,
+        )
+        self.record_status_panel.settings_changed.connect(self._persist_settings)
         self.record_status_dock = QDockWidget("녹화 상태", self)
         self.record_status_dock.setObjectName("RecordStatusDock")
         self.record_status_dock.setWidget(self.record_status_panel)
@@ -1979,6 +1984,8 @@ class MainWindow(QMainWindow):
         # 글로벌 툴바 인라인 단축키 표시 동기화 (다이얼로그에서 바뀌었을 수 있음).
         self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
         self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)
+        # 녹화 상태 도크의 인라인 영상/GIF/사운드 위젯도 다이얼로그가 바꾼 값으로 동기화.
+        self.record_status_panel.refresh_from_settings()
 
     # ---------- 탭 전환 시 옵션바·도구 동기화 ----------
 

@@ -166,3 +166,35 @@ class VideoPanel(QWidget):
         self.sound.bitrate_kbps = self.s_bitrate.value()
 
         self.settings_changed.emit()
+
+    def refresh_from_settings(self) -> None:
+        """다른 곳(환경설정 다이얼로그 등) 에서 settings dataclass 가 바뀐 뒤 호출하면
+        위젯 값을 다시 settings 와 일치시킨다. blockSignals 로 _sync 재진입 방지."""
+        widgets_to_block = (
+            self.v_container, self.v_codec, self.v_fps, self.v_scale_slider,
+            self.v_scale_spin, self.v_bitrate,
+            self.g_fps, self.g_scale_slider, self.g_scale_spin, self.g_colors,
+            self.s_enabled, self.s_codec, self.s_bitrate,
+        )
+        for w in widgets_to_block:
+            w.blockSignals(True)
+        try:
+            self.v_container.setCurrentText(self.video.container)
+            ci = self.v_codec.findData(self.video.codec)
+            self.v_codec.setCurrentIndex(max(ci, 0))
+            self.v_fps.setCurrentText(str(self.video.fps))
+            self.v_scale_slider.setValue(self.video.scale_percent)
+            self.v_scale_spin.setValue(self.video.scale_percent)
+            self.v_bitrate.setValue(self.video.bitrate_kbps)
+
+            self.g_fps.setValue(self.gif.fps)
+            self.g_scale_slider.setValue(self.gif.scale_percent)
+            self.g_scale_spin.setValue(self.gif.scale_percent)
+            self.g_colors.setCurrentText(str(self.gif.colors))
+
+            self.s_enabled.setChecked(self.sound.system_audio_enabled)
+            self.s_codec.setCurrentText(self.sound.codec.upper())
+            self.s_bitrate.setValue(self.sound.bitrate_kbps)
+        finally:
+            for w in widgets_to_block:
+                w.blockSignals(False)

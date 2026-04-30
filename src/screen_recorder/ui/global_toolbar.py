@@ -12,6 +12,7 @@ from ..core.state import RecorderState
 from .drag_save_button import DragSaveButton
 from .mode_controller import AppMode
 from .overlay.monitor_identifier import MonitorIdentifier
+from .widgets import OneShotKeySequenceEdit
 
 
 class _MonitorComboBox(QComboBox):
@@ -158,8 +159,7 @@ class GlobalToolbar(QWidget):
         self._video_hotkey_label = QLabel(" 영역 녹화")
         self._video_hotkey_label.setStyleSheet("color: #999;")
         layout.addWidget(self._video_hotkey_label)
-        self.video_hotkey_edit = QKeySequenceEdit()
-        self.video_hotkey_edit.setMaximumSequenceLength(1)
+        self.video_hotkey_edit = OneShotKeySequenceEdit()
         self.video_hotkey_edit.setMaximumWidth(110)
         self.video_hotkey_edit.setToolTip("영역 녹화 단축키 (3-state 무장→시작→정지)")
         self.video_hotkey_edit.editingFinished.connect(
@@ -170,8 +170,7 @@ class GlobalToolbar(QWidget):
         self._image_hotkey_label = QLabel(" 영역 스크린샷")
         self._image_hotkey_label.setStyleSheet("color: #999;")
         layout.addWidget(self._image_hotkey_label)
-        self.image_hotkey_edit = QKeySequenceEdit()
-        self.image_hotkey_edit.setMaximumSequenceLength(1)
+        self.image_hotkey_edit = OneShotKeySequenceEdit()
         self.image_hotkey_edit.setMaximumWidth(110)
         self.image_hotkey_edit.setToolTip("영역 스크린샷 단축키")
         self.image_hotkey_edit.editingFinished.connect(

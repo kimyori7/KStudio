@@ -6,10 +6,11 @@ from typing import Optional
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QFormLayout, QHBoxLayout, QKeySequenceEdit, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ...core.settings import EditorShortcuts, HotkeySettings
+from ..widgets import OneShotKeySequenceEdit
 
 
 _EDITOR_LABELS = {
@@ -35,7 +36,7 @@ class ShortcutsPanel(QWidget):
         super().__init__()
         self._hotkeys = hotkeys
         self._editor = editor
-        self._editors: dict[str, QKeySequenceEdit] = {}
+        self._editors: dict[str, OneShotKeySequenceEdit] = {}
 
         root = QVBoxLayout(self)
 
@@ -64,16 +65,20 @@ class ShortcutsPanel(QWidget):
         root.addLayout(btn_row)
 
     def _add_hotkey_row(self, form, key: str, label: str, initial: str) -> None:
-        ed = QKeySequenceEdit()
+        ed = OneShotKeySequenceEdit()
         ed.setKeySequence(QKeySequence(initial))
-        ed.keySequenceChanged.connect(lambda seq, k=key: self._on_hotkey_changed(k, seq))
+        ed.editingFinished.connect(
+            lambda k=key, e=ed: self._on_hotkey_changed(k, e.keySequence())
+        )
         self._editors[f"hk:{key}"] = ed
         form.addRow(label + ":", ed)
 
     def _add_editor_row(self, form, key: str, label: str, initial: str) -> None:
-        ed = QKeySequenceEdit()
+        ed = OneShotKeySequenceEdit()
         ed.setKeySequence(QKeySequence(initial))
-        ed.keySequenceChanged.connect(lambda seq, k=key: self._on_editor_changed(k, seq))
+        ed.editingFinished.connect(
+            lambda k=key, e=ed: self._on_editor_changed(k, e.keySequence())
+        )
         self._editors[key] = ed
         form.addRow(label + ":", ed)
 
