@@ -30,6 +30,7 @@ class LibraryPanel(QWidget):
     entry_rename_requested = Signal(int)     # entry id (UI 상에서 인라인 편집 시작 요청)
     entry_delete_requested = Signal(int)     # entry id
     entry_open_folder_requested = Signal(int)  # entry id
+    entry_undelete_requested = Signal()       # Ctrl+Z — 마지막 삭제 항목 복원
 
     def __init__(self, model: LibraryModel,
                  mode_controller: Optional[ModeController] = None) -> None:
@@ -194,6 +195,10 @@ class LibraryPanel(QWidget):
                     eid = item.data(Qt.UserRole)
                     if eid is not None:
                         self.entry_delete_requested.emit(int(eid))
+                return True
+            # Ctrl+Z — 마지막 Del 을 휴지통에서 되돌리는 요청. 실제 복원 로직은 MainWindow.
+            if event.key() == Qt.Key_Z and (event.modifiers() & Qt.ControlModifier):
+                self.entry_undelete_requested.emit()
                 return True
         return super().eventFilter(obj, event)
 

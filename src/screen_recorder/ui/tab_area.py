@@ -26,6 +26,11 @@ class TabArea(QTabWidget):
         self._mode = mode_controller
         self._player_settings = player_settings
         self._tabs: list[tuple[QWidget, AppMode, int]] = []  # (widget, mode, entry_id)
+        # 모든 탭의 baseline 라벨 (파일명 등). 이미지 탭은 저장 상태 ● 마커가 동적으로
+        # 붙고, 영상 탭은 duration 접미사가 붙어, 라벨 재계산이 필요해 베이스만 보관.
+        self._tab_base_labels: dict[QWidget, str] = {}
+        # 영상 탭의 duration 접미사 (예: " (3s)") — 베이스와 분리 보관.
+        self._video_duration_suffix: dict[QWidget, str] = {}
         self.setTabsClosable(True)
         self.setMovable(True)
         self.tabCloseRequested.connect(self._on_close_requested)
@@ -37,14 +42,67 @@ class TabArea(QTabWidget):
                         display_name: str | None = None) -> int:
         tab = EditTab.from_screenshot(image, source_label=source_label)
         # 탭 라벨 — 실제 파일명(display_name)이 있으면 그걸로, 없으면 source_label fallback.
-        label_text = display_name if display_name else source_label
-        idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=f"📸 {label_text}")
+        base = display_name if display_name else source_label
+        self._tab_base_labels[tab] = base
+        idx = self._add_tab(tab, AppMode.IMAGE, entry_id,
+                            label=self._format_tab_label(tab))
+        # 저장 상태가 바뀔 때마다 ● 마커 토글.
+        tab.save_state_changed.connect(lambda t=tab: self._refresh_tab_label(t))
         return idx
 
-    def add_image_tab(self, tab: EditTab, *, entry_id: int, label: str) -> int:
-        """이미 구성된 EditTab 을 그대로 추가 (파일 열기 흐름)."""
-        idx = self._add_tab(tab, AppMode.IMAGE, entry_id, label=label)
+    def add_image_tab(self, tab: EditTab, *, entry_id: int,
+                       display_name: str | None = None,
+                       label: str | None = None) -> int:
+        """이미 구성된 EditTab 을 그대로 추가 (파일 열기 흐름).
+
+        display_name 우선. 하위 호환을 위해 legacy `label` 도 받지만 이모지 prefix 만
+        떼고 베이스로 사용. 가능하면 호출 측에서 display_name 을 명시.
+        """
+        if display_name:
+            base = display_name
+        elif label:
+            base = label
+            for prefix in ("📸 ", "📂 "):
+                if base.startswith(prefix):
+                    base = base[len(prefix):].strip()
+                    break
+        else:
+            base = ""
+        self._tab_base_labels[tab] = base
+        idx = self._add_tab(tab, AppMode.IMAGE, entry_id,
+                            label=self._format_tab_label(tab))
+        tab.save_state_changed.connect(lambda t=tab: self._refresh_tab_label(t))
         return idx
+
+    # ---------- 통합 탭 라벨 포맷 ----------
+    def _format_tab_label(self, tab: QWidget) -> str:
+        base = self._tab_base_labels.get(tab, "")
+        if isinstance(tab, EditTab):
+            # 미저장(또는 저장 후 변경됨) 이면 ● 마커.
+            marker = " ●" if tab.needs_save() else ""
+            return f"📸 {base}{marker}"
+        if isinstance(tab, VideoTab):
+            suffix = self._video_duration_suffix.get(tab, "")
+            return f"🎞 {base}{suffix}"
+        return base
+
+    def _refresh_tab_label(self, tab: QWidget) -> None:
+        idx = self.indexOf(tab)
+        if idx < 0:
+            return
+        self.setTabText(idx, self._format_tab_label(tab))
+
+    def update_tab_base(self, entry_id: int, new_base: str) -> None:
+        """라이브러리 rename / Save As 로 파일명이 바뀌면 베이스 라벨도 갱신.
+        이미지·영상 탭 모두 적용."""
+        idx = self.find_index_by_entry(entry_id)
+        if idx < 0:
+            return
+        widget = self._tabs[idx][0]
+        if widget not in self._tab_base_labels:
+            return
+        self._tab_base_labels[widget] = new_base
+        self._refresh_tab_label(widget)
 
     def add_video(self, *, path: Path, source_label: str, duration_ms: int, entry_id: int,
                    display_name: str | None = None,
@@ -53,16 +111,17 @@ class TabArea(QTabWidget):
                        duration_ms=duration_ms, player_settings=self._player_settings,
                        thumbnail=thumbnail)
         tab.snapshot_requested.connect(self.snapshot_requested.emit)
-        label_text = display_name if display_name else source_label
+        # 탭 라벨 — 실제 파일명(display_name)이 있으면 그걸로, 없으면 source_label.
+        base = display_name if display_name else source_label
+        self._tab_base_labels[tab] = base
         # 탭 생성 시점엔 duration_ms 가 0 일 수 있음 (인코더가 막 끝낸 영상은 메타가 늦게
         # 채워짐). VideoTab.duration_resolved 가 player 로드 후 실제 길이를 알려주면
         # 탭 라벨을 다시 쓴다.
-        suffix = self._format_video_duration(duration_ms)
+        self._video_duration_suffix[tab] = self._format_video_duration(duration_ms)
         idx = self._add_tab(tab, AppMode.VIDEO, entry_id,
-                            label=f"🎞 {label_text}{suffix}")
-        # 라벨 갱신용 컨텍스트 보존
+                            label=self._format_tab_label(tab))
         tab.duration_resolved.connect(
-            lambda ms, t=tab, base=label_text: self._on_video_duration_resolved(t, base, ms)
+            lambda ms, t=tab: self._on_video_duration_resolved(t, ms)
         )
         return idx
 
@@ -75,14 +134,14 @@ class TabArea(QTabWidget):
             return f" ({s}s)"
         return f" ({s // 60}m{s % 60:02d}s)"
 
-    def _on_video_duration_resolved(self, tab: VideoTab, base_label: str, duration_ms: int) -> None:
+    def _on_video_duration_resolved(self, tab: VideoTab, duration_ms: int) -> None:
         """player 가 영상 메타를 다 읽고 실제 duration 을 알려줬을 때 호출 — 탭 라벨 갱신 +
         뷰어가 보여주는 라이브러리 항목도 자체 시그널로 갱신되도록 외부에 알림."""
         idx = self.indexOf(tab)
         if idx < 0:
             return
-        suffix = self._format_video_duration(duration_ms)
-        self.setTabText(idx, f"🎞 {base_label}{suffix}")
+        self._video_duration_suffix[tab] = self._format_video_duration(duration_ms)
+        self._refresh_tab_label(tab)
         # entry_id 알아내서 외부 (main_window) 가 라이브러리 모델에 반영하도록
         eid = self._tabs[idx][2] if 0 <= idx < len(self._tabs) else None
         if eid is not None:
@@ -159,5 +218,12 @@ class TabArea(QTabWidget):
         widget, _, eid = self._tabs[idx]
         self.removeTab(idx)
         del self._tabs[idx]
+        self._tab_base_labels.pop(widget, None)
+        self._video_duration_suffix.pop(widget, None)
         widget.deleteLater()
         self.entry_closed.emit(eid)
+        # QTabWidget 은 탭 제거 후 currentIndex 를 자동 재설정하는데, 이 때 다른 모드의
+        # (현재는 숨겨진) 탭 위젯으로 넘어갈 수 있다. 그러면 이미지 모드인데 영상 플레이어
+        # 위젯이 중앙에 그대로 표시되는 현상 발생. 모드 visibility 를 재적용해 현재 모드
+        # 의 보이는 탭으로 전환하거나, 없으면 위젯을 숨김.
+        self._refresh_visibility(self._mode.mode())

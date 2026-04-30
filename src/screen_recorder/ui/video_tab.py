@@ -31,6 +31,13 @@ class VideoTab(QWidget):
         self._source_label = source_label
         self._settings = player_settings
 
+        # 프레임 스킵 누적 — D/F 키와 ◀/▶ 버튼으로 프레임 단위 이동할 때마다 누적,
+        # 다른 종류의 시크(슬라이더 드래그, 화살표 초단위 이동, Home/End) 가 일어나면 0 으로 리셋.
+        # delta_ms 는 실제 player.position_ms 차이의 누적이라 단순히 N * 1/fps 가 아닌
+        # 실제 영상 fps 와 정합하는 값.
+        self._frame_step_accum: int = 0
+        self._frame_step_accum_ms: int = 0
+
         self.player = PlayerWidget()
         self.controls = PlayerControls()
 
@@ -47,8 +54,11 @@ class VideoTab(QWidget):
         self.player.playing_changed.connect(self.controls.set_playing)
 
         # 컨트롤 → 모델
-        self.controls.play_toggled.connect(self.player.toggle_play)
-        self.controls.seek_request.connect(self.player.seek_ms)
+        # 재생 토글(스페이스 / 컨트롤바 ▶ 클릭) 도 시점이 바뀌니 누적 프레임 스킵 리셋.
+        self.controls.play_toggled.connect(self._on_user_play_toggle)
+        # 사용자가 슬라이더를 드래그/클릭하면 누적 프레임 스킵 카운터 리셋. 프로그래매틱
+        # set_position_ms 는 controls 쪽에서 blockSignals 처리되므로 여기로 들어오지 않음.
+        self.controls.seek_request.connect(self._on_user_seek_request)
         self.controls.volume_changed.connect(self.player.set_volume)
         self.controls.mute_toggled.connect(self._toggle_mute)
         self.controls.speed_changed.connect(self.player.set_playback_rate)
@@ -73,24 +83,26 @@ class VideoTab(QWidget):
         m = event.modifiers()
         if k == Qt.Key_Space:
             self.player.toggle_play()
+            self._reset_frame_step_accum()
             event.accept(); return
         if k == Qt.Key_Right:
             delta = self._delta_for_modifier(m, sign=+1)
             self.player.seek_seconds(delta)
             self.player.flash_action(f"▶▶ +{abs(delta):g}초")
+            self._reset_frame_step_accum()
             event.accept(); return
         if k == Qt.Key_Left:
             delta = self._delta_for_modifier(m, sign=-1)
             self.player.seek_seconds(delta)
             self.player.flash_action(f"◀◀ -{abs(delta):g}초")
+            self._reset_frame_step_accum()
             event.accept(); return
-        if k == Qt.Key_Period:
-            self.player.step_frame(+1)
-            self.player.flash_action("▶ +1 프레임")
+        # 프레임 단위 이동: D = 이전 프레임, F = 다음 프레임 (사용자 요청 단축키).
+        if k == Qt.Key_F:
+            self._do_frame_step(+1)
             event.accept(); return
-        if k == Qt.Key_Comma:
-            self.player.step_frame(-1)
-            self.player.flash_action("◀ -1 프레임")
+        if k == Qt.Key_D:
+            self._do_frame_step(-1)
             event.accept(); return
         if k == Qt.Key_Up:
             self._bump_volume(+0.1); event.accept(); return
@@ -105,20 +117,51 @@ class VideoTab(QWidget):
         if k == Qt.Key_Home:
             self.player.seek_ms(0)
             self.player.flash_action("⏮ 처음으로")
+            self._reset_frame_step_accum()
             event.accept(); return
         if k == Qt.Key_End:
             self.player.seek_ms(self.player.duration_ms())
             self.player.flash_action("⏭ 끝으로")
+            self._reset_frame_step_accum()
             event.accept(); return
         super().keyPressEvent(event)
 
     def _on_frame_step_button(self, direction: int) -> None:
-        """컨트롤바의 ◀/▶ 프레임 버튼 → 플레이어 step + HUD 표시."""
+        """컨트롤바의 ◀/▶ 프레임 버튼 → 단축키와 동일하게 프레임 step + 누적 HUD."""
+        self._do_frame_step(direction)
+
+    def _do_frame_step(self, direction: int) -> None:
+        """프레임 단위 이동 + 누적 카운터 갱신 + HUD 표시 (D/F 키 / ◀▶ 버튼 공통)."""
+        before_ms = self.player.position_ms()
         self.player.step_frame(direction)
-        if direction > 0:
-            self.player.flash_action("▶ +1 프레임")
-        else:
-            self.player.flash_action("◀ -1 프레임")
+        after_ms = self.player.position_ms()
+        delta_ms = after_ms - before_ms
+        self._frame_step_accum += direction
+        self._frame_step_accum_ms += delta_ms
+        # HUD: 단발 표시 + 누적 (스킵 횟수 + 시간). 부호는 +N / -N 로 직관적으로 보이게.
+        single = "+1 프레임" if direction > 0 else "-1 프레임"
+        arrow = "▶" if direction > 0 else "◀"
+        accum_n = self._frame_step_accum
+        accum_sign = "+" if accum_n >= 0 else ""
+        sec = self._frame_step_accum_ms / 1000.0
+        sec_str = f"{sec:+.2f}초"
+        self.player.flash_action(
+            f"{arrow} {single} (누적 프레임 스킵 {accum_sign}{accum_n}, {sec_str})"
+        )
+
+    def _reset_frame_step_accum(self) -> None:
+        self._frame_step_accum = 0
+        self._frame_step_accum_ms = 0
+
+    def _on_user_seek_request(self, ms: int) -> None:
+        """슬라이더 드래그/클릭으로 사용자가 시크 — 누적 카운터 초기화."""
+        self.player.seek_ms(ms)
+        self._reset_frame_step_accum()
+
+    def _on_user_play_toggle(self) -> None:
+        """재생 토글 (스페이스 / 컨트롤바 ▶ 버튼) — 누적 카운터 초기화."""
+        self.player.toggle_play()
+        self._reset_frame_step_accum()
 
     def _delta_for_modifier(self, m: Qt.KeyboardModifier, sign: int) -> float:
         if m & Qt.ControlModifier:

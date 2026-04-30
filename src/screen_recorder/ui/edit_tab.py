@@ -89,6 +89,7 @@ class EditTab(QWidget):
             tab = cls(stack, source_label="opened")
             tab._saved_path = path
             tab.undo_stack.setClean()
+            tab._last_needs_save = tab.needs_save()
             return tab
         # 일반 raster: PNG / JPG / WebP / BMP — 투명 배경 + 사진 두 레이어.
         img = QImage(str(path))
@@ -100,7 +101,13 @@ class EditTab(QWidget):
         photo = ImageLayer(id=stack.next_id(), name=path.name, pixmap=img)
         stack.add_layer(photo)
         stack.set_active_layer(photo.id)
-        return cls(stack, source_label="opened")
+        tab = cls(stack, source_label="opened")
+        # 디스크에서 막 로드한 파일은 "이미 저장된 상태" 다 — 저장 마커가 안 떠야 함.
+        # (편집 안 한 상태로는 needs_save() == False.) Ctrl+S 시 같은 경로에 덮어쓰기.
+        tab._saved_path = path
+        tab.undo_stack.setClean()
+        tab._last_needs_save = tab.needs_save()
+        return tab
 
     # --- 외부 API (구 ScreenshotTab 호환) ---
     def image(self) -> QImage:

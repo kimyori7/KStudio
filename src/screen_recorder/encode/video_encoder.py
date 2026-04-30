@@ -59,33 +59,54 @@ class VideoEncoder(threading.Thread):
         argv = video_pipe_args(self.video_settings, self.width, self.height, str(video_only))
         argv[0] = str(self.ffmpeg_path)
 
+        # ffmpeg stderr 를 임시 파일로 보내 디버깅용 로그 보존 (DEVNULL 이면 사용자가
+        # 'mp4 가 0초로 떨어진' 원인을 추적할 길이 없음). 정상 종료 시엔 자동 삭제.
+        stderr_log_path = self.output_path.with_suffix(".ffmpeg.log")
+        try:
+            stderr_log = open(stderr_log_path, "wb")
+        except OSError:
+            stderr_log = subprocess.DEVNULL  # 폴백 — 로그 못 열어도 인코딩은 계속
+            stderr_log_path = None
+
         try:
             proc = subprocess.Popen(
                 argv,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_log,
                 creationflags=_NO_WINDOW,
             )
         except Exception as e:
             self.error = f"ffmpeg start failed: {e}"
             log.error(self.error)
+            if isinstance(stderr_log, int) is False:
+                try:
+                    stderr_log.close()
+                except Exception:
+                    pass
             return
 
+        log.info("ffmpeg video pipe started: %s (size %dx%d)",
+                 video_only.name, self.width, self.height)
+        frame_count = 0
         try:
             while True:
                 item = self.frame_queue.get()
                 if item is None:
                     break
                 if proc.poll() is not None:
-                    self.error = "ffmpeg exited unexpectedly"
+                    self.error = (
+                        f"ffmpeg exited unexpectedly (code={proc.returncode}); "
+                        f"see {stderr_log_path}"
+                    )
                     log.error(self.error)
                     break
                 data = item if isinstance(item, (bytes, bytearray)) else item.tobytes()
                 try:
                     proc.stdin.write(data)
+                    frame_count += 1
                 except (BrokenPipeError, OSError) as e:
-                    self.error = f"pipe write failed: {e}"
+                    self.error = f"pipe write failed after {frame_count} frames: {e}"
                     log.error(self.error)
                     break
         finally:
@@ -94,6 +115,22 @@ class VideoEncoder(threading.Thread):
             except Exception:
                 pass
             proc.wait(timeout=5)
+            if hasattr(stderr_log, "close"):
+                try:
+                    stderr_log.close()
+                except Exception:
+                    pass
+        log.info("ffmpeg video pipe finished: %d frames written, exit=%s",
+                 frame_count, proc.returncode)
+        # 정상 종료 + 충분한 프레임이면 stderr 로그 정리. 비정상이면 보존.
+        if (stderr_log_path is not None
+                and proc.returncode == 0
+                and frame_count > 0
+                and self.error is None):
+            try:
+                Path(stderr_log_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
         if not has_audio:
             return

@@ -79,14 +79,14 @@ class PlayerControls(QWidget):
         # 프레임 스텝/스냅샷/풀스크린 — 아이콘 가독성을 위해 크게.
         self.frame_back_btn = QPushButton("◀")
         self.frame_back_btn.setFixedSize(40, 32)
-        self.frame_back_btn.setToolTip("이전 프레임 (,)")
+        self.frame_back_btn.setToolTip("이전 프레임 (D)")
         self.frame_back_btn.clicked.connect(lambda: self.frame_step.emit(-1))
         _bump_font_size(self.frame_back_btn, 16)
         layout.addWidget(self.frame_back_btn)
 
         self.frame_forward_btn = QPushButton("▶")
         self.frame_forward_btn.setFixedSize(40, 32)
-        self.frame_forward_btn.setToolTip("다음 프레임 (.)")
+        self.frame_forward_btn.setToolTip("다음 프레임 (F)")
         self.frame_forward_btn.clicked.connect(lambda: self.frame_step.emit(+1))
         _bump_font_size(self.frame_forward_btn, 16)
         layout.addWidget(self.frame_forward_btn)

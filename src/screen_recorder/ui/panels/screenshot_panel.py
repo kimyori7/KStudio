@@ -113,20 +113,43 @@ class ScreenshotPanel(QWidget):
         return edit, row
 
     def _browse_image_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(
-            self, "이미지 저장 폴더", self.img_dir_edit.text() or str(Path.home())
+        path = self._pick_directory(
+            "이미지 저장 폴더",
+            self.img_dir_edit.text() or str(Path.home()),
+            name_filter="이미지 (*.png *.jpg *.jpeg *.bmp *.kstudio);;모든 파일 (*)",
         )
         if path:
             self.img_dir_edit.setText(path)
             self._sync()
 
     def _browse_video_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(
-            self, "영상 저장 폴더", self.vid_dir_edit.text() or str(Path.home())
+        path = self._pick_directory(
+            "영상 저장 폴더",
+            self.vid_dir_edit.text() or str(Path.home()),
+            name_filter="영상 (*.mp4 *.gif *.mkv *.mov *.webm);;모든 파일 (*)",
         )
         if path:
             self.vid_dir_edit.setText(path)
             self._sync()
+
+    def _pick_directory(self, caption: str, initial: str, name_filter: str) -> str:
+        # Qt 자체 다이얼로그를 써서 ShowDirsOnly 를 끔 — 폴더 안의 파일도 미리보기처럼
+        # 보이도록(선택은 폴더 단위). Windows 네이티브 폴더 피커는 파일을 숨겨서
+        # 사용자가 빈 폴더처럼 느끼는 문제 해결.
+        dlg = QFileDialog(self, caption, initial)
+        dlg.setFileMode(QFileDialog.Directory)
+        dlg.setOption(QFileDialog.ShowDirsOnly, False)
+        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+        dlg.setNameFilter(name_filter)
+        dlg.setAcceptMode(QFileDialog.AcceptOpen)
+        if dlg.exec() != QFileDialog.Accepted:
+            return ""
+        files = dlg.selectedFiles()
+        if not files:
+            return ""
+        # 사용자가 파일을 선택해도 그 파일이 들어있는 폴더로 해석.
+        chosen = Path(files[0])
+        return str(chosen if chosen.is_dir() else chosen.parent)
 
     def _sync(self) -> None:
         self.settings.save_dir = self.img_dir_edit.text()

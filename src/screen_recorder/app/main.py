@@ -11,11 +11,11 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from screen_recorder.app import windows_assoc
 from screen_recorder.core.ffmpeg_check import find_ffmpeg
-from screen_recorder.core.settings import AppSettings, load, save
+from screen_recorder.core.settings import AppSettings, load, save, settings_path
 from screen_recorder.ui.main_window import MainWindow
 
 
-SETTINGS_PATH = Path.home() / "AppData" / "Local" / "KStudio" / "settings.json"
+SETTINGS_PATH = settings_path()
 
 
 def build_main_window(

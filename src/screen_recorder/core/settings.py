@@ -145,6 +145,11 @@ def save(settings: AppSettings, path: Path) -> None:
     )
 
 
+def settings_path() -> Path:
+    """앱 어디서든 동일한 settings.json 경로를 얻기 위한 헬퍼."""
+    return Path.home() / "AppData" / "Local" / "KStudio" / "settings.json"
+
+
 def load(path: Path) -> AppSettings:
     if not path.exists():
         return AppSettings()

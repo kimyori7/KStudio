@@ -27,7 +27,9 @@ from PySide6.QtWidgets import (
 )
 
 from screen_recorder.core.controller import RecorderController
-from screen_recorder.core.settings import AppSettings, default_image_dir, default_video_dir
+from screen_recorder.core.settings import (
+    AppSettings, default_image_dir, default_video_dir, save as save_settings, settings_path,
+)
 from screen_recorder.core.state import RecorderState
 from screen_recorder.hotkey.manager import HotkeyManager
 from screen_recorder.capture.targets import (
@@ -145,12 +147,16 @@ class MainWindow(QMainWindow):
         # ---------- 글로벌 툴바 (QToolBar 래퍼에 위젯 삽입) ----------
         self.global_toolbar = GlobalToolbar()
         self._global_tb_host = QToolBar("글로벌", self)
+        # objectName 은 QMainWindow.saveState/restoreState 가 toolbar/dock 을 식별하는
+        # 키. 없으면 매 실행마다 "objectName not set" 경고 + 위치 복원 불가능.
+        self._global_tb_host.setObjectName("GlobalToolBarHost")
         self._global_tb_host.setMovable(False)
         self._global_tb_host.addWidget(self.global_toolbar)
         self.addToolBar(self._global_tb_host)
 
         # ---------- 옵션바 (annotation toolbar) ----------
         self.annotation_toolbar = AnnotationToolbar(self)
+        self.annotation_toolbar.setObjectName("AnnotationToolBar")
         self.addToolBarBreak()
         self.addToolBar(self.annotation_toolbar)
 
@@ -218,6 +224,11 @@ class MainWindow(QMainWindow):
             viewer_getter=lambda: None,
         )
         self._screenshot_ctrl.captured.connect(self._on_screenshot_captured)
+
+        # 라이브러리 Del 한 항목들 (Ctrl+Z 복원용). 가장 최근 삭제가 stack 의 끝.
+        # 각 항목은 (LibraryEntry 의 핵심 메타) — entry id 는 새로 발급되므로 보관 X.
+        # path / kind / source_label / display_name / origin / duration_ms / thumbnail.
+        self._undelete_stack: list[dict] = []
 
         # ---------- 단축키 등록 ----------
         self._register_all_hotkeys()
@@ -326,6 +337,7 @@ class MainWindow(QMainWindow):
         self.library_panel.entry_open_requested.connect(self._open_entry)
         self.library_panel.entry_delete_requested.connect(self._on_library_delete)
         self.library_panel.entry_open_folder_requested.connect(self._on_library_open_folder)
+        self.library_panel.entry_undelete_requested.connect(self._on_library_undelete)
         self.library_model.entry_renamed.connect(self._on_entry_renamed)
 
         # 영상 탭 프레임 → 스크린샷 단축키
@@ -527,6 +539,7 @@ class MainWindow(QMainWindow):
             if self.controller.state == RecorderState.IDLE:
                 self.status_bar.state_label.setText("● 대기 중")
                 self.status_bar.state_label.setStyleSheet("color: #666;")
+        self._persist_settings()
 
     def _on_fullscreen_monitor_changed(self, idx: int) -> None:
         self.app_settings.general.fullscreen_monitor_index = idx
@@ -534,6 +547,16 @@ class MainWindow(QMainWindow):
                 and self.global_toolbar.current_target() == "fullscreen"):
             self.status_bar.state_label.setText(f"● 대기 중 (모니터 {idx + 1})")
             self.status_bar.state_label.setStyleSheet("color: #666;")
+        # 즉시 디스크에 저장 — aboutToQuit 만 의존하면 강제 종료/크래시 시 손실. 모니터
+        # 선택은 자주 바뀌지 않고 JSON 쓰기는 ms 단위라 hot path 아님.
+        self._persist_settings()
+
+    def _persist_settings(self) -> None:
+        """app_settings 를 즉시 디스크에 저장. 자주 바뀌지 않는 설정에서만 호출."""
+        try:
+            save_settings(self.app_settings, settings_path())
+        except OSError as e:
+            logging.getLogger(__name__).warning("settings save failed: %s", e)
 
     def _default_region_geometry(self) -> tuple[int, int, int, int]:
         screens = QGuiApplication.screens()
@@ -817,6 +840,14 @@ class MainWindow(QMainWindow):
         entry = self.library_model.get(entry_id)
         if entry is None:
             return
+        # display_name 이 비어 있으면 path.name 또는 source_label 로 폴백 — 어느 경우든
+        # 사용자가 보는 라이브러리 항목 이름과 탭 라벨이 같도록 우선순위 명시.
+        display_name = entry.display_name
+        if not display_name:
+            if entry.path is not None:
+                display_name = entry.path.name
+            else:
+                display_name = entry.source_label
         if entry.kind is EntryKind.SCREENSHOT:
             # path 가 있으면 디스크에서 로드 (origin="opened" 또는 저장된 캡처)
             # — 라이브러리의 thumbnail 은 다운스케일 본일 수 있으므로 원본을 우선.
@@ -827,11 +858,12 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "열기 실패", str(e))
                     return
                 self.tab_area.add_image_tab(
-                    tab, entry_id=entry.id, label=f"📂 {entry.path.name}"
+                    tab, entry_id=entry.id, display_name=display_name
                 )
             else:
                 self.tab_area.add_screenshot(
-                    image=entry.thumbnail, source_label=entry.source_label, entry_id=entry.id
+                    image=entry.thumbnail, source_label=entry.source_label, entry_id=entry.id,
+                    display_name=display_name,
                 )
         else:
             if entry.path is None:
@@ -839,6 +871,7 @@ class MainWindow(QMainWindow):
             self.tab_area.add_video(
                 path=entry.path, source_label=entry.source_label,
                 duration_ms=entry.duration_ms, entry_id=entry.id,
+                display_name=display_name,
                 thumbnail=entry.thumbnail,
             )
 
@@ -924,6 +957,9 @@ class MainWindow(QMainWindow):
 
         이름 충돌·OSError 시: 사용자에게 안내 후 display_name 을 디스크 파일 stem 으로
         롤백 (라이브러리 표시와 디스크 파일명이 어긋난 채 유지되지 않도록)."""
+        # 탭 라벨도 새 이름으로 갱신 (이미지·영상 모두). 저장 상태 ● 와 영상 duration
+        # 접미사는 TabArea 가 자체 보존.
+        self.tab_area.update_tab_base(entry_id, new_name)
         entry = self.library_model.get(entry_id)
         if entry is None or entry.path is None:
             return
@@ -966,19 +1002,102 @@ class MainWindow(QMainWindow):
         path = entry.path
         kind = entry.kind
         idx = self.tab_area.find_index_by_entry(entry_id)
+
+        # 영상 파일은 QMediaPlayer 가 핸들을 잡고 있어 그대로 send2trash 호출하면
+        # Windows 가 "다른 프로그램이 사용 중" 으로 거부 → 파일이 폴더에 남는다.
+        # 탭 닫기 전에 명시적으로 setSource(QUrl()) 로 핸들을 해제해 주고,
+        # processEvents 로 deferred deletion·media-pipeline tear-down 을 한 번 굴린다.
+        widget = self.tab_area.tab_widget_for_entry(entry_id)
+        if isinstance(widget, VideoTab):
+            try:
+                widget.player.stop()
+                widget.player._media.setSource(QUrl())
+            except (RuntimeError, AttributeError):
+                pass
+
+        # Ctrl+Z 복원용 스냅샷 (id 는 보관 X — 다음 add 시 새로 발급).
+        snapshot = {
+            "kind": entry.kind,
+            "thumbnail": entry.thumbnail,
+            "source_label": entry.source_label,
+            "display_name": entry.display_name,
+            "path": path,
+            "duration_ms": entry.duration_ms,
+            "origin": entry.origin,
+        }
+
         self.library_model.remove(entry_id)
         # 같이 열려 있던 탭 닫기 (영상이면 player 해제도 같이).
         if idx >= 0:
             self.tab_area._on_close_requested(idx)
-        # 디스크 파일이 있으면 휴지통으로 (실패해도 라이브러리에서는 이미 빠짐).
+        # deleteLater 가 큐에 들어간 상태 — Qt 가 실제로 위젯을 파괴하고 미디어 백엔드의
+        # 파일 핸들을 닫도록 이벤트 루프를 짧게 풀어 준다. 이게 없으면 send2trash 가
+        # 0x80070020 (sharing violation) 으로 실패하는 일이 잦다.
+        QApplication.processEvents()
+
+        trashed_ok = True
+        # 디스크 파일이 있으면 휴지통으로.
         if path is not None and path.exists():
             try:
                 from send2trash import send2trash
                 send2trash(str(path))
             except Exception as e:
+                trashed_ok = False
                 logging.getLogger(__name__).warning(
                     "send2trash failed for %s (%s): %s", path, kind, e,
                 )
+                QMessageBox.warning(
+                    self, "삭제 실패",
+                    f"파일을 휴지통으로 보낼 수 없습니다.\n다른 프로그램이 사용 중이거나 권한이 없을 수 있습니다.\n\n{path}\n\n{e}",
+                )
+
+        # 휴지통으로 잘 들어갔거나 (혹은 path 가 없는 미저장 항목) 만 undelete stack 에 푸시.
+        # 스택은 짧게(8) 유지 — 너무 많이 쌓이면 메모리/혼란.
+        if trashed_ok:
+            self._undelete_stack.append(snapshot)
+            if len(self._undelete_stack) > 8:
+                self._undelete_stack.pop(0)
+
+    def _on_library_undelete(self) -> None:
+        """라이브러리에서 Ctrl+Z — 마지막 Del 한 항목을 휴지통에서 복원하고 라이브러리에
+        다시 추가한다. 디스크 파일이 없던 항목은 라이브러리에만 다시 등록."""
+        if not self._undelete_stack:
+            return
+        snapshot = self._undelete_stack[-1]
+        path = snapshot.get("path")
+
+        if path is not None:
+            from screen_recorder.core.recycle_bin import is_supported as rb_supported, restore as rb_restore
+            if not rb_supported():
+                QMessageBox.information(
+                    self, "복원 불가",
+                    "이 환경에서는 Ctrl+Z 휴지통 복원이 지원되지 않습니다.\n"
+                    "Windows 탐색기 휴지통에서 직접 '복원' 해 주세요.",
+                )
+                return
+            ok, reason = rb_restore(path)
+            if not ok:
+                QMessageBox.warning(
+                    self, "복원 실패",
+                    f"휴지통에서 복원하지 못했습니다.\n\n사유: {reason}\n\n"
+                    f"파일: {path}\n\nWindows 탐색기 휴지통에서 직접 복원해 주세요.",
+                )
+                return
+
+        # 복원 (또는 미저장 항목) — 라이브러리에 새 entry 로 다시 등록. id 는 새로 발급.
+        # 스택에서 제거.
+        self._undelete_stack.pop()
+        new_entry = self.library_model.add(
+            kind=snapshot["kind"],
+            thumbnail=snapshot["thumbnail"],
+            source_label=snapshot["source_label"],
+            display_name=snapshot["display_name"],
+            path=path,
+            duration_ms=snapshot["duration_ms"],
+            origin=snapshot["origin"],
+        )
+        self.status_bar.state_label.setText(f"↩ 복원: {new_entry.display_name}")
+        self.status_bar.state_label.setStyleSheet("color: #5BC07C;")
 
     def _on_library_open_folder(self, entry_id: int) -> None:
         entry = self.library_model.get(entry_id)
@@ -1006,6 +1125,7 @@ class MainWindow(QMainWindow):
         self.record_status_panel.set_mode(mode_key)
         if self._border is not None and hasattr(self._border, "set_mode"):
             self._border.set_mode(mode_key)
+        self._persist_settings()
 
     # ---------- 스크린샷 편집 액션 ----------
 
@@ -1067,6 +1187,7 @@ class MainWindow(QMainWindow):
             tab.canvas.set_tool(
                 TextTool(
                     color, stack,
+                    live_scene=tab.canvas.scene(),
                     on_commit=lambda: self.tool_palette.set_current_tool("select"),
                 ),
                 target_scene=ann_scene,
@@ -1296,6 +1417,13 @@ class MainWindow(QMainWindow):
         self._apply_tool_to_current_tab(self.tool_palette.current_tool())
 
     def _on_undo(self) -> None:
+        # 라이브러리 list 에 포커스가 있으면 — 사용자가 휴지통에서 되돌리려는 의도.
+        # menu_bar.undo_action 은 WindowShortcut 컨텍스트라 LibraryPanel 의 eventFilter
+        # 보다 먼저 발화. 여기서 분기해 위임한다.
+        if QApplication.focusWidget() is self.library_panel.list_widget:
+            if self._undelete_stack:
+                self._on_library_undelete()
+            return
         tab = self._current_screenshot_tab()
         if tab:
             tab.undo_stack.undo()
@@ -1348,6 +1476,31 @@ class MainWindow(QMainWindow):
             entry.path = path
             self.library_model.rename(entry.id, path.name)
 
+    def _suggested_save_path(self, tab) -> Path:
+        """미저장 탭의 Save As 다이얼로그 기본 경로 — 사용자의 파일명 패턴을 따른다.
+
+        라이브러리 항목에 사용자 지정 이름(rename) 이 있으면 그걸 우선, 없으면
+        screenshot.filename_pattern 으로 빌드. "image.png" 같은 일반 이름이 노출돼
+        사용자가 매번 지우고 새로 입력해야 하는 불편 해소.
+        """
+        from datetime import datetime
+        save_dir = Path(self.app_settings.screenshot.save_dir or default_image_dir())
+        entry = self._entry_for_current_tab()
+        if entry is not None and entry.display_name:
+            # display_name 은 보통 확장자 없는 stem — 기본 PNG 확장자 부여.
+            base = entry.display_name
+            if not Path(base).suffix:
+                base = base + "." + (self.app_settings.screenshot.format or "png")
+        else:
+            base = build_filename(
+                pattern=self.app_settings.screenshot.filename_pattern,
+                when=datetime.now(),
+                mode="screenshot",
+                target=tab.source_label(),
+                extension=self.app_settings.screenshot.format,
+            )
+        return save_dir / base
+
     # ---------- 파일 메뉴 핸들러 (열기 / 저장 / 다른 이름으로 / 내보내기) ----------
 
     # 지원하는 확장자 (드래그 앤 드롭 / 메뉴 열기 공통).
@@ -1380,7 +1533,7 @@ class MainWindow(QMainWindow):
             display_name=label,
             origin="opened",
         )
-        self.tab_area.add_image_tab(tab, entry_id=entry.id, label=f"🆕 {label}")
+        self.tab_area.add_image_tab(tab, entry_id=entry.id, display_name=label)
         self.mode_controller.set_mode(AppMode.IMAGE)
         self._restore_window_for_capture()
 
@@ -1426,7 +1579,7 @@ class MainWindow(QMainWindow):
             path=p,
             origin="opened",
         )
-        self.tab_area.add_image_tab(tab, entry_id=entry.id, label=f"📂 {p.name}")
+        self.tab_area.add_image_tab(tab, entry_id=entry.id, display_name=p.name)
         self.mode_controller.set_mode(AppMode.IMAGE)
         self._restore_window_for_capture()
 
@@ -1500,9 +1653,7 @@ class MainWindow(QMainWindow):
         tab = self._current_screenshot_tab()
         if tab is None:
             return
-        suggested = tab.saved_path() or Path(
-            self.app_settings.screenshot.save_dir or default_image_dir()
-        ) / "image.png"
+        suggested = tab.saved_path() or self._suggested_save_path(tab)
         # PNG 를 가장 먼저 두어 다이얼로그 기본 필터가 되도록 한다 (사용자가 가장 자주 쓰는 포맷).
         filters = (
             "PNG (*.png);;"
@@ -1803,11 +1954,20 @@ class MainWindow(QMainWindow):
         self._rebind_layers_panel(tab.stack)
 
     def _focus_current_video_tab(self) -> None:
-        """현재 활성 탭이 VideoTab 이면 포커스를 그 위젯으로 — Space 단축키 즉시 발화."""
+        """현재 활성 탭이 VideoTab 이면 포커스를 그 위젯으로 — Space 단축키 즉시 발화.
+
+        다만 사용자가 라이브러리 패널에서 키보드로 작업 중이면(Del / Ctrl+Z 등) 포커스를
+        가로채지 않는다 — 그러지 않으면 라이브러리 list_widget 의 eventFilter 가 키 이벤트를
+        못 받아 Del/Ctrl+Z 가 먹히지 않는다.
+        """
         from .video_tab import VideoTab
         widget = self.tab_area.currentWidget()
-        if isinstance(widget, VideoTab):
-            widget.setFocus()
+        if not isinstance(widget, VideoTab):
+            return
+        focused = QApplication.focusWidget()
+        if focused is self.library_panel.list_widget:
+            return
+        widget.setFocus()
 
     def _dummy_stack(self) -> LayerStack:
         return LayerStack(QSize(1, 1))

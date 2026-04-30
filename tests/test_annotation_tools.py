@@ -105,24 +105,52 @@ def test_arrow_tool_tiny_drag_cancelled(qtbot):
     assert len([a for a in scene.annotations() if isinstance(a, ArrowAnnotationItem)]) == 0
 
 
+from PySide6.QtWidgets import QGraphicsScene
 from image_editor.tools.text import TextTool
 from image_editor.items.text import TextAnnotationItem
 
 
 def test_text_tool_click_creates_editing_text(qtbot):
+    # 편집 중인 텍스트는 live_scene 에 들어가야 키보드 입력이 도달한다 (AnnotationLayer
+    # scene 은 헤드리스라 setFocus 해도 키 이벤트가 못 옴).
     scene = _scene()
-    tool = TextTool(color=QColor("#000"), undo_stack=QUndoStack())
+    live_scene = QGraphicsScene()
+    tool = TextTool(color=QColor("#000"), undo_stack=QUndoStack(), live_scene=live_scene)
     tool.mouse_press(scene, QPointF(40, 40))
     tool.mouse_release(scene, QPointF(40, 40))
-    texts = [a for a in scene.annotations() if isinstance(a, TextAnnotationItem)]
-    assert len(texts) == 1
-    assert texts[0].pos_f() == QPointF(40, 40)
+    # 편집 중에는 live_scene 에 있고 annotation scene 에는 없다.
+    assert [a for a in scene.annotations() if isinstance(a, TextAnnotationItem)] == []
+    live_texts = [it for it in live_scene.items() if isinstance(it, TextAnnotationItem)]
+    assert len(live_texts) == 1
+    assert live_texts[0].pos_f() == QPointF(40, 40)
 
 
 def test_text_tool_empty_text_is_cleaned_on_commit(qtbot):
     scene = _scene()
-    tool = TextTool(color=QColor("#000"), undo_stack=QUndoStack())
+    live_scene = QGraphicsScene()
+    tool = TextTool(color=QColor("#000"), undo_stack=QUndoStack(), live_scene=live_scene)
     tool.mouse_press(scene, QPointF(40, 40))
     tool.mouse_release(scene, QPointF(40, 40))
     tool.commit_active(scene)  # 빈 채로 확정
-    assert len([a for a in scene.annotations() if isinstance(a, TextAnnotationItem)]) == 0
+    assert [a for a in scene.annotations() if isinstance(a, TextAnnotationItem)] == []
+    assert [it for it in live_scene.items() if isinstance(it, TextAnnotationItem)] == []
+
+
+def test_text_tool_committed_text_lands_in_annotation_scene(qtbot):
+    # 비어있지 않은 텍스트는 commit 후 AnnotationLayer scene 으로 이동해야 한다.
+    scene = _scene()
+    live_scene = QGraphicsScene()
+    stack = QUndoStack()
+    tool = TextTool(color=QColor("#000"), undo_stack=stack, live_scene=live_scene)
+    tool.mouse_press(scene, QPointF(50, 60))
+    tool.mouse_release(scene, QPointF(50, 60))
+    # 입력된 텍스트 흉내 — 편집 중인 아이템에 직접 set_text.
+    assert tool._active is not None
+    tool._active.set_text("hello")
+    tool.commit_active(scene)
+    texts = [a for a in scene.annotations() if isinstance(a, TextAnnotationItem)]
+    assert len(texts) == 1
+    assert texts[0].text() == "hello"
+    assert texts[0].pos_f() == QPointF(50, 60)
+    assert [it for it in live_scene.items() if isinstance(it, TextAnnotationItem)] == []
+    assert stack.count() == 1

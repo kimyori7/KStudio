@@ -21,6 +21,11 @@ a = Analysis(
         "send2trash",
         "send2trash.plat_win",
         "pygetwindow",
+        # pywin32 — 휴지통 복원(Shell.Application COM) 에 필요. PyInstaller 가
+        # win32com 동적 import 를 자동으로 못 잡아 명시.
+        "win32com",
+        "win32com.client",
+        "pywintypes",
     ],
     hookspath=[],
     hooksconfig={},

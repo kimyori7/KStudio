@@ -15,10 +15,10 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QToolButton, QButtonGroup, Q
 # (id, icon, tooltip, shortcut or None)
 _TOOLS = [
     ("select", "🖐", "선택 (V) — 주석 객체를 잡고 이동·크기조정", "V"),
-    ("selection", "▭",
+    ("selection", "⬚",
      "영역 선택 (M) — 사각 영역 드래그. 이후 Ctrl+C 로 영역만 복사, "
      "Ctrl+X 로 잘라내기. ESC 로 해제.", "M"),
-    ("rect",   "□", "사각형 (R)", "R"),
+    ("rect",   "▭", "사각형 (R)", "R"),
     ("arrow",  "→", "화살표 (A)", "A"),
     ("text",   "T", "텍스트 (T)", "T"),
     ("crop",   "✂", "자르기 (Crop) — 사각 영역 선택 후 Enter", None),
