@@ -309,6 +309,9 @@ class MainWindow(QMainWindow):
         self.global_toolbar.save_clicked.connect(self._save_current_screenshot)
         self.global_toolbar.copy_clicked.connect(self._copy_current_screenshot)
         self.global_toolbar.hotkey_changed.connect(self._on_inline_hotkey_changed)
+        # 인라인 단축키 capture 중에는 글로벌 Win32 핫키 일시 해제.
+        self.global_toolbar.hotkey_editing_started.connect(self._pause_hotkey)
+        self.global_toolbar.hotkey_editing_finished.connect(self._resume_hotkey)
         # 드래그-저장 버튼 — 현재 활성 EditTab 의 이미지를 제공.
         self.global_toolbar.drag_save_btn.image_provider = self._current_image_for_drag
         self.global_toolbar.drag_save_btn.filename_provider = self._current_filename_for_drag
@@ -1977,6 +1980,11 @@ class MainWindow(QMainWindow):
 
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)
+        # 환경설정 안 단축키 패널에서 capture 중에도 글로벌 핫키 해제.
+        sp = getattr(dialog, "shortcuts_panel", None)
+        if sp is not None:
+            sp.hotkey_editing_started.connect(self._pause_hotkey)
+            sp.hotkey_editing_finished.connect(self._resume_hotkey)
         dialog.exec()
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()

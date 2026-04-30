@@ -74,6 +74,11 @@ class GlobalToolbar(QWidget):
     # 인라인 단축키 편집 — (HotkeySettings 의 필드명, 새 키 시퀀스 텍스트).
     # 모드별로 한 항목씩 노출됨: VIDEO=toggle_record, IMAGE=screenshot_region.
     hotkey_changed = Signal(str, str)
+    # 인라인 단축키 capture 시작/종료 — main_window 가 글로벌 Win32 핫키를 일시
+    # 해제(unregister) → 사용자가 기존 단축키와 같은 조합을 누를 때 그 액션이
+    # 발화되지 않도록 함.
+    hotkey_editing_started = Signal()
+    hotkey_editing_finished = Signal()
 
     # 액션
     save_clicked = Signal()
@@ -165,6 +170,8 @@ class GlobalToolbar(QWidget):
         self.video_hotkey_edit.editingFinished.connect(
             lambda: self._on_inline_hotkey_done("toggle_record", self.video_hotkey_edit)
         )
+        self.video_hotkey_edit.editing_started.connect(self.hotkey_editing_started.emit)
+        self.video_hotkey_edit.editing_finished_signal.connect(self.hotkey_editing_finished.emit)
         layout.addWidget(self.video_hotkey_edit)
 
         self._image_hotkey_label = QLabel(" 영역 스크린샷")
@@ -176,6 +183,8 @@ class GlobalToolbar(QWidget):
         self.image_hotkey_edit.editingFinished.connect(
             lambda: self._on_inline_hotkey_done("screenshot_region", self.image_hotkey_edit)
         )
+        self.image_hotkey_edit.editing_started.connect(self.hotkey_editing_started.emit)
+        self.image_hotkey_edit.editing_finished_signal.connect(self.hotkey_editing_finished.emit)
         layout.addWidget(self.image_hotkey_edit)
 
         self._sep4 = self._make_sep()

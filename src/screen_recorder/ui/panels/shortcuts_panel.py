@@ -31,6 +31,10 @@ _EDITOR_LABELS = {
 
 class ShortcutsPanel(QWidget):
     settings_changed = Signal()
+    # 패널 안의 어떤 OneShotKeySequenceEdit 라도 capture 가 시작/끝나면 발화 —
+    # main_window 가 글로벌 Win32 핫키를 일시 unregister 하기 위함.
+    hotkey_editing_started = Signal()
+    hotkey_editing_finished = Signal()
 
     def __init__(self, hotkeys: HotkeySettings, editor: EditorShortcuts) -> None:
         super().__init__()
@@ -70,6 +74,8 @@ class ShortcutsPanel(QWidget):
         ed.editingFinished.connect(
             lambda k=key, e=ed: self._on_hotkey_changed(k, e.keySequence())
         )
+        ed.editing_started.connect(self.hotkey_editing_started.emit)
+        ed.editing_finished_signal.connect(self.hotkey_editing_finished.emit)
         self._editors[f"hk:{key}"] = ed
         form.addRow(label + ":", ed)
 
@@ -79,6 +85,8 @@ class ShortcutsPanel(QWidget):
         ed.editingFinished.connect(
             lambda k=key, e=ed: self._on_editor_changed(k, e.keySequence())
         )
+        ed.editing_started.connect(self.hotkey_editing_started.emit)
+        ed.editing_finished_signal.connect(self.hotkey_editing_finished.emit)
         self._editors[key] = ed
         form.addRow(label + ":", ed)
 
