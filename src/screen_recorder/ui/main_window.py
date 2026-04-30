@@ -1687,18 +1687,56 @@ class MainWindow(QMainWindow):
         self._restore_window_for_capture()
 
     def _on_file_save(self) -> None:
-        """현재 편집 탭을 저장. 저장 경로가 있으면 그 포맷으로 그대로 덮어쓰기,
-        없으면 Save As 흐름으로 위임. .kstudio / png / jpg / webp 모두 지원."""
+        """현재 편집 탭을 저장.
+
+        - 저장 경로가 있으면 그 포맷으로 그대로 덮어쓰기.
+        - 없으면(첫 저장) 다이얼로그 없이 기본 폴더 + 파일명 패턴 + 기본 포맷으로
+          즉시 저장. 사용자가 매 캡처마다 파일명 다이얼로그를 거쳐야 하는 부담 제거.
+          다른 이름/위치로 저장하고 싶으면 Ctrl+Shift+S (다른 이름으로 저장) 사용.
+        """
         tab = self._current_screenshot_tab()
         if tab is None:
             return
         target = tab.saved_path()
         if target is None:
-            self._on_file_save_as()
-            return
+            target = self._auto_save_path_for(tab)
+            if target is None:
+                # 폴더 생성 실패 등 — 사용자에게 dialog 로 fallback.
+                self._on_file_save_as()
+                return
         if not self._save_tab_to_path(tab, target):
             return
         tab.mark_saved(target)
+        # 라이브러리 entry path 동기화 (캡처 직후 첫 저장 때 entry.path 가 None 이었음).
+        entry = self._entry_for_current_tab()
+        if entry is not None and entry.path != target:
+            entry.path = target
+            self.library_model.rename(entry.id, target.name)
+
+    def _auto_save_path_for(self, tab) -> Path | None:
+        """첫 Ctrl+S 시 다이얼로그 없이 쓸 자동 경로. 기본 이미지 폴더 + 파일명 패턴.
+        라이브러리 entry 에 display_name 이 있으면 그걸 우선 사용.
+        실패 시 None — 호출자가 Save As 로 fallback."""
+        from datetime import datetime
+        try:
+            save_dir = Path(self.app_settings.screenshot.save_dir or default_image_dir())
+            save_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+        entry = self._entry_for_current_tab()
+        if entry is not None and entry.display_name:
+            base = entry.display_name
+            if not Path(base).suffix:
+                base = base + "." + (self.app_settings.screenshot.format or "png")
+        else:
+            base = build_filename(
+                pattern=self.app_settings.screenshot.filename_pattern,
+                when=datetime.now(),
+                mode="screenshot",
+                target=tab.source_label(),
+                extension=self.app_settings.screenshot.format,
+            )
+        return resolve_collision(save_dir / base)
 
     def _on_file_save_as(self) -> None:
         """현재 편집 탭을 다른 이름으로 저장. PNG 가 기본, .kstudio/JPG/WebP/BMP 도 선택 가능."""

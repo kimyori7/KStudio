@@ -43,6 +43,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "associatekstudio"; Description: ".kstudio 파일을 KStudio 와 연결"; GroupDescription: "파일 연결:"; Flags: unchecked
 
+[Dirs]
+; 기본 저장 폴더 미리 생성 — settings.json 의 save_dir/output_dir 가 빈 문자열일 때
+; 앱이 떨어지는 기본 경로 (Path.home() / "KStudio" / ...). 사용자가 처음 캡처/녹화
+; 했을 때 폴더가 없어 실패하는 것 방지. uninstaller 는 이 폴더를 건드리지 않음
+; (사용자 파일이 들어있을 수 있으므로). uninsneveruninstall 플래그로 보호.
+Name: "{%USERPROFILE}\KStudio"; Flags: uninsneveruninstall
+Name: "{%USERPROFILE}\KStudio\Image"; Flags: uninsneveruninstall
+Name: "{%USERPROFILE}\KStudio\Video"; Flags: uninsneveruninstall
+
 [Files]
 ; PyInstaller 가 빌드한 결과물 전체를 그대로 복사.
 ; recursesubdirs + createallsubdirs 로 _internal 트리까지 보존.
