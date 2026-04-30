@@ -9,19 +9,23 @@ from ..layer_model import LayerStack
 from ..layers.image_layer import ImageLayer
 
 
-def _default_remove_bg(image: QImage) -> QImage:
+def _default_remove_bg(image: QImage, *, model_name: str = "u2net") -> QImage:
     """rembg 호출 → 알파 마스크 (greyscale) 반환.
+
+    model_name 으로 rembg 모델을 선택 (u2net / isnet-general-use / birefnet-general 등).
+    첫 사용 시 ~/.u2net/ 등에 모델이 다운로드된다 (rembg 가 자체 처리).
     예외 시 호출자가 try/except 로 잡음.
     """
     from PIL import Image
-    from rembg import remove
+    from rembg import new_session, remove
 
     # QImage → PIL → rembg → PIL(RGBA) → mask QImage(Grayscale8)
     src = image.convertToFormat(QImage.Format_RGBA8888)
     ptr = src.bits()
     pil_in = Image.frombytes("RGBA", (src.width(), src.height()),
                              bytes(ptr), "raw", "RGBA")
-    pil_out = remove(pil_in).convert("RGBA")
+    session = new_session(model_name)
+    pil_out = remove(pil_in, session=session).convert("RGBA")
     alpha = pil_out.split()[-1]   # alpha 채널만 추출
     raw = alpha.tobytes()
     mask = QImage(raw, alpha.width, alpha.height, alpha.width,
@@ -55,11 +59,17 @@ class BackgroundRemovalCommand(QUndoCommand):
         stack: LayerStack,
         layer_id: int,
         remove_bg_fn: Optional[Callable[[QImage], QImage]] = None,
+        *,
+        model_name: str = "u2net",
     ) -> None:
         super().__init__("배경 제거")
         self._stack = stack
         self._layer_id = layer_id
-        self._fn = remove_bg_fn or _default_remove_bg
+        # remove_bg_fn 이 주어지면(테스트용) model_name 은 무시된다.
+        if remove_bg_fn is not None:
+            self._fn: Callable[[QImage], QImage] = remove_bg_fn
+        else:
+            self._fn = lambda img, m=model_name: _default_remove_bg(img, model_name=m)
         self._mask: Optional[QImage] = None
         self._prev_mask: Optional[QImage] = None
         self._emitter = _Emitter()

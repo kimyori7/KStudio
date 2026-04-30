@@ -79,6 +79,8 @@ class ScreenshotSettings:
 class AnnotationSettings:
     last_color: str = "#E53935"   # 마지막 사용 색상 (hex, #RRGGBB)
     last_thickness: int = 2        # 마지막 사용 두께 단계 (1~4)
+    # 자동 누끼(rembg) 마지막 선택 모델 — 자동 누끼 다이얼로그가 기본값으로 사용.
+    bg_removal_model: str = "u2net"
 
 
 @dataclass

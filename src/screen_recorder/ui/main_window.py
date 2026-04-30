@@ -1575,6 +1575,9 @@ class MainWindow(QMainWindow):
     def _on_remove_background(self) -> None:
         """현재 활성 ImageLayer 의 배경을 rembg 로 제거 (마스크 추가).
 
+        실행 전에 모델 선택 다이얼로그(BgRemovalModelDialog) 를 띄워 사용자가 자기
+        이미지에 맞는 모델을 고르게 한다 — 일반 사진이면 u2net, UI/그래픽이면
+        isnet-general-use 등 입력 종류에 따라 결과 품질이 크게 갈리기 때문.
         rembg 가 모델 로딩 + 추론에 수 초~수십 초 걸릴 수 있어 사용자가 실행 여부를
         알 수 있도록 indeterminate QProgressDialog 를 띄운다. 작업은 QThreadPool 백그라운드.
         """
@@ -1583,14 +1586,32 @@ class MainWindow(QMainWindow):
             return
         active = tab.stack.active_layer()
         if not isinstance(active, ImageLayer):
-            QMessageBox.information(
-                self, "배경 제거",
-                "이미지 레이어가 선택되어 있어야 합니다.",
-            )
+            # 활성이 ImageLayer 가 아니면 사진 레이어로 자동 전환 시도 — 브러시·마술봉과
+            # 같은 정책. 그래도 ImageLayer 가 하나도 없으면 안내 후 종료.
+            self._ensure_active_image_layer(tab)
+            active = tab.stack.active_layer()
+            if not isinstance(active, ImageLayer):
+                QMessageBox.information(
+                    self, "배경 제거",
+                    "이미지 레이어가 있어야 합니다.",
+                )
+                return
+        # 모델 선택 다이얼로그 — 마지막에 쓴 모델을 기본 선택.
+        from .bg_removal_dialog import BgRemovalModelDialog
+        dlg = BgRemovalModelDialog(
+            current_model=self.app_settings.annotation.bg_removal_model,
+            parent=self,
+        )
+        if dlg.exec() != dlg.Accepted:
             return
-        cmd = BackgroundRemovalCommand(tab.stack, layer_id=active.id)
+        model_name = dlg.selected_model()
+        # 다음 호출의 기본값으로 기억.
+        self.app_settings.annotation.bg_removal_model = model_name
+        cmd = BackgroundRemovalCommand(tab.stack, layer_id=active.id, model_name=model_name)
 
-        progress = QProgressDialog("배경 제거 중... (rembg 모델 추론)", None, 0, 0, self)
+        progress = QProgressDialog(
+            f"배경 제거 중... ({model_name} 추론)", None, 0, 0, self,
+        )
         progress.setWindowTitle("배경 제거")
         progress.setWindowModality(Qt.ApplicationModal)
         progress.setMinimumDuration(0)
