@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication
+from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QComboBox, QFrame, QLabel, QButtonGroup,
+    QKeySequenceEdit,
 )
 
 from ..core.state import RecorderState
@@ -69,6 +70,9 @@ class GlobalToolbar(QWidget):
     target_changed = Signal(str)
     monitor_changed = Signal(int)
     mode_value_changed = Signal(str)  # "video"/"gif" — 녹화 출력 형식
+    # 인라인 단축키 편집 — (HotkeySettings 의 필드명, 새 키 시퀀스 텍스트).
+    # 모드별로 한 항목씩 노출됨: VIDEO=toggle_record, IMAGE=screenshot_region.
+    hotkey_changed = Signal(str, str)
 
     # 액션
     save_clicked = Signal()
@@ -146,6 +150,34 @@ class GlobalToolbar(QWidget):
         self._refresh_monitors()
         self.monitor_combo.currentIndexChanged.connect(self._on_monitor_combo_changed)
         layout.addWidget(self.monitor_combo)
+
+        # ---------- 모니터 콤보 옆 인라인 단축키 편집 ----------
+        # 영상 모드는 "영역 녹화" (toggle_record), 이미지 모드는 "영역 스크린샷"
+        # (screenshot_region) — 둘 다 "Ctrl+Shift+T / R" 처럼 자주 바뀌지 않는
+        # 핵심 단축키라 모니터 옆에서 즉시 확인/수정할 수 있게 노출.
+        self._video_hotkey_label = QLabel(" 영역 녹화")
+        self._video_hotkey_label.setStyleSheet("color: #999;")
+        layout.addWidget(self._video_hotkey_label)
+        self.video_hotkey_edit = QKeySequenceEdit()
+        self.video_hotkey_edit.setMaximumSequenceLength(1)
+        self.video_hotkey_edit.setMaximumWidth(110)
+        self.video_hotkey_edit.setToolTip("영역 녹화 단축키 (3-state 무장→시작→정지)")
+        self.video_hotkey_edit.editingFinished.connect(
+            lambda: self._on_inline_hotkey_done("toggle_record", self.video_hotkey_edit)
+        )
+        layout.addWidget(self.video_hotkey_edit)
+
+        self._image_hotkey_label = QLabel(" 영역 스크린샷")
+        self._image_hotkey_label.setStyleSheet("color: #999;")
+        layout.addWidget(self._image_hotkey_label)
+        self.image_hotkey_edit = QKeySequenceEdit()
+        self.image_hotkey_edit.setMaximumSequenceLength(1)
+        self.image_hotkey_edit.setMaximumWidth(110)
+        self.image_hotkey_edit.setToolTip("영역 스크린샷 단축키")
+        self.image_hotkey_edit.editingFinished.connect(
+            lambda: self._on_inline_hotkey_done("screenshot_region", self.image_hotkey_edit)
+        )
+        layout.addWidget(self.image_hotkey_edit)
 
         self._sep4 = self._make_sep()
         layout.addWidget(self._sep4)
@@ -250,6 +282,17 @@ class GlobalToolbar(QWidget):
         data = self.monitor_combo.currentData()
         return int(data) if data is not None else -1
 
+    def set_inline_hotkey(self, key: str, sequence_text: str) -> None:
+        """외부에서 인라인 단축키 표시값 동기화 (환경설정 다이얼로그에서 바뀌었을 때 등)."""
+        editor = (self.video_hotkey_edit if key == "toggle_record"
+                  else self.image_hotkey_edit if key == "screenshot_region"
+                  else None)
+        if editor is None:
+            return
+        editor.blockSignals(True)
+        editor.setKeySequence(QKeySequence(sequence_text))
+        editor.blockSignals(False)
+
     # ---------- 가시성 통합 관리 ----------
     def _refresh_widgets_visibility(self) -> None:
         is_video = self._current_mode is AppMode.VIDEO
@@ -272,6 +315,12 @@ class GlobalToolbar(QWidget):
         # 이미지=전체 캡처 대상). 항상 표시.
         self._monitor_label.setVisible(True)
         self.monitor_combo.setVisible(True)
+
+        # 인라인 단축키 — 모드별로 한 쌍만 노출.
+        self._video_hotkey_label.setVisible(is_video)
+        self.video_hotkey_edit.setVisible(is_video)
+        self._image_hotkey_label.setVisible(is_image)
+        self.image_hotkey_edit.setVisible(is_image)
 
         # 이미지 모드 전용 — 캡처 + 액션
         self.capture_region_btn.setVisible(is_image)
@@ -335,3 +384,9 @@ class GlobalToolbar(QWidget):
             return
         self._current_format_key = key
         self.mode_value_changed.emit(key)
+
+    def _on_inline_hotkey_done(self, key: str, editor: QKeySequenceEdit) -> None:
+        """QKeySequenceEdit.editingFinished 핸들러 — 사용자가 입력을 마쳤을 때만 emit.
+        keySequenceChanged 는 키 입력 도중마다 발화돼 핫키 재등록이 너무 잦아짐."""
+        text = editor.keySequence().toString(QKeySequence.PortableText)
+        self.hotkey_changed.emit(key, text)

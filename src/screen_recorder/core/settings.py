@@ -57,9 +57,12 @@ class SoundSettings:
 
 @dataclass
 class HotkeySettings:
-    toggle_record: str = "Ctrl+Shift+T"
-    screenshot_region: str = "Ctrl+Shift+R"
-    screenshot_full: str = ""  # 빈 문자열 = 미할당
+    toggle_record: str = "Ctrl+Shift+T"        # 영역 녹화 (3-state 무장→시작→정지)
+    screenshot_region: str = "Ctrl+Shift+R"    # 영역 스크린샷
+    screenshot_full: str = ""                  # 빈 문자열 = 미할당
+    # "전체 녹화" 단축키 — 환경설정 리스트에서 사용자가 지정 가능. 현재는
+    # 글로벌 핫키 등록만 placeholder (별도 액션 핸들러는 후속에 추가 예정).
+    toggle_record_full: str = ""
 
 
 @dataclass

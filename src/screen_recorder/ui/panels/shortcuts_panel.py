@@ -42,8 +42,9 @@ class ShortcutsPanel(QWidget):
         # 글로벌 그룹
         root.addWidget(QLabel("🎬 글로벌"))
         gform = QFormLayout()
-        self._add_hotkey_row(gform, "toggle_record", "녹화 시작/정지", hotkeys.toggle_record)
-        self._add_hotkey_row(gform, "screenshot_region", "스크린샷 영역", hotkeys.screenshot_region)
+        self._add_hotkey_row(gform, "toggle_record", "영역 녹화", hotkeys.toggle_record)
+        self._add_hotkey_row(gform, "toggle_record_full", "전체 녹화", hotkeys.toggle_record_full)
+        self._add_hotkey_row(gform, "screenshot_region", "영역 스크린샷", hotkeys.screenshot_region)
         self._add_hotkey_row(gform, "screenshot_full", "스크린샷 전체", hotkeys.screenshot_full)
         root.addLayout(gform)
 

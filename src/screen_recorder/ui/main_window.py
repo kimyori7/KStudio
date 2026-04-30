@@ -253,6 +253,9 @@ class MainWindow(QMainWindow):
             self.app_settings.general.fullscreen_monitor_index
         )
         self.global_toolbar.set_recording_mode(self.app_settings.general.mode)
+        # 인라인 단축키 표시 (영상=영역 녹화, 이미지=영역 스크린샷) — 모니터 옆.
+        self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
+        self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)
 
         # 마지막 대상 복원
         saved_target = self.app_settings.general.target
@@ -300,6 +303,7 @@ class MainWindow(QMainWindow):
         self.global_toolbar.preferences_clicked.connect(self._open_preferences)
         self.global_toolbar.save_clicked.connect(self._save_current_screenshot)
         self.global_toolbar.copy_clicked.connect(self._copy_current_screenshot)
+        self.global_toolbar.hotkey_changed.connect(self._on_inline_hotkey_changed)
         # 드래그-저장 버튼 — 현재 활성 EditTab 의 이미지를 제공.
         self.global_toolbar.drag_save_btn.image_provider = self._current_image_for_drag
         self.global_toolbar.drag_save_btn.filename_provider = self._current_filename_for_drag
@@ -549,6 +553,16 @@ class MainWindow(QMainWindow):
             if self.controller.state == RecorderState.IDLE:
                 self.status_bar.state_label.setText("● 대기 중")
                 self.status_bar.state_label.setStyleSheet("color: #666;")
+        self._persist_settings()
+
+    def _on_inline_hotkey_changed(self, key: str, sequence_text: str) -> None:
+        """글로벌 툴바 인라인 단축키 편집 — 즉시 settings 반영 + 핫키 재등록 + 저장."""
+        if not hasattr(self.app_settings.hotkey, key):
+            return
+        if getattr(self.app_settings.hotkey, key) == sequence_text:
+            return
+        setattr(self.app_settings.hotkey, key, sequence_text)
+        self._reregister_hotkey()
         self._persist_settings()
 
     def _on_fullscreen_monitor_changed(self, idx: int) -> None:
@@ -1962,6 +1976,9 @@ class MainWindow(QMainWindow):
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()
         self._register_editor_shortcuts()
+        # 글로벌 툴바 인라인 단축키 표시 동기화 (다이얼로그에서 바뀌었을 수 있음).
+        self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
+        self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)
 
     # ---------- 탭 전환 시 옵션바·도구 동기화 ----------
 
