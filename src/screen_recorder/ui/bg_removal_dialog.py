@@ -13,8 +13,8 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QRadioButton, QScrollArea,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QRadioButton,
+    QScrollArea, QVBoxLayout, QWidget,
 )
 
 
@@ -137,6 +137,11 @@ class BgRemovalModelDialog(QDialog):
         # 저장된 model id 가 목록에 없으면 기본으로 폴백.
         normalized = current_model if current_model in _VALID_IDS else "u2net"
 
+        # QRadioButton 의 자동 배타성은 부모 위젯 단위라 각 row 의 라디오가 따로 부모를
+        # 가지면 동시에 여러 개가 체크된다. QButtonGroup 으로 명시적으로 묶어 모델
+        # 하나만 선택되도록 한다.
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
         self._radios: dict[str, QRadioButton] = {}
         for mid, label, desc, size_mb in MODELS:
             # 다운로드 상태 — 캐시에 있으면 ✓, 없으면 ⚠ + 크기.
@@ -153,6 +158,7 @@ class BgRemovalModelDialog(QDialog):
             rb = QRadioButton(label)
             rb.setChecked(mid == normalized)
             self._radios[mid] = rb
+            self._group.addButton(rb)
             row_layout.addWidget(rb)
             status_label = QLabel(status)
             status_label.setStyleSheet(

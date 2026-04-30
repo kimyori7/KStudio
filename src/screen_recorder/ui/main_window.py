@@ -1644,31 +1644,48 @@ class MainWindow(QMainWindow):
             model_size_mb as _bg_size,
             rembg_cache_dir as _bg_cache_dir,
         )
-        from PySide6.QtCore import QTimer
         was_cached = _bg_is_cached(model_name)
+        expected_mb = _bg_size(model_name)
+        expected_bytes = expected_mb * 1024 * 1024
+        cache_dir = _bg_cache_dir()
+        check_path = cache_dir / f"{model_name}.onnx"
+
         if was_cached:
             initial_text = f"배경 제거 추론 중... ({model_name})"
+            progress = QProgressDialog(initial_text, None, 0, 0, self)
         else:
             initial_text = (
-                f"모델 다운로드 중... ({model_name}, 약 {_bg_size(model_name)} MB)\n"
+                f"모델 다운로드 중... ({model_name}, 0 / {expected_mb} MB)\n"
                 "처음 한 번만 받으면 다음부터는 빨라집니다."
             )
-        progress = QProgressDialog(initial_text, None, 0, 100, self)
+            progress = QProgressDialog(initial_text, None, 0, expected_bytes, self)
         progress.setWindowTitle("자동 누끼")
         progress.setWindowModality(Qt.ApplicationModal)
         progress.setMinimumDuration(0)
         progress.setCancelButton(None)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
-        # 다운로드 진행률은 실제로 받기 어려우니(rembg/pooch 콜백 후킹이 비호환적),
-        # 다운로드 단계는 indeterminate(0,0), 추론 단계는 indeterminate(0,0) 으로 둠.
-        # 단계가 바뀌는 것만 텍스트로 명확히 알림.
-        progress.setRange(0, 0)
         progress.show()
 
-        # 캐시 폴더에 .onnx 가 등장하면 다운로드가 끝났다는 신호 — 그때 텍스트를
-        # "추론 중" 으로 갈음. 250ms 마다 polling.
-        check_path = _bg_cache_dir() / f"{model_name}.onnx"
+        # 다운로드 진행률 추정 — pooch 가 캐시 디렉토리 안에 임시 파일을 만들고 끝나면
+        # 최종 이름으로 rename 하므로, "현재 디렉토리 총 크기 - 시작 시점 baseline" 이
+        # 다운로드된 바이트 수에 가깝다. 250ms 마다 폴링하며 최종 .onnx 가 등장하면
+        # 추론 단계로 넘어가 indeterminate 로 전환.
+        def _dir_total_bytes() -> int:
+            if not cache_dir.exists():
+                return 0
+            total = 0
+            try:
+                for f in cache_dir.iterdir():
+                    try:
+                        total += f.stat().st_size
+                    except OSError:
+                        continue
+            except OSError:
+                return 0
+            return total
+
+        baseline_bytes = _dir_total_bytes()
         download_done = [was_cached]   # mutable flag for nested closure
 
         timer = QTimer(self)
@@ -1678,9 +1695,22 @@ class MainWindow(QMainWindow):
             if download_done[0]:
                 return
             try:
+                # 최종 .onnx 가 완성된 경우 — 다운로드 종료, 추론 단계로 전환
                 if check_path.exists() and check_path.stat().st_size > 0:
                     download_done[0] = True
+                    progress.setRange(0, 0)   # 추론은 indeterminate
                     progress.setLabelText(f"배경 제거 추론 중... ({model_name})")
+                    return
+                # 진행률 갱신 — 디렉토리 총 크기 변화를 기준으로
+                downloaded = max(0, _dir_total_bytes() - baseline_bytes)
+                downloaded = min(downloaded, expected_bytes)
+                progress.setValue(downloaded)
+                mb_now = downloaded / (1024 * 1024)
+                progress.setLabelText(
+                    f"모델 다운로드 중... ({model_name}, "
+                    f"{mb_now:.1f} / {expected_mb} MB)\n"
+                    "처음 한 번만 받으면 다음부터는 빨라집니다."
+                )
             except OSError:
                 pass
 
