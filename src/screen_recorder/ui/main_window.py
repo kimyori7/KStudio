@@ -348,6 +348,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.record_start_requested.connect(self._on_start_clicked)
         self.menu_bar.record_stop_requested.connect(self._on_stop_clicked)
         self.menu_bar.record_pause_requested.connect(self._on_pause_clicked)
+        self.menu_bar.about_requested.connect(self._show_about)
 
         # 모드 / 탭 / 라이브러리
         self.mode_controller.mode_changed.connect(self._on_mode_changed)
@@ -1083,16 +1084,20 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.tab_area._on_close_requested(idx)
         # deleteLater 가 큐에 들어간 상태 — Qt 가 실제로 위젯을 파괴하고 미디어 백엔드의
-        # 파일 핸들을 닫도록 이벤트 루프를 짧게 풀어 준다. 이게 없으면 send2trash 가
-        # 0x80070020 (sharing violation) 으로 실패하는 일이 잦다.
+        # 파일 핸들을 닫도록 이벤트 루프를 짧게 풀어 준다. GIF (QMovie/QImageReader) 는
+        # 단순 processEvents 만으론 QFile 이 안 닫히는 일이 있어, sendPostedEvents 로
+        # DeferredDelete 만 명시 처리한 뒤 한 번 더 processEvents 로 마무리.
+        from PySide6.QtCore import QCoreApplication, QEvent
+        QApplication.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         QApplication.processEvents()
 
         trashed_ok = True
-        # 디스크 파일이 있으면 휴지통으로.
+        # 디스크 파일이 있으면 휴지통으로 — sharing violation (file in use) 은 100ms
+        # 뒤 한 번 재시도. 썸네일 추출 ffmpeg 가 막 끝나는 타이밍 등에서 성공.
         if path is not None and path.exists():
             try:
-                from send2trash import send2trash
-                send2trash(str(path))
+                self._send_to_trash_with_retry(path)
             except Exception as e:
                 trashed_ok = False
                 logging.getLogger(__name__).warning(
@@ -1109,6 +1114,26 @@ class MainWindow(QMainWindow):
             self._undelete_stack.append(snapshot)
             if len(self._undelete_stack) > 8:
                 self._undelete_stack.pop(0)
+
+    def _send_to_trash_with_retry(self, path: Path) -> None:
+        """send2trash + 짧은 재시도. GIF 의 QMovie 핸들 / 썸네일 ffmpeg 등이 막 끝나는
+        타이밍에 실패할 수 있어, 한 번 100ms 대기 후 재시도하면 대개 성공."""
+        from send2trash import send2trash
+        import time
+        try:
+            send2trash(str(path))
+            return
+        except OSError as e:
+            # 0x80270027 (sharing violation), 0x80070020 등 — file in use 류만 재시도
+            text = str(e).lower()
+            if not ("0x80270027" in text or "0x80070020" in text or "사용" in text or "in use" in text):
+                raise
+            logging.getLogger(__name__).info(
+                "send2trash file-in-use, retrying in 100ms: %s", path
+            )
+        time.sleep(0.1)
+        QApplication.processEvents()
+        send2trash(str(path))
 
     def _on_library_undelete(self) -> None:
         """라이브러리에서 Ctrl+Z — 마지막 Del 한 항목을 휴지통에서 복원하고 라이브러리에
@@ -2015,6 +2040,16 @@ class MainWindow(QMainWindow):
             save_dir = self.app_settings.screenshot.save_dir or str(default_image_dir())
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(save_dir))
+
+    def _show_about(self) -> None:
+        """도움말 → 정보. QMessageBox.about 한 줄 설명 + 저작권."""
+        QMessageBox.about(
+            self,
+            "KStudio 정보",
+            "<h3>KStudio 0.1.0</h3>"
+            "<p>Windows 전용 화면 캡처 · 녹화 · 이미지 편집 통합 툴</p>"
+            "<p>© 2026 kimyori</p>",
+        )
 
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)

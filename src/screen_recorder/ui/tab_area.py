@@ -220,6 +220,16 @@ class TabArea(QTabWidget):
         del self._tabs[idx]
         self._tab_base_labels.pop(widget, None)
         self._video_duration_suffix.pop(widget, None)
+        # VideoTab 의 player 가 잡고 있는 QMediaPlayer/QMovie 핸들을 즉시 해제.
+        # deleteLater 만으로는 closeEvent 가 발화하지 않아 Windows 가 "파일 사용 중"
+        # 으로 파일을 계속 잠가둠 → 사용자가 라이브러리에서 곧장 Del 하면 send2trash
+        # 실패. 여기서 명시 해제하면 X 로 닫고 나서 휴지통 이동도 깔끔히 성공.
+        if isinstance(widget, VideoTab):
+            try:
+                widget.player.stop()
+                widget.player.release_file_handles()
+            except (RuntimeError, AttributeError):
+                pass
         widget.deleteLater()
         self.entry_closed.emit(eid)
         # QTabWidget 은 탭 제거 후 currentIndex 를 자동 재설정하는데, 이 때 다른 모드의

@@ -198,6 +198,13 @@ class PlayerWidget(QStackedWidget):
             except (TypeError, RuntimeError):
                 pass
             self._gif_label.setMovie(None)
+            # Python ref 해제만으로는 Qt 가 QImageReader 의 QFile 을 즉시 안 닫음.
+            # deleteLater + 호출자에서 processEvents/sendPostedEvents 로 강제해야 GIF
+            # 파일 핸들이 풀려 send2trash 가 sharing violation 없이 통과.
+            try:
+                self._movie.deleteLater()
+            except RuntimeError:
+                pass
             self._movie = None
 
     def is_loaded(self) -> bool:
