@@ -154,11 +154,11 @@ class SelectionTool(Tool):
             # hover cursor 갱신
             hit = self._hit_handle(scene_pos)
             if hit == _H_INSIDE:
-                self.cursor_requested.emit(int(Qt.SizeAllCursor))
+                self.cursor_requested.emit(Qt.SizeAllCursor.value)
             elif hit is not None:
-                self.cursor_requested.emit(int(_HANDLE_CURSORS[hit]))
+                self.cursor_requested.emit(_HANDLE_CURSORS[hit].value)
             else:
-                self.cursor_requested.emit(int(Qt.CrossCursor))
+                self.cursor_requested.emit(Qt.CrossCursor.value)
             return
         if self._press_pos is None:
             return

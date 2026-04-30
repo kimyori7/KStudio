@@ -1,14 +1,15 @@
-"""MagicWandCommand — 클릭 픽셀 색 + 허용 범위 (tolerance) 기준 BFS flood-fill,
-선택된 영역을 ImageLayer.mask 에서 0(=transparent)으로 빼는 undo-able 커맨드.
+"""MagicWandCommand — 클릭 픽셀 색 + 허용 범위 (tolerance) 기준 connected-component
+flood-fill, 선택된 영역을 ImageLayer.mask 에서 0(=transparent)으로 빼는 undo-able 커맨드.
 
 기존 마스크가 있으면 그 위에 빼기 연산. 없으면 전체 white(=opaque) 마스크로 시작.
 """
 from __future__ import annotations
-from collections import deque
 from typing import Optional
 
+import numpy as np
 from PySide6.QtCore import QRect, QSize
 from PySide6.QtGui import QImage, QUndoCommand
+from scipy.ndimage import label as _ndi_label
 
 from ..layer_model import LayerStack
 from ..layers.image_layer import ImageLayer
@@ -53,54 +54,46 @@ def compute_magic_wand_mask_with_rect(
         m.fill(255)
         return m, None
 
-    # 시작 색
-    sc = src.pixel(start_x, start_y)
-    sr, sg, sb = (sc >> 16) & 0xFF, (sc >> 8) & 0xFF, sc & 0xFF
-    tol_sq = max(0, tolerance) ** 2 * 3
-
-    # 결과 마스크 초기화
+    # 결과 마스크 초기화 (벡터화된 마스크 갱신은 numpy 로 일괄 처리)
     if current_mask is not None and current_mask.size() == QSize(w, h):
-        new_mask = current_mask.convertToFormat(QImage.Format_Grayscale8).copy()
+        cur = current_mask.convertToFormat(QImage.Format_Grayscale8)
+        cur_buf = np.frombuffer(cur.constBits(), dtype=np.uint8).reshape(
+            h, cur.bytesPerLine()
+        )[:, :w].copy()
     else:
-        new_mask = QImage(w, h, QImage.Format_Grayscale8)
-        new_mask.fill(255)
+        cur_buf = np.full((h, w), 255, dtype=np.uint8)
 
-    # BFS — 단순 Python 루프 (1080p 이내 스크린샷 기준 충분)
-    visited = bytearray(w * h)
-    q: deque[tuple[int, int]] = deque()
-    q.append((start_x, start_y))
-    min_x = w
-    min_y = h
-    max_x = -1
-    max_y = -1
-    while q:
-        x, y = q.popleft()
-        if x < 0 or y < 0 or x >= w or y >= h:
-            continue
-        idx = y * w + x
-        if visited[idx]:
-            continue
-        c = src.pixel(x, y)
-        r, g, b = (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF
-        if (r - sr) ** 2 + (g - sg) ** 2 + (b - sb) ** 2 > tol_sq:
-            continue
-        visited[idx] = 1
-        new_mask.setPixel(x, y, 0)   # transparent
-        if x < min_x:
-            min_x = x
-        if y < min_y:
-            min_y = y
-        if x > max_x:
-            max_x = x
-        if y > max_y:
-            max_y = y
-        q.append((x + 1, y))
-        q.append((x - 1, y))
-        q.append((x, y + 1))
-        q.append((x, y - 1))
-    if max_x < min_x or max_y < min_y:
+    # ARGB32 little-endian: 메모리 byte 순 = B,G,R,A → R=byte 2, G=byte 1, B=byte 0
+    src_buf = np.frombuffer(src.constBits(), dtype=np.uint8).reshape(
+        h, src.bytesPerLine()
+    )[:, : w * 4].reshape(h, w, 4)
+    r = src_buf[:, :, 2].astype(np.int32)
+    g = src_buf[:, :, 1].astype(np.int32)
+    b = src_buf[:, :, 0].astype(np.int32)
+    sr, sg, sb = int(r[start_y, start_x]), int(g[start_y, start_x]), int(b[start_y, start_x])
+    tol_sq = max(0, tolerance) ** 2 * 3
+    similar = (r - sr) ** 2 + (g - sg) ** 2 + (b - sb) ** 2 <= tol_sq
+
+    # connected-component 라벨링 후 시작 픽셀이 속한 컴포넌트만 추출 — BFS 와 동일
+    # 동작이지만 C 구현이라 1080p 가 수십 ms.
+    labels, _n = _ndi_label(similar)
+    component_id = labels[start_y, start_x]
+    if component_id == 0:
+        # 시작 픽셀 자체가 임계 조건 밖 (방어적; 정상 흐름에서는 발생 안 함)
+        new_mask = QImage(cur_buf.tobytes(), w, h, w, QImage.Format_Grayscale8).copy()
         return new_mask, None
-    affected = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+    flood = labels == component_id
+    cur_buf[flood] = 0
+
+    new_mask = QImage(cur_buf.tobytes(), w, h, w, QImage.Format_Grayscale8).copy()
+
+    ys, xs = np.where(flood)
+    if ys.size == 0:
+        return new_mask, None
+    affected = QRect(
+        int(xs.min()), int(ys.min()),
+        int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1),
+    )
     return new_mask, affected
 
 

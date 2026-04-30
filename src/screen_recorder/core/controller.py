@@ -36,6 +36,10 @@ class RecorderController(QObject):
         self._encoder = None
         self._video_queue: Optional[queue.Queue] = None
         self._output_path: Optional[Path] = None
+        # stop_recording 후 백그라운드 daemon 스레드가 mp4/gif finalize 중인지 여부.
+        # 앱 종료 시 main_window 가 이 플래그를 보고 finalize 완료까지 modal 로 대기 →
+        # daemon 이 도중에 끊겨 손상된 영상이 생기는 것을 방지.
+        self._finalizing = False
 
     @property
     def state(self) -> RecorderState:
@@ -160,12 +164,18 @@ class RecorderController(QObject):
         self._video_queue = None
         self._output_path = None
 
+        self._finalizing = True
         threading.Thread(
             target=self._finalize_stop_async,
             args=(v_thread, a_thread, encoder, audio_raw_path, out_path),
             daemon=True,
             name="RecorderStopFinalizer",
         ).start()
+
+    def is_finalizing(self) -> bool:
+        """stop_recording 후 mp4/gif 헤더 기록이 끝나기 전 구간인지.
+        True 인 동안 앱을 끝내면 손상된 영상이 남는다."""
+        return self._finalizing
 
     def _finalize_stop_async(
         self,
@@ -198,6 +208,9 @@ class RecorderController(QObject):
             except OSError:
                 pass
 
+        # 시그널 emit 전에 플래그를 내려야 — main_window 의 closeEvent 가 _finalizing
+        # 을 폴링할 가능성에 대비. (현재는 시그널 기반이지만 의도 명확화 위해 순서 유지.)
+        self._finalizing = False
         # Qt Signal 은 thread-safe — 자동으로 main thread 슬롯에 dispatch.
         if out_path:
             self.recording_finished.emit(str(out_path))

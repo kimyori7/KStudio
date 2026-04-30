@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Optional
 
+import numpy as np
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 
@@ -11,6 +12,9 @@ from .base import Layer
 def compose_image_with_mask(pixmap: QImage, mask: Optional[QImage]) -> QImage:
     """원본 + 알파 마스크 합성 결과를 새 ARGB32 QImage 로 반환.
     mask=None 이면 원본 그대로(ARGB32 변환).
+
+    마스크 브러시·자동 누끼 결과가 캔버스 새로 그릴 때마다 호출되므로 numpy 로
+    벡터화 — 1080p 한 장에 수 ms. (이전 픽셀 루프는 1080p 에서 수 초 소요)
     """
     out = pixmap.convertToFormat(QImage.Format_ARGB32)
     if mask is None:
@@ -18,14 +22,15 @@ def compose_image_with_mask(pixmap: QImage, mask: Optional[QImage]) -> QImage:
     m = mask.convertToFormat(QImage.Format_Grayscale8)
     if m.size() != out.size():
         m = m.scaled(out.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    # 픽셀별 알파 곱
-    for y in range(out.height()):
-        for x in range(out.width()):
-            argb = out.pixel(x, y)
-            mv = m.pixel(x, y) & 0xFF  # gray = mask alpha
-            a = ((argb >> 24) & 0xFF) * mv // 255
-            out.setPixel(x, y, (a << 24) | (argb & 0x00FFFFFF))
-    return out
+    w, h = out.width(), out.height()
+    out_buf = np.frombuffer(out.constBits(), dtype=np.uint8).reshape(h, out.bytesPerLine())[:, : w * 4].reshape(h, w, 4).copy()
+    mask_buf = np.frombuffer(m.constBits(), dtype=np.uint8).reshape(h, m.bytesPerLine())[:, :w]
+    # ARGB32 little-endian: byte order in memory = B,G,R,A → 알파는 index 3
+    alpha = out_buf[:, :, 3].astype(np.uint16)
+    new_alpha = (alpha * mask_buf.astype(np.uint16) // 255).astype(np.uint8)
+    out_buf[:, :, 3] = new_alpha
+    result = QImage(out_buf.tobytes(), w, h, w * 4, QImage.Format_ARGB32).copy()
+    return result
 
 
 class ImageLayer(Layer):

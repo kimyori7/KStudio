@@ -29,7 +29,11 @@ FORMAT_VERSION = 1
 def _qimage_to_png_bytes(img: QImage) -> bytes:
     buf = QBuffer()
     buf.open(QIODevice.ReadWrite)
-    img.save(buf, "PNG")
+    if not img.save(buf, "PNG"):
+        # 인코딩 실패 — 호출자(write_kstudio → _save_tab_to_path)가 OSError 로 받아서
+        # "저장 실패" 메시지를 띄우게 한다. 빈 PNG 가 ZIP 에 들어가 silent 데이터
+        # 손실되는 것을 방지.
+        raise OSError("PNG 인코딩 실패")
     return bytes(buf.data())
 
 
@@ -162,9 +166,11 @@ def write_kstudio(stack: "LayerStack", path: Path) -> None:
 
 
 def _png_bytes_to_qimage(blob: bytes) -> QImage:
-    """PNG 바이트 → QImage. 실패 시 null QImage 반환."""
+    """PNG 바이트 → QImage. 디코드 실패 시 OSError 발생 — 호출자 read_kstudio 가
+    위로 전파해 빈 레이어 대신 명확한 에러로 사용자에게 알린다."""
     img = QImage()
-    img.loadFromData(QByteArray(blob), "PNG")
+    if not img.loadFromData(QByteArray(blob), "PNG") or img.isNull():
+        raise OSError("PNG 디코드 실패 — 손상된 .kstudio 파일")
     return img
 
 

@@ -243,7 +243,7 @@ class CropTool(Tool):
                     _HANDLE_CURSORS.get(hit) if hit is not None else
                     Qt.CrossCursor
                 )
-                self.cursor_requested.emit(int(shape))
+                self.cursor_requested.emit(shape.value)
             return
         if self._drag_handle is None or not self._has_rect:
             # 새 사각형 그리기 모드

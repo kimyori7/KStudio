@@ -23,7 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QToolBar,
     QDockWidget, QFileDialog, QMessageBox, QApplication, QSystemTrayIcon,
-    QInputDialog, QProgressDialog,
+    QInputDialog, QProgressDialog, QDialog,
 )
 
 from screen_recorder.core.controller import RecorderController
@@ -920,7 +920,10 @@ class MainWindow(QMainWindow):
     # ---------- 라이브러리 컨텍스트 메뉴 ----------
 
     def _on_entry_renamed(self, entry_id: int, new_name: str) -> None:
-        """라이브러리 인라인 편집으로 display_name 이 바뀜 — 디스크 path 가 있으면 같이 rename."""
+        """라이브러리 인라인 편집으로 display_name 이 바뀜 — 디스크 path 가 있으면 같이 rename.
+
+        이름 충돌·OSError 시: 사용자에게 안내 후 display_name 을 디스크 파일 stem 으로
+        롤백 (라이브러리 표시와 디스크 파일명이 어긋난 채 유지되지 않도록)."""
         entry = self.library_model.get(entry_id)
         if entry is None or entry.path is None:
             return
@@ -931,13 +934,27 @@ class MainWindow(QMainWindow):
         new_stem = Path(new_name).stem
         new_suffix = Path(new_name).suffix or old_path.suffix
         target = old_path.parent / f"{new_stem}{new_suffix}"
-        if target == old_path or target.exists():
+        if target == old_path:
+            return
+        if target.exists():
+            QMessageBox.warning(
+                self, "이름 바꾸기 실패",
+                f"같은 이름의 파일이 이미 존재합니다:\n{target.name}",
+            )
+            # display_name 롤백 — 디스크 파일 stem 으로. rename 시그널이 다시 발화하지만
+            # target == old_path 가 되어 즉시 return.
+            self.library_model.rename(entry_id, old_path.stem)
             return
         try:
             old_path.rename(target)
             entry.path = target
         except OSError as e:
             logging.getLogger(__name__).warning("rename failed: %s", e)
+            QMessageBox.warning(
+                self, "이름 바꾸기 실패",
+                f"파일 이름을 바꿀 수 없습니다:\n{e}",
+            )
+            self.library_model.rename(entry_id, old_path.stem)
 
     def _on_library_delete(self, entry_id: int) -> None:
         entry = self.library_model.get(entry_id)
@@ -1344,7 +1361,7 @@ class MainWindow(QMainWindow):
         """
         from .new_canvas_dialog import NewCanvasDialog
         dlg = NewCanvasDialog(self)
-        if dlg.exec() != dlg.Accepted:
+        if dlg.exec() != QDialog.Accepted:
             return
         size = dlg.size()
         try:
@@ -1614,7 +1631,7 @@ class MainWindow(QMainWindow):
             current_model=self.app_settings.annotation.bg_removal_model,
             parent=self,
         )
-        if dlg.exec() != dlg.Accepted:
+        if dlg.exec() != QDialog.Accepted:
             return
         model_name = dlg.selected_model()
         # 다음 호출의 기본값으로 기억.
@@ -2118,6 +2135,37 @@ class MainWindow(QMainWindow):
         self.close()
         QApplication.instance().quit()
 
+    def _wait_for_recording_finalize(self) -> None:
+        """녹화 종료 후 daemon finalize 스레드가 끝날 때까지 modal 로 대기 (최대 60s).
+
+        controller.recording_finished 시그널이 mp4/gif 헤더 기록 완료를 알린다. 그 시그널을
+        받기 전에 closeEvent 를 accept 하면 QApplication.quit() 가 daemon 스레드를 끊어
+        손상된 영상 파일이 남는다. 사용자에겐 indeterminate progress 만 보여 주고, 60s
+        내에 안 끝나면 그냥 진행 (인코더가 뻗은 비정상 상황 — 더 막아도 의미 없음)."""
+        from PySide6.QtCore import QEventLoop
+
+        progress = QProgressDialog("녹화 파일 마무리 중...", None, 0, 0, self)
+        progress.setWindowTitle("종료")
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        loop = QEventLoop(self)
+        def _done(_path: str = "") -> None:
+            loop.quit()
+        self.controller.recording_finished.connect(_done)
+        # 안전 타임아웃 — 인코더가 뻗어 시그널이 안 오는 경우를 위한 fallback.
+        QTimer.singleShot(60_000, loop.quit)
+        try:
+            loop.exec()
+        finally:
+            try:
+                self.controller.recording_finished.disconnect(_done)
+            except (TypeError, RuntimeError):
+                pass
+            progress.close()
+
     def closeEvent(self, e):
         # X 버튼은 트레이로 숨김 (실제 종료는 트레이 메뉴 '종료').
         if not getattr(self, "_force_quit", False):
@@ -2144,6 +2192,13 @@ class MainWindow(QMainWindow):
                 e.ignore()
                 self._force_quit = False  # 종료 취소 시 플래그 리셋
                 return
+        # mp4/gif 인코더의 finalize 가 백그라운드 daemon 스레드에서 진행되는데 closeEvent
+        # 가 즉시 accept 되면 QApplication.quit() 가 그 스레드를 도중 차단해 마지막 청크가
+        # 헤더에 안 반영된 손상된 영상이 생긴다. 사용자가 stop 직후 바로 닫는 케이스도
+        # 포함되도록 controller 의 finalizing 플래그를 본다 (state 기반은 이미 IDLE 이라
+        # 놓침).
+        if self.controller.is_finalizing():
+            self._wait_for_recording_finalize()
         # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출)
         g = self.geometry()
         self.app_settings.screenshot.viewer_x = g.x()

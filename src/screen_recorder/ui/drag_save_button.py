@@ -4,13 +4,14 @@ OS 의 파일 복사 메커니즘(QDrag + URL MIME)에 위임. 드래그 시작 
 PNG 를 써두고 OS 가 그 경로를 복사하도록 한다.
 """
 from __future__ import annotations
+import logging
 import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDrag, QImage, QMouseEvent, QPixmap
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QMessageBox, QPushButton
 
 
 class DragSaveButton(QPushButton):
@@ -40,14 +41,25 @@ class DragSaveButton(QPushButton):
         if img is None or img.isNull():
             self._press_pos = None
             return
-        # 임시 파일 작성
+        # 임시 파일 작성 — 디스크 가득/권한 거부 시에도 사용자에게 알림 후 중단
+        # (실패 시 빈 파일이 드래그되는 silent 손실 방지)
         fname = self.filename_provider() or "image.png"
         if not fname.lower().endswith(".png"):
             fname = Path(fname).stem + ".png"
         tmp_dir = Path(tempfile.gettempdir()) / "KStudio_drag"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        tmp_path = tmp_dir / fname
-        img.save(str(tmp_path), "PNG")
+        try:
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tmp_path = tmp_dir / fname
+            if not img.save(str(tmp_path), "PNG"):
+                raise OSError("PNG 저장 실패")
+        except OSError as e:
+            logging.getLogger(__name__).warning("drag save failed: %s", e)
+            QMessageBox.warning(
+                self, "드래그 저장 실패",
+                f"임시 파일을 만들 수 없습니다:\n{e}",
+            )
+            self._press_pos = None
+            return
         # MIME 구성
         md = QMimeData()
         md.setUrls([QUrl.fromLocalFile(str(tmp_path))])
