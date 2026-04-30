@@ -713,10 +713,25 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _toggle_record_safe(self):
-        if self.controller.state == RecorderState.IDLE:
-            self._on_start_clicked()
-        else:
+        # 3-state 단축키: 어느 모드든 처음 누르면 영역 지정 UI 무장 →
+        # 같은 키 다시 누르면 녹화 시작 → 또 누르면 녹화 종료.
+        # 영역 picker 를 X 로 닫으면 _on_region_close_requested 가 fullscreen 으로
+        # 되돌리므로 자연스럽게 "다음 단축키는 다시 무장" 상태로 들어간다.
+        if self.controller.state != RecorderState.IDLE:
             self._on_stop_clicked()
+            return
+        armed = (self.global_toolbar.current_target() == "region"
+                 and isinstance(self._border, AdjustableRegionBorder))
+        if armed:
+            self._on_start_clicked()
+            return
+        # 무장: 영역 모드로 전환 + AdjustableRegionBorder 표시.
+        if self.global_toolbar.current_target() != "region":
+            self.global_toolbar.set_target("region")
+            self._on_target_changed("region")
+        elif not isinstance(self._border, AdjustableRegionBorder):
+            # 이미 region 인데 border 가 없는 예외 케이스 (수동 hide 등) 만 처리.
+            self._show_region_border()
 
     # ---------- 스크린샷 / 녹화 결과 → LibraryModel + TabArea ----------
 
