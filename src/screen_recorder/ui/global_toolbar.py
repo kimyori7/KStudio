@@ -225,8 +225,10 @@ class GlobalToolbar(QWidget):
         self._actions_by_key["remove_bg"] = self._action_remove_bg
 
         # ---------- 양쪽 공통 ----------
-        self.preferences_btn = QPushButton("⚙")
-        self.preferences_btn.setFixedWidth(32)
+        # 단일 ⚙ 글리프는 폰트에 따라 작은 흑백 아웃라인으로 보여 잘 인지가 안 됨.
+        # U+FE0F (variation selector-16) 로 컬러 이모지 렌더링을 강제하고, "설정"
+        # 한글 라벨을 같이 둬 다른 토글 버튼들("💾 저장", "📋 복사") 과 어순 통일.
+        self.preferences_btn = QPushButton("⚙️ 설정")
         self.preferences_btn.setToolTip("환경설정 (Ctrl+,)")
         self.preferences_btn.clicked.connect(self.preferences_clicked.emit)
         layout.addWidget(self.preferences_btn)
