@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QWidget
 
 
@@ -41,6 +41,7 @@ class TrimLane(QWidget):
         self._in_ms: Optional[int] = None
         self._out_ms: Optional[int] = None
         self._dragging: Optional[str] = None
+        self._filmstrip: list[QImage] = []
 
     # ---------- 외부 API ----------
     def set_duration_ms(self, ms: int) -> None:
@@ -71,6 +72,14 @@ class TrimLane(QWidget):
         self._dragging = None
         self.update()
 
+    def set_filmstrip(self, images: list[QImage]) -> None:
+        """N장 썸네일 배경 설정. 빈 리스트 → 검정 배경."""
+        self._filmstrip = list(images)
+        self.update()
+
+    def has_filmstrip(self) -> bool:
+        return bool(self._filmstrip)
+
     # ---------- 좌표 ↔ ms ----------
     def _lane_left_pad(self) -> int:
         return _PAD_LEFT
@@ -99,6 +108,7 @@ class TrimLane(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, False)
         p.fillRect(self.rect(), _BG_COLOR)
+        self._draw_filmstrip(p)
 
         if self._in_ms is not None and self._out_ms is not None:
             lo, hi = sorted((self._in_ms, self._out_ms))
@@ -115,6 +125,31 @@ class TrimLane(QWidget):
             self._draw_handle(p, self._pixel_for_ms(self._in_ms), is_in=True)
         if self._out_ms is not None:
             self._draw_handle(p, self._pixel_for_ms(self._out_ms), is_in=False)
+
+    def _draw_filmstrip(self, p: QPainter) -> None:
+        if not self._filmstrip:
+            return
+        n = len(self._filmstrip)
+        lane_w = self._lane_width()
+        if lane_w <= 0 or n == 0:
+            return
+        x0 = self._lane_left_pad()
+        h = self.height()
+        # 각 썸네일이 차지하는 픽셀 폭 — 부동소수 누적으로 끝까지 lane 채움.
+        for i, img in enumerate(self._filmstrip):
+            if img.isNull():
+                continue
+            x_start = x0 + (i * lane_w) // n
+            x_end = x0 + ((i + 1) * lane_w) // n
+            w = x_end - x_start
+            if w <= 0:
+                continue
+            target = self.rect()
+            target.setX(x_start)
+            target.setY(0)
+            target.setWidth(w)
+            target.setHeight(h)
+            p.drawImage(target, img)
 
     def _draw_handle(self, p: QPainter, x: int, *, is_in: bool) -> None:
         rect_x = x - _HANDLE_HALF_WIDTH

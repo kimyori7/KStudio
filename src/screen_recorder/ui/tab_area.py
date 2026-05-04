@@ -183,6 +183,12 @@ class TabArea(QTabWidget):
             return None
         return self._tabs[i][0]
 
+    def entry_id_for_widget(self, widget: QWidget) -> Optional[int]:
+        for w, _, eid in self._tabs:
+            if w is widget:
+                return eid
+        return None
+
     # ---------- 포커스 / 모드 ----------
     def focus_entry(self, entry_id: int) -> None:
         i = self.find_index_by_entry(entry_id)

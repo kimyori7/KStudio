@@ -78,6 +78,18 @@ def test_mouse_drag_emits_seek_request(lane, qtbot):
         QTest.mouseRelease(lane, Qt.LeftButton, pos=QPoint(in_px, lane.height() // 2))
 
 
+def test_set_filmstrip_marks_lane_as_having_strip(lane):
+    """set_filmstrip 후 has_filmstrip True. 빈 리스트 → False."""
+    from PySide6.QtGui import QImage
+    img = QImage(64, 32, QImage.Format_RGB32)
+    img.fill(0xFF0000)
+    assert lane.has_filmstrip() is False
+    lane.set_filmstrip([img, img, img])
+    assert lane.has_filmstrip() is True
+    lane.set_filmstrip([])
+    assert lane.has_filmstrip() is False
+
+
 def test_empty_space_click_seeks_without_changing_handles(lane, qtbot):
     """핸들 외 빈 공간 클릭 = 시크. in/out 은 안 건드림."""
     lane.set_in_ms(2_000)

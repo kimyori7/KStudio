@@ -30,6 +30,7 @@ class LibraryEntry:
     path: Optional[Path] = None
     duration_ms: int = 0
     origin: str = "captured"   # "captured" | "opened"
+    filmstrip: list = field(default_factory=list)   # list[QImage] — 트림 레인 배경 캐시
 
 
 class LibraryModel(QObject):

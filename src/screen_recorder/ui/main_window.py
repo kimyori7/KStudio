@@ -77,6 +77,7 @@ from screen_recorder.core.filename import build_filename, resolve_collision
 from .edit_tab import EditTab
 from .video_tab import VideoTab
 from screen_recorder.encode.trim import TrimJob
+from screen_recorder.encode.filmstrip import FilmstripJob
 from image_editor.tools.select import SelectTool
 from image_editor.tools.selection import SelectionTool
 from image_editor.tools.rect import RectTool
@@ -124,6 +125,8 @@ class MainWindow(QMainWindow):
         self._active_trim_src_widget = None
         self._active_trim_src_path: Path | None = None
         self._active_trim_dst_path: Path | None = None
+        # 필름스트립 잡 보관 — entry_id 단위, 동시 다발적 추출 가능 (서로 독립).
+        self._filmstrip_jobs: dict[int, FilmstripJob] = {}
         self.setWindowTitle("KStudio")
         self.setWindowIcon(app_icon())
         # 일반 OS 창 프레임 사용 (frameless 해제 — 메뉴 바를 위해)
@@ -993,6 +996,8 @@ class MainWindow(QMainWindow):
             self.library_model.entry_renamed.emit(entry_id, entry.display_name)
         except Exception:
             pass
+        # 정확한 duration 이 확정된 시점에 필름스트립(트림 레인 배경) 추출 시작.
+        self._start_filmstrip_extraction(entry_id)
 
     def _on_tab_closed_by_user(self, entry_id: int) -> None:
         # 라이브러리에는 그대로 남겨둔다 (탭만 닫힘).
@@ -1004,6 +1009,15 @@ class MainWindow(QMainWindow):
             widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
         elif isinstance(widget, VideoTab):
             widget.trim_requested.connect(self._on_trim_requested)
+            # 같은 영상 entry 가 이미 필름스트립을 들고 있으면 즉시 적용 (재오픈 캐시).
+            entry_id = self.tab_area.entry_id_for_widget(widget)
+            if entry_id is not None:
+                entry = self.library_model.get(entry_id)
+                if entry is not None and entry.filmstrip:
+                    widget.controls.trim_lane.set_filmstrip(entry.filmstrip)
+                # duration 이 이미 확정돼 있으면 추출 시작 (영상 라이브러리에서 다시 열기 등).
+                if entry is not None and entry.duration_ms > 0 and not entry.filmstrip:
+                    self._start_filmstrip_extraction(entry_id)
 
     def _entry_for_current_tab(self):
         eid = self.tab_area.current_entry_id()
@@ -2524,6 +2538,52 @@ class MainWindow(QMainWindow):
         self._active_trim_src_widget = None
         self._active_trim_src_path = None
         self._active_trim_dst_path = None
+
+    def _start_filmstrip_extraction(self, entry_id: int) -> None:
+        """라이브러리 entry 의 영상에서 필름스트립 N장을 비동기 추출.
+
+        이미 잡이 진행 중이거나 캐시가 있으면 스킵. 추출 결과는 entry.filmstrip 에
+        보관하고 현재 열려있는 같은 entry 의 트림 레인에도 즉시 반영.
+        """
+        if entry_id in self._filmstrip_jobs:
+            return
+        entry = self.library_model.get(entry_id)
+        if entry is None or entry.path is None or entry.duration_ms <= 0:
+            return
+        if entry.filmstrip:
+            return
+        if not Path(entry.path).exists():
+            return
+        job = FilmstripJob(
+            ffmpeg_path=self.ffmpeg_path,
+            src=entry.path,
+            duration_ms=entry.duration_ms,
+            count=20,
+            thumb_width=96,
+        )
+        job.finished.connect(lambda imgs, eid=entry_id: self._on_filmstrip_finished(eid, imgs))
+        job.error.connect(lambda msg, eid=entry_id: self._on_filmstrip_error(eid, msg))
+        self._filmstrip_jobs[entry_id] = job
+        job.start()
+
+    @Slot(int, list)
+    def _on_filmstrip_finished(self, entry_id: int, images: list) -> None:
+        self._filmstrip_jobs.pop(entry_id, None)
+        entry = self.library_model.get(entry_id)
+        if entry is None:
+            return
+        entry.filmstrip = images
+        widget = self.tab_area.tab_widget_for_entry(entry_id)
+        if widget is not None and isinstance(widget, VideoTab):
+            widget.controls.trim_lane.set_filmstrip(images)
+
+    @Slot(int, str)
+    def _on_filmstrip_error(self, entry_id: int, msg: str) -> None:
+        self._filmstrip_jobs.pop(entry_id, None)
+        # 실패는 silent — 트림 레인이 검정 배경 그대로 유지.
+        import logging
+        logging.getLogger(__name__).info("filmstrip extraction failed for entry %s: %s",
+                                           entry_id, msg)
 
     def _extract_thumbnail_async(self, path: Path, entry_id: int) -> None:
         """ffmpeg 으로 첫 프레임 썸네일을 비동기 추출 → LibraryModel 갱신."""
