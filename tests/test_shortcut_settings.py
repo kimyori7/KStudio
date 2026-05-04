@@ -49,3 +49,34 @@ def test_conflict_detected(qtbot):
     qtbot.addWidget(panel)
     conflict = panel.check_conflict("tool_crop", "V")  # V 는 select
     assert conflict == "tool_select"
+
+
+def test_preset_combo_disabled_when_no_settings(qtbot):
+    from screen_recorder.core.settings import EditorShortcuts, HotkeySettings
+    from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
+    panel = ShortcutsPanel(HotkeySettings(), EditorShortcuts())
+    qtbot.addWidget(panel)
+    assert panel.preset_combo.isEnabled() is False
+
+
+def test_preset_combo_reflects_current_preset(qtbot):
+    from screen_recorder.core.settings import AppSettings
+    from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
+    s = AppSettings()
+    s.hotkey.preset_name = "windows-standard"
+    panel = ShortcutsPanel(s.hotkey, s.editor_shortcuts, s)
+    qtbot.addWidget(panel)
+    assert panel.preset_combo.currentData() == "windows-standard"
+
+
+def test_individual_edit_marks_custom(qtbot):
+    """사용자가 개별 키 한 줄 변경 → preset_name='custom' 자동 전환."""
+    from screen_recorder.core.settings import AppSettings
+    from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
+    s = AppSettings()
+    s.hotkey.preset_name = "goom-pot"
+    panel = ShortcutsPanel(s.hotkey, s.editor_shortcuts, s)
+    qtbot.addWidget(panel)
+    panel.set_shortcut_for("tool_crop", "K")
+    assert s.hotkey.preset_name == "custom"
+    assert panel.preset_combo.currentData() == "custom"

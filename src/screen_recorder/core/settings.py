@@ -63,6 +63,9 @@ class HotkeySettings:
     # "전체 녹화" 단축키 — 환경설정 리스트에서 사용자가 지정 가능. 현재는
     # 글로벌 핫키 등록만 placeholder (별도 액션 핸들러는 후속에 추가 예정).
     toggle_record_full: str = ""
+    # 단축키 프리셋 식별자. 빈 문자열 = 첫 실행 (다이얼로그 노출). 사용자가 개별 키를
+    # 수정하면 "custom" 으로 자동 전환. 값: "" | "windows-standard" | "goom-pot" | "custom"
+    preset_name: str = ""
 
 
 @dataclass
@@ -157,7 +160,12 @@ def load(path: Path) -> AppSettings:
     if not path.exists():
         return AppSettings()
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return _from_dict(AppSettings, raw)
+    settings = _from_dict(AppSettings, raw)
+    # 마이그레이션: 기존 사용자는 settings.json 이 이미 있는데 preset_name 필드가 없거나
+    # 비어 있을 수 있다. 첫 실행 다이얼로그를 안 띄우도록 'custom' 으로 자동 마킹.
+    if settings.hotkey.preset_name == "":
+        settings.hotkey.preset_name = "custom"
+    return settings
 
 
 def _from_dict(cls, data: dict):

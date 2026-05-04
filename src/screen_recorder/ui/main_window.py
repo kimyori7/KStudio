@@ -301,6 +301,11 @@ class MainWindow(QMainWindow):
         # 초기화 끝 — 이제부터 사용자 액션에 의한 persist 허용.
         self._initializing = False
 
+        # 첫 실행 시 단축키 프리셋 다이얼로그 노출 (preset_name="" 일 때만).
+        # 노출은 이벤트 루프 시작 후로 미뤄 메인 창이 먼저 보이도록 한다.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._maybe_show_hotkey_preset_dialog)
+
     # ---------- 시그널 와이어링 ----------
 
     def _wire_signals(self) -> None:
@@ -2072,6 +2077,33 @@ class MainWindow(QMainWindow):
             "<p>Windows 전용 화면 캡처 · 녹화 · 이미지 편집 통합 툴</p>"
             "<p>© 2026 kimyori</p>",
         )
+
+    def _maybe_show_hotkey_preset_dialog(self) -> None:
+        """첫 실행(preset_name='') 시 프리셋 카드 다이얼로그를 띄움.
+
+        사용자가 카드를 고르면 settings 일괄 갱신 + persist + 핫키 재등록.
+        '건너뛰기' 시에는 현재 키 유지하고 preset_name='custom' 으로 마킹해
+        다음 실행부터 노출 안 됨.
+        """
+        import os
+        if os.environ.get("KSTUDIO_NO_FIRST_RUN_DIALOG"):
+            # 테스트 환경 등에서 모달 차단 회피용.
+            return
+        from .hotkey_preset_dialog import HotkeyPresetDialog
+        from screen_recorder.core.hotkey_presets import is_first_run, apply_preset
+        if not is_first_run(self.app_settings):
+            return
+        dialog = HotkeyPresetDialog(self)
+        dialog.exec()
+        if dialog.selected_preset is not None:
+            apply_preset(self.app_settings, dialog.selected_preset)
+        else:
+            self.app_settings.hotkey.preset_name = "custom"
+        self._persist_settings()
+        self._reregister_hotkey()
+        self._register_editor_shortcuts()
+        self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
+        self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)
 
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)

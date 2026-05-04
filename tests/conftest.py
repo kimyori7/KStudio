@@ -5,6 +5,8 @@ import os
 # 테스트 종료 시 cleanup 으로 close 가 불리면서 모달 다이얼로그가 뜸.
 # 반드시 Qt import 전에 환경변수가 설정되어야 하므로 최상단에 둔다.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# MainWindow 의 첫 실행 단축키 프리셋 다이얼로그가 테스트를 블로킹하지 않게 차단.
+os.environ.setdefault("KSTUDIO_NO_FIRST_RUN_DIALOG", "1")
 
 import pytest
 from screen_recorder.core import ffmpeg_check
