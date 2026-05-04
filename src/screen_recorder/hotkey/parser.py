@@ -15,6 +15,8 @@ _MODIFIERS_WIN32 = {
     "alt": _MOD_ALT,
     "win": _MOD_WIN,
     "super": _MOD_WIN,
+    # Qt 의 QKeySequence.toString() 은 Windows 키를 "Meta" 로 표기 — 호환.
+    "meta": _MOD_WIN,
 }
 
 # 자주 쓰이는 특수 키의 Windows VK 코드
