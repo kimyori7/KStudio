@@ -76,6 +76,7 @@ from screen_recorder.core.filename import build_filename, resolve_collision
 
 from .edit_tab import EditTab
 from .video_tab import VideoTab
+from screen_recorder.encode.trim import TrimJob
 from image_editor.tools.select import SelectTool
 from image_editor.tools.selection import SelectionTool
 from image_editor.tools.rect import RectTool
@@ -118,6 +119,11 @@ class MainWindow(QMainWindow):
         # 사용자 실제 settings.json 에 기록돼 영구 오염됨. 사용자 의도 변경은
         # __init__ 종료 후에만 발생하므로 그때부터 persist 허용.
         self._initializing = True
+        # 트림 잡 lifecycle 추적 — 한 번에 하나만 진행.
+        self._active_trim_job: TrimJob | None = None
+        self._active_trim_src_widget = None
+        self._active_trim_src_path: Path | None = None
+        self._active_trim_dst_path: Path | None = None
         self.setWindowTitle("KStudio")
         self.setWindowIcon(app_icon())
         # 일반 OS 창 프레임 사용 (frameless 해제 — 메뉴 바를 위해)
@@ -996,6 +1002,8 @@ class MainWindow(QMainWindow):
         """새 탭이 추가되면 그 탭의 시그널을 옵션바 등에 연결."""
         if isinstance(widget, EditTab):
             widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
+        elif isinstance(widget, VideoTab):
+            widget.trim_requested.connect(self._on_trim_requested)
 
     def _entry_for_current_tab(self):
         eid = self.tab_area.current_entry_id()
@@ -2412,6 +2420,112 @@ class MainWindow(QMainWindow):
             if still_there:
                 continue
             self.library_model.remove(entry.id)
+
+    # ---------- 영상 트림 lifecycle ----------
+
+    def _on_trim_requested(self, src_path, in_ms: int, out_ms: int) -> None:
+        """VideoTab 에서 트림 요청 — TrimJob 시작.
+
+        한 번에 하나만 진행. 진행 중이면 토스트로 안내 후 무시.
+        출력 경로: <원본>_cut_NNN.<ext>, 충돌 시 NNN 증가 (1~999).
+        """
+        if self._active_trim_job is not None:
+            from .toast import show_toast
+            show_toast(self, "이미 자르는 중입니다", duration_ms=1500)
+            return
+
+        src = Path(src_path)
+        stem = src.stem
+        suffix = src.suffix
+        save_dir = src.parent
+        n = 1
+        candidate = save_dir / f"{stem}_cut_{n:03d}{suffix}"
+        while candidate.exists():
+            n += 1
+            if n > 999:
+                from .toast import show_toast
+                show_toast(self, "출력 파일명 충돌 (>999)", duration_ms=2000)
+                return
+            candidate = save_dir / f"{stem}_cut_{n:03d}{suffix}"
+
+        job = TrimJob(
+            ffmpeg_path=self.ffmpeg_path,
+            src=src, dst=candidate,
+            in_ms=in_ms, out_ms=out_ms,
+        )
+        job.finished.connect(self._on_trim_finished)
+        job.error.connect(self._on_trim_error)
+        self._active_trim_job = job
+        self._active_trim_src_path = src
+        self._active_trim_dst_path = candidate
+
+        cur = self.tab_area.currentWidget()
+        if isinstance(cur, VideoTab):
+            cur.controls.set_cut_button_enabled(False)
+            self._active_trim_src_widget = cur
+        else:
+            self._active_trim_src_widget = None
+
+        self.status_bar.state_label.setText(f"✂ 자르는 중... ({src.name})")
+        self.status_bar.state_label.setStyleSheet("color: #26C6DA;")
+        job.start()
+
+    def _on_trim_finished(self, out_path) -> None:
+        """TrimJob 완료 — 라이브러리 + 새 영상 탭 + 자동 포커스 + 원본 in/out 초기화."""
+        out = Path(out_path)
+        placeholder = QImage(64, 36, QImage.Format_ARGB32)
+        placeholder.fill(0xFF222222)
+        entry = self.library_model.add(
+            EntryKind.VIDEO,
+            thumbnail=placeholder,
+            source_label="trim",
+            display_name=out.name,
+            path=out,
+            duration_ms=0,
+        )
+        self.tab_area.add_video(
+            path=out, source_label="trim",
+            duration_ms=0, entry_id=entry.id,
+            display_name=out.name,
+            thumbnail=entry.thumbnail,
+        )
+        self._extract_thumbnail_async(out, entry.id)
+
+        if isinstance(self._active_trim_src_widget, VideoTab):
+            try:
+                self._active_trim_src_widget.controls.clear_trim()
+                self._active_trim_src_widget.controls.set_cut_button_enabled(True)
+            except RuntimeError:
+                pass
+        src_name = self._active_trim_src_path.name if self._active_trim_src_path else out.name
+        self._reset_trim_state()
+        self.status_bar.state_label.setText(f"✂ 완료 — {out.name}")
+        self.status_bar.state_label.setStyleSheet("color: #5BC07C;")
+        del src_name   # noqa - 미래 로깅용
+
+    def _on_trim_error(self, msg: str) -> None:
+        """TrimJob 실패 — 부분 파일 삭제 + 토스트 + ✂ 재활성."""
+        if self._active_trim_dst_path is not None:
+            try:
+                Path(self._active_trim_dst_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        from .toast import show_toast
+        show_toast(self, f"✂ 자르기 실패 — {msg}", duration_ms=3000)
+        if isinstance(self._active_trim_src_widget, VideoTab):
+            try:
+                self._active_trim_src_widget.controls.set_cut_button_enabled(True)
+            except RuntimeError:
+                pass
+        self._reset_trim_state()
+        self.status_bar.state_label.setText("● 대기 중")
+        self.status_bar.state_label.setStyleSheet("color: #A0A4AB;")
+
+    def _reset_trim_state(self) -> None:
+        self._active_trim_job = None
+        self._active_trim_src_widget = None
+        self._active_trim_src_path = None
+        self._active_trim_dst_path = None
 
     def _extract_thumbnail_async(self, path: Path, entry_id: int) -> None:
         """ffmpeg 으로 첫 프레임 썸네일을 비동기 추출 → LibraryModel 갱신."""
