@@ -142,6 +142,16 @@ class PlayerControls(QWidget):
         _bump_font_size(self.fullscreen_btn, 16)
         layout.addWidget(self.fullscreen_btn)
 
+        # 트림 진입 버튼 — 항상 표시. 클릭 = 현재 위치를 in 점으로 마크 ([ 키와 동일).
+        # 트림 row 의 ✂ 자르기 버튼은 in/out 둘 다 마크된 후 자르기 실행이고,
+        # 이건 트림 모드 *진입* 용 (사용자가 단축키 모르고도 마우스로 시작 가능).
+        self.cut_enter_btn = QPushButton("✂")
+        self.cut_enter_btn.setFixedSize(40, 32)
+        self.cut_enter_btn.setToolTip("트림 시작점 마크 ([) — 영상 시간 일부만 잘라내기")
+        _bump_font_size(self.cut_enter_btn, 16)
+        self.cut_enter_btn.clicked.connect(self._on_cut_enter_clicked)
+        layout.addWidget(self.cut_enter_btn)
+
         self._duration_ms = 0
         self._position_ms = 0
         self._in_ms: int | None = None
@@ -303,3 +313,10 @@ class PlayerControls(QWidget):
         if self._in_ms is None or self._out_ms is None:
             return
         self.trim_execute_requested.emit(self._in_ms, self._out_ms)
+
+    def _on_cut_enter_clicked(self) -> None:
+        """컨트롤바의 ✂ 트림 진입 버튼 — 현재 위치를 in 점으로 마크.
+
+        '[' 단축키와 동일 동작. 단축키 모르는 사용자도 마우스로 트림 시작 가능.
+        """
+        self.set_in_ms(self._position_ms)

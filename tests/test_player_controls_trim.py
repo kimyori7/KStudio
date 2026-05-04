@@ -79,3 +79,25 @@ def test_trim_lane_in_changed_updates_state(controls):
     controls.set_out_ms(8_000)
     controls.trim_lane.in_changed.emit(3_000)
     assert controls.in_ms() == 3_000
+
+
+def test_cut_enter_btn_marks_in_at_current_position(controls, qtbot):
+    """컨트롤바의 ✂ 진입 버튼 — 현재 위치를 in 점으로 마크 ([ 키와 동일)."""
+    controls.set_position_ms(3_500)
+    assert controls.in_ms() is None      # 사전 조건
+    controls.cut_enter_btn.click()
+    assert controls.in_ms() == 3_500
+    # 트림 row 도 같이 등장
+    controls.show()
+    qtbot.waitExposed(controls)
+    assert controls.trim_row.isVisibleTo(controls)
+
+
+def test_cut_enter_btn_always_visible(controls, qtbot):
+    """진입 버튼은 in/out 마크 여부와 무관하게 항상 표시."""
+    controls.show()
+    qtbot.waitExposed(controls)
+    assert controls.cut_enter_btn.isVisibleTo(controls)
+    # in 점 마크 후에도 그대로
+    controls.set_in_ms(1_000)
+    assert controls.cut_enter_btn.isVisibleTo(controls)
