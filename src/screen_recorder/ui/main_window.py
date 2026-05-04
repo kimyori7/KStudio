@@ -2497,11 +2497,9 @@ class MainWindow(QMainWindow):
                 self._active_trim_src_widget.controls.set_cut_button_enabled(True)
             except RuntimeError:
                 pass
-        src_name = self._active_trim_src_path.name if self._active_trim_src_path else out.name
         self._reset_trim_state()
         self.status_bar.state_label.setText(f"✂ 완료 — {out.name}")
         self.status_bar.state_label.setStyleSheet("color: #5BC07C;")
-        del src_name   # noqa - 미래 로깅용
 
     def _on_trim_error(self, msg: str) -> None:
         """TrimJob 실패 — 부분 파일 삭제 + 토스트 + ✂ 재활성."""
