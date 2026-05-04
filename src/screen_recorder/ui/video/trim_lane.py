@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QWidget
 
 
-_LANE_HEIGHT = 32
+_LANE_HEIGHT = 36
 _HANDLE_HALF_WIDTH = 4
 _HANDLE_HIT_PAD = 8
 _PAD_LEFT = 4
@@ -22,7 +22,7 @@ _BG_COLOR = QColor(40, 44, 52)
 _SEL_COLOR = QColor(38, 198, 218, 200)
 _HANDLE_FILL = QColor(255, 215, 64)
 _HANDLE_BORDER = QColor(0, 0, 0, 220)
-_PLAYHEAD_COLOR = QColor(255, 255, 255, 230)
+_PLAYHEAD_COLOR = QColor(229, 57, 53, 240)   # 빨강 — 시크바 통합 후 재생 헤드 변별성
 
 
 class TrimLane(QWidget):
@@ -108,7 +108,7 @@ class TrimLane(QWidget):
 
         if self._duration_ms > 0:
             xp = self._pixel_for_ms(self._position_ms)
-            p.setPen(QPen(_PLAYHEAD_COLOR, 1))
+            p.setPen(QPen(_PLAYHEAD_COLOR, 2))
             p.drawLine(xp, 0, xp, self.height())
 
         if self._in_ms is not None:
@@ -132,11 +132,14 @@ class TrimLane(QWidget):
         if event.button() != Qt.LeftButton:
             return
         x = int(event.position().x())
+        new_ms = self._ms_for_pixel(x)
         target = self._handle_at(x)
         if target is None:
+            # 핸들 외 빈 공간 클릭 — 시크 (영상 위치 이동, in/out 안 건드림).
+            self._dragging = "seek"
+            self.seek_request.emit(new_ms)
             return
         self._dragging = target
-        new_ms = self._ms_for_pixel(x)
         if target == "in":
             self._in_ms = new_ms
             self.in_changed.emit(new_ms)
@@ -151,6 +154,9 @@ class TrimLane(QWidget):
             return
         x = int(event.position().x())
         new_ms = self._ms_for_pixel(x)
+        if self._dragging == "seek":
+            self.seek_request.emit(new_ms)
+            return
         if self._dragging == "in":
             self._in_ms = new_ms
             self.in_changed.emit(new_ms)

@@ -101,3 +101,29 @@ def test_cut_enter_btn_always_visible(controls, qtbot):
     # in 점 마크 후에도 그대로
     controls.set_in_ms(1_000)
     assert controls.cut_enter_btn.isVisibleTo(controls)
+
+
+def test_seek_slider_hidden_when_trim_active(controls, qtbot):
+    """트림 row 활성 시 시크 슬라이더 숨김 — 트림 레인이 시크 역할 겸함."""
+    controls.show()
+    qtbot.waitExposed(controls)
+    assert controls.seek_slider.isVisibleTo(controls)
+    controls.set_in_ms(2_000)
+    assert not controls.seek_slider.isVisibleTo(controls)
+    # clear 시 다시 보임
+    controls.clear_trim()
+    assert controls.seek_slider.isVisibleTo(controls)
+
+
+def test_mark_in_btn_uses_current_position(controls):
+    controls.set_position_ms(4_500)
+    controls.set_in_ms(1_000)   # 트림 모드 진입
+    controls.mark_in_btn.click()
+    assert controls.in_ms() == 4_500
+
+
+def test_mark_out_btn_uses_current_position(controls):
+    controls.set_position_ms(7_200)
+    controls.set_in_ms(1_000)
+    controls.mark_out_btn.click()
+    assert controls.out_ms() == 7_200

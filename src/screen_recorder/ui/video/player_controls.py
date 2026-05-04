@@ -59,9 +59,18 @@ class PlayerControls(QWidget):
         self.cut_btn = QPushButton("✂ 자르기")
         self.cut_btn.setEnabled(False)
         self.cut_btn.clicked.connect(self._on_cut_clicked)
+        # 단축키 모르는 사용자도 마우스로 in/out 마크 가능 + 트림 모드 진입 후 빠른 재마크.
+        self.mark_in_btn = QPushButton("[ 시작점")
+        self.mark_in_btn.setToolTip("현재 재생 위치를 시작점으로 마크 ([)")
+        self.mark_in_btn.clicked.connect(self._on_mark_in_clicked)
+        self.mark_out_btn = QPushButton("] 끝점")
+        self.mark_out_btn.setToolTip("현재 재생 위치를 끝점으로 마크 (])")
+        self.mark_out_btn.clicked.connect(self._on_mark_out_clicked)
         self.cut_clear_btn = QPushButton("✕ 해제")
         self.cut_clear_btn.clicked.connect(self.clear_trim)
         trim_btns.addWidget(self.cut_btn)
+        trim_btns.addWidget(self.mark_in_btn)
+        trim_btns.addWidget(self.mark_out_btn)
         trim_btns.addStretch(1)
         trim_btns.addWidget(self.cut_clear_btn)
         trim_v.addLayout(trim_btns)
@@ -287,6 +296,9 @@ class PlayerControls(QWidget):
         self.trim_lane.set_out_ms(self._out_ms)
         any_marked = self._in_ms is not None or self._out_ms is not None
         self.trim_row.setVisible(any_marked)
+        # 트림 row 활성 시 시크 슬라이더 숨김 — 트림 레인이 시크 역할도 겸함.
+        # 두 가로 막대가 동시에 보여 헷갈리던 UX 이슈 해결.
+        self.seek_slider.setVisible(not any_marked)
         self._refresh_cut_button()
 
     def _refresh_cut_button(self) -> None:
@@ -320,3 +332,11 @@ class PlayerControls(QWidget):
         '[' 단축키와 동일 동작. 단축키 모르는 사용자도 마우스로 트림 시작 가능.
         """
         self.set_in_ms(self._position_ms)
+
+    def _on_mark_in_clicked(self) -> None:
+        """트림 row 의 [ 시작점 버튼 — 현재 재생 위치를 in 점으로 마크 (덮어쓰기 가능)."""
+        self.set_in_ms(self._position_ms)
+
+    def _on_mark_out_clicked(self) -> None:
+        """트림 row 의 ] 끝점 버튼 — 현재 재생 위치를 out 점으로 마크 (덮어쓰기 가능)."""
+        self.set_out_ms(self._position_ms)

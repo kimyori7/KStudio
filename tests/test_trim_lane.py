@@ -76,3 +76,20 @@ def test_mouse_drag_emits_seek_request(lane, qtbot):
     with qtbot.waitSignal(lane.seek_request, timeout=1000):
         QTest.mousePress(lane, Qt.LeftButton, pos=QPoint(in_px, lane.height() // 2))
         QTest.mouseRelease(lane, Qt.LeftButton, pos=QPoint(in_px, lane.height() // 2))
+
+
+def test_empty_space_click_seeks_without_changing_handles(lane, qtbot):
+    """핸들 외 빈 공간 클릭 = 시크. in/out 은 안 건드림."""
+    lane.set_in_ms(2_000)
+    lane.set_out_ms(8_000)
+    target_px = lane._pixel_for_ms(5_000)   # 5초 위치 — in/out 둘 다 멀리 떨어짐
+
+    with qtbot.waitSignal(lane.seek_request, timeout=1000) as blocker:
+        with qtbot.assertNotEmitted(lane.in_changed, wait=200):
+            with qtbot.assertNotEmitted(lane.out_changed, wait=200):
+                QTest.mousePress(lane, Qt.LeftButton, pos=QPoint(target_px, lane.height() // 2))
+                QTest.mouseRelease(lane, Qt.LeftButton, pos=QPoint(target_px, lane.height() // 2))
+    assert abs(blocker.args[0] - 5_000) <= 100
+    # in/out 변경 안 됨
+    assert lane.in_ms() == 2_000
+    assert lane.out_ms() == 8_000
