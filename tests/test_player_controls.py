@@ -68,22 +68,25 @@ def test_audio_disabled_for_gif(qtbot):
     assert not c.mute_btn.isEnabled()
 
 
-def test_set_playing_toggles_button_text(qtbot):
+def test_set_playing_swaps_icon(qtbot):
+    """버튼 아이콘이 SVG 로 마이그레이션됨 — text 대신 icon cacheKey 비교."""
     c = PlayerControls()
     qtbot.addWidget(c)
     c.set_playing(True)
-    assert c.play_btn.text() == "⏸"
+    pause_key = c.play_btn.icon().cacheKey()
     c.set_playing(False)
-    assert c.play_btn.text() == "▶"
+    play_key = c.play_btn.icon().cacheKey()
+    assert pause_key != play_key
 
 
-def test_set_muted_toggles_button_text(qtbot):
+def test_set_muted_swaps_icon(qtbot):
     c = PlayerControls()
     qtbot.addWidget(c)
     c.set_muted(True)
-    assert c.mute_btn.text() == "🔇"
+    muted_key = c.mute_btn.icon().cacheKey()
     c.set_muted(False)
-    assert c.mute_btn.text() == "🔊"
+    unmuted_key = c.mute_btn.icon().cacheKey()
+    assert muted_key != unmuted_key
 
 
 def test_set_speed_updates_combo(qtbot):

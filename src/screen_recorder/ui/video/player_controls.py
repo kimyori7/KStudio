@@ -1,13 +1,17 @@
 """곰/팟플레이어 스타일 영상 컨트롤 바."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSlider,
     QVBoxLayout, QWidget,
 )
 
 from .trim_lane import TrimLane
+from ..icons import load_icon
+
+
+_ICON_PX = 18
 
 
 _SPEEDS = [("0.5×", 0.5), ("1.0×", 1.0), ("1.5×", 1.5), ("2.0×", 2.0)]
@@ -56,17 +60,25 @@ class PlayerControls(QWidget):
         trim_v.addWidget(self.trim_lane)
         trim_btns = QHBoxLayout()
         trim_btns.setSpacing(8)
-        self.cut_btn = QPushButton("✂ 자르기")
+        self.cut_btn = QPushButton("자르기")
+        self.cut_btn.setIcon(load_icon("scissors", size=_ICON_PX))
+        self.cut_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.cut_btn.setEnabled(False)
         self.cut_btn.clicked.connect(self._on_cut_clicked)
         # 단축키 모르는 사용자도 마우스로 in/out 마크 가능 + 트림 모드 진입 후 빠른 재마크.
-        self.mark_in_btn = QPushButton("[ 시작점")
+        self.mark_in_btn = QPushButton("시작점")
+        self.mark_in_btn.setIcon(load_icon("square-arrow-left", size=_ICON_PX))
+        self.mark_in_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.mark_in_btn.setToolTip("현재 재생 위치를 시작점으로 마크 ([)")
         self.mark_in_btn.clicked.connect(self._on_mark_in_clicked)
-        self.mark_out_btn = QPushButton("] 끝점")
+        self.mark_out_btn = QPushButton("끝점")
+        self.mark_out_btn.setIcon(load_icon("square-arrow-right", size=_ICON_PX))
+        self.mark_out_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.mark_out_btn.setToolTip("현재 재생 위치를 끝점으로 마크 (])")
         self.mark_out_btn.clicked.connect(self._on_mark_out_clicked)
-        self.cut_clear_btn = QPushButton("✕ 해제")
+        self.cut_clear_btn = QPushButton("해제")
+        self.cut_clear_btn.setIcon(load_icon("x", size=_ICON_PX))
+        self.cut_clear_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.cut_clear_btn.clicked.connect(self.clear_trim)
         trim_btns.addWidget(self.cut_btn)
         trim_btns.addWidget(self.mark_in_btn)
@@ -84,8 +96,11 @@ class PlayerControls(QWidget):
         layout.setSpacing(6)
         outer.addWidget(main_row)
 
-        self.play_btn = QPushButton("▶")
-        self.play_btn.setFixedWidth(36)
+        self.play_btn = QPushButton()
+        self.play_btn.setFixedSize(36, 32)
+        self.play_btn.setIcon(load_icon("play", size=_ICON_PX))
+        self.play_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
+        self.play_btn.setToolTip("재생/일시정지 (Space)")
         self.play_btn.clicked.connect(self.play_toggled.emit)
         layout.addWidget(self.play_btn)
 
@@ -98,10 +113,11 @@ class PlayerControls(QWidget):
         self.seek_slider.valueChanged.connect(self.seek_request.emit)
         layout.addWidget(self.seek_slider, stretch=1)
 
-        self.mute_btn = QPushButton("🔊")
+        self.mute_btn = QPushButton()
         self.mute_btn.setFixedSize(40, 32)
+        self.mute_btn.setIcon(load_icon("volume-2", size=_ICON_PX))
+        self.mute_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.mute_btn.setToolTip("음소거 (M)")
-        _bump_font_size(self.mute_btn, 16)
         self.mute_btn.clicked.connect(self.mute_toggled.emit)
         layout.addWidget(self.mute_btn)
 
@@ -122,42 +138,47 @@ class PlayerControls(QWidget):
         self.speed_combo.currentTextChanged.connect(self._on_speed_changed)
         layout.addWidget(self.speed_combo)
 
-        # 프레임 스텝/스냅샷/풀스크린 — 아이콘 가독성을 위해 크게.
-        self.frame_back_btn = QPushButton("◀")
+        # 프레임 스텝/스냅샷/풀스크린.
+        self.frame_back_btn = QPushButton()
         self.frame_back_btn.setFixedSize(40, 32)
+        self.frame_back_btn.setIcon(load_icon("chevron-left", size=_ICON_PX))
+        self.frame_back_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.frame_back_btn.setToolTip("이전 프레임 (D)")
         self.frame_back_btn.clicked.connect(lambda: self.frame_step.emit(-1))
-        _bump_font_size(self.frame_back_btn, 16)
         layout.addWidget(self.frame_back_btn)
 
-        self.frame_forward_btn = QPushButton("▶")
+        self.frame_forward_btn = QPushButton()
         self.frame_forward_btn.setFixedSize(40, 32)
+        self.frame_forward_btn.setIcon(load_icon("chevron-right", size=_ICON_PX))
+        self.frame_forward_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.frame_forward_btn.setToolTip("다음 프레임 (F)")
         self.frame_forward_btn.clicked.connect(lambda: self.frame_step.emit(+1))
-        _bump_font_size(self.frame_forward_btn, 16)
         layout.addWidget(self.frame_forward_btn)
 
-        self.snapshot_btn = QPushButton("📸")
+        self.snapshot_btn = QPushButton()
         self.snapshot_btn.setFixedSize(40, 32)
+        self.snapshot_btn.setIcon(load_icon("camera", size=_ICON_PX))
+        self.snapshot_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.snapshot_btn.setToolTip("현재 프레임 → 스크린샷 탭 (Ctrl+Shift+P)")
         self.snapshot_btn.clicked.connect(self.snapshot_request.emit)
-        _bump_font_size(self.snapshot_btn, 16)
         layout.addWidget(self.snapshot_btn)
 
-        self.fullscreen_btn = QPushButton("⛶")
+        self.fullscreen_btn = QPushButton()
         self.fullscreen_btn.setFixedSize(40, 32)
+        self.fullscreen_btn.setIcon(load_icon("maximize", size=_ICON_PX))
+        self.fullscreen_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.fullscreen_btn.setToolTip("풀스크린")
         self.fullscreen_btn.clicked.connect(self.fullscreen_toggled.emit)
-        _bump_font_size(self.fullscreen_btn, 16)
         layout.addWidget(self.fullscreen_btn)
 
         # 트림 진입 버튼 — 항상 표시. 클릭 = 현재 위치를 in 점으로 마크 ([ 키와 동일).
         # 트림 row 의 ✂ 자르기 버튼은 in/out 둘 다 마크된 후 자르기 실행이고,
         # 이건 트림 모드 *진입* 용 (사용자가 단축키 모르고도 마우스로 시작 가능).
-        self.cut_enter_btn = QPushButton("✂")
+        self.cut_enter_btn = QPushButton()
         self.cut_enter_btn.setFixedSize(40, 32)
+        self.cut_enter_btn.setIcon(load_icon("scissors", size=_ICON_PX))
+        self.cut_enter_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.cut_enter_btn.setToolTip("트림 시작점 마크 ([) — 영상 시간 일부만 잘라내기")
-        _bump_font_size(self.cut_enter_btn, 16)
         self.cut_enter_btn.clicked.connect(self._on_cut_enter_clicked)
         layout.addWidget(self.cut_enter_btn)
 
@@ -190,14 +211,16 @@ class PlayerControls(QWidget):
         self._refresh_time_label()
 
     def set_playing(self, playing: bool) -> None:
-        self.play_btn.setText("⏸" if playing else "▶")
+        name = "pause" if playing else "play"
+        self.play_btn.setIcon(load_icon(name, size=_ICON_PX))
 
     def set_audio_enabled(self, enabled: bool) -> None:
         self.volume_slider.setEnabled(enabled)
         self.mute_btn.setEnabled(enabled)
 
     def set_muted(self, muted: bool) -> None:
-        self.mute_btn.setText("🔇" if muted else "🔊")
+        name = "volume-x" if muted else "volume-2"
+        self.mute_btn.setIcon(load_icon(name, size=_ICON_PX))
 
     def set_speed(self, rate: float) -> None:
         # 프리셋과 매칭되면 그 라벨, 아니면 사용자 지정 라벨로 임시 추가.

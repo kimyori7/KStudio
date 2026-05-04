@@ -1,7 +1,7 @@
 """글로벌 툴바 — 모드 토글 + 모드별 액션 (영상: 녹화 / 이미지: 캡처·저장·복사)."""
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QSize, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QComboBox, QFrame, QLabel, QButtonGroup,
@@ -10,9 +10,13 @@ from PySide6.QtWidgets import (
 
 from ..core.state import RecorderState
 from .drag_save_button import DragSaveButton
+from .icons import load_icon
 from .mode_controller import AppMode
 from .overlay.monitor_identifier import MonitorIdentifier
 from .widgets import OneShotKeySequenceEdit
+
+
+_TB_ICON_PX = 16
 
 
 class _MonitorComboBox(QComboBox):
@@ -109,24 +113,34 @@ class GlobalToolbar(QWidget):
         layout.addWidget(self._sep1)
 
         # ---------- 영상 모드: 녹화 컨트롤 ----------
-        self.record_btn = QPushButton("▶ 녹화")
+        self.record_btn = QPushButton("녹화")
+        self.record_btn.setIcon(load_icon("play", size=_TB_ICON_PX))
+        self.record_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.record_btn.clicked.connect(self.record_clicked.emit)
         layout.addWidget(self.record_btn)
 
-        self.pause_btn = QPushButton("⏸ 일시정지")
+        self.pause_btn = QPushButton("일시정지")
+        self.pause_btn.setIcon(load_icon("pause", size=_TB_ICON_PX))
+        self.pause_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.pause_btn.clicked.connect(self.pause_clicked.emit)
         layout.addWidget(self.pause_btn)
 
-        self.stop_btn = QPushButton("⏹ 정지")
+        self.stop_btn = QPushButton("정지")
+        self.stop_btn.setIcon(load_icon("square", size=_TB_ICON_PX))
+        self.stop_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.stop_btn.clicked.connect(self.stop_clicked.emit)
         layout.addWidget(self.stop_btn)
 
         # ---------- 이미지 모드: 캡처 버튼 ----------
-        self.capture_region_btn = QPushButton("📷 영역 캡처")
+        self.capture_region_btn = QPushButton("영역 캡처")
+        self.capture_region_btn.setIcon(load_icon("camera", size=_TB_ICON_PX))
+        self.capture_region_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.capture_region_btn.clicked.connect(self.capture_region_clicked.emit)
         layout.addWidget(self.capture_region_btn)
 
-        self.capture_full_btn = QPushButton("📷⛶ 전체 캡처")
+        self.capture_full_btn = QPushButton("전체 캡처")
+        self.capture_full_btn.setIcon(load_icon("camera", size=_TB_ICON_PX))
+        self.capture_full_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.capture_full_btn.clicked.connect(self.capture_full_clicked.emit)
         layout.addWidget(self.capture_full_btn)
 
@@ -210,11 +224,15 @@ class GlobalToolbar(QWidget):
         self.drag_save_btn = DragSaveButton()
         layout.addWidget(self.drag_save_btn)
 
-        self.save_btn = QPushButton("💾 저장")
+        self.save_btn = QPushButton("저장")
+        self.save_btn.setIcon(load_icon("save", size=_TB_ICON_PX))
+        self.save_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.save_btn.clicked.connect(self.save_clicked.emit)
         layout.addWidget(self.save_btn)
 
-        self.copy_btn = QPushButton("📋 복사")
+        self.copy_btn = QPushButton("복사")
+        self.copy_btn.setIcon(load_icon("copy", size=_TB_ICON_PX))
+        self.copy_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.copy_btn.clicked.connect(self.copy_clicked.emit)
         layout.addWidget(self.copy_btn)
 
@@ -225,10 +243,9 @@ class GlobalToolbar(QWidget):
         self._actions_by_key["remove_bg"] = self._action_remove_bg
 
         # ---------- 양쪽 공통 ----------
-        # 단일 ⚙ 글리프는 폰트에 따라 작은 흑백 아웃라인으로 보여 잘 인지가 안 됨.
-        # U+FE0F (variation selector-16) 로 컬러 이모지 렌더링을 강제하고, "설정"
-        # 한글 라벨을 같이 둬 다른 토글 버튼들("💾 저장", "📋 복사") 과 어순 통일.
-        self.preferences_btn = QPushButton("⚙️ 설정")
+        self.preferences_btn = QPushButton("설정")
+        self.preferences_btn.setIcon(load_icon("settings", size=_TB_ICON_PX))
+        self.preferences_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.preferences_btn.setToolTip("환경설정 (Ctrl+,)")
         self.preferences_btn.clicked.connect(self.preferences_clicked.emit)
         layout.addWidget(self.preferences_btn)
@@ -254,7 +271,12 @@ class GlobalToolbar(QWidget):
 
     def set_recording_state(self, state: RecorderState) -> None:
         self._current_state = state
-        self.pause_btn.setText("▶ 재개" if state == RecorderState.PAUSED else "⏸ 일시정지")
+        if state == RecorderState.PAUSED:
+            self.pause_btn.setText("재개")
+            self.pause_btn.setIcon(load_icon("play", size=_TB_ICON_PX))
+        else:
+            self.pause_btn.setText("일시정지")
+            self.pause_btn.setIcon(load_icon("pause", size=_TB_ICON_PX))
         # 녹화 중에는 옵션 잠금
         idle = state == RecorderState.IDLE
         for btn in self._target_btns.values():
