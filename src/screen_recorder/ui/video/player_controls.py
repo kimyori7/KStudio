@@ -90,7 +90,9 @@ class PlayerControls(QWidget):
         layout.addWidget(self.seek_slider, stretch=1)
 
         self.mute_btn = QPushButton("🔊")
-        self.mute_btn.setFixedWidth(32)
+        self.mute_btn.setFixedSize(40, 32)
+        self.mute_btn.setToolTip("음소거 (M)")
+        _bump_font_size(self.mute_btn, 16)
         self.mute_btn.clicked.connect(self.mute_toggled.emit)
         layout.addWidget(self.mute_btn)
 
@@ -135,7 +137,7 @@ class PlayerControls(QWidget):
 
         self.fullscreen_btn = QPushButton("⛶")
         self.fullscreen_btn.setFixedSize(40, 32)
-        self.fullscreen_btn.setToolTip("풀스크린 (F)")
+        self.fullscreen_btn.setToolTip("풀스크린")
         self.fullscreen_btn.clicked.connect(self.fullscreen_toggled.emit)
         _bump_font_size(self.fullscreen_btn, 16)
         layout.addWidget(self.fullscreen_btn)

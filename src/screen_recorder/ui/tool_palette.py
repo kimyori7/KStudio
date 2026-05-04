@@ -21,7 +21,7 @@ _TOOLS = [
     ("rect",   "▭", "사각형 (R)", "R"),
     ("arrow",  "→", "화살표 (A)", "A"),
     ("text",   "T", "텍스트 (T)", "T"),
-    ("crop",   "✂", "자르기 (Crop) — 사각 영역 선택 후 Enter", None),
+    ("crop",   "▣", "자르기 (C) — 사각 영역 선택 후 Enter. 영상 트림(✂)과 구분되는 이미지 크롭 도구.", None),
 ]
 _PAINT_TOOLS = [
     ("brush",   "🖌",
