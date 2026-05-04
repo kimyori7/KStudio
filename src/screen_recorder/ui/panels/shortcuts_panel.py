@@ -6,7 +6,7 @@ from typing import Optional
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ...core.settings import AppSettings, EditorShortcuts, HotkeySettings
@@ -46,6 +46,8 @@ class ShortcutsPanel(QWidget):
     hotkey_editing_finished = Signal()
     # "프리셋 선택…" 버튼 클릭 — main_window 가 다이얼로그 노출하도록.
     preset_dialog_requested = Signal()
+    # OS 시스템 단축키 가로채기 토글 변경 — main_window 가 hotkey 매니저에 적용.
+    intercept_system_keys_changed = Signal(bool)
 
     def __init__(self, hotkeys: HotkeySettings, editor: EditorShortcuts,
                  settings: AppSettings | None = None) -> None:
@@ -81,6 +83,19 @@ class ShortcutsPanel(QWidget):
         self._add_hotkey_row(gform, "screenshot_region", "영역 스크린샷", hotkeys.screenshot_region)
         self._add_hotkey_row(gform, "screenshot_full", "스크린샷 전체", hotkeys.screenshot_full)
         root.addLayout(gform)
+
+        # OS 시스템 단축키 가로채기 토글 — Win+Shift+S 같은 OS 가 가로채는 키도
+        # KStudio 가 먼저 잡으려면 low-level keyboard hook 활성화 필요.
+        self.intercept_check = QCheckBox(
+            "Win+Shift+S 같은 OS 시스템 단축키도 KStudio 가 가로채기 (실험)"
+        )
+        self.intercept_check.setToolTip(
+            "켜면 OS Snipping Tool 같은 시스템 단축키를 KStudio 가 먼저 잡습니다.\n"
+            "단점: OS Snipping Tool 사용 불가 + 일부 게임 anti-cheat 와 마찰 가능."
+        )
+        self.intercept_check.setChecked(bool(hotkeys.intercept_system_keys))
+        self.intercept_check.toggled.connect(self._on_intercept_toggled)
+        root.addWidget(self.intercept_check)
 
         # 편집기 그룹
         root.addWidget(QLabel("🔧 편집기"))
@@ -118,6 +133,11 @@ class ShortcutsPanel(QWidget):
         ed.editing_finished_signal.connect(self.hotkey_editing_finished.emit)
         self._editors[key] = ed
         form.addRow(label + ":", ed)
+
+    def _on_intercept_toggled(self, enabled: bool) -> None:
+        self._hotkeys.intercept_system_keys = enabled
+        self.intercept_system_keys_changed.emit(enabled)
+        self.settings_changed.emit()
 
     def _on_hotkey_changed(self, key: str, seq: QKeySequence) -> None:
         text = seq.toString(QKeySequence.PortableText)

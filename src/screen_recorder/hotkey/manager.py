@@ -46,6 +46,11 @@ class HotkeyManager(QAbstractNativeEventFilter):
         self._ids: Dict[int, Callable[[], None]] = {}
         self._next_id = 1
         self._installed = False
+        # Low-level hook 은 OS 시스템 단축키(Win+Shift+S 등)용 fallback. 사용자가
+        # intercept_system_keys 토글을 켤 때만 활성화.
+        self._ll_hook = None
+        self._ll_callbacks: Dict[tuple[int, int], Callable[[], None]] = {}
+        self._intercept_enabled = False
 
     def set_host_widget(self, host: QWidget) -> None:
         """HWND 를 나중에 주입할 때 사용."""
@@ -59,12 +64,30 @@ class HotkeyManager(QAbstractNativeEventFilter):
         except Exception:
             return 0
 
+    def set_intercept_enabled(self, enabled: bool) -> None:
+        """OS 시스템 단축키 가로채기 토글. set_bindings 다음에 호출하거나 호출 후
+        다시 set_bindings 해야 fallback 매핑이 LL hook 으로 등록됨."""
+        if enabled and self._ll_hook is None:
+            from .low_level_hook import LowLevelKeyboardHook
+            self._ll_hook = LowLevelKeyboardHook()
+            self._ll_hook.activated.connect(self._on_ll_activated)
+        if self._ll_hook is not None:
+            if enabled and not self._ll_hook.is_installed():
+                self._ll_hook.install()
+            elif not enabled and self._ll_hook.is_installed():
+                self._ll_hook.uninstall()
+                self._ll_callbacks.clear()
+        self._intercept_enabled = enabled
+
     def set_bindings(self, bindings: Dict[str, Callable[[], None]]) -> None:
         """여러 단축키를 한 번에 등록. 빈 문자열 키는 미할당으로 간주해 건너뛴다.
 
-        기존 등록은 먼저 정리된다.
+        기존 등록은 먼저 정리된다. RegisterHotKey 가 실패한 키는 intercept_enabled 가
+        켜진 경우 low-level hook 의 target 으로 추가 — Win+Shift+S 같은 OS 시스템
+        단축키도 가로채진다.
         """
         self.unregister()
+        self._ll_callbacks.clear()
         self._ensure_filter_installed()
         hwnd = self._hwnd()
         for text, cb in bindings.items():
@@ -87,7 +110,15 @@ class HotkeyManager(QAbstractNativeEventFilter):
                     "RegisterHotKey FAILED: %r (err=%d) — 다른 앱이 이 조합을 선점하고 있을 수 있음",
                     text, err,
                 )
+                # 토글이 켜져 있으면 low-level hook 으로 fallback (OS 시스템 단축키 케이스).
+                if self._intercept_enabled and self._ll_hook is not None:
+                    self._ll_callbacks[(mods, vk)] = cb
+                    _log.info("LL hook fallback registered: %r (mods=0x%04x, vk=0x%02x)",
+                              text, mods, vk)
                 # id 는 안 증가 (재사용 가능)
+        # LL hook 의 target 갱신.
+        if self._ll_hook is not None:
+            self._ll_hook.set_targets(self._ll_callbacks.keys())
 
     def register(self, hotkey_text: str, callback: Callable[[], None]) -> None:
         """단일 바인딩 편의 메서드."""
@@ -101,6 +132,25 @@ class HotkeyManager(QAbstractNativeEventFilter):
             except Exception:
                 pass
         self._ids.clear()
+        # LL hook 의 target 도 비움 (콜백 매핑은 set_bindings 에서 다시 채움).
+        self._ll_callbacks.clear()
+        if self._ll_hook is not None:
+            self._ll_hook.set_targets([])
+
+    def _on_ll_activated(self, mods: int, vk: int) -> None:
+        cb = self._ll_callbacks.get((int(mods), int(vk)))
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            _log.exception("LL hook callback crashed")
+
+    def shutdown(self) -> None:
+        """앱 종료 시 호출 — LL hook 도 안전 해제."""
+        self.unregister()
+        if self._ll_hook is not None:
+            self._ll_hook.uninstall()
 
     def _ensure_filter_installed(self) -> None:
         if self._installed:

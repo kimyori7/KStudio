@@ -66,6 +66,10 @@ class HotkeySettings:
     # 단축키 프리셋 식별자. 빈 문자열 = 첫 실행 (다이얼로그 노출). 사용자가 개별 키를
     # 수정하면 "custom" 으로 자동 전환. 값: "" | "windows-standard" | "kstudio-default" | "custom"
     preset_name: str = ""
+    # OS 시스템 단축키(Win+Shift+S 같은) 가로채기 — low-level keyboard hook 사용.
+    # 기본 off — 켜면 OS Snipping Tool 이 KStudio 한테 가려짐 + 일부 게임 anti-cheat
+    # 와 마찰 가능성. 사용자가 의도적으로 켤 때만 활성.
+    intercept_system_keys: bool = False
 
 
 @dataclass

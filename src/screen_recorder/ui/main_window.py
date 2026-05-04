@@ -482,6 +482,10 @@ class MainWindow(QMainWindow):
             self.app_settings.hotkey.screenshot_full: self._on_hotkey_shot_full,
         }
         try:
+            # 토글 상태 먼저 반영 — set_bindings 안에서 fallback 결정에 사용.
+            self.hotkeys.set_intercept_enabled(
+                bool(self.app_settings.hotkey.intercept_system_keys)
+            )
             self.hotkeys.set_bindings(bindings)
         except Exception:
             pass
@@ -2130,6 +2134,13 @@ class MainWindow(QMainWindow):
             self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
             self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)
 
+    def _on_intercept_system_keys_changed(self, enabled: bool) -> None:
+        """환경설정 토글 즉시 반영 — 매니저에 알리고 핫키 재등록."""
+        self.app_settings.hotkey.intercept_system_keys = enabled
+        self.hotkeys.set_intercept_enabled(enabled)
+        self._reregister_hotkey()
+        self._persist_settings()
+
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)
         # 환경설정 안 단축키 패널에서 capture 중에도 글로벌 핫키 해제.
@@ -2142,6 +2153,8 @@ class MainWindow(QMainWindow):
                 lambda panel=sp: (self._open_hotkey_preset_dialog(),
                                   panel.refresh_after_preset_applied())
             )
+            # OS 시스템 단축키 가로채기 토글 — 즉시 hotkey 매니저에 반영.
+            sp.intercept_system_keys_changed.connect(self._on_intercept_system_keys_changed)
         dialog.exec()
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()
@@ -2766,6 +2779,6 @@ class MainWindow(QMainWindow):
         self.app_settings.screenshot.viewer_h = g.height()
         # dock 레이아웃 영속화 — 현재 모드 기준.
         self._save_dock_state_for_mode(self.mode_controller.mode())
-        self.hotkeys.unregister()
+        self.hotkeys.shutdown()
         self._hide_border()
         e.accept()
