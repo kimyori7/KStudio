@@ -70,9 +70,9 @@ class CustomTitleBar(QWidget):
         layout.setContentsMargins(8, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 아이콘
+        # 아이콘 — 24px (기존 20px 에서 20% 확대로 가독성 개선)
         icon_label = QLabel()
-        pix = app_icon().pixmap(20, 20)
+        pix = app_icon().pixmap(24, 24)
         if not pix.isNull():
             icon_label.setPixmap(pix)
         layout.addWidget(icon_label)
