@@ -347,6 +347,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.undo_requested.connect(self._on_undo)
         self.menu_bar.redo_requested.connect(self._on_redo)
         self.menu_bar.background_remove_requested.connect(self._on_remove_background)
+        self.menu_bar.image_scale_requested.connect(self._on_image_scale)
         self.menu_bar.original_zoom_requested.connect(self._on_original)
         # dock 토글 — 메뉴 체크 → dock 가시성 (단방향).
         # NOTE: 양방향 동기화는 BUG: restoreState() 가 dock 을 transient 하게 hide 하면
@@ -526,6 +527,7 @@ class MainWindow(QMainWindow):
         # 가 발생한다. 여기서는 Crop 만 등록 (ToolPalette 에 없는 도구).
         _add(es.tool_crop,   lambda: self._activate_editor_tool("crop"))
         _add(es.op_background_removal, self._on_remove_background)
+        _add(es.op_image_scale, self._on_image_scale)
         _add(es.file_save,    self._on_file_save)
         _add(es.file_save_as, self._on_file_save_as)
         _add(es.file_export_png, lambda: self._on_export("png"))
@@ -2034,6 +2036,63 @@ class MainWindow(QMainWindow):
         cmd.failed.connect(on_failed)
         cmd.run_async()
 
+    def _on_image_scale(self) -> None:
+        """현재 이미지 탭의 합성 결과를 픽셀/% 입력 받아 LANCZOS 리사이즈 → 새 PNG.
+
+        트림 패턴과 동일: 결과는 새 파일 + 라이브러리 entry + 새 탭 + 자동 포커스.
+        원본은 그대로 보존 (undo 통합 X — 탭이 별도라 사용자가 닫으면 곧 원복).
+        AI 업스케일은 추후 추가 예정 (현재는 LANCZOS, 다운/소폭 업까지 충분).
+        """
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        img = tab.image()
+        if img.isNull() or img.width() <= 0 or img.height() <= 0:
+            QMessageBox.information(self, "이미지 크기 변경", "비어있는 이미지입니다.")
+            return
+
+        from .scale_dialog import ScaleDialog
+        dlg = ScaleDialog(src_w=img.width(), src_h=img.height(), parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        target_w, target_h = dlg.target_size()
+        if target_w == img.width() and target_h == img.height():
+            return   # 변경 없음 — 사용자 의도 보호 차원에서 no-op.
+
+        # 저장 폴더 — 현재 탭 entry 가 디스크 경로를 갖고 있으면 그 폴더, 아니면 기본.
+        entry = self._entry_for_current_tab()
+        if entry is not None and entry.path is not None:
+            src_for_naming = entry.path
+        else:
+            base_dir = Path(self.app_settings.screenshot.save_dir or default_image_dir())
+            base_dir.mkdir(parents=True, exist_ok=True)
+            display = entry.display_name if entry is not None else "image"
+            src_for_naming = base_dir / f"{display}.png"
+
+        from screen_recorder.encode.scale import (
+            scale_qimage, resolve_scaled_path, save_scaled,
+        )
+        try:
+            out = scale_qimage(img, target_w, target_h)
+        except (ValueError, MemoryError) as e:
+            QMessageBox.warning(self, "이미지 크기 변경 실패", str(e))
+            return
+
+        try:
+            dst = resolve_scaled_path(src_for_naming, target_w, target_h)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            save_scaled(out, dst)
+        except OSError as e:
+            QMessageBox.warning(self, "저장 실패", str(e))
+            return
+
+        # 결과 파일을 일반 "열기" 흐름으로 통합 — 새 탭 + 라이브러리 entry + 포커스.
+        self._open_image_path(dst)
+        self.status_bar.state_label.setText(
+            f"📐 크기 변경 완료 — {target_w}×{target_h} → {dst.name}"
+        )
+        self.status_bar.state_label.setStyleSheet("color: #5BC07C;")
+
     def _copy_current_screenshot(self) -> None:
         tab = self._current_screenshot_tab()
         if tab is None:
@@ -2242,8 +2301,9 @@ class MainWindow(QMainWindow):
         is_image = self.mode_controller.mode() is AppMode.IMAGE
         self.menu_bar.layers_visible_action.setEnabled(is_image)
         self.menu_bar.status_visible_action.setEnabled(not is_image)
-        # 이미지 > 배경 제거 — 영상 모드에서는 의미 없음.
+        # 이미지 > 배경 제거 / 크기 변경 — 영상 모드에서는 의미 없음.
         self.menu_bar.background_remove_action.setEnabled(is_image)
+        self.menu_bar.image_scale_action.setEnabled(is_image)
 
     def _on_tool_palette_visibility_toggled(self, checked: bool) -> None:
         is_image = self.mode_controller.mode() is AppMode.IMAGE

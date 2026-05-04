@@ -134,6 +134,7 @@ class EditorShortcuts:
     tool_text: str = "T"
     # 연산
     op_background_removal: str = "Ctrl+Shift+B"
+    op_image_scale: str = "Ctrl+Shift+I"
     # 파일
     file_save: str = "Ctrl+S"
     file_save_as: str = "Ctrl+Shift+S"

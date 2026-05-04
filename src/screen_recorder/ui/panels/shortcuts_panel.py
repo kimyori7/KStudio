@@ -29,6 +29,7 @@ _EDITOR_LABELS = {
     "tool_rect": "사각형 도구",
     "tool_text": "텍스트 도구",
     "op_background_removal": "배경 제거 (누끼)",
+    "op_image_scale": "이미지 크기 변경",
     "file_save": "저장",
     "file_save_as": "다른 이름으로 저장",
     "file_export_png": "PNG 로 내보내기",

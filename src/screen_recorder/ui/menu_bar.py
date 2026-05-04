@@ -21,6 +21,7 @@ class KStudioMenuBar(QMenuBar):
     preferences_requested = Signal()
     # 이미지
     background_remove_requested = Signal()
+    image_scale_requested = Signal()
     # 보기
     original_zoom_requested = Signal()
     record_status_visibility_toggled = Signal(bool)
@@ -113,6 +114,11 @@ class KStudioMenuBar(QMenuBar):
         self.background_remove_action.triggered.connect(self.background_remove_requested.emit)
         m_image.addAction(self.background_remove_action)
 
+        self.image_scale_action = QAction("이미지 크기 변경…", self)
+        self.image_scale_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
+        self.image_scale_action.triggered.connect(self.image_scale_requested.emit)
+        m_image.addAction(self.image_scale_action)
+
         m_view = self.addMenu("보기")
         self.original_action = QAction("원본 (100%)", self)
         self.original_action.setShortcut(QKeySequence("Ctrl+0"))
@@ -196,6 +202,7 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
         ],
         "image": [
             mb.background_remove_action,
+            mb.image_scale_action,
         ],
         "view": [
             mb.original_action,
