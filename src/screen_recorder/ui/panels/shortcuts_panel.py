@@ -6,20 +6,20 @@ from typing import Optional
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QVBoxLayout, QWidget,
+    QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ...core.settings import AppSettings, EditorShortcuts, HotkeySettings
-from ...core.hotkey_presets import apply_preset, detect_preset
+from ...core.hotkey_presets import detect_global_preset, detect_player_preset
 from ..widgets import OneShotKeySequenceEdit
 
 
-_PRESET_LABELS = [
-    ("custom", "사용자 지정"),
-    ("windows-standard", "윈도우 표준"),
-    ("kstudio-default", "KStudio 기본"),
-]
+_PRESET_LABEL = {
+    "custom": "사용자 지정",
+    "windows-standard": "윈도우 표준",
+    "kstudio-default": "KStudio 기본",
+    "goom-style": "곰플레이어 호환",
+}
 
 
 _EDITOR_LABELS = {
@@ -44,6 +44,8 @@ class ShortcutsPanel(QWidget):
     # main_window 가 글로벌 Win32 핫키를 일시 unregister 하기 위함.
     hotkey_editing_started = Signal()
     hotkey_editing_finished = Signal()
+    # "프리셋 선택…" 버튼 클릭 — main_window 가 다이얼로그 노출하도록.
+    preset_dialog_requested = Signal()
 
     def __init__(self, hotkeys: HotkeySettings, editor: EditorShortcuts,
                  settings: AppSettings | None = None) -> None:
@@ -57,18 +59,18 @@ class ShortcutsPanel(QWidget):
 
         root = QVBoxLayout(self)
 
-        # 프리셋 드롭다운 (상단)
+        # 프리셋 — 현재 적용된 프리셋 표시 + "프리셋 선택…" 버튼이 다이얼로그 호출.
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("프리셋:"))
-        self.preset_combo = QComboBox()
-        for key, label in _PRESET_LABELS:
-            self.preset_combo.addItem(label, key)
-        self._sync_preset_combo()
-        self.preset_combo.activated.connect(self._on_preset_chosen)
-        if self._settings is None:
-            self.preset_combo.setEnabled(False)
-        preset_row.addWidget(self.preset_combo)
+        self.preset_label = QLabel(self._format_preset_label())
+        self.preset_label.setStyleSheet("color: #C0C4CC;")
+        preset_row.addWidget(self.preset_label)
         preset_row.addStretch(1)
+        self.preset_btn = QPushButton("프리셋 선택…")
+        self.preset_btn.clicked.connect(self.preset_dialog_requested.emit)
+        if self._settings is None:
+            self.preset_btn.setEnabled(False)
+        preset_row.addWidget(self.preset_btn)
         root.addLayout(preset_row)
 
         # 글로벌 그룹
@@ -130,36 +132,34 @@ class ShortcutsPanel(QWidget):
         self.settings_changed.emit()
 
     def _mark_custom(self) -> None:
-        """사용자가 개별 키 한 줄을 수정하면 프리셋이 'custom' 으로 전환."""
+        """사용자가 개별 키 한 줄을 수정하면 글로벌 프리셋이 'custom' 으로 전환."""
         if self._hotkeys.preset_name != "custom":
             self._hotkeys.preset_name = "custom"
-            self._sync_preset_combo()
+            self.preset_label.setText(self._format_preset_label())
 
-    def _sync_preset_combo(self) -> None:
-        current = self._hotkeys.preset_name or "custom"
-        for i in range(self.preset_combo.count()):
-            if self.preset_combo.itemData(i) == current:
-                self.preset_combo.blockSignals(True)
-                self.preset_combo.setCurrentIndex(i)
-                self.preset_combo.blockSignals(False)
-                return
+    def _format_preset_label(self) -> str:
+        """현재 적용된 글로벌 + 영상 프리셋을 한 줄로 표시.
 
-    def _on_preset_chosen(self, idx: int) -> None:
-        if self._settings is None:
-            return
-        key = self.preset_combo.itemData(idx)
-        if key == "custom" or key is None:
-            return
-        ans = QMessageBox.question(
-            self, "프리셋 적용",
-            "프리셋을 적용하면 현재 단축키가 모두 덮어쓰입니다.\n계속하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if ans != QMessageBox.Yes:
-            self._sync_preset_combo()
-            return
-        apply_preset(self._settings, key)
-        # 모든 위젯에 새 값 반영.
+        preset_name 필드가 'custom' 으로 명시 마킹돼 있으면 그걸 우선 — 사용자가 개별
+        키를 수정한 흐름을 detect 로직(키 값 비교) 이 못 잡는 경우 보존.
+        """
+        if self._hotkeys.preset_name == "custom":
+            g = "custom"
+        else:
+            g = detect_global_preset(self._settings) if self._settings else "custom"
+        if self._settings is not None:
+            if self._settings.player_hotkeys.preset_name == "custom":
+                p = "custom"
+            else:
+                p = detect_player_preset(self._settings)
+        else:
+            p = "custom"
+        g_lbl = _PRESET_LABEL.get(g, g)
+        p_lbl = _PRESET_LABEL.get(p, p)
+        return f"{g_lbl} (글로벌) · {p_lbl} (영상)"
+
+    def refresh_after_preset_applied(self) -> None:
+        """main_window 가 프리셋 적용 후 호출 — 모든 위젯과 라벨 갱신."""
         for f_key in self.captured_settings_keys():
             v = getattr(self._editor, f_key)
             if f_key in self._editors:
@@ -173,7 +173,7 @@ class ShortcutsPanel(QWidget):
                 ed.blockSignals(True)
                 ed.setKeySequence(QKeySequence(getattr(self._hotkeys, hk_field)))
                 ed.blockSignals(False)
-        self.settings_changed.emit()
+        self.preset_label.setText(self._format_preset_label())
 
     # --- API (테스트 + 외부) ---
     def captured_settings_keys(self) -> list[str]:

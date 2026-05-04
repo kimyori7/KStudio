@@ -51,26 +51,27 @@ def test_conflict_detected(qtbot):
     assert conflict == "tool_select"
 
 
-def test_preset_combo_disabled_when_no_settings(qtbot):
+def test_preset_button_disabled_when_no_settings(qtbot):
     from screen_recorder.core.settings import EditorShortcuts, HotkeySettings
     from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
     panel = ShortcutsPanel(HotkeySettings(), EditorShortcuts())
     qtbot.addWidget(panel)
-    assert panel.preset_combo.isEnabled() is False
+    assert panel.preset_btn.isEnabled() is False
 
 
-def test_preset_combo_reflects_current_preset(qtbot):
+def test_preset_label_shows_both_dimensions(qtbot):
     from screen_recorder.core.settings import AppSettings
     from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
-    s = AppSettings()
-    s.hotkey.preset_name = "windows-standard"
+    s = AppSettings()   # 두 차원 default = kstudio-default
     panel = ShortcutsPanel(s.hotkey, s.editor_shortcuts, s)
     qtbot.addWidget(panel)
-    assert panel.preset_combo.currentData() == "windows-standard"
+    # 라벨은 글로벌 + 영상 두 차원 모두 명시.
+    text = panel.preset_label.text()
+    assert "글로벌" in text and "영상" in text
 
 
 def test_individual_edit_marks_custom(qtbot):
-    """사용자가 개별 키 한 줄 변경 → preset_name='custom' 자동 전환."""
+    """사용자가 개별 키 한 줄 변경 → 글로벌 preset_name='custom' 자동 전환."""
     from screen_recorder.core.settings import AppSettings
     from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
     s = AppSettings()
@@ -79,4 +80,15 @@ def test_individual_edit_marks_custom(qtbot):
     qtbot.addWidget(panel)
     panel.set_shortcut_for("tool_crop", "K")
     assert s.hotkey.preset_name == "custom"
-    assert panel.preset_combo.currentData() == "custom"
+    assert "사용자 지정" in panel.preset_label.text()
+
+
+def test_preset_button_emits_request(qtbot):
+    """프리셋 버튼 클릭 → preset_dialog_requested 시그널."""
+    from screen_recorder.core.settings import AppSettings
+    from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
+    s = AppSettings()
+    panel = ShortcutsPanel(s.hotkey, s.editor_shortcuts, s)
+    qtbot.addWidget(panel)
+    with qtbot.waitSignal(panel.preset_dialog_requested, timeout=500):
+        panel.preset_btn.click()

@@ -73,9 +73,36 @@ def test_is_first_run_when_preset_name_empty():
 
 
 def test_is_first_run_false_after_apply():
+    """첫 실행은 글로벌 + 영상 두 차원 모두 결정돼야 false."""
+    from screen_recorder.core.hotkey_presets import apply_player_preset
     s = AppSettings()
     apply_preset(s, "kstudio-default")
+    apply_player_preset(s, "kstudio-default")
     assert is_first_run(s) is False
+
+
+def test_apply_player_preset_goom_style():
+    from screen_recorder.core.hotkey_presets import apply_player_preset
+    s = AppSettings()
+    apply_player_preset(s, "goom-style")
+    assert s.player_hotkeys.frame_back == "A"
+    assert s.player_hotkeys.frame_forward == "D"
+    assert s.player_hotkeys.snapshot == "Ctrl+G"
+    assert s.player_hotkeys.preset_name == "goom-style"
+
+
+def test_detect_player_preset_default():
+    from screen_recorder.core.hotkey_presets import detect_player_preset
+    s = AppSettings()
+    # default frame_back/forward/snapshot 가 kstudio-default 와 일치
+    assert detect_player_preset(s) == "kstudio-default"
+
+
+def test_detect_player_preset_custom_after_edit():
+    from screen_recorder.core.hotkey_presets import detect_player_preset
+    s = AppSettings()
+    s.player_hotkeys.frame_back = "Z"
+    assert detect_player_preset(s) == "custom"
 
 
 def test_apply_preset_doesnt_touch_other_settings():

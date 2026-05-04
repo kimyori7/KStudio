@@ -189,7 +189,8 @@ class MainWindow(QMainWindow):
         center_row.setSpacing(0)
         self.tool_palette = ToolPalette()
         center_row.addWidget(self.tool_palette)
-        self.tab_area = TabArea(self.mode_controller, self.app_settings.player)
+        self.tab_area = TabArea(self.mode_controller, self.app_settings.player,
+                                  self.app_settings.player_hotkeys)
         center_row.addWidget(self.tab_area, stretch=1)
         outer.addLayout(center_row, stretch=1)
 
@@ -377,9 +378,12 @@ class MainWindow(QMainWindow):
         self.library_panel.entry_undelete_requested.connect(self._on_library_undelete)
         self.library_model.entry_renamed.connect(self._on_entry_renamed)
 
-        # 영상 탭 프레임 → 스크린샷 단축키
-        QShortcut(QKeySequence("Ctrl+Shift+P"), self,
-                  activated=self._snapshot_current_video_frame)
+        # 영상 탭 프레임 → 스크린샷 단축키 (PlayerHotkeys 에서 동적으로 가져옴)
+        self._snapshot_shortcut = QShortcut(self)
+        self._snapshot_shortcut.setKey(
+            QKeySequence(self.app_settings.player_hotkeys.snapshot or "Ctrl+Shift+P")
+        )
+        self._snapshot_shortcut.activated.connect(self._snapshot_current_video_frame)
         # Ctrl+C → selection 이 있으면 그 영역만, 아니면 전체 합성 이미지를 클립보드.
         QShortcut(QKeySequence("Ctrl+C"), self,
                   activated=self._copy_current_screenshot)
@@ -2079,31 +2083,52 @@ class MainWindow(QMainWindow):
         )
 
     def _maybe_show_hotkey_preset_dialog(self) -> None:
-        """첫 실행(preset_name='') 시 프리셋 카드 다이얼로그를 띄움.
-
-        사용자가 카드를 고르면 settings 일괄 갱신 + persist + 핫키 재등록.
-        '건너뛰기' 시에는 현재 키 유지하고 preset_name='custom' 으로 마킹해
-        다음 실행부터 노출 안 됨.
-        """
+        """첫 실행(preset_name='') 시 두 차원 프리셋 다이얼로그를 띄움."""
         import os
         if os.environ.get("KSTUDIO_NO_FIRST_RUN_DIALOG"):
-            # 테스트 환경 등에서 모달 차단 회피용.
             return
-        from .hotkey_preset_dialog import HotkeyPresetDialog
-        from screen_recorder.core.hotkey_presets import is_first_run, apply_preset
+        from screen_recorder.core.hotkey_presets import is_first_run
         if not is_first_run(self.app_settings):
             return
-        dialog = HotkeyPresetDialog(self)
+        self._open_hotkey_preset_dialog()
+
+    def _open_hotkey_preset_dialog(self) -> None:
+        """프리셋 다이얼로그 표시 + 사용자 선택 적용. 첫 실행 / 환경설정 버튼 공용."""
+        from .hotkey_preset_dialog import HotkeyPresetDialog
+        from screen_recorder.core.hotkey_presets import (
+            apply_global_preset, apply_player_preset,
+            detect_global_preset, detect_player_preset,
+        )
+        current_global = detect_global_preset(self.app_settings)
+        current_player = detect_player_preset(self.app_settings)
+        dialog = HotkeyPresetDialog(
+            self,
+            current_global=current_global if current_global != "custom" else "kstudio-default",
+            current_player=current_player if current_player != "custom" else "kstudio-default",
+        )
         dialog.exec()
-        if dialog.selected_preset is not None:
-            apply_preset(self.app_settings, dialog.selected_preset)
-        else:
+        applied = False
+        if dialog.selected_global is not None:
+            apply_global_preset(self.app_settings, dialog.selected_global)
+            applied = True
+        elif self.app_settings.hotkey.preset_name == "":
             self.app_settings.hotkey.preset_name = "custom"
+        if dialog.selected_player is not None:
+            apply_player_preset(self.app_settings, dialog.selected_player)
+            applied = True
+        elif self.app_settings.player_hotkeys.preset_name == "":
+            self.app_settings.player_hotkeys.preset_name = "custom"
         self._persist_settings()
-        self._reregister_hotkey()
-        self._register_editor_shortcuts()
-        self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
-        self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)
+        if applied:
+            self._reregister_hotkey()
+            self._register_editor_shortcuts()
+            # 영상 플레이어 스냅샷 단축키 재바인딩.
+            if hasattr(self, "_snapshot_shortcut"):
+                self._snapshot_shortcut.setKey(
+                    QKeySequence(self.app_settings.player_hotkeys.snapshot or "Ctrl+Shift+P")
+                )
+            self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
+            self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)
 
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)
@@ -2112,6 +2137,11 @@ class MainWindow(QMainWindow):
         if sp is not None:
             sp.hotkey_editing_started.connect(self._pause_hotkey)
             sp.hotkey_editing_finished.connect(self._resume_hotkey)
+            # "프리셋 선택…" 버튼 → 같은 다이얼로그 재사용.
+            sp.preset_dialog_requested.connect(
+                lambda panel=sp: (self._open_hotkey_preset_dialog(),
+                                  panel.refresh_after_preset_applied())
+            )
         dialog.exec()
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()

@@ -7,7 +7,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QTabWidget, QWidget
 
-from ..core.settings import PlayerSettings
+from ..core.settings import PlayerHotkeys, PlayerSettings
 from .mode_controller import AppMode, ModeController
 from .edit_tab import EditTab
 from .video_tab import VideoTab
@@ -21,10 +21,12 @@ class TabArea(QTabWidget):
     tab_added = Signal(QWidget, object)    # (widget, AppMode) — 외부에서 시그널 와이어링용
     video_duration_resolved = Signal(int, int)   # (entry_id, duration_ms) — player 로드 후
 
-    def __init__(self, mode_controller: ModeController, player_settings: PlayerSettings) -> None:
+    def __init__(self, mode_controller: ModeController, player_settings: PlayerSettings,
+                 player_hotkeys: PlayerHotkeys | None = None) -> None:
         super().__init__()
         self._mode = mode_controller
         self._player_settings = player_settings
+        self._player_hotkeys = player_hotkeys or PlayerHotkeys()
         self._tabs: list[tuple[QWidget, AppMode, int]] = []  # (widget, mode, entry_id)
         # 모든 탭의 baseline 라벨 (파일명 등). 이미지 탭은 저장 상태 ● 마커가 동적으로
         # 붙고, 영상 탭은 duration 접미사가 붙어, 라벨 재계산이 필요해 베이스만 보관.
@@ -109,7 +111,7 @@ class TabArea(QTabWidget):
                    thumbnail: Optional[QImage] = None) -> int:
         tab = VideoTab(path=path, source_label=source_label,
                        duration_ms=duration_ms, player_settings=self._player_settings,
-                       thumbnail=thumbnail)
+                       thumbnail=thumbnail, player_hotkeys=self._player_hotkeys)
         tab.snapshot_requested.connect(self.snapshot_requested.emit)
         # 탭 라벨 — 실제 파일명(display_name)이 있으면 그걸로, 없으면 source_label.
         base = display_name if display_name else source_label

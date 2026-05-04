@@ -110,6 +110,17 @@ class PlayerSettings:
 
 
 @dataclass
+class PlayerHotkeys:
+    """영상 플레이어 모드 한정 단축키. 글로벌 핫키와는 별개 차원."""
+    frame_back: str = "D"               # 이전 프레임
+    frame_forward: str = "F"            # 다음 프레임
+    snapshot: str = "Ctrl+Shift+P"      # 현재 프레임 → 이미지 탭
+    # 영상 플레이어 프리셋 식별자. 빈 문자열 = 첫 실행 (다이얼로그 노출).
+    # 값: "" | "kstudio-default" | "goom-style" | "custom"
+    preset_name: str = ""
+
+
+@dataclass
 class EditorShortcuts:
     # 도구
     tool_select: str = "V"
@@ -140,6 +151,7 @@ class AppSettings:
     screenshot: ScreenshotSettings = field(default_factory=ScreenshotSettings)
     annotation: AnnotationSettings = field(default_factory=AnnotationSettings)
     player: PlayerSettings = field(default_factory=PlayerSettings)
+    player_hotkeys: PlayerHotkeys = field(default_factory=PlayerHotkeys)
     editor_shortcuts: EditorShortcuts = field(default_factory=EditorShortcuts)
 
 

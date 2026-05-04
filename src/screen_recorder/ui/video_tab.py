@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QKeyEvent
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from ..core.settings import PlayerSettings
+from ..core.settings import PlayerHotkeys, PlayerSettings
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 
@@ -26,12 +26,16 @@ class VideoTab(QWidget):
 
     def __init__(self, *, path: Path, source_label: str, duration_ms: int,
                  player_settings: PlayerSettings,
-                 thumbnail: QImage | None = None) -> None:
+                 thumbnail: QImage | None = None,
+                 player_hotkeys: PlayerHotkeys | None = None) -> None:
         super().__init__()
         self.setFocusPolicy(Qt.StrongFocus)
         self._source_label = source_label
         self._source_path = Path(path)
         self._settings = player_settings
+        # 영상 플레이어 키 — main_window 가 settings 의 인스턴스를 그대로 넘김.
+        # 사용자가 환경설정에서 키를 바꾸면 같은 인스턴스가 자동으로 반영.
+        self._player_hotkeys = player_hotkeys or PlayerHotkeys()
 
         # 프레임 스킵 누적 — D/F 키와 ◀/▶ 버튼으로 프레임 단위 이동할 때마다 누적,
         # 다른 종류의 시크(슬라이더 드래그, 화살표 초단위 이동, Home/End) 가 일어나면 0 으로 리셋.
@@ -101,11 +105,12 @@ class VideoTab(QWidget):
             self.player.flash_action(f"◀◀ -{abs(delta):g}초")
             self._reset_frame_step_accum()
             event.accept(); return
-        # 프레임 단위 이동: D = 이전 프레임, F = 다음 프레임 (사용자 요청 단축키).
-        if k == Qt.Key_F:
+        # 프레임 단위 이동 — PlayerHotkeys 에서 동적으로 가져옴.
+        # KStudio 기본: D=이전 / F=다음. 곰플 호환: A=이전 / D=다음.
+        if self._matches_player_key(event, self._player_hotkeys.frame_forward):
             self._do_frame_step(+1)
             event.accept(); return
-        if k == Qt.Key_D:
+        if self._matches_player_key(event, self._player_hotkeys.frame_back):
             self._do_frame_step(-1)
             event.accept(); return
         if k == Qt.Key_Up:
@@ -151,6 +156,18 @@ class VideoTab(QWidget):
                 self.player.flash_action("✕ 트림 해제")
                 event.accept(); return
         super().keyPressEvent(event)
+
+    def _matches_player_key(self, event: QKeyEvent, hotkey_str: str) -> bool:
+        """이벤트가 settings 의 단일 글자 단축키와 일치하는지. modifier 없는 단일 키 한정."""
+        if not hotkey_str or len(hotkey_str) != 1:
+            return False
+        # modifier 가 있으면 단일 글자 키와 매칭 안 함 (Ctrl+D 가 D 와 매칭되지 않도록).
+        if event.modifiers() not in (Qt.NoModifier, Qt.KeypadModifier):
+            return False
+        text = event.text()
+        if not text:
+            return False
+        return text.upper() == hotkey_str.upper()
 
     def _on_frame_step_button(self, direction: int) -> None:
         """컨트롤바의 ◀/▶ 프레임 버튼 → 단축키와 동일하게 프레임 step + 누적 HUD."""
