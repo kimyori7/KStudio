@@ -22,6 +22,7 @@ class VideoTab(QWidget):
 
     snapshot_requested = Signal(QImage, str)   # (이미지, 원본@시각 라벨)
     duration_resolved = Signal(int)            # ms — 영상 로드 후 실제 길이 확정
+    trim_requested = Signal(object, int, int)  # (Path src, int in_ms, int out_ms)
 
     def __init__(self, *, path: Path, source_label: str, duration_ms: int,
                  player_settings: PlayerSettings,
@@ -29,6 +30,7 @@ class VideoTab(QWidget):
         super().__init__()
         self.setFocusPolicy(Qt.StrongFocus)
         self._source_label = source_label
+        self._source_path = Path(path)
         self._settings = player_settings
 
         # 프레임 스킵 누적 — D/F 키와 ◀/▶ 버튼으로 프레임 단위 이동할 때마다 누적,
@@ -65,6 +67,8 @@ class VideoTab(QWidget):
         self.controls.frame_step.connect(self._on_frame_step_button)
         self.controls.snapshot_request.connect(self._on_snapshot)
         self.controls.fullscreen_toggled.connect(self._on_fullscreen_toggled)
+        # 트림 시그널 — PlayerControls → MainWindow 로 bubble
+        self.controls.trim_execute_requested.connect(self._on_trim_execute)
 
         self.player.load(path)
         if thumbnail is not None and not thumbnail.isNull():
@@ -124,6 +128,28 @@ class VideoTab(QWidget):
             self.player.flash_action("⏭ 끝으로")
             self._reset_frame_step_accum()
             event.accept(); return
+        # ===== 트림 단축키 =====
+        if k == Qt.Key_BracketLeft:
+            self.controls.set_in_ms(self.player.position_ms())
+            self.player.flash_action("[ 시작점")
+            event.accept(); return
+        if k == Qt.Key_BracketRight:
+            self.controls.set_out_ms(self.player.position_ms())
+            self.player.flash_action("] 끝점")
+            event.accept(); return
+        if k == Qt.Key_E and (m & Qt.ControlModifier):
+            if self.controls.cut_btn.isEnabled():
+                self._on_trim_execute(
+                    self.controls.in_ms() or 0,
+                    self.controls.out_ms() or 0,
+                )
+            event.accept(); return
+        if k == Qt.Key_Escape:
+            had = self.controls.in_ms() is not None or self.controls.out_ms() is not None
+            if had:
+                self.controls.clear_trim()
+                self.player.flash_action("✕ 트림 해제")
+                event.accept(); return
         super().keyPressEvent(event)
 
     def _on_frame_step_button(self, direction: int) -> None:
@@ -184,6 +210,10 @@ class VideoTab(QWidget):
         cur = self.controls.speed_combo.currentIndex()
         target = max(0, min(self.controls.speed_combo.count() - 1, cur + direction))
         self.controls.speed_combo.setCurrentIndex(target)
+
+    def _on_trim_execute(self, in_ms: int, out_ms: int) -> None:
+        """PlayerControls / Ctrl+E 가 트림 요청 → MainWindow 로 bubble."""
+        self.trim_requested.emit(self._source_path, int(in_ms), int(out_ms))
 
     def _on_snapshot(self) -> None:
         img = self.player.current_frame()
