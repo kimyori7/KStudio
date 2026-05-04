@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSlider, QWidget,
+    QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSlider,
+    QVBoxLayout, QWidget,
 )
+
+from .trim_lane import TrimLane
 
 
 _SPEEDS = [("0.5×", 0.5), ("1.0×", 1.0), ("1.5×", 1.5), ("2.0×", 2.0)]
@@ -32,13 +35,45 @@ class PlayerControls(QWidget):
     frame_step = Signal(int)          # -1 / +1
     snapshot_request = Signal()
     fullscreen_toggled = Signal()
+    trim_execute_requested = Signal(int, int)   # (in_ms, out_ms)
+    trim_cleared = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("PlayerControls")
-        layout = QHBoxLayout(self)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ===== 트림 row (in/out 점이 하나라도 찍히면 보임) =====
+        self.trim_row = QFrame()
+        self.trim_row.setObjectName("TrimRow")
+        trim_v = QVBoxLayout(self.trim_row)
+        trim_v.setContentsMargins(8, 4, 8, 4)
+        trim_v.setSpacing(4)
+        self.trim_lane = TrimLane()
+        trim_v.addWidget(self.trim_lane)
+        trim_btns = QHBoxLayout()
+        trim_btns.setSpacing(8)
+        self.cut_btn = QPushButton("✂ 자르기")
+        self.cut_btn.setEnabled(False)
+        self.cut_btn.clicked.connect(self._on_cut_clicked)
+        self.cut_clear_btn = QPushButton("✕ 해제")
+        self.cut_clear_btn.clicked.connect(self.clear_trim)
+        trim_btns.addWidget(self.cut_btn)
+        trim_btns.addStretch(1)
+        trim_btns.addWidget(self.cut_clear_btn)
+        trim_v.addLayout(trim_btns)
+        self.trim_row.hide()
+        outer.addWidget(self.trim_row)
+
+        # ===== 기존 메인 컨트롤 row =====
+        main_row = QWidget()
+        layout = QHBoxLayout(main_row)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
+        outer.addWidget(main_row)
 
         self.play_btn = QPushButton("▶")
         self.play_btn.setFixedWidth(36)
@@ -107,7 +142,14 @@ class PlayerControls(QWidget):
 
         self._duration_ms = 0
         self._position_ms = 0
+        self._in_ms: int | None = None
+        self._out_ms: int | None = None
         self._refresh_time_label()
+
+        # 트림 레인 → 자체 상태 갱신
+        self.trim_lane.in_changed.connect(self._on_lane_in_changed)
+        self.trim_lane.out_changed.connect(self._on_lane_out_changed)
+        self.trim_lane.seek_request.connect(self.seek_request.emit)
 
     # ---------- 외부 API ----------
     def set_duration_ms(self, ms: int) -> None:
@@ -115,6 +157,7 @@ class PlayerControls(QWidget):
         self.seek_slider.blockSignals(True)
         self.seek_slider.setRange(0, self._duration_ms)
         self.seek_slider.blockSignals(False)
+        self.trim_lane.set_duration_ms(self._duration_ms)
         self._refresh_time_label()
 
     def set_position_ms(self, ms: int) -> None:
@@ -122,6 +165,7 @@ class PlayerControls(QWidget):
         self.seek_slider.blockSignals(True)
         self.seek_slider.setValue(self._position_ms)
         self.seek_slider.blockSignals(False)
+        self.trim_lane.set_position_ms(self._position_ms)
         self._refresh_time_label()
 
     def set_playing(self, playing: bool) -> None:
@@ -184,3 +228,76 @@ class PlayerControls(QWidget):
         self.time_label.setText(
             f"{_format_ms(self._position_ms)} / {_format_ms(self._duration_ms)}"
         )
+
+    # ---------- 트림 외부 API ----------
+    _MIN_TRIM_MS = 100   # 0.1초 미만 거부
+
+    def in_ms(self) -> int | None:
+        return self._in_ms
+
+    def out_ms(self) -> int | None:
+        return self._out_ms
+
+    def set_in_ms(self, ms: int) -> None:
+        ms = max(0, min(ms, self._duration_ms))
+        self._in_ms = ms
+        self._maybe_swap()
+        self._sync_trim_view()
+
+    def set_out_ms(self, ms: int) -> None:
+        ms = max(0, min(ms, self._duration_ms))
+        self._out_ms = ms
+        self._maybe_swap()
+        self._sync_trim_view()
+
+    def clear_trim(self) -> None:
+        had = self._in_ms is not None or self._out_ms is not None
+        self._in_ms = None
+        self._out_ms = None
+        self._sync_trim_view()
+        if had:
+            self.trim_cleared.emit()
+
+    def set_cut_button_enabled(self, on: bool) -> None:
+        """외부(MainWindow)가 자르기 진행 중에 버튼을 잠그기 위해 호출."""
+        if on:
+            self._refresh_cut_button()
+        else:
+            self.cut_btn.setEnabled(False)
+
+    # ---------- 트림 내부 ----------
+    def _maybe_swap(self) -> None:
+        if self._in_ms is not None and self._out_ms is not None and self._out_ms < self._in_ms:
+            self._in_ms, self._out_ms = self._out_ms, self._in_ms
+
+    def _sync_trim_view(self) -> None:
+        self.trim_lane.set_in_ms(self._in_ms)
+        self.trim_lane.set_out_ms(self._out_ms)
+        any_marked = self._in_ms is not None or self._out_ms is not None
+        self.trim_row.setVisible(any_marked)
+        self._refresh_cut_button()
+
+    def _refresh_cut_button(self) -> None:
+        if self._in_ms is None or self._out_ms is None:
+            self.cut_btn.setEnabled(False)
+            self.cut_btn.setText("✂ 자르기")
+            return
+        length = abs(self._out_ms - self._in_ms)
+        if length < self._MIN_TRIM_MS:
+            self.cut_btn.setEnabled(False)
+            self.cut_btn.setText("✂ 자르기 (너무 짧음)")
+            return
+        self.cut_btn.setEnabled(True)
+        sec = length // 1000
+        self.cut_btn.setText(f"✂ 자르기 ({sec // 60:02d}:{sec % 60:02d})")
+
+    def _on_lane_in_changed(self, ms: int) -> None:
+        self.set_in_ms(ms)
+
+    def _on_lane_out_changed(self, ms: int) -> None:
+        self.set_out_ms(ms)
+
+    def _on_cut_clicked(self) -> None:
+        if self._in_ms is None or self._out_ms is None:
+            return
+        self.trim_execute_requested.emit(self._in_ms, self._out_ms)
