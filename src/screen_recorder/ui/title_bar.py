@@ -70,11 +70,21 @@ class CustomTitleBar(QWidget):
         layout.setContentsMargins(8, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 아이콘 — 24px (기존 20px 에서 20% 확대로 가독성 개선)
+        # 아이콘 — 표시 영역 20×20 그대로, 내부 그래픽만 1.2배 zoom + 중앙 crop.
+        # ico 자산이 중앙 그래픽 + 패딩 구조라 그대로 표시하면 작아 보임.
+        # 1.2배 (24×24) 로 렌더 → 중앙 20×20 만 잘라 사용 → 가장자리 패딩이 잘려
+        # 같은 표시 영역에서 그래픽 자체가 약 20% 커 보임.
         icon_label = QLabel()
-        pix = app_icon().pixmap(24, 24)
-        if not pix.isNull():
-            icon_label.setPixmap(pix)
+        display_px = 20
+        zoom = 1.2
+        over_px = int(round(display_px * zoom))
+        oversized = app_icon().pixmap(over_px, over_px)
+        if not oversized.isNull():
+            cx = (oversized.width() - display_px) // 2
+            cy = (oversized.height() - display_px) // 2
+            cropped = oversized.copy(cx, cy, display_px, display_px)
+            icon_label.setPixmap(cropped)
+        icon_label.setFixedSize(display_px, display_px)
         layout.addWidget(icon_label)
 
         # 제목
