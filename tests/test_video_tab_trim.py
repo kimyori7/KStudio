@@ -84,3 +84,31 @@ def test_ctrl_e_noop_when_button_disabled(video_tab, qtbot):
     video_tab.controls.set_in_ms(500)
     with qtbot.assertNotEmitted(video_tab.trim_requested, wait=300):
         _send_key(video_tab, Qt.Key_E, Qt.ControlModifier)
+
+
+def test_seek_during_trim_auto_pauses(video_tab):
+    """트림 활성 + 영상 재생 중 시크 → 자동 일시정지 + 그 위치로 이동."""
+    pause_calls = []
+    seek_calls = []
+    video_tab.player.is_playing = lambda: True
+    video_tab.player.pause = lambda: pause_calls.append(True)
+    video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
+
+    video_tab.controls.set_in_ms(500)   # 트림 활성
+    video_tab._on_user_seek_request(2_000)
+    assert pause_calls == [True]
+    assert seek_calls == [2_000]
+
+
+def test_seek_without_trim_does_not_pause(video_tab):
+    """트림 비활성(in/out 모두 None) 상태에서 시크는 일시정지 안 함."""
+    pause_calls = []
+    seek_calls = []
+    video_tab.player.is_playing = lambda: True
+    video_tab.player.pause = lambda: pause_calls.append(True)
+    video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
+
+    video_tab.controls.clear_trim()
+    video_tab._on_user_seek_request(2_000)
+    assert pause_calls == []
+    assert seek_calls == [2_000]

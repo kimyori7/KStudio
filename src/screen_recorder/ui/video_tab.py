@@ -180,7 +180,16 @@ class VideoTab(QWidget):
         self._frame_step_accum_ms = 0
 
     def _on_user_seek_request(self, ms: int) -> None:
-        """슬라이더 드래그/클릭으로 사용자가 시크 — 누적 카운터 초기화."""
+        """슬라이더 드래그/클릭 또는 트림 레인 시크 — 누적 카운터 초기화.
+
+        트림 모드(in/out 둘 중 하나라도 마크된 상태)에서 시크하면 자동 일시정지.
+        편집 작업 중에는 사용자가 정확한 프레임을 보면서 점을 찍어야 하므로
+        영상이 그대로 재생되며 다음 프레임으로 흘러가면 안 됨 (Premiere 등 표준).
+        """
+        trim_active = (self.controls.in_ms() is not None
+                       or self.controls.out_ms() is not None)
+        if trim_active and self.player.is_playing():
+            self.player.pause()
         self.player.seek_ms(ms)
         self._reset_frame_step_accum()
 
