@@ -64,7 +64,7 @@ class HotkeySettings:
     # 글로벌 핫키 등록만 placeholder (별도 액션 핸들러는 후속에 추가 예정).
     toggle_record_full: str = ""
     # 단축키 프리셋 식별자. 빈 문자열 = 첫 실행 (다이얼로그 노출). 사용자가 개별 키를
-    # 수정하면 "custom" 으로 자동 전환. 값: "" | "windows-standard" | "goom-pot" | "custom"
+    # 수정하면 "custom" 으로 자동 전환. 값: "" | "windows-standard" | "kstudio-default" | "custom"
     preset_name: str = ""
 
 
@@ -165,6 +165,9 @@ def load(path: Path) -> AppSettings:
     # 비어 있을 수 있다. 첫 실행 다이얼로그를 안 띄우도록 'custom' 으로 자동 마킹.
     if settings.hotkey.preset_name == "":
         settings.hotkey.preset_name = "custom"
+    # 마이그레이션: 첫 릴리스에서 'goom-pot' 으로 박힌 ID 를 'kstudio-default' 로 정정.
+    if settings.hotkey.preset_name == "goom-pot":
+        settings.hotkey.preset_name = "kstudio-default"
     return settings
 
 

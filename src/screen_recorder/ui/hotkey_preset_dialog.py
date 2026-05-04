@@ -88,9 +88,9 @@ class HotkeyPresetDialog(QDialog):
         windows_card.clicked.connect(self._on_card_clicked)
         cards_row.addWidget(windows_card)
 
-        goompot_card = _PresetCard(
-            preset_id="goom-pot",
-            title="🎮 곰/팟 스타일",
+        kstudio_card = _PresetCard(
+            preset_id="kstudio-default",
+            title="🛠 KStudio 기본",
             lines=[
                 "• 영역 캡처: Ctrl+Shift+R",
                 "• 영역 녹화: Ctrl+Shift+T",
@@ -98,8 +98,8 @@ class HotkeyPresetDialog(QDialog):
                 "• 프레임: D / F",
             ],
         )
-        goompot_card.clicked.connect(self._on_card_clicked)
-        cards_row.addWidget(goompot_card)
+        kstudio_card.clicked.connect(self._on_card_clicked)
+        cards_row.addWidget(kstudio_card)
 
         self.setStyleSheet(_CARD_STYLE)
 

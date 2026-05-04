@@ -18,7 +18,7 @@ from ..widgets import OneShotKeySequenceEdit
 _PRESET_LABELS = [
     ("custom", "사용자 지정"),
     ("windows-standard", "윈도우 표준"),
-    ("goom-pot", "곰/팟 스타일"),
+    ("kstudio-default", "KStudio 기본"),
 ]
 
 

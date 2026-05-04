@@ -25,10 +25,10 @@ def test_card_click_sets_preset_and_accepts(dialog, qtbot):
     assert len(cards) == 2
     # ID 매핑 확인
     presets = sorted([c._preset_id for c in cards])
-    assert presets == ["goom-pot", "windows-standard"]
+    assert presets == ["kstudio-default", "windows-standard"]
     # 시뮬레이트 클릭
     cards[0].clicked.emit(cards[0]._preset_id)
-    assert dialog.selected_preset in ("windows-standard", "goom-pot")
+    assert dialog.selected_preset in ("windows-standard", "kstudio-default")
 
 
 def test_skip_keeps_preset_none(dialog, qtbot):

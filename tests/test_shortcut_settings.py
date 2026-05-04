@@ -74,7 +74,7 @@ def test_individual_edit_marks_custom(qtbot):
     from screen_recorder.core.settings import AppSettings
     from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
     s = AppSettings()
-    s.hotkey.preset_name = "goom-pot"
+    s.hotkey.preset_name = "kstudio-default"
     panel = ShortcutsPanel(s.hotkey, s.editor_shortcuts, s)
     qtbot.addWidget(panel)
     panel.set_shortcut_for("tool_crop", "K")

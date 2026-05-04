@@ -9,23 +9,34 @@ from screen_recorder.core.hotkey_presets import (
 
 def test_presets_have_two_options():
     assert "windows-standard" in PRESETS
-    assert "goom-pot" in PRESETS
+    assert "kstudio-default" in PRESETS
 
 
 def test_apply_windows_preset_overrides_hotkeys():
     s = AppSettings()
     apply_preset(s, "windows-standard")
     assert s.hotkey.toggle_record == "Ctrl+Alt+R"
-    assert s.hotkey.screenshot_region == "Ctrl+Win+S"
+    assert s.hotkey.screenshot_region == "Ctrl+Meta+S"   # Win 키 = Meta (Qt 표기)
     assert s.hotkey.preset_name == "windows-standard"
 
 
-def test_apply_goompot_preset():
+def test_windows_preset_keys_parse_through_qkeysequence():
+    """프리셋 값이 QKeySequence 로 파싱돼 빈 문자열이 아니어야 — UI 위젯 표시 회귀."""
+    from PySide6.QtGui import QKeySequence
     s = AppSettings()
-    apply_preset(s, "goom-pot")
+    apply_preset(s, "windows-standard")
+    for key in (s.hotkey.toggle_record, s.hotkey.screenshot_region,
+                 s.hotkey.screenshot_full):
+        if key:   # 빈 문자열은 스킵 (toggle_record_full 등)
+            assert QKeySequence(key).toString(), f"파싱 실패: {key!r}"
+
+
+def test_apply_kstudio_default_preset():
+    s = AppSettings()
+    apply_preset(s, "kstudio-default")
     assert s.hotkey.toggle_record == "Ctrl+Shift+T"
     assert s.hotkey.screenshot_region == "Ctrl+Shift+R"
-    assert s.hotkey.preset_name == "goom-pot"
+    assert s.hotkey.preset_name == "kstudio-default"
 
 
 def test_apply_unknown_preset_noop():
@@ -38,14 +49,14 @@ def test_apply_unknown_preset_noop():
 def test_apply_preset_overrides_editor_shortcuts():
     s = AppSettings()
     s.editor_shortcuts.tool_crop = "X"   # 사용자가 임의 변경
-    apply_preset(s, "goom-pot")
+    apply_preset(s, "kstudio-default")
     assert s.editor_shortcuts.tool_crop == "C"   # 프리셋 값으로 복귀
 
 
 def test_detect_preset_goompot_default():
-    """초기 default = goom-pot 과 일치."""
+    """초기 default = kstudio-default 과 일치."""
     s = AppSettings()
-    assert detect_preset(s) == "goom-pot"
+    assert detect_preset(s) == "kstudio-default"
 
 
 def test_detect_preset_custom_when_modified():
@@ -63,7 +74,7 @@ def test_is_first_run_when_preset_name_empty():
 
 def test_is_first_run_false_after_apply():
     s = AppSettings()
-    apply_preset(s, "goom-pot")
+    apply_preset(s, "kstudio-default")
     assert is_first_run(s) is False
 
 

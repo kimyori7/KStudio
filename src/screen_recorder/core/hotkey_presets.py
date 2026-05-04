@@ -9,16 +9,17 @@ from typing import Literal
 from .settings import AppSettings, EditorShortcuts, HotkeySettings
 
 
-PresetName = Literal["windows-standard", "goom-pot", "custom"]
+PresetName = Literal["windows-standard", "kstudio-default", "custom"]
 
 
 # 두 프리셋의 차이는 글로벌 캡처/녹화 단축키 + 영상 프레임 step 만.
 # 도구 단축키(V/R/A/T/C) 는 두 프리셋 동일 (편집기 표준).
+# Qt 의 QKeySequence 는 Windows 키를 "Meta" 로 표기 — "Win" 으로 적으면 파싱 실패.
 PRESETS: dict[str, dict[str, HotkeySettings | EditorShortcuts]] = {
     "windows-standard": {
         "hotkey": HotkeySettings(
-            toggle_record="Ctrl+Alt+R",        # 게임 바 충돌 회피
-            screenshot_region="Ctrl+Win+S",    # OS Snipping Tool 와 충돌 회피
+            toggle_record="Ctrl+Alt+R",         # 게임 바 충돌 회피
+            screenshot_region="Ctrl+Meta+S",    # Win 키 = Meta — OS Snipping Tool 와 같은 키
             screenshot_full="Print",
             toggle_record_full="",
             preset_name="windows-standard",
@@ -38,13 +39,13 @@ PRESETS: dict[str, dict[str, HotkeySettings | EditorShortcuts]] = {
             view_fit="Ctrl+1",
         ),
     },
-    "goom-pot": {
+    "kstudio-default": {
         "hotkey": HotkeySettings(
-            toggle_record="Ctrl+Shift+T",      # 곰/팟 표준
+            toggle_record="Ctrl+Shift+T",      # KStudio 기존 기본 (사용자 개인 취향)
             screenshot_region="Ctrl+Shift+R",
             screenshot_full="",
             toggle_record_full="",
-            preset_name="goom-pot",
+            preset_name="kstudio-default",
         ),
         "editor": EditorShortcuts(
             tool_select="V",
