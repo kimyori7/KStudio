@@ -113,6 +113,15 @@ class VideoTab(QWidget):
         if self._matches_player_key(event, self._player_hotkeys.frame_back):
             self._do_frame_step(-1)
             event.accept(); return
+        # G = 누적 프레임 스킵 카운터 수동 초기화 (현재 위치는 유지).
+        if k == Qt.Key_G:
+            had_accum = self._frame_step_accum != 0 or self._frame_step_accum_ms != 0
+            self._reset_frame_step_accum()
+            self.player.flash_action(
+                "↺ 누적 프레임 스킵 0 으로 초기화" if had_accum
+                else "↺ 누적 프레임 스킵 (이미 0)"
+            )
+            event.accept(); return
         if k == Qt.Key_Up:
             self._bump_volume(+0.1); event.accept(); return
         if k == Qt.Key_Down:
