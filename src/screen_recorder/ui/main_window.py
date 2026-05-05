@@ -2218,6 +2218,12 @@ class MainWindow(QMainWindow):
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()
         self._register_editor_shortcuts()
+        # Windows 자동 시작 체크박스가 바뀌었을 수 있으므로 레지스트리 동기화.
+        try:
+            from screen_recorder.app import windows_autostart  # noqa: PLC0415
+            windows_autostart.apply(self.app_settings.preferences.autostart)
+        except Exception:
+            logging.exception("자동 시작 레지스트리 동기화 실패")
         # 글로벌 툴바 인라인 단축키 표시 동기화 (다이얼로그에서 바뀌었을 수 있음).
         self.global_toolbar.set_inline_hotkey("toggle_record", self.app_settings.hotkey.toggle_record)
         self.global_toolbar.set_inline_hotkey("screenshot_region", self.app_settings.hotkey.screenshot_region)

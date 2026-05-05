@@ -9,10 +9,13 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.window=false")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from screen_recorder.app import windows_assoc
+from screen_recorder.app import windows_assoc, windows_autostart
 from screen_recorder.core.ffmpeg_check import find_ffmpeg
 from screen_recorder.core.settings import AppSettings, load, save, settings_path
 from screen_recorder.ui.main_window import MainWindow
+
+# 부팅 시 자동 시작으로 진입했음을 알리는 플래그 — 메인 창을 숨기고 트레이만 띄운다.
+_TRAY_FLAG = "--tray"
 
 
 SETTINGS_PATH = settings_path()
@@ -46,6 +49,10 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("KStudio")
+    # 트레이로 숨겨도 마지막 윈도우 닫힘 신호로 종료되지 않도록.
+    # (closeEvent 가 hide() 로 우회하지만, 자동 시작 모드에서는 처음부터 창을
+    # 한 번도 보여주지 않으므로 이 보호가 더 중요해진다.)
+    app.setQuitOnLastWindowClosed(False)
     from screen_recorder.ui.app_icon import app_icon
     from screen_recorder.ui.theme import apply_theme
     app.setWindowIcon(app_icon())
@@ -79,18 +86,30 @@ def main() -> int:
         save(win.app_settings, SETTINGS_PATH)
     app.aboutToQuit.connect(on_about_to_quit)
 
-    win.show()
-
     # 패키지된 빌드라면 .kstudio 확장자 연결을 한 번 갱신 (HKCU, idempotent).
     windows_assoc.ensure_associated()
+    # 자동 시작 레지스트리도 설정값과 동기화 — 사용자가 exe 를 옮긴 경우에도
+    # 다음 부팅에 올바른 경로가 등록되도록 매 실행마다 idempotent 하게 적용한다.
+    windows_autostart.apply(settings.preferences.autostart)
+
+    # `--tray` 인자로 들어왔으면 메인 창을 숨긴 상태로 시작한다 (트레이만 표시).
+    start_in_tray = _TRAY_FLAG in sys.argv[1:]
+    if not start_in_tray:
+        win.show()
 
     # 명령행으로 들어온 파일 경로가 있으면 새 탭으로 연다 (탐색기 더블클릭 흐름).
+    # 단, 파일을 받은 경우엔 사용자가 그 파일을 보길 원한다는 뜻이므로 트레이 모드라도
+    # 창을 띄운다.
+    opened_any = False
     for arg in sys.argv[1:]:
         if not arg or arg.startswith("-"):
             continue
         p = Path(arg)
         if p.is_file():
             win._open_path(p)
+            opened_any = True
+    if start_in_tray and opened_any:
+        win.show()
 
     return app.exec()
 
