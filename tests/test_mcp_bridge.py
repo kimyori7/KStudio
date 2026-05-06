@@ -25,17 +25,21 @@ def _img() -> QImage:
 
 @pytest.fixture
 def bridge(qtbot, tmp_path):
-    """MCP 가 켜진 채로 시작하는 MainWindow + 브리지."""
+    """MCP 가 켜진 채로 시작하는 MainWindow + 브리지.
+
+    사용자 실제 KStudio 폴더가 자동으로 라이브러리에 채워지지 않도록 image/video
+    저장 폴더를 tmp_path 로 격리한다.
+    """
     f = tmp_path / "ffmpeg.exe"
     f.write_bytes(b"")
     s = AppSettings()
-    s.screenshot.save_dir = str(tmp_path)
+    s.screenshot.save_dir = str(tmp_path / "img")
+    s.general.output_dir = str(tmp_path / "vid")
     s.mcp.enabled = True
     s.mcp.token = generate_token()
     s.mcp.port = 0   # OS 자동 할당
     win = MainWindow(s, f)
     qtbot.addWidget(win)
-    # 브리지가 자동 시작됐어야 한다.
     assert win._mcp_bridge is not None
     assert win._mcp_bridge.is_running
     yield win
@@ -191,10 +195,11 @@ def test_call_invalid_json_returns_400(bridge):
     assert r.status_code == 400
 
 
-def test_call_without_token_rejected(bridge):
-    r = requests.post(
+def test_call_without_token_rejected(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
         f"{_base(bridge)}/mcp/v1/call/get_current_image_path",
-        json={}, timeout=5,
+        json={},
     )
     assert r.status_code == 401
 
@@ -213,6 +218,126 @@ def test_bridge_stop_idempotent(bridge):
     bridge._stop_mcp_bridge()
     bridge._stop_mcp_bridge()
     assert bridge._mcp_bridge is None
+
+
+def test_tools_list_includes_stage2_tools(bridge):
+    r = requests.get(
+        f"{_base(bridge)}/mcp/v1/tools",
+        headers=_auth_headers(bridge), timeout=5,
+    )
+    names = {t["name"] for t in r.json()["tools"]}
+    expected = {
+        "get_current_image_path", "list_library", "list_tabs",
+        "get_current_mode", "get_save_dirs", "get_settings_summary",
+    }
+    assert expected.issubset(names)
+
+
+def test_call_list_library_empty(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/list_library",
+        headers=_auth_headers(bridge), json={},
+    )
+    assert r.status_code == 200
+    res = r.json()["result"]
+    assert res["entries"] == []
+    assert res["total"] == 0
+
+
+def test_call_list_library_after_capture(bridge, qtbot):
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/list_library",
+        headers=_auth_headers(bridge), json={},
+    )
+    res = r.json()["result"]
+    assert res["total"] == 1
+    e = res["entries"][0]
+    assert e["kind"] == "image"
+    assert e["source_label"] == "region"
+    assert e["has_thumbnail"] is True
+
+
+def test_call_list_library_kind_filter(bridge, qtbot):
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/list_library",
+        headers=_auth_headers(bridge), json={"kind": "video"},
+    )
+    assert r.json()["result"]["total"] == 0
+    r2 = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/list_library",
+        headers=_auth_headers(bridge), json={"kind": "image"},
+    )
+    assert r2.json()["result"]["total"] == 1
+
+
+def test_call_list_tabs_empty(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/list_tabs",
+        headers=_auth_headers(bridge), json={},
+    )
+    res = r.json()["result"]
+    assert res["active_index"] == -1
+    assert res["tabs"] == []
+
+
+def test_call_list_tabs_after_capture(bridge, qtbot):
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/list_tabs",
+        headers=_auth_headers(bridge), json={},
+    )
+    res = r.json()["result"]
+    assert res["total"] == 1
+    assert res["active_index"] == 0
+    t = res["tabs"][0]
+    assert t["kind"] == "image"
+    assert t["entry_id"] is not None
+
+
+def test_call_get_current_mode(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/get_current_mode",
+        headers=_auth_headers(bridge), json={},
+    )
+    assert r.json()["result"]["mode"] in {"image", "video"}
+
+
+def test_call_get_save_dirs(bridge, qtbot, tmp_path):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/get_save_dirs",
+        headers=_auth_headers(bridge), json={},
+    )
+    res = r.json()["result"]
+    assert Path(res["image_dir"]).resolve() == (tmp_path / "img").resolve()
+    assert Path(res["video_dir"]).resolve() == (tmp_path / "vid").resolve()
+    assert res["image_format"] == "png"
+    assert res["image_filename_pattern"]
+
+
+def test_call_get_settings_summary_no_token(bridge, qtbot):
+    """settings summary 에 토큰 같은 민감정보가 절대 안 나오도록 확인."""
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/get_settings_summary",
+        headers=_auth_headers(bridge), json={},
+    )
+    res = r.json()["result"]
+    serialized = repr(res)
+    assert bridge.app_settings.mcp.token not in serialized
+    assert "token" not in res
+    # 핵심 메타는 포함
+    assert "image_dir" in res
+    assert "current_mode" in res
 
 
 def test_token_is_persistent_across_settings_save_load(tmp_path):
