@@ -312,8 +312,10 @@ class MainWindow(QMainWindow):
         # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
         # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
         # 매번 재등록 안 해도 됨).
+        from screen_recorder.mcp.pending_requests import PendingRequestStore
         self._mcp_bridge = None
         self._mcp_dispatcher = None
+        self._mcp_request_store = PendingRequestStore()   # async 도구 결과 보관
         if self.app_settings.mcp.enabled:
             self._start_mcp_bridge()
 
