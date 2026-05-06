@@ -152,6 +152,19 @@ _PATHS: dict[str, str] = {
         '<path d="M6 17.5V6"/>'
         '<rect width="20" height="12" x="2" y="6" rx="2"/>'
     ),
+    # 드래그-저장 — 이미지 카드 + 우상단으로 빠져나가는 export 화살표 ("들어
+    # 올려서 끄집어 내기" 메타포). lucide 의 image 아이콘에 export 화살표를 합성.
+    "drag-save": (
+        # 이미지 프레임 (좌하단에 살짝 치우쳐 화살표 자리 확보)
+        '<rect width="14" height="14" x="3" y="7" rx="2"/>'
+        # 태양
+        '<circle cx="7" cy="11" r="1.5"/>'
+        # 산 — lucide image 의 곡선 봉우리 패턴
+        '<path d="m17 21-3.086-3.086a2 2 0 0 0-2.828 0L7 21"/>'
+        # 우상단 export 화살표
+        '<path d="m18 6 4-4"/>'
+        '<path d="M22 6V2h-4"/>'
+    ),
 }
 
 

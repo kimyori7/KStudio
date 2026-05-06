@@ -136,7 +136,18 @@ class VideoEncoder(threading.Thread):
             return
 
         # ----- 오디오 인코딩 + mux. 실패해도 비디오는 살린다. -----
+        # ffmpeg stderr 는 파일로 보내서 실패 시 사용자/우리가 사고 후에라도 원인을
+        # 추적할 수 있게 한다. 정상 종료(audio_ok / mux_ok) 시에는 자동 삭제.
         audio_encoded = self.output_path.with_suffix(".audio.tmp." + self.sound_settings.codec)
+        audio_log_path = self.output_path.with_suffix(".audio.ffmpeg.log")
+        mux_log_path = self.output_path.with_suffix(".mux.ffmpeg.log")
+        # 진단용: raw 파일 크기 — '한 chunk 만 쓰고 끝남' 같은 캡처-측 회귀를 노출.
+        try:
+            raw_size = Path(self.audio_raw_path).stat().st_size
+        except OSError:
+            raw_size = -1
+        log.info("audio raw ready for mux: path=%s size=%d", self.audio_raw_path, raw_size)
+
         a_argv = audio_encode_args(
             self.sound_settings,
             str(self.audio_raw_path),
@@ -147,49 +158,71 @@ class VideoEncoder(threading.Thread):
         a_argv[0] = str(self.ffmpeg_path)
         audio_ok = False
         try:
-            proc_a = subprocess.Popen(
-                a_argv,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=_NO_WINDOW,
-            )
-            proc_a.wait(timeout=30)
+            with open(audio_log_path, "wb") as a_log:
+                proc_a = subprocess.Popen(
+                    a_argv,
+                    stdout=subprocess.DEVNULL,
+                    stderr=a_log,
+                    creationflags=_NO_WINDOW,
+                )
+                proc_a.wait(timeout=30)
             audio_ok = (proc_a.returncode == 0
                         and audio_encoded.exists()
                         and audio_encoded.stat().st_size > 0)
+            if not audio_ok:
+                log.warning(
+                    "audio encode failed: code=%s exists=%s size=%s log=%s",
+                    proc_a.returncode,
+                    audio_encoded.exists(),
+                    audio_encoded.stat().st_size if audio_encoded.exists() else "n/a",
+                    audio_log_path,
+                )
         except Exception as e:
-            log.warning("audio encode failed: %s", e)
+            log.warning("audio encode crashed: %s (log=%s)", e, audio_log_path)
 
         mux_ok = False
         if audio_ok:
             m_argv = mux_args(str(video_only), str(audio_encoded), str(self.output_path))
             m_argv[0] = str(self.ffmpeg_path)
             try:
-                proc_m = subprocess.Popen(
-                    m_argv,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=_NO_WINDOW,
-                )
-                proc_m.wait(timeout=30)
+                with open(mux_log_path, "wb") as m_log:
+                    proc_m = subprocess.Popen(
+                        m_argv,
+                        stdout=subprocess.DEVNULL,
+                        stderr=m_log,
+                        creationflags=_NO_WINDOW,
+                    )
+                    proc_m.wait(timeout=30)
                 mux_ok = (proc_m.returncode == 0
                           and self.output_path.exists()
                           and self.output_path.stat().st_size > 0)
+                if not mux_ok:
+                    log.warning(
+                        "mux failed: code=%s exists=%s size=%s log=%s",
+                        proc_m.returncode,
+                        self.output_path.exists(),
+                        self.output_path.stat().st_size if self.output_path.exists() else "n/a",
+                        mux_log_path,
+                    )
             except Exception as e:
-                log.warning("mux failed: %s", e)
+                log.warning("mux crashed: %s (log=%s)", e, mux_log_path)
 
         if mux_ok:
-            # mux 성공 → 임시 파일들 정리
-            for p in (video_only, audio_encoded, self.audio_raw_path):
+            # mux 성공 → 임시 파일들 + ffmpeg 로그 정리
+            for p in (video_only, audio_encoded, self.audio_raw_path,
+                      audio_log_path, mux_log_path):
                 try:
                     Path(p).unlink(missing_ok=True)
                 except Exception:
                     pass
         else:
-            # mux 실패 → 비디오는 살리고(오디오는 포기) 임시 파일만 정리
+            # mux 실패 → 비디오는 살리고(오디오는 포기) 임시 파일만 정리.
+            # ffmpeg stderr 로그는 사고 추적용으로 보존 (수동으로 정리).
             log.warning(
-                "audio mux failed; preserving video-only output. audio_ok=%s",
-                audio_ok,
+                "audio mux failed; preserving video-only output. audio_ok=%s "
+                "raw_size=%d audio_log=%s mux_log=%s",
+                audio_ok, raw_size, audio_log_path,
+                mux_log_path if audio_ok else "(skipped)",
             )
             try:
                 if video_only != self.output_path and Path(video_only).exists():
@@ -208,4 +241,14 @@ class VideoEncoder(threading.Thread):
                     Path(p).unlink(missing_ok=True)
                 except Exception:
                     pass
-            self.error = self.error or "audio mux failed; saved video-only"
+            # 오디오 인코드까지도 안 갔으면 mux 로그는 비어있을 테니 정리.
+            if not audio_ok:
+                try:
+                    Path(mux_log_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            # 사용자 메시지 — 추측 없이 사실만(원인 단정 X).
+            self.error = self.error or (
+                f"audio mux failed; saved video-only "
+                f"(audio raw {raw_size} bytes — see {audio_log_path.name})"
+            )

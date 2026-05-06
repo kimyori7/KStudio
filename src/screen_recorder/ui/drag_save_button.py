@@ -9,18 +9,23 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
+from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QUrl
 from PySide6.QtGui import QDrag, QImage, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QMessageBox, QPushButton
+
+from .icons import load_icon
 
 
 class DragSaveButton(QPushButton):
     """버튼 자체를 드래그 → 폴더에 놓으면 PNG 로 저장."""
 
     def __init__(self, parent=None) -> None:
-        super().__init__("📤", parent)
+        super().__init__("", parent)
         self.setToolTip("이 버튼을 드래그해서 폴더에 놓으면 이미지로 저장됩니다")
         self.setFixedWidth(36)
+        # lucide 풍 SVG 아이콘 — 이미지 카드 + 우상단 export 화살표
+        self.setIcon(load_icon("drag-save", size=20))
+        self.setIconSize(QSize(20, 20))
         self.image_provider: Callable[[], Optional[QImage]] = lambda: None
         self.filename_provider: Callable[[], str] = lambda: "image.png"
         self._press_pos: Optional[QPoint] = None

@@ -54,7 +54,11 @@ class _VideoSurface(QWidget):
         p.fillRect(self.rect(), Qt.black)
         src = self._frame if not self._frame.isNull() else self._thumbnail
         if not src.isNull():
-            scaled = src.scaled(self.size(), Qt.KeepAspectRatio, Qt.FastTransformation)
+            # SmoothTransformation = bilinear. Fast(=nearest neighbor) 로 두면 같은
+            # mp4 인데도 플레이어에서만 픽셀이 깨져 보이는 회귀 (스크린샷은 원본
+            # QImage 그대로라 선명). 화면 크기로 축소되는 일반 케이스에서 CPU 비용
+            # 차이는 작고, 화질 차이는 즉시 체감됨.
+            scaled = src.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             x = (self.width() - scaled.width()) // 2
             y = (self.height() - scaled.height()) // 2
             p.drawImage(x, y, scaled)

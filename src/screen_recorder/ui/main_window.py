@@ -1229,7 +1229,13 @@ class MainWindow(QMainWindow):
         entry = self.library_model.get(entry_id)
         if entry is None:
             return
+        # 파일이 실제로 디스크에 있으면 탐색기에서 그 파일을 '선택된 상태로' 열기
+        # (Windows: explorer /select,FILE). 미저장이거나 삭제된 항목은 모드별 기본
+        # 저장 폴더만 연다.
         if entry.path is not None and entry.path.exists():
+            if self._reveal_in_explorer(entry.path):
+                return
+            # 폴백 — explorer 호출 실패 시 폴더만 연다.
             folder = entry.path.parent
         elif entry.kind is EntryKind.VIDEO:
             folder = Path(self.app_settings.general.output_dir or default_video_dir())
@@ -1237,6 +1243,31 @@ class MainWindow(QMainWindow):
             folder = Path(self.app_settings.screenshot.save_dir or default_image_dir())
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _reveal_in_explorer(self, file_path: Path) -> bool:
+        """탐색기에서 파일을 '선택된' 상태로 열기. 성공하면 True.
+
+        Windows 는 `explorer.exe /select,FILE` 로 파일이 하이라이트된 채 부모 폴더가
+        열린다. 다른 OS 는 미지원 (폴더만 여는 폴백을 호출자가 사용).
+        주의: explorer.exe 는 성공해도 exit code 1 을 자주 반환하므로 returncode 로
+        실패 판정 금지. fire-and-forget Popen 만 사용.
+        """
+        import sys
+        if sys.platform != "win32":
+            return False
+        try:
+            import subprocess
+            # /select 와 파일 경로 사이는 공백이 아니라 콤마로 붙여 한 인자로 전달.
+            subprocess.Popen(
+                ["explorer.exe", f"/select,{file_path}"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return True
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "explorer /select failed for %s: %s", file_path, e
+            )
+            return False
 
     def _on_video_snapshot(self, image: QImage, label_at: str) -> None:
         """영상 탭에서 '현재 프레임 → 스크린샷' 요청."""

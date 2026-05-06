@@ -2,13 +2,18 @@
 from __future__ import annotations
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QKeyEvent
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QEvent, QTimer, Signal
+from PySide6.QtGui import QCursor, QImage, QKeyEvent
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
+
+
+# 풀스크린 컨트롤 오버레이 동작 상수
+_FS_HIDE_DELAY_MS = 1000          # 재생 중 마우스 idle 시 숨김 지연
+_FS_BOTTOM_BAND_PX = 120          # 하단에서 이 높이 안에 마우스가 들어오면 다시 표시
 
 
 def _format_ms_label(ms: int) -> str:
@@ -43,6 +48,11 @@ class VideoTab(QWidget):
         # 실제 영상 fps 와 정합하는 값.
         self._frame_step_accum: int = 0
         self._frame_step_accum_ms: int = 0
+
+        # 풀스크린 오버레이 상태 — 진입 전엔 None, 진입 시 holder 위젯 + 타이머 세팅.
+        # eventFilter 가 풀스크린이 아닐 때도 호출되므로 반드시 __init__ 에서 정의.
+        self._fullscreen_holder: QWidget | None = None
+        self._fs_hide_timer: QTimer | None = None
 
         self.player = PlayerWidget()
         self.controls = PlayerControls()
@@ -259,36 +269,89 @@ class VideoTab(QWidget):
         self.snapshot_requested.emit(img, label)
 
     def _on_fullscreen_toggled(self) -> None:
-        """플레이어 위젯을 단독으로 풀스크린에 띄움. Esc 로 복귀."""
+        """플레이어 위젯을 단독으로 풀스크린에 띄움. Esc 로 복귀.
+
+        풀스크린에서도 PlayerControls(재생/시크/볼륨 등) 를 유지해야 사용자가 영상을
+        조작할 수 있다. 컨트롤바는 holder 의 자식 오버레이로 띄우고, 재생 중에는
+        1초간 마우스 움직임이 없으면 자동으로 숨고, 마우스가 화면 하단 영역에 진입
+        하면 다시 나타나는 표준 동작 (YouTube/VLC 와 동일).
+        """
         # 이미 분리된 풀스크린 창이 있으면 닫기 (토글)
-        existing = getattr(self, "_fullscreen_holder", None)
-        if existing is not None:
-            existing.close()
+        if self._fullscreen_holder is not None:
+            self._fullscreen_holder.close()
             return
 
-        # 새 top-level 창에 player 를 일시적으로 reparent
-        from PySide6.QtCore import Qt
+        # 복귀 시 layout 의 원래 순서를 보존하기 위해 인덱스를 *modify 전* 에 캡처.
+        # 한쪽을 reparent 한 뒤 indexOf 를 부르면 이미 줄어든 인덱스가 나와 복귀 시
+        # 순서가 뒤집힘 (player 가 controls 뒤로 들어감 → 컨트롤바가 화면 상단에 나옴).
+        player_index = self.layout().indexOf(self.player)
+        ctrl_index = self.layout().indexOf(self.controls)
+
+        # 새 top-level 창에 player 를 일시적으로 reparent.
+        # holder 자체엔 layout 을 두지 않는다 — player 는 fillRect 로 깔고, controls
+        # 는 raise_() 한 floating overlay 로 관리한다. 마우스 트래킹은 위젯별
+        # setMouseTracking 대신 QApplication 글로벌 eventFilter 로 처리 (아래).
         holder = QWidget()
         holder.setWindowTitle("KStudio - 풀스크린")
         holder.setStyleSheet("background-color: black;")
-        h_layout = QVBoxLayout(holder)
-        h_layout.setContentsMargins(0, 0, 0, 0)
-        h_layout.setSpacing(0)
+
         # player 를 holder 로 옮김 (원래 layout 에서 자동 분리)
         self.player.setParent(holder)
-        h_layout.addWidget(self.player)
+        self.player.show()
+        self.player.setGeometry(0, 0, 1, 1)  # showFullScreen 후 resizeEvent 에서 정확히 잡음
+
+        # controls 도 holder 의 자식으로 reparent — layout 이 아닌 floating overlay
+        # 로 두어야 player 위에 겹쳐 그릴 수 있다.
+        self.layout().removeWidget(self.controls)
+        self.controls.setParent(holder)
+        self.controls.show()
+
+        # 자동 숨김 타이머
+        hide_timer = QTimer(holder)
+        hide_timer.setSingleShot(True)
+        hide_timer.setInterval(_FS_HIDE_DELAY_MS)
+        hide_timer.timeout.connect(lambda: self._fs_maybe_hide_controls())
+        self._fs_hide_timer = hide_timer
+
+        def _reposition_controls():
+            ctrl_h = self.controls.sizeHint().height()
+            self.controls.setGeometry(
+                0, holder.height() - ctrl_h, holder.width(), ctrl_h,
+            )
+            self.controls.raise_()
+
+        def _on_resize(ev):
+            self.player.setGeometry(0, 0, holder.width(), holder.height())
+            _reposition_controls()
+        holder.resizeEvent = _on_resize  # type: ignore[assignment]
+
+        # 마우스 위치 추적 — _VideoSurface 까지 mouseTracking 을 전파하고 후크하는
+        # 것은 깨지기 쉽다 (페인트만 하던 위젯에 입력 이벤트 흐름이 추가됨). 대신
+        # QApplication 에 eventFilter 를 달아 mouseMove 이벤트를 한 곳에서 처리.
+        # 풀스크린 진입 → 등록, 종료 → 해제하는 lifecycle 이라 비용도 작다.
+        QApplication.instance().installEventFilter(self)
 
         def _restore():
-            # player 를 원래 자리에 복귀. 멱등 — 한 번만 실행되도록 가드.
+            # player + controls 를 원래 자리에 복귀. 멱등 — 한 번만 실행되도록 가드.
             if self._fullscreen_holder is None:
                 return
             self._fullscreen_holder = None
+            self._fs_hide_timer = None
             try:
-                holder.layout().removeWidget(self.player)
-            except (RuntimeError, AttributeError):
+                QApplication.instance().removeEventFilter(self)
+            except (AttributeError, RuntimeError):
                 pass
-            self.layout().insertWidget(0, self.player, stretch=1)
+            try:
+                self.player.setParent(None)
+                self.controls.setParent(None)
+            except RuntimeError:
+                pass
+            # 진입 전과 동일한 순서로 복귀 (player_index, ctrl_index 는 모두 modify
+            # 전에 잡아둔 값). 보통 player_index=0, ctrl_index=1.
+            self.layout().insertWidget(player_index, self.player, stretch=1)
+            self.layout().insertWidget(ctrl_index, self.controls)
             self.player.show()
+            self.controls.show()
             self.player.setFocus()
 
         # 닫힐 때(Esc 등) 복귀 처리
@@ -297,7 +360,11 @@ class VideoTab(QWidget):
             if ev.key() == Qt.Key_Escape:
                 holder.close()
                 return
-            original_keyPressEvent(ev)
+            # F = 다음 프레임, Space = 재생/일시정지 — 풀스크린에서도 단축키 유지
+            # 위해 video_tab 의 keyPressEvent 로 위임.
+            self.keyPressEvent(ev)
+            if not ev.isAccepted():
+                original_keyPressEvent(ev)
         holder.keyPressEvent = _key   # type: ignore[assignment]
 
         # WA_DeleteOnClose 미적용 + 강한 참조(self._fullscreen_holder) 때문에
@@ -311,3 +378,44 @@ class VideoTab(QWidget):
 
         holder.showFullScreen()
         self._fullscreen_holder = holder
+        # 진입 직후엔 컨트롤 보임 → 1초 후 (재생 중이면) 숨김 시작
+        _reposition_controls()
+        if self.player.is_playing():
+            hide_timer.start()
+
+    # ---------- 풀스크린 컨트롤 오버레이 ----------
+    def eventFilter(self, obj, ev) -> bool:  # type: ignore[override]
+        """QApplication 전역 필터 — 풀스크린 동안만 활성. 마우스가 holder 내부에서
+        움직일 때 컨트롤 표시/숨김을 결정한다. 다른 이벤트는 모두 그대로 통과.
+        """
+        if (self._fullscreen_holder is not None
+                and ev.type() == QEvent.MouseMove):
+            self._fs_handle_global_mouse_move()
+        return super().eventFilter(obj, ev)
+
+    def _fs_handle_global_mouse_move(self) -> None:
+        holder = self._fullscreen_holder
+        if holder is None:
+            return
+        # 글로벌 커서 → holder 로컬 좌표 변환. 다른 모니터/창 위로 마우스가 가도
+        # 안전하게 무시.
+        pos = holder.mapFromGlobal(QCursor.pos())
+        if not (0 <= pos.x() < holder.width() and 0 <= pos.y() < holder.height()):
+            return
+        in_bottom_band = pos.y() >= holder.height() - _FS_BOTTOM_BAND_PX
+        if in_bottom_band:
+            self.controls.show()
+            self.controls.raise_()
+            if self._fs_hide_timer is not None:
+                self._fs_hide_timer.stop()
+        else:
+            # 하단 밖 — 재생 중이면 1초 후 숨김. 일시정지 상태면 그대로 둠.
+            if self.player.is_playing() and self._fs_hide_timer is not None:
+                self._fs_hide_timer.start()
+
+    def _fs_maybe_hide_controls(self) -> None:
+        if self._fullscreen_holder is None:
+            return
+        if not self.player.is_playing():
+            return  # 일시정지 중엔 숨기지 않음
+        self.controls.hide()

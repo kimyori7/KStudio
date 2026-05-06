@@ -1,7 +1,7 @@
 """곰/팟플레이어 스타일 영상 컨트롤 바."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSlider,
     QVBoxLayout, QWidget,
@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 
 from .trim_lane import TrimLane
 from ..icons import load_icon
+from ...core.i18n import tr
 
 
 _ICON_PX = 18
@@ -100,7 +101,7 @@ class PlayerControls(QWidget):
         self.play_btn.setFixedSize(36, 32)
         self.play_btn.setIcon(load_icon("play", size=_ICON_PX))
         self.play_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
-        self.play_btn.setToolTip("재생/일시정지 (Space)")
+        self.play_btn.setToolTip(tr("재생/일시정지 (Space)"))
         self.play_btn.clicked.connect(self.play_toggled.emit)
         layout.addWidget(self.play_btn)
 
@@ -110,14 +111,24 @@ class PlayerControls(QWidget):
 
         self.seek_slider = QSlider(Qt.Horizontal)
         self.seek_slider.setRange(0, 0)
-        self.seek_slider.valueChanged.connect(self.seek_request.emit)
+        # 드래그 시 valueChanged 가 마우스 이동마다(초당 100+회) 쏟아지면 QMediaPlayer
+        # 의 setPosition 이 직렬 처리되며 디코더 큐가 쌓여 미리보기 갱신이 ~5–10Hz 로
+        # 떨어진다. leading-edge fire + 50ms cool-down + trailing-edge flush 로 최대
+        # ~20Hz 로 coalesce — 첫 변경은 즉시 반영되고, 쿨다운 중 변화는 최신값으로
+        # 압축돼 한 번만 발화한다.
+        self._seek_throttle_pending: int | None = None
+        self._seek_throttle_timer = QTimer(self)
+        self._seek_throttle_timer.setSingleShot(True)
+        self._seek_throttle_timer.setInterval(50)
+        self._seek_throttle_timer.timeout.connect(self._flush_pending_seek)
+        self.seek_slider.valueChanged.connect(self._on_seek_value_changed)
         layout.addWidget(self.seek_slider, stretch=1)
 
         self.mute_btn = QPushButton()
         self.mute_btn.setFixedSize(40, 32)
         self.mute_btn.setIcon(load_icon("volume-2", size=_ICON_PX))
         self.mute_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
-        self.mute_btn.setToolTip("음소거 (M)")
+        self.mute_btn.setToolTip(tr("음소거 (M)"))
         self.mute_btn.clicked.connect(self.mute_toggled.emit)
         layout.addWidget(self.mute_btn)
 
@@ -143,7 +154,7 @@ class PlayerControls(QWidget):
         self.frame_back_btn.setFixedSize(40, 32)
         self.frame_back_btn.setIcon(load_icon("chevron-left", size=_ICON_PX))
         self.frame_back_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
-        self.frame_back_btn.setToolTip("이전 프레임 (D)")
+        self.frame_back_btn.setToolTip(tr("이전 프레임 (D)"))
         self.frame_back_btn.clicked.connect(lambda: self.frame_step.emit(-1))
         layout.addWidget(self.frame_back_btn)
 
@@ -151,7 +162,7 @@ class PlayerControls(QWidget):
         self.frame_forward_btn.setFixedSize(40, 32)
         self.frame_forward_btn.setIcon(load_icon("chevron-right", size=_ICON_PX))
         self.frame_forward_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
-        self.frame_forward_btn.setToolTip("다음 프레임 (F)")
+        self.frame_forward_btn.setToolTip(tr("다음 프레임 (F)"))
         self.frame_forward_btn.clicked.connect(lambda: self.frame_step.emit(+1))
         layout.addWidget(self.frame_forward_btn)
 
@@ -159,7 +170,7 @@ class PlayerControls(QWidget):
         self.snapshot_btn.setFixedSize(40, 32)
         self.snapshot_btn.setIcon(load_icon("camera", size=_ICON_PX))
         self.snapshot_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
-        self.snapshot_btn.setToolTip("현재 프레임 → 스크린샷 탭 (Ctrl+Shift+P)")
+        self.snapshot_btn.setToolTip(tr("현재 프레임 → 스크린샷 탭 (Ctrl+Shift+P)"))
         self.snapshot_btn.clicked.connect(self.snapshot_request.emit)
         layout.addWidget(self.snapshot_btn)
 
@@ -167,7 +178,7 @@ class PlayerControls(QWidget):
         self.fullscreen_btn.setFixedSize(40, 32)
         self.fullscreen_btn.setIcon(load_icon("maximize", size=_ICON_PX))
         self.fullscreen_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
-        self.fullscreen_btn.setToolTip("풀스크린")
+        self.fullscreen_btn.setToolTip(tr("풀스크린"))
         self.fullscreen_btn.clicked.connect(self.fullscreen_toggled.emit)
         layout.addWidget(self.fullscreen_btn)
 
@@ -192,6 +203,26 @@ class PlayerControls(QWidget):
         self.trim_lane.in_changed.connect(self._on_lane_in_changed)
         self.trim_lane.out_changed.connect(self._on_lane_out_changed)
         self.trim_lane.seek_request.connect(self.seek_request.emit)
+
+    # ---------- 시크 throttle ----------
+    def _on_seek_value_changed(self, ms: int) -> None:
+        if self._seek_throttle_timer.isActive():
+            # 쿨다운 중 — 최신값만 보존, 만료 시 한 번에 발화
+            self._seek_throttle_pending = ms
+            return
+        # leading-edge: 즉시 발화 후 쿨다운 시작
+        self._seek_throttle_pending = None
+        self.seek_request.emit(ms)
+        self._seek_throttle_timer.start()
+
+    def _flush_pending_seek(self) -> None:
+        if self._seek_throttle_pending is None:
+            return
+        ms = self._seek_throttle_pending
+        self._seek_throttle_pending = None
+        self.seek_request.emit(ms)
+        # 또 변경이 들어올 수 있으니 재무장
+        self._seek_throttle_timer.start()
 
     # ---------- 외부 API ----------
     def set_duration_ms(self, ms: int) -> None:

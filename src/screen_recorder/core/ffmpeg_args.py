@@ -39,6 +39,11 @@ def video_pipe_args(
         "-c:v", _CODEC_MAP[s.codec],
         "-preset", "ultrafast",
         "-b:v", f"{s.bitrate_kbps}k",
+        # 키프레임 간격 = 1초. ultrafast 의 기본 GOP(~250 frame ≈ 8초) 가 너무 길어
+        # 비키프레임 위치로 시크할 때 디코더가 앞 키프레임까지 거꾸로 가서 다시 디코딩
+        # → 진행바 드래그 시 미리보기 갱신이 0.1~0.2s 로 떨어짐. -g {fps} 로 1초마다
+        # 키프레임을 강제하면 시크 비용이 ~30× 줄고 파일 크기는 2~5%만 증가.
+        "-g", str(max(1, s.fps)),
         "-pix_fmt", "yuv420p",
         output,
     ]
