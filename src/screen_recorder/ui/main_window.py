@@ -15,7 +15,9 @@ import logging
 from pathlib import Path
 import pygetwindow as gw
 
-from PySide6.QtCore import Qt, QFileSystemWatcher, QRect, QSize, QTimer, QUrl, Slot
+from PySide6.QtCore import (
+    Qt, QFileSystemWatcher, QMimeData, QRect, QSize, QTimer, QUrl, Slot,
+)
 from PySide6.QtGui import (
     QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication,
     QKeySequence, QShortcut,
@@ -2205,7 +2207,7 @@ class MainWindow(QMainWindow):
         tab = self._current_screenshot_tab()
         if tab is None:
             return
-        QApplication.clipboard().setImage(self._image_for_clipboard(tab))
+        self._set_clipboard_image_with_filename(self._image_for_clipboard(tab), tab)
 
     def _image_for_clipboard(self, tab: "EditTab") -> QImage:
         """selection 이 있으면 그 영역만, 없으면 전체 합성 이미지를 반환."""
@@ -2230,9 +2232,80 @@ class MainWindow(QMainWindow):
         tab = self._current_screenshot_tab()
         if tab is None:
             return
-        QApplication.clipboard().setImage(self._image_for_clipboard(tab))
+        self._set_clipboard_image_with_filename(self._image_for_clipboard(tab), tab)
         # delete_selection 은 selection 이 없으면 no-op — has_selection 가드는 그쪽이 해 줌.
         tab.delete_selection(command_text="잘라내기")
+
+    def _clipboard_filename_for_tab(self, tab: "EditTab") -> str:
+        """탭의 정식 PNG 파일명 — Save As 다이얼로그가 제안하는 이름과 동일 규칙.
+
+        디스크 파일이 있으면 그 stem, 없으면 환경설정 파일명 패턴
+        (`screenshot_{date}_{time}` 등). 항상 .png 로 강제 (클립보드는 알파 보존
+        가능한 PNG 가 안전하다).
+        """
+        from datetime import datetime
+        entry = self._entry_for_current_tab()
+        if entry is not None and entry.display_name:
+            stem = Path(entry.display_name).stem or entry.display_name
+        else:
+            built = build_filename(
+                pattern=self.app_settings.screenshot.filename_pattern,
+                when=datetime.now(),
+                mode="screenshot",
+                target=tab.source_label(),
+                extension="png",
+            )
+            stem = Path(built).stem
+        # 파일명에 부적합한 문자 제거 — 일부 채팅 앱이 첨부 시 파일명 검증한다.
+        safe = "".join(c for c in stem if c.isalnum() or c in " ._-").strip() or "screenshot"
+        return f"{safe}.png"
+
+    def _set_clipboard_image_with_filename(
+        self, img: QImage, tab: "EditTab",
+    ) -> None:
+        """클립보드에 이미지 + 정식 이름의 파일 URL 둘 다 set.
+
+        QClipboard.setImage 만 쓰면 받는 앱이 'image.png' 같은 일반 이름을 부여한다.
+        같은 이미지를 임시 폴더에 정식 이름(Save As 와 동일한 규칙) 으로 저장하고
+        그 URL 도 함께 넣어 — file-drop 을 우선하는 앱 (Slack/탐색기/Word) 이 정식
+        이름으로 받게 한다. 임시 폴더는 인스턴스 단위로 한 번 만들어 재사용,
+        앱 종료 시 정리.
+        """
+        import shutil
+        import tempfile
+
+        mime = QMimeData()
+        mime.setImageData(img)
+
+        # 임시 폴더 — 첫 호출 때만 만들고 종료 시 정리.
+        if getattr(self, "_clipboard_tmpdir", None) is None:
+            self._clipboard_tmpdir = Path(
+                tempfile.mkdtemp(prefix="kstudio_clipboard_")
+            )
+            import atexit
+            atexit.register(
+                lambda d=self._clipboard_tmpdir: shutil.rmtree(d, ignore_errors=True)
+            )
+
+        try:
+            base = self._clipboard_filename_for_tab(tab)
+            tmp_path = self._clipboard_tmpdir / base
+            n = 1
+            # 같은 이름이 이미 있으면 _N 번호 붙여 충돌 회피 — 같은 탭을 여러 번
+            # 복사하면 매번 새 임시 파일이 생긴다.
+            while tmp_path.exists():
+                n += 1
+                if n > 999:
+                    raise OSError("clipboard temp filename collision")
+                tmp_path = self._clipboard_tmpdir / f"{Path(base).stem}_{n}.png"
+            if img.save(str(tmp_path), "PNG"):
+                mime.setUrls([QUrl.fromLocalFile(str(tmp_path))])
+        except OSError:
+            # 임시 파일 저장이 실패하더라도 이미지 클립보드는 동작하도록 — 정식
+            # 이름은 못 보내도 paste 자체가 막히지는 않음.
+            pass
+
+        QApplication.clipboard().setMimeData(mime)
 
     def _open_save_folder(self) -> None:
         """File → 저장 폴더 열기. 현재 모드에 맞는 폴더(이미지/영상) 를 탐색기로 연다."""

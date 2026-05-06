@@ -49,3 +49,47 @@ def test_copy_to_clipboard(w, qtbot):
     w._copy_current_screenshot()
     cb = QApplication.clipboard()
     assert not cb.image().isNull()
+
+
+def test_copy_to_clipboard_includes_named_file_url(w, qtbot):
+    """클립보드에 이미지뿐 아니라 정식 이름의 임시 파일 URL 도 들어가야
+    Slack/탐색기 등이 'image.png' 가 아닌 정식 이름으로 받는다."""
+    from PySide6.QtWidgets import QApplication
+    w._on_screenshot_captured(_img(), "region")
+    w._copy_current_screenshot()
+    cb = QApplication.clipboard()
+    mime = cb.mimeData()
+    urls = mime.urls()
+    assert len(urls) == 1, "URL 이 한 개 이상 클립보드에 있어야 한다"
+    name = Path(urls[0].toLocalFile()).name
+    assert name.lower().endswith(".png")
+    # Qt 의 기본 'image.png' 가 아니라 사용자 패턴(screenshot_*) 으로 시작해야.
+    assert name != "image.png"
+    assert name.startswith("screenshot_") or name.startswith("rec_")
+
+
+def test_copy_to_clipboard_uses_existing_display_name(w, qtbot, tmp_path):
+    """디스크 파일이 있는 탭은 그 파일명을 클립보드에도 그대로 쓴다."""
+    from PySide6.QtWidgets import QApplication
+    # 먼저 캡처해 저장
+    w._on_screenshot_captured(_img(), "region")
+    w._save_current_screenshot()
+    saved = list(tmp_path.glob("*.png"))[0]
+    w._copy_current_screenshot()
+    cb = QApplication.clipboard()
+    urls = cb.mimeData().urls()
+    assert urls
+    assert Path(urls[0].toLocalFile()).name == saved.name
+
+
+def test_cut_to_clipboard_includes_named_file_url(w, qtbot):
+    """Ctrl+X 도 같은 클립보드 이름 규칙."""
+    from PySide6.QtWidgets import QApplication
+    w._on_screenshot_captured(_img(), "region")
+    w._cut_current_selection()
+    cb = QApplication.clipboard()
+    urls = cb.mimeData().urls()
+    assert urls
+    name = Path(urls[0].toLocalFile()).name
+    assert name != "image.png"
+    assert name.lower().endswith(".png")
