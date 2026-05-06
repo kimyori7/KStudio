@@ -80,6 +80,13 @@ def main() -> int:
 
     settings = load(SETTINGS_PATH)
 
+    # i18n — settings.preferences.language 에 따라 한국어/영어 결정.
+    # i18n_en import 시점에 영문 번역 사전이 자동 등록 (모듈 부팅 사이드이펙트).
+    from screen_recorder.core import i18n
+    from screen_recorder.core import i18n_en  # noqa: F401  — 사전 등록을 위한 import
+    if settings.preferences.language in ("ko", "en"):
+        i18n.set_language(settings.preferences.language)  # type: ignore[arg-type]
+
     win = MainWindow(settings=settings, ffmpeg_path=ffmpeg)
 
     def on_about_to_quit():

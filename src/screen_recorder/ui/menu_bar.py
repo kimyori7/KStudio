@@ -5,6 +5,8 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import QMenuBar
 
+from ..core.i18n import tr
+
 
 class KStudioMenuBar(QMenuBar):
     # 파일
@@ -41,31 +43,31 @@ class KStudioMenuBar(QMenuBar):
         self._build()
 
     def _build(self) -> None:
-        m_file = self.addMenu("파일")
-        self.new_action = QAction("새로 만들기…", self)
+        m_file = self.addMenu(tr("파일"))
+        self.new_action = QAction(tr("새로 만들기…"), self)
         self.new_action.setShortcut(QKeySequence("Ctrl+N"))
         self.new_action.triggered.connect(self.new_requested.emit)
         m_file.addAction(self.new_action)
 
-        self.open_action = QAction("열기…", self)
+        self.open_action = QAction(tr("열기…"), self)
         self.open_action.setShortcut(QKeySequence("Ctrl+O"))
         self.open_action.triggered.connect(self.open_requested.emit)
         m_file.addAction(self.open_action)
 
         m_file.addSeparator()
 
-        self.save_action = QAction("저장", self)
+        self.save_action = QAction(tr("저장"), self)
         self.save_action.setShortcut(QKeySequence("Ctrl+S"))
         self.save_action.triggered.connect(self.save_requested.emit)
         m_file.addAction(self.save_action)
 
-        self.save_as_action = QAction("다른 이름으로 저장…", self)
+        self.save_as_action = QAction(tr("다른 이름으로 저장…"), self)
         self.save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.save_as_action.triggered.connect(self.save_as_requested.emit)
         m_file.addAction(self.save_as_action)
 
         # 내보내기 서브메뉴
-        self.export_menu = m_file.addMenu("내보내기")
+        self.export_menu = m_file.addMenu(tr("내보내기"))
         self.export_menu_action = self.export_menu.menuAction()
         m_export = self.export_menu
         self.export_png_action = QAction("PNG", self)
@@ -82,58 +84,58 @@ class KStudioMenuBar(QMenuBar):
         m_export.addAction(self.export_webp_action)
 
         m_file.addSeparator()
-        self.open_folder_action = QAction("저장 폴더 열기", self)
+        self.open_folder_action = QAction(tr("저장 폴더 열기"), self)
         self.open_folder_action.triggered.connect(self.open_save_folder_requested.emit)
         m_file.addAction(self.open_folder_action)
 
         m_file.addSeparator()
-        self.quit_action = QAction("종료", self)
+        self.quit_action = QAction(tr("종료"), self)
         self.quit_action.triggered.connect(self.quit_requested.emit)
         m_file.addAction(self.quit_action)
 
-        m_edit = self.addMenu("편집")
-        self.undo_action = QAction("실행취소", self)
+        m_edit = self.addMenu(tr("편집"))
+        self.undo_action = QAction(tr("실행취소"), self)
         self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
         self.undo_action.triggered.connect(self.undo_requested.emit)
         m_edit.addAction(self.undo_action)
 
-        self.redo_action = QAction("다시실행", self)
+        self.redo_action = QAction(tr("다시실행"), self)
         self.redo_action.setShortcut(QKeySequence("Ctrl+Y"))
         self.redo_action.triggered.connect(self.redo_requested.emit)
         m_edit.addAction(self.redo_action)
 
         m_edit.addSeparator()
-        self.preferences_action = QAction("환경설정…", self)
+        self.preferences_action = QAction(tr("환경설정…"), self)
         self.preferences_action.setShortcut(QKeySequence("Ctrl+,"))
         self.preferences_action.triggered.connect(self.preferences_requested.emit)
         m_edit.addAction(self.preferences_action)
 
-        m_image = self.addMenu("이미지")
-        self.background_remove_action = QAction("배경 제거 (누끼)", self)
+        m_image = self.addMenu(tr("이미지"))
+        self.background_remove_action = QAction(tr("배경 제거 (누끼)"), self)
         self.background_remove_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
         self.background_remove_action.triggered.connect(self.background_remove_requested.emit)
         m_image.addAction(self.background_remove_action)
 
-        self.image_scale_action = QAction("이미지 크기 변경…", self)
+        self.image_scale_action = QAction(tr("이미지 크기 변경…"), self)
         self.image_scale_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
         self.image_scale_action.triggered.connect(self.image_scale_requested.emit)
         m_image.addAction(self.image_scale_action)
 
-        m_view = self.addMenu("보기")
-        self.original_action = QAction("원본 (100%)", self)
+        m_view = self.addMenu(tr("보기"))
+        self.original_action = QAction(tr("원본 (100%)"), self)
         self.original_action.setShortcut(QKeySequence("Ctrl+0"))
         self.original_action.triggered.connect(self.original_zoom_requested.emit)
         m_view.addAction(self.original_action)
 
         # 창 — 패널 가시성 토글 모음
-        m_window = self.addMenu("창")
-        self.tool_palette_visible_action = QAction("도구 팔레트", self)
+        m_window = self.addMenu(tr("창"))
+        self.tool_palette_visible_action = QAction(tr("도구 팔레트"), self)
         self.tool_palette_visible_action.setCheckable(True)
         self.tool_palette_visible_action.setChecked(True)
         self.tool_palette_visible_action.toggled.connect(self.tool_palette_visibility_toggled.emit)
         m_window.addAction(self.tool_palette_visible_action)
 
-        self.library_visible_action = QAction("라이브러리", self)
+        self.library_visible_action = QAction(tr("라이브러리"), self)
         self.library_visible_action.setCheckable(True)
         self.library_visible_action.setChecked(True)
         self.library_visible_action.toggled.connect(self.library_visibility_toggled.emit)
@@ -141,33 +143,33 @@ class KStudioMenuBar(QMenuBar):
 
         m_window.addSeparator()
         # 모드별 전용 dock — 비-적용 모드에서는 자동으로 비활성화
-        self.layers_visible_action = QAction("레이어 (이미지 모드 전용)", self)
+        self.layers_visible_action = QAction(tr("레이어 (이미지 모드 전용)"), self)
         self.layers_visible_action.setCheckable(True)
         self.layers_visible_action.setChecked(True)
         self.layers_visible_action.toggled.connect(self.layers_visibility_toggled.emit)
         m_window.addAction(self.layers_visible_action)
 
-        self.status_visible_action = QAction("녹화 상태 (영상 모드 전용)", self)
+        self.status_visible_action = QAction(tr("녹화 상태 (영상 모드 전용)"), self)
         self.status_visible_action.setCheckable(True)
         self.status_visible_action.setChecked(True)
         self.status_visible_action.toggled.connect(self.record_status_visibility_toggled.emit)
         m_window.addAction(self.status_visible_action)
 
-        m_record = self.addMenu("녹화")
-        self.record_start_action = QAction("녹화 시작", self)
+        m_record = self.addMenu(tr("녹화"))
+        self.record_start_action = QAction(tr("녹화 시작"), self)
         self.record_start_action.triggered.connect(self.record_start_requested.emit)
         m_record.addAction(self.record_start_action)
 
-        self.record_stop_action = QAction("정지", self)
+        self.record_stop_action = QAction(tr("정지"), self)
         self.record_stop_action.triggered.connect(self.record_stop_requested.emit)
         m_record.addAction(self.record_stop_action)
 
-        self.record_pause_action = QAction("일시정지", self)
+        self.record_pause_action = QAction(tr("일시정지"), self)
         self.record_pause_action.triggered.connect(self.record_pause_requested.emit)
         m_record.addAction(self.record_pause_action)
 
-        m_help = self.addMenu("도움말")
-        self.about_action = QAction("정보", self)
+        m_help = self.addMenu(tr("도움말"))
+        self.about_action = QAction(tr("정보"), self)
         self.about_action.triggered.connect(self.about_requested.emit)
         m_help.addAction(self.about_action)
 

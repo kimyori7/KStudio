@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QKeySequenceEdit,
 )
 
+from ..core.i18n import tr
 from ..core.state import RecorderState
 from .drag_save_button import DragSaveButton
 from .icons import load_icon
@@ -17,6 +18,19 @@ from .widgets import OneShotKeySequenceEdit
 
 
 _TB_ICON_PX = 16
+
+
+def _targets() -> list[tuple[str, str]]:
+    """대상 토글 라벨 — tr() 가 부팅 시점 언어 기준이라 함수로 감싸서 lazy 평가."""
+    return [
+        ("region", tr("▭ 지정 영역")),
+        ("window", tr("🪟 특정 창")),
+        ("fullscreen", tr("🖥 전체화면")),
+    ]
+
+
+def _formats() -> list[tuple[str, str]]:
+    return [("video", tr("영상")), ("gif", tr("GIF"))]
 
 
 class _MonitorComboBox(QComboBox):
@@ -55,9 +69,6 @@ class _MonitorComboBox(QComboBox):
         self._identifiers.clear()
 
 
-# 사용자 선호 순서: 지정 영역 → 특정 창 → 전체 화면 (모니터 선택은 전체화면 옆에 짝지음).
-_TARGETS = [("region", "▭ 지정 영역"), ("window", "🪟 특정 창"), ("fullscreen", "🖥 전체화면")]
-_FORMATS = [("video", "영상"), ("gif", "GIF")]
 
 
 class GlobalToolbar(QWidget):
@@ -101,8 +112,8 @@ class GlobalToolbar(QWidget):
         # ---------- 모드 토글 (양쪽 공통) ----------
         self._mode_group = QButtonGroup(self)
         self._mode_group.setExclusive(True)
-        self.video_btn = self._make_toggle_btn("🎞 영상", min_width=80)
-        self.image_btn = self._make_toggle_btn("🖼 이미지", min_width=80)
+        self.video_btn = self._make_toggle_btn(tr("🎞 영상"), min_width=80)
+        self.image_btn = self._make_toggle_btn(tr("🖼 이미지"), min_width=80)
         self._mode_group.addButton(self.video_btn)
         self._mode_group.addButton(self.image_btn)
         self.video_btn.clicked.connect(lambda: self.mode_clicked.emit(AppMode.VIDEO))
@@ -113,32 +124,32 @@ class GlobalToolbar(QWidget):
         layout.addWidget(self._sep1)
 
         # ---------- 영상 모드: 녹화 컨트롤 ----------
-        self.record_btn = QPushButton("녹화")
+        self.record_btn = QPushButton(tr("녹화"))
         self.record_btn.setIcon(load_icon("play", size=_TB_ICON_PX))
         self.record_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.record_btn.clicked.connect(self.record_clicked.emit)
         layout.addWidget(self.record_btn)
 
-        self.pause_btn = QPushButton("일시정지")
+        self.pause_btn = QPushButton(tr("일시정지"))
         self.pause_btn.setIcon(load_icon("pause", size=_TB_ICON_PX))
         self.pause_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.pause_btn.clicked.connect(self.pause_clicked.emit)
         layout.addWidget(self.pause_btn)
 
-        self.stop_btn = QPushButton("정지")
+        self.stop_btn = QPushButton(tr("정지"))
         self.stop_btn.setIcon(load_icon("square", size=_TB_ICON_PX))
         self.stop_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.stop_btn.clicked.connect(self.stop_clicked.emit)
         layout.addWidget(self.stop_btn)
 
         # ---------- 이미지 모드: 캡처 버튼 ----------
-        self.capture_region_btn = QPushButton("영역 캡처")
+        self.capture_region_btn = QPushButton(tr("영역 캡처"))
         self.capture_region_btn.setIcon(load_icon("camera", size=_TB_ICON_PX))
         self.capture_region_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.capture_region_btn.clicked.connect(self.capture_region_clicked.emit)
         layout.addWidget(self.capture_region_btn)
 
-        self.capture_full_btn = QPushButton("전체 캡처")
+        self.capture_full_btn = QPushButton(tr("전체 캡처"))
         self.capture_full_btn.setIcon(load_icon("camera", size=_TB_ICON_PX))
         self.capture_full_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.capture_full_btn.clicked.connect(self.capture_full_clicked.emit)
@@ -151,7 +162,7 @@ class GlobalToolbar(QWidget):
         self._target_group = QButtonGroup(self)
         self._target_group.setExclusive(True)
         self._target_btns: dict[str, QPushButton] = {}
-        for key, label in _TARGETS:
+        for key, label in _targets():
             btn = self._make_toggle_btn(label, min_width=70)
             self._target_btns[key] = btn
             self._target_group.addButton(btn)
@@ -163,10 +174,10 @@ class GlobalToolbar(QWidget):
 
         # ---------- 모니터 콤보 (전체화면 전용) — 전체화면 버튼 바로 옆 ----------
         self._monitor_label = QLabel(" 🖥")
-        self._monitor_label.setToolTip("전체화면 캡처/녹화 시 사용할 모니터 — 전체 모니터 또는 1개 선택")
+        self._monitor_label.setToolTip(tr("전체화면 캡처/녹화 시 사용할 모니터 — 전체 모니터 또는 1개 선택"))
         layout.addWidget(self._monitor_label)
         self.monitor_combo = _MonitorComboBox()
-        self.monitor_combo.setToolTip("전체화면용 모니터 선택")
+        self.monitor_combo.setToolTip(tr("전체화면용 모니터 선택"))
         self._refresh_monitors()
         self.monitor_combo.currentIndexChanged.connect(self._on_monitor_combo_changed)
         layout.addWidget(self.monitor_combo)
@@ -175,12 +186,12 @@ class GlobalToolbar(QWidget):
         # 영상 모드는 "영역 녹화" (toggle_record), 이미지 모드는 "영역 스크린샷"
         # (screenshot_region) — 둘 다 "Ctrl+Shift+T / R" 처럼 자주 바뀌지 않는
         # 핵심 단축키라 모니터 옆에서 즉시 확인/수정할 수 있게 노출.
-        self._video_hotkey_label = QLabel(" 영역 녹화")
+        self._video_hotkey_label = QLabel(" " + tr("영역 녹화"))
         self._video_hotkey_label.setStyleSheet("color: #999;")
         layout.addWidget(self._video_hotkey_label)
         self.video_hotkey_edit = OneShotKeySequenceEdit()
         self.video_hotkey_edit.setMaximumWidth(110)
-        self.video_hotkey_edit.setToolTip("영역 녹화 단축키 (3-state 무장→시작→정지)")
+        self.video_hotkey_edit.setToolTip(tr("영역 녹화 단축키 (3-state 무장→시작→정지)"))
         self.video_hotkey_edit.editingFinished.connect(
             lambda: self._on_inline_hotkey_done("toggle_record", self.video_hotkey_edit)
         )
@@ -188,12 +199,12 @@ class GlobalToolbar(QWidget):
         self.video_hotkey_edit.editing_finished_signal.connect(self.hotkey_editing_finished.emit)
         layout.addWidget(self.video_hotkey_edit)
 
-        self._image_hotkey_label = QLabel(" 영역 스크린샷")
+        self._image_hotkey_label = QLabel(" " + tr("영역 스크린샷"))
         self._image_hotkey_label.setStyleSheet("color: #999;")
         layout.addWidget(self._image_hotkey_label)
         self.image_hotkey_edit = OneShotKeySequenceEdit()
         self.image_hotkey_edit.setMaximumWidth(110)
-        self.image_hotkey_edit.setToolTip("영역 스크린샷 단축키")
+        self.image_hotkey_edit.setToolTip(tr("영역 스크린샷 단축키"))
         self.image_hotkey_edit.editingFinished.connect(
             lambda: self._on_inline_hotkey_done("screenshot_region", self.image_hotkey_edit)
         )
@@ -208,7 +219,7 @@ class GlobalToolbar(QWidget):
         self._format_group = QButtonGroup(self)
         self._format_group.setExclusive(True)
         self._format_btns: dict[str, QPushButton] = {}
-        for key, label in _FORMATS:
+        for key, label in _formats():
             btn = self._make_toggle_btn(label, min_width=56)
             self._format_btns[key] = btn
             self._format_group.addButton(btn)
@@ -224,13 +235,13 @@ class GlobalToolbar(QWidget):
         self.drag_save_btn = DragSaveButton()
         layout.addWidget(self.drag_save_btn)
 
-        self.save_btn = QPushButton("저장")
+        self.save_btn = QPushButton(tr("저장"))
         self.save_btn.setIcon(load_icon("save", size=_TB_ICON_PX))
         self.save_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.save_btn.clicked.connect(self.save_clicked.emit)
         layout.addWidget(self.save_btn)
 
-        self.copy_btn = QPushButton("복사")
+        self.copy_btn = QPushButton(tr("복사"))
         self.copy_btn.setIcon(load_icon("copy", size=_TB_ICON_PX))
         self.copy_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.copy_btn.clicked.connect(self.copy_clicked.emit)
@@ -238,15 +249,15 @@ class GlobalToolbar(QWidget):
 
         # 누끼 (배경 제거) 는 좌측 ToolPalette '✨ 자동 누끼' 와 메뉴 '이미지>배경 제거' 로 옮김.
         # 외부 (메뉴 등) 에서 trigger 할 수 있도록 QAction 만 유지 (UI 버튼은 제거).
-        self._action_remove_bg = QAction("✨ 배경 제거", self)
-        self._action_remove_bg.setToolTip("활성 ImageLayer 의 배경을 제거 (Ctrl+Shift+B)")
+        self._action_remove_bg = QAction(tr("✨ 배경 제거"), self)
+        self._action_remove_bg.setToolTip(tr("활성 ImageLayer 의 배경을 제거 (Ctrl+Shift+B)"))
         self._actions_by_key["remove_bg"] = self._action_remove_bg
 
         # ---------- 양쪽 공통 ----------
-        self.preferences_btn = QPushButton("설정")
+        self.preferences_btn = QPushButton(tr("설정"))
         self.preferences_btn.setIcon(load_icon("settings", size=_TB_ICON_PX))
         self.preferences_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
-        self.preferences_btn.setToolTip("환경설정 (Ctrl+,)")
+        self.preferences_btn.setToolTip(tr("환경설정 (Ctrl+,)"))
         self.preferences_btn.clicked.connect(self.preferences_clicked.emit)
         layout.addWidget(self.preferences_btn)
 
@@ -272,10 +283,10 @@ class GlobalToolbar(QWidget):
     def set_recording_state(self, state: RecorderState) -> None:
         self._current_state = state
         if state == RecorderState.PAUSED:
-            self.pause_btn.setText("재개")
+            self.pause_btn.setText(tr("재개"))
             self.pause_btn.setIcon(load_icon("play", size=_TB_ICON_PX))
         else:
-            self.pause_btn.setText("일시정지")
+            self.pause_btn.setText(tr("일시정지"))
             self.pause_btn.setIcon(load_icon("pause", size=_TB_ICON_PX))
         # 녹화 중에는 옵션 잠금
         idle = state == RecorderState.IDLE
@@ -386,7 +397,7 @@ class GlobalToolbar(QWidget):
         screens = QGuiApplication.screens() or []
         self.monitor_combo.clear()
         # 첫 항목 = "전체 모니터" (가상 데스크톱 전체) — userData -1
-        self.monitor_combo.addItem("전체 모니터", -1)
+        self.monitor_combo.addItem(tr("전체 모니터"), -1)
         for i, s in enumerate(screens):
             g = s.geometry()
             self.monitor_combo.addItem(f"{i + 1}: {g.width()}×{g.height()}", i)
