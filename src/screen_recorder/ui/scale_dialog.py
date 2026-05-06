@@ -5,7 +5,8 @@ UX:
 - 모드 라디오: [픽셀] / [퍼센트]
 - 픽셀 모드: W [____] × H [____] 입력 + "비율 유지" 체크 (기본 ON)
 - 퍼센트 모드: [____] % 입력 (한 박스, 비율 자동 유지)
-- 결과 미리보기: "결과: 1920 × 1080"
+- AI 업스케일 체크박스 — 업스케일일 때만 활성, 첫 사용 시 모델 다운로드 안내
+- 결과 미리보기: "결과: 1920 × 1080  (업스케일)"
 - OK / 취소
 
 비율 유지 ON 일 때 한 쪽을 바꾸면 다른 쪽이 원본 비율로 자동 갱신.
@@ -92,6 +93,22 @@ class ScaleDialog(QDialog):
         form.addRow("", self.lock_aspect)
         root.addLayout(form)
 
+        # AI 업스케일 옵션 — 업스케일(목표가 더 큼) 케이스에만 의미.
+        # 다운스케일이면 자동 비활성. 첫 사용 시 모델 ~67MB 다운로드가 필요해
+        # 그 사실을 라벨에 명시.
+        self.use_ai = QCheckBox("AI 업스케일 사용 (느림, 첫 사용 시 모델 다운로드)")
+        self.use_ai.setChecked(False)
+        self.use_ai.setToolTip(
+            "Real-ESRGAN 모델로 업스케일 결과의 디테일을 복원합니다.\n"
+            "첫 사용 시 약 67 MB 모델을 자동 다운로드하며, 이후에는 캐시에서 로드됩니다.\n"
+            "CPU 추론은 이미지 크기에 따라 수십 초~수 분 걸릴 수 있습니다."
+        )
+        self._ai_status_label = QLabel("")
+        self._ai_status_label.setStyleSheet("color: #A0A4AB; padding-left: 22px;")
+        self._ai_status_label.setWordWrap(True)
+        root.addWidget(self.use_ai)
+        root.addWidget(self._ai_status_label)
+
         # 결과 미리보기
         self.preview_label = QLabel()
         self.preview_label.setStyleSheet("color: #5BC07C; font-weight: 600;")
@@ -114,8 +131,10 @@ class ScaleDialog(QDialog):
         self.mode_pixel.toggled.connect(self._on_mode_changed)
         self.mode_percent.toggled.connect(self._on_mode_changed)
         self.lock_aspect.toggled.connect(self._refresh_preview)
+        self.use_ai.toggled.connect(self._refresh_preview)
 
         self._on_mode_changed()
+        self._refresh_ai_status()
         self._refresh_preview()
 
     # ---------- 시그널 핸들러 ----------
@@ -172,12 +191,51 @@ class ScaleDialog(QDialog):
 
     def _refresh_preview(self) -> None:
         w, h = self.target_size()
+        is_up = w > self._src_w or h > self._src_h
+        is_down = (w < self._src_w or h < self._src_h) and not is_up
         delta = ""
-        if w > self._src_w or h > self._src_h:
+        if is_up:
             delta = "  (업스케일)"
-        elif w < self._src_w or h < self._src_h:
+        elif is_down:
             delta = "  (다운스케일)"
         self.preview_label.setText(f"결과:  {w} × {h}{delta}")
+
+        # AI 체크박스는 업스케일일 때만 의미 있음 — 다운스케일 / 동일 크기에는 비활성.
+        self.use_ai.setEnabled(is_up)
+        if not is_up:
+            # 토글이 켜진 상태에서 다운스케일로 바뀌면 자동으로 끔 — 사용자가
+            # "AI" 켜진 줄 모르고 진행해 결과가 오해되지 않도록.
+            if self.use_ai.isChecked():
+                self.use_ai.blockSignals(True)
+                self.use_ai.setChecked(False)
+                self.use_ai.blockSignals(False)
+        self._refresh_ai_status()
+
+    def _refresh_ai_status(self) -> None:
+        """AI 체크박스 아래 상태 라벨 — 모델 다운로드 여부에 따라 색·문구 갱신."""
+        if not self.use_ai.isEnabled():
+            self._ai_status_label.setText("")
+            return
+        # upscale 모듈을 lazy import — 다이얼로그 단독 import 시 onnxruntime 필요 없게.
+        try:
+            from screen_recorder.encode import upscale as _up
+            cached = _up.is_model_downloaded(_up.DEFAULT_MODEL_ID)
+            size_mb = _up.model_info(_up.DEFAULT_MODEL_ID)["size_mb"]
+        except Exception:
+            cached = False
+            size_mb = 67
+        if cached:
+            self._ai_status_label.setText("✓ 모델 준비 완료")
+            self._ai_status_label.setStyleSheet(
+                "color: #5BC07C; padding-left: 22px;"
+            )
+        else:
+            self._ai_status_label.setText(
+                f"⚠ 처음 사용 — 약 {size_mb} MB 모델을 다운로드합니다"
+            )
+            self._ai_status_label.setStyleSheet(
+                "color: #E0A030; padding-left: 22px;"
+            )
 
     # ---------- API ----------
 
@@ -186,3 +244,7 @@ class ScaleDialog(QDialog):
         if self.mode_percent.isChecked():
             return self._target_from_pct(self.spin_pct.value())
         return self.spin_w.value(), self.spin_h.value()
+
+    def wants_ai_upscale(self) -> bool:
+        """사용자가 AI 업스케일 옵션을 체크했고 활성 상태인지."""
+        return self.use_ai.isChecked() and self.use_ai.isEnabled()

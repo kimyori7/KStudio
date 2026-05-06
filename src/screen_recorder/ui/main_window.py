@@ -2037,11 +2037,14 @@ class MainWindow(QMainWindow):
         cmd.run_async()
 
     def _on_image_scale(self) -> None:
-        """현재 이미지 탭의 합성 결과를 픽셀/% 입력 받아 LANCZOS 리사이즈 → 새 PNG.
+        """현재 이미지 탭의 합성 결과를 픽셀/% 입력 받아 리사이즈 → 새 PNG.
 
         트림 패턴과 동일: 결과는 새 파일 + 라이브러리 entry + 새 탭 + 자동 포커스.
         원본은 그대로 보존 (undo 통합 X — 탭이 별도라 사용자가 닫으면 곧 원복).
-        AI 업스케일은 추후 추가 예정 (현재는 LANCZOS, 다운/소폭 업까지 충분).
+
+        다이얼로그에서 사용자가 "AI 업스케일" 을 체크하면 Real-ESRGAN 4x ONNX
+        모델로 추론 후 LANCZOS 로 정확한 목표 크기에 맞춤. 미체크면 LANCZOS 만.
+        AI 첫 사용 시 모델 ~67MB 자동 다운로드 (rembg 와 동일한 진행률 UX).
         """
         tab = self._current_screenshot_tab()
         if tab is None:
@@ -2069,6 +2072,11 @@ class MainWindow(QMainWindow):
             display = entry.display_name if entry is not None else "image"
             src_for_naming = base_dir / f"{display}.png"
 
+        if dlg.wants_ai_upscale():
+            self._run_ai_upscale(img, target_w, target_h, src_for_naming)
+            return
+
+        # 일반 LANCZOS 경로
         from screen_recorder.encode.scale import (
             scale_qimage, resolve_scaled_path, save_scaled,
         )
@@ -2092,6 +2100,106 @@ class MainWindow(QMainWindow):
             f"📐 크기 변경 완료 — {target_w}×{target_h} → {dst.name}"
         )
         self.status_bar.state_label.setStyleSheet("color: #5BC07C;")
+
+    def _run_ai_upscale(
+        self,
+        img: QImage,
+        target_w: int,
+        target_h: int,
+        src_for_naming: Path,
+    ) -> None:
+        """AI 업스케일 비동기 흐름 — 모델 다운로드(필요 시) → 추론 → 결과 처리.
+
+        rembg 의 _on_remove_background 와 동일한 패턴: QProgressDialog + 백그라운드
+        QRunnable + 시그널 콜백. 다운로드는 결정적 진행률(bytes), 추론은 타일 단위
+        진행률, 둘 다 끝나면 finished 시그널로 결과 QImage 수신.
+        """
+        from screen_recorder.encode import upscale as _up
+        from screen_recorder.encode.scale import (
+            scale_qimage, resolve_scaled_path, save_scaled,
+        )
+
+        model_id = _up.DEFAULT_MODEL_ID
+        info = _up.model_info(model_id)
+        expected_mb = info["size_mb"]
+        expected_bytes = expected_mb * 1024 * 1024
+        was_cached = _up.is_model_downloaded(model_id)
+
+        if was_cached:
+            initial_text = "AI 업스케일 추론 중..."
+            progress = QProgressDialog(initial_text, None, 0, 0, self)
+        else:
+            initial_text = (
+                f"모델 다운로드 중... (0 / {expected_mb} MB)\n"
+                "처음 한 번만 받으면 다음부터는 빨라집니다."
+            )
+            progress = QProgressDialog(initial_text, None, 0, expected_bytes, self)
+        progress.setWindowTitle("AI 업스케일")
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+
+        emitter = _up.start_upscale_async(img, model_id)
+
+        def on_dl(downloaded: int, total: int) -> None:
+            # total==0 → 다운로드 단계 종료, 추론 단계로 전환 (indeterminate)
+            if total == 0:
+                progress.setRange(0, 0)
+                progress.setLabelText("AI 업스케일 추론 중...")
+                return
+            progress.setRange(0, total)
+            progress.setValue(downloaded)
+            mb_now = downloaded / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            progress.setLabelText(
+                f"모델 다운로드 중... ({mb_now:.1f} / {mb_total:.0f} MB)\n"
+                "처음 한 번만 받으면 다음부터는 빨라집니다."
+            )
+
+        def on_inf(done: int, total: int) -> None:
+            if total <= 0:
+                return
+            progress.setRange(0, total)
+            progress.setValue(done)
+            progress.setLabelText(
+                f"AI 업스케일 추론 중... ({done} / {total} 타일)"
+            )
+
+        def on_finished(upscaled: QImage) -> None:
+            progress.close()
+            # AI 모델은 정수배 (4x) 출력 → 사용자 입력 픽셀에 LANCZOS 로 맞춤.
+            try:
+                if upscaled.width() != target_w or upscaled.height() != target_h:
+                    final = scale_qimage(upscaled, target_w, target_h)
+                else:
+                    final = upscaled
+            except (ValueError, MemoryError) as e:
+                QMessageBox.warning(self, "이미지 크기 변경 실패", str(e))
+                return
+            try:
+                dst = resolve_scaled_path(src_for_naming, target_w, target_h)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                save_scaled(final, dst)
+            except OSError as e:
+                QMessageBox.warning(self, "저장 실패", str(e))
+                return
+            self._open_image_path(dst)
+            self.status_bar.state_label.setText(
+                f"🤖 AI 업스케일 완료 — {target_w}×{target_h} → {dst.name}"
+            )
+            self.status_bar.state_label.setStyleSheet("color: #5BC07C;")
+
+        def on_failed(msg: str) -> None:
+            progress.close()
+            QMessageBox.warning(self, "AI 업스케일 실패", msg)
+
+        emitter.download_progress.connect(on_dl)
+        emitter.inference_progress.connect(on_inf)
+        emitter.finished.connect(on_finished)
+        emitter.failed.connect(on_failed)
 
     def _copy_current_screenshot(self) -> None:
         tab = self._current_screenshot_tab()
