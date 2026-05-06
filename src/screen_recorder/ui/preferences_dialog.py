@@ -13,6 +13,7 @@ from .panels.video_panel import VideoPanel
 from .panels.shortcuts_panel import ShortcutsPanel
 from .panels.preferences_panel import PreferencesPanel
 from .panels.player_panel import PlayerPanel
+from .panels.mcp_panel import McpPanel
 
 
 _CATEGORIES = [
@@ -21,6 +22,7 @@ _CATEGORIES = [
     ("영상 플레이어", "player"),
     ("단축키", "shortcuts"),
     ("일반", "general"),
+    ("LLM 통합 (MCP)", "mcp"),
 ]
 
 
@@ -51,12 +53,14 @@ class PreferencesDialog(QDialog):
         self.player_panel = PlayerPanel(settings.player)
         self.shortcuts_panel = ShortcutsPanel(settings.hotkey, settings.editor_shortcuts, settings)
         self.preferences_panel = PreferencesPanel(settings.preferences)
+        self.mcp_panel = McpPanel(settings.mcp)
 
         self.stack.addWidget(self.screenshot_panel)
         self.stack.addWidget(self.video_panel)
         self.stack.addWidget(self.player_panel)
         self.stack.addWidget(self.shortcuts_panel)
         self.stack.addWidget(self.preferences_panel)
+        self.stack.addWidget(self.mcp_panel)
 
         self.category_list.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.category_list.setCurrentRow(0)

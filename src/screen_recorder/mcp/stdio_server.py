@@ -142,6 +142,87 @@ def get_settings_summary() -> dict:
     return _http_call("get_settings_summary", {})
 
 
+# ---------- 명령 도구 (sync) ----------
+
+
+@mcp.tool()
+def open_image_path(path: str) -> dict:
+    """디스크의 이미지 파일을 KStudio 새 탭으로 연다.
+
+    Args:
+        path: 절대 경로. 지원 확장자 — png, jpg, jpeg, webp, bmp, kstudio.
+    """
+    return _http_call("open_image_path", {"path": path})
+
+
+@mcp.tool()
+def save_current_tab() -> dict:
+    """현재 활성 이미지 탭을 디스크에 저장한다."""
+    return _http_call("save_current_tab", {})
+
+
+@mcp.tool()
+def set_mode(mode: str) -> dict:
+    """KStudio 의 모드 전환.
+
+    Args:
+        mode: "image" 또는 "video".
+    """
+    return _http_call("set_mode", {"mode": mode})
+
+
+@mcp.tool()
+def resize_image(target_w: int, target_h: int) -> dict:
+    """현재 이미지 탭을 LANCZOS 로 리사이즈해 새 PNG 파일 생성. 원본 보존.
+
+    더 고품질의 AI 업스케일은 `ai_upscale` 도구를 사용.
+
+    Args:
+        target_w: 목표 가로 픽셀 (1~16384).
+        target_h: 목표 세로 픽셀 (1~16384).
+    """
+    return _http_call("resize_image", {"target_w": target_w, "target_h": target_h})
+
+
+# ---------- 명령 도구 (async via request_id) ----------
+
+
+@mcp.tool()
+def ai_upscale(target_w: int, target_h: int) -> dict:
+    """Real-ESRGAN x4 AI 업스케일. 비동기 — request_id 반환.
+
+    수십 초 ~ 수 분 걸릴 수 있어 즉시 request_id 반환. 결과는 `get_request_status`
+    로 폴링한다 (status: "pending" → "done" / "failed").
+
+    Args:
+        target_w: 목표 가로 픽셀 (원본보다 커야 함).
+        target_h: 목표 세로 픽셀 (원본보다 커야 함).
+    """
+    return _http_call("ai_upscale", {"target_w": target_w, "target_h": target_h})
+
+
+@mcp.tool()
+def remove_background(model: Optional[str] = None) -> dict:
+    """현재 이미지 레이어의 배경을 자동 제거 (rembg). 비동기 — request_id 반환.
+
+    Args:
+        model: rembg 모델 id. 생략하면 사용자 설정 기본값(보통 "u2net").
+            선택지: u2net / isnet-general-use / u2netp / silueta / u2net_human_seg /
+            isnet-anime / birefnet-general / birefnet-general-lite / birefnet-portrait.
+    """
+    params = {"model": model} if model else {}
+    return _http_call("remove_background", params)
+
+
+@mcp.tool()
+def get_request_status(request_id: str) -> dict:
+    """비동기 도구가 발급한 request_id 의 현재 상태/결과를 조회한다.
+
+    응답 status 가 "done" 이면 result 필드에 결과 dict 가 담긴다. "failed" 면 error 필드.
+    """
+    return _http_call("get_request_status", {"request_id": request_id})
+
+
 def main() -> None:
     """`python -m screen_recorder.mcp.stdio_server` 진입점."""
     mcp.run()

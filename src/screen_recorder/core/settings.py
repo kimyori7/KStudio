@@ -138,6 +138,10 @@ class McpSettings:
     port: int = 0
     # 빈 문자열이면 시작 시 보안 토큰 자동 생성 (32 hex chars).
     token: str = ""
+    # 파괴적 작업(원본 파일 덮어쓰기/삭제) 허용 여부. 기본 OFF.
+    # KStudio 의 모든 저장은 충돌 회피(_NNN 자동 번호) 라 실제로는 거의 사용되지 않으나,
+    # 미래 도구가 명시적으로 파괴적이라면 이 토글이 켜졌을 때만 허용한다.
+    allow_destructive: bool = False
 
 
 @dataclass

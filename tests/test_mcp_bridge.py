@@ -340,6 +340,176 @@ def test_call_get_settings_summary_no_token(bridge, qtbot):
     assert "current_mode" in res
 
 
+# ---------- Stage 4 명령 도구 ----------
+
+def test_call_open_image_path_round_trip(bridge, qtbot, tmp_path):
+    """저장된 PNG 를 open_image_path 로 다시 열 수 있어야 한다."""
+    bridge._on_screenshot_captured(_img(), "region")
+    bridge._save_current_screenshot()
+    saved = list((tmp_path / "img").glob("*.png"))[0]
+    # 새 캡처 → 다른 탭이 활성. 그 다음 open 으로 saved 다시 열기.
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/open_image_path",
+        headers=_auth_headers(bridge), json={"path": str(saved)},
+    )
+    res = r.json()["result"]
+    assert res["success"] is True
+    assert Path(res["opened_path"]).resolve() == saved.resolve()
+
+
+def test_call_open_image_path_rejects_missing(bridge, qtbot, tmp_path):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/open_image_path",
+        headers=_auth_headers(bridge),
+        json={"path": str(tmp_path / "no_such.png")},
+    )
+    res = r.json()["result"]
+    assert res["success"] is False
+    assert "없음" in res["error"] or "not" in res["error"].lower()
+
+
+def test_call_open_image_path_rejects_relative(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/open_image_path",
+        headers=_auth_headers(bridge),
+        json={"path": "relative.png"},
+    )
+    assert r.json()["result"]["success"] is False
+
+
+def test_call_save_current_tab_no_tab(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/save_current_tab",
+        headers=_auth_headers(bridge), json={},
+    )
+    res = r.json()["result"]
+    assert res["success"] is False
+
+
+def test_call_save_current_tab_creates_file(bridge, qtbot, tmp_path):
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/save_current_tab",
+        headers=_auth_headers(bridge), json={},
+    )
+    res = r.json()["result"]
+    assert res["success"] is True
+    assert Path(res["saved_path"]).exists()
+
+
+def test_call_set_mode_round_trip(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/set_mode",
+        headers=_auth_headers(bridge), json={"mode": "video"},
+    )
+    res = r.json()["result"]
+    assert res["success"] is True
+    assert res["current_mode"] == "video"
+    r2 = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/set_mode",
+        headers=_auth_headers(bridge), json={"mode": "image"},
+    )
+    assert r2.json()["result"]["current_mode"] == "image"
+
+
+def test_call_set_mode_rejects_unknown(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/set_mode",
+        headers=_auth_headers(bridge), json={"mode": "wat"},
+    )
+    assert r.json()["result"]["success"] is False
+
+
+def test_call_resize_image_creates_new_file(bridge, qtbot, tmp_path):
+    bridge._on_screenshot_captured(_img(), "region")
+    bridge._save_current_screenshot()
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/resize_image",
+        headers=_auth_headers(bridge),
+        json={"target_w": 80, "target_h": 60},
+    )
+    res = r.json()["result"]
+    assert res["success"] is True
+    assert res["width"] == 80
+    assert res["height"] == 60
+    assert Path(res["saved_path"]).exists()
+
+
+def test_call_resize_image_rejects_bad_input(bridge, qtbot):
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/resize_image",
+        headers=_auth_headers(bridge),
+        json={"target_w": -1, "target_h": 100},
+    )
+    assert r.json()["result"]["success"] is False
+
+
+def test_call_get_request_status_unknown(bridge, qtbot):
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/get_request_status",
+        headers=_auth_headers(bridge),
+        json={"request_id": "no_such"},
+    )
+    res = r.json()["result"]
+    assert "error" in res
+    assert "unknown" in res["error"]
+
+
+def test_pending_request_lifecycle(bridge):
+    """PendingRequestStore 단위 동작."""
+    store = bridge._mcp_request_store
+    rid = store.create("test_tool")
+    req = store.get(rid)
+    assert req is not None
+    assert req.status == "pending"
+    store.complete(rid, {"foo": "bar"})
+    assert store.get(rid).status == "done"
+    assert store.get(rid).result == {"foo": "bar"}
+    # complete 후엔 fail 이 무시돼야
+    store.fail(rid, "too late")
+    assert store.get(rid).status == "done"
+
+
+def test_call_ai_upscale_returns_request_id(bridge, qtbot):
+    """ai_upscale 은 즉시 request_id 반환 (pending 상태). 실제 모델 추론은 검증 X."""
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/ai_upscale",
+        headers=_auth_headers(bridge),
+        json={"target_w": 200, "target_h": 150},
+    )
+    res = r.json()["result"]
+    assert res["success"] is True
+    assert "request_id" in res
+    assert res["status"] == "pending"
+
+
+def test_call_ai_upscale_rejects_downscale(bridge, qtbot):
+    bridge._on_screenshot_captured(_img(), "region")
+    r = _post_with_events(
+        qtbot,
+        f"{_base(bridge)}/mcp/v1/call/ai_upscale",
+        headers=_auth_headers(bridge),
+        json={"target_w": 20, "target_h": 15},
+    )
+    res = r.json()["result"]
+    assert res["success"] is False
+
+
 def test_token_is_persistent_across_settings_save_load(tmp_path):
     """토큰은 settings 에 저장돼 다음 실행에도 같은 값으로 살아야 (CLI 재등록 불필요)."""
     from screen_recorder.core.settings import save, load
