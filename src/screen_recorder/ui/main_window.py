@@ -309,6 +309,14 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._maybe_show_hotkey_preset_dialog)
 
+        # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
+        # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
+        # 매번 재등록 안 해도 됨).
+        self._mcp_bridge = None
+        self._mcp_dispatcher = None
+        if self.app_settings.mcp.enabled:
+            self._start_mcp_bridge()
+
     # ---------- 시그널 와이어링 ----------
 
     def _wire_signals(self) -> None:
@@ -2985,6 +2993,45 @@ class MainWindow(QMainWindow):
                 pass
             progress.close()
 
+    def _start_mcp_bridge(self) -> None:
+        """MCP HTTP 브리지 시작 — 환경설정에서 enabled 일 때만 호출.
+
+        토큰이 비어 있으면 자동 생성해 settings 에 저장. 포트 0 은 OS 자동 할당
+        (실제 포트는 settings.mcp.port 에 저장돼 다음 실행에도 같은 포트 시도).
+        """
+        from screen_recorder.mcp.bridge_server import BridgeServer, generate_token
+        from screen_recorder.mcp.ui_dispatcher import UIDispatcher
+
+        cfg = self.app_settings.mcp
+        if not cfg.token:
+            cfg.token = generate_token()
+        self._mcp_dispatcher = UIDispatcher(self)
+        self._mcp_bridge = BridgeServer(
+            window=self,
+            dispatcher=self._mcp_dispatcher,
+            token=cfg.token,
+            port=cfg.port,
+        )
+        try:
+            actual = self._mcp_bridge.start()
+            cfg.port = actual
+        except OSError as e:
+            self._mcp_bridge = None
+            self._mcp_dispatcher = None
+            QMessageBox.warning(
+                self, "MCP 브리지 시작 실패",
+                f"MCP HTTP 브리지를 시작할 수 없습니다: {e}",
+            )
+
+    def _stop_mcp_bridge(self) -> None:
+        if self._mcp_bridge is not None:
+            try:
+                self._mcp_bridge.stop()
+            except Exception:   # noqa: BLE001
+                pass
+            self._mcp_bridge = None
+            self._mcp_dispatcher = None
+
     def closeEvent(self, e):
         # X 버튼은 트레이로 숨김 (실제 종료는 트레이 메뉴 '종료').
         if not getattr(self, "_force_quit", False):
@@ -3027,5 +3074,6 @@ class MainWindow(QMainWindow):
         # dock 레이아웃 영속화 — 현재 모드 기준.
         self._save_dock_state_for_mode(self.mode_controller.mode())
         self.hotkeys.shutdown()
+        self._stop_mcp_bridge()
         self._hide_border()
         e.accept()

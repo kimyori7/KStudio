@@ -125,6 +125,22 @@ class PlayerHotkeys:
 
 
 @dataclass
+class McpSettings:
+    """KStudio 를 LLM CLI(Claude Code / Gemini CLI / Codex 등)가 제어할 수 있게
+    하는 로컬 HTTP 브리지 설정.
+
+    기본 OFF — 켜면 KStudio 가 시작 시 `127.0.0.1:port` 에 작은 HTTP 서버를 띄우고,
+    같이 배포되는 stdio MCP 서버(`kstudio_mcp.py`) 가 그 HTTP 를 호출해 LLM 에 도구로
+    노출한다. 외부에서 임의 호출되지 않도록 토큰을 항상 요구.
+    """
+    enabled: bool = False
+    # 0 = OS 가 자동 할당. 시작 시 실제 포트가 결정되면 settings 에 저장.
+    port: int = 0
+    # 빈 문자열이면 시작 시 보안 토큰 자동 생성 (32 hex chars).
+    token: str = ""
+
+
+@dataclass
 class EditorShortcuts:
     # 도구
     tool_select: str = "V"
@@ -158,6 +174,7 @@ class AppSettings:
     player: PlayerSettings = field(default_factory=PlayerSettings)
     player_hotkeys: PlayerHotkeys = field(default_factory=PlayerHotkeys)
     editor_shortcuts: EditorShortcuts = field(default_factory=EditorShortcuts)
+    mcp: McpSettings = field(default_factory=McpSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:
