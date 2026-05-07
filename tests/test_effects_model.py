@@ -55,3 +55,18 @@ def test_effect_list_filter_by_type():
     captions = lst.of_type("caption")
     assert len(captions) == 2
     assert all(e.type == "caption" for e in captions)
+
+
+def test_package_reexports_main_symbols():
+    from screen_recorder.effects import (
+        Effect, EffectList,
+        Sidecar, Trim, save_atomic, load,
+        SidecarStore, compute_video_hash, default_sidecar_dir,
+        History,
+        sort_for_render, RENDER_ORDER,
+        overlaps_existing,
+        EFFECT_CLASSES, effect_class_for,
+    )
+    # 모두 callable 또는 클래스
+    for sym in (Effect, EffectList, Sidecar, History, SidecarStore):
+        assert isinstance(sym, type)
