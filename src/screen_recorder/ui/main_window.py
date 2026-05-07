@@ -78,6 +78,7 @@ from screen_recorder.core.filename import build_filename, resolve_collision
 
 from .edit_tab import EditTab
 from .video_tab import VideoTab
+from .panels.inspector_panel import InspectorPanel
 from screen_recorder.encode.trim import TrimJob
 from screen_recorder.encode.filmstrip import FilmstripJob
 from image_editor.tools.select import SelectTool
@@ -229,6 +230,13 @@ class MainWindow(QMainWindow):
         self.record_status_dock.setWidget(self.record_status_panel)
         self.record_status_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, self.record_status_dock)
+
+        self.inspector_panel = InspectorPanel()
+        self.inspector_dock = QDockWidget("효과 인스펙터", self)
+        self.inspector_dock.setObjectName("InspectorDock")
+        self.inspector_dock.setWidget(self.inspector_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.inspector_dock)
+        self.inspector_dock.hide()   # 기본 숨김
 
         # 호환성: 기존 코드에서 _left_dock_container 참조 가능 — 더이상 의미 없으나 None 으로 둔다.
         self._left_dock_container = None
@@ -1036,6 +1044,7 @@ class MainWindow(QMainWindow):
             widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
         elif isinstance(widget, VideoTab):
             widget.trim_requested.connect(self._on_trim_requested)
+            self._hookup_video_tab_inspector(widget)
             # 같은 영상 entry 가 이미 필름스트립을 들고 있으면 즉시 적용 (재오픈 캐시).
             entry_id = self.tab_area.entry_id_for_widget(widget)
             if entry_id is not None:
@@ -1051,6 +1060,28 @@ class MainWindow(QMainWindow):
         if eid is None:
             return None
         return self.library_model.get(eid)
+
+    # ---------- 인스펙터 도크 hookup ----------
+
+    def _hookup_video_tab_inspector(self, tab) -> None:
+        """영상 탭의 편집 모드/효과 선택을 인스펙터 도크에 연결."""
+        tab.edit_mode_toggled.connect(self.inspector_dock.setVisible)
+        tab.effect_selected.connect(self.inspector_panel.set_effect)
+        self.inspector_panel.effect_changed.connect(
+            lambda eff, t=tab: t.edit_controller().update_sidecar(
+                self._patch_sidecar_effect(t.sidecar(), eff)
+            )
+        )
+
+    def _patch_sidecar_effect(self, sidecar, new_effect):
+        """사이드카에서 같은 id 의 효과를 new_effect 로 교체한 새 Sidecar 반환."""
+        import copy
+        sc = copy.deepcopy(sidecar)
+        for i, e in enumerate(sc.effects):
+            if e.id == new_effect.id:
+                sc.effects[i] = new_effect
+                break
+        return sc
 
     # ---------- 라이브러리 컨텍스트 메뉴 ----------
 
