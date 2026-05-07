@@ -28,11 +28,14 @@ class VideoTab(QWidget):
     snapshot_requested = Signal(QImage, str)   # (이미지, 원본@시각 라벨)
     duration_resolved = Signal(int)            # ms — 영상 로드 후 실제 길이 확정
     trim_requested = Signal(object, int, int)  # (Path src, int in_ms, int out_ms)
+    edit_mode_toggled = Signal(bool)           # 편집 모드 ON/OFF
+    effect_selected = Signal(object)           # Effect | None — MainWindow 인스펙터 패널용
 
     def __init__(self, *, path: Path, source_label: str, duration_ms: int,
                  player_settings: PlayerSettings,
                  thumbnail: QImage | None = None,
-                 player_hotkeys: PlayerHotkeys | None = None) -> None:
+                 player_hotkeys: PlayerHotkeys | None = None,
+                 sidecar_dir: Path | None = None) -> None:
         super().__init__()
         self.setFocusPolicy(Qt.StrongFocus)
         self._source_label = source_label
@@ -91,14 +94,60 @@ class VideoTab(QWidget):
         if duration_ms > 0:
             self.controls.set_duration_ms(duration_ms)
 
+        # ---- 편집 모드 통합 (Stage 2) ----
+        from .video.edit_controller import EditController
+        from .video.effect_lanes_widget import EffectLanesWidget
+        from ..effects import default_sidecar_dir
+
+        sc_dir = Path(sidecar_dir) if sidecar_dir is not None else default_sidecar_dir()
+        self._edit_controller = EditController(self._source_path, sc_dir)
+        self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
+        self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
+
+        self._lanes_widget = EffectLanesWidget()
+        self._lanes_widget.set_sidecar(self._edit_controller.sidecar())
+        if duration_ms > 0:
+            self._lanes_widget.set_duration_ms(duration_ms)
+        self._lanes_widget.hide()
+        layout.addWidget(self._lanes_widget)
+
+        # 재생 위치/지속시간 → lanes 에 전파
+        self.player.position_changed.connect(self._lanes_widget.set_position_ms)
+        self.player.duration_changed.connect(self._lanes_widget.set_duration_ms)
+
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label
+
+    # ---------- 편집 모드 API ----------
+    def is_edit_mode_on(self) -> bool:
+        return self._edit_controller.is_edit_mode_on()
+
+    def set_edit_mode(self, on: bool) -> None:
+        self._edit_controller.set_edit_mode(on)
+        self._lanes_widget.setVisible(on)
+
+    def sidecar(self):
+        return self._edit_controller.sidecar()
+
+    def lanes_widget(self):
+        return self._lanes_widget
+
+    def edit_controller(self):
+        return self._edit_controller
+
+    def _on_sidecar_replaced(self, sc) -> None:
+        """controller 가 사이드카를 갱신 (undo/redo 또는 effect 변경)."""
+        self._lanes_widget.set_sidecar(sc)
 
     # ---------- 단축키 ----------
     def keyPressEvent(self, event: QKeyEvent) -> None:
         k = event.key()
         m = event.modifiers()
+        # Ctrl+E — 편집 모드 토글
+        if k == Qt.Key_E and (m & Qt.ControlModifier):
+            self.set_edit_mode(not self.is_edit_mode_on())
+            event.accept(); return
         if k == Qt.Key_Space:
             self.player.toggle_play()
             self._reset_frame_step_accum()
@@ -161,7 +210,7 @@ class VideoTab(QWidget):
             self.controls.set_out_ms(self.player.position_ms())
             self.player.flash_action("] 끝점")
             event.accept(); return
-        if k == Qt.Key_E and (m & Qt.ControlModifier):
+        if (k in (Qt.Key_Return, Qt.Key_Enter)) and (m & Qt.ControlModifier):
             if self.controls.cut_btn.isEnabled():
                 self._on_trim_execute(
                     self.controls.in_ms() or 0,

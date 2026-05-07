@@ -71,19 +71,20 @@ def test_escape_clears_trim_when_in_or_out_set(video_tab):
     assert video_tab.controls.in_ms() is None
 
 
-def test_ctrl_e_emits_trim_requested_when_active(video_tab, qtbot):
+def test_ctrl_enter_emits_trim_requested_when_active(video_tab, qtbot):
+    """Ctrl+Enter (트림 실행 — Ctrl+E 는 편집 모드 토글로 이동됨)."""
     video_tab.controls.set_in_ms(500)
     video_tab.controls.set_out_ms(1_500)
     with qtbot.waitSignal(video_tab.trim_requested, timeout=500) as blocker:
-        _send_key(video_tab, Qt.Key_E, Qt.ControlModifier)
+        _send_key(video_tab, Qt.Key_Return, Qt.ControlModifier)
     assert blocker.args == [video_tab._source_path, 500, 1_500]
 
 
-def test_ctrl_e_noop_when_button_disabled(video_tab, qtbot):
-    """in 만 있고 out 없으면 Ctrl+E 는 시그널 emit 안 함."""
+def test_ctrl_enter_noop_when_button_disabled(video_tab, qtbot):
+    """in 만 있고 out 없으면 Ctrl+Enter 는 시그널 emit 안 함."""
     video_tab.controls.set_in_ms(500)
     with qtbot.assertNotEmitted(video_tab.trim_requested, wait=300):
-        _send_key(video_tab, Qt.Key_E, Qt.ControlModifier)
+        _send_key(video_tab, Qt.Key_Return, Qt.ControlModifier)
 
 
 def test_seek_during_trim_auto_pauses(video_tab):
