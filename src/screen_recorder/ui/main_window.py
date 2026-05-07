@@ -235,6 +235,8 @@ class MainWindow(QMainWindow):
         # 효과별 인스펙터 폼 등록 (Stage 3+)
         from .video.inspectors.caption_inspector import CaptionInspector
         self.inspector_panel.register_inspector("caption", CaptionInspector)
+        from .video.inspectors.cut_inspector import CutInspector            # NEW
+        self.inspector_panel.register_inspector("cut", CutInspector)        # NEW
         self.inspector_dock = QDockWidget("효과 인스펙터", self)
         self.inspector_dock.setObjectName("InspectorDock")
         self.inspector_dock.setWidget(self.inspector_panel)

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ...effects import Sidecar
 from .caption_lane import CaptionLane
+from .cut_lane import CutLane
 from .effect_lane import EffectLane
 
 
@@ -32,6 +33,7 @@ _LANE_ORDER = ["caption", "speed", "zoom", "broll", "cut"]
 # type → lane 클래스 dispatch. 누락된 type 은 base EffectLane 으로 fallback.
 EFFECT_LANE_CLASSES: dict[str, type] = {
     "caption": CaptionLane,
+    "cut": CutLane,
 }
 
 

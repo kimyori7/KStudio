@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
 from ..effects.types.caption import CaptionEffect
+from ..effects.types.cut import CutEffect
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 
@@ -184,8 +185,19 @@ class VideoTab(QWidget):
             return False
         if effect_type == "caption":
             eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms)
+        elif effect_type in ("cut", "cut_splice"):
+            # "cut" = lane 우클릭 add (modifier 없는 기본은 splice).
+            # "cut_splice" = 단축키 C 명시.
+            eff = CutEffect(in_ms=in_ms, out_ms=in_ms)
+        elif effect_type == "cut_range":
+            half = 500
+            start = max(0, in_ms - half)
+            end = min(in_ms + half, duration_ms)
+            if end - start < 100:
+                return False
+            eff = CutEffect(in_ms=start, out_ms=end)
         else:
-            return False  # 다른 type 은 다음 stage 에서
+            return False
         return self._edit_controller.add_effect(eff)
 
     def _get_duration_ms(self) -> int:
@@ -214,6 +226,12 @@ class VideoTab(QWidget):
         # T — 편집 모드 ON 일 때만 캡션 추가 (현재 위치 + 기본 길이)
         if self.is_edit_mode_on() and k == Qt.Key_T and m == Qt.NoModifier:
             self._add_effect_at("caption", self._get_position_ms())
+            event.accept(); return
+        if self.is_edit_mode_on() and k == Qt.Key_C and m == Qt.NoModifier:
+            self._add_effect_at("cut_splice", self._get_position_ms())
+            event.accept(); return
+        if self.is_edit_mode_on() and k == Qt.Key_C and m == Qt.ShiftModifier:
+            self._add_effect_at("cut_range", self._get_position_ms())
             event.accept(); return
         if k == Qt.Key_Space:
             self.player.toggle_play()
