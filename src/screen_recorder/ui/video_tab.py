@@ -111,6 +111,11 @@ class VideoTab(QWidget):
         self._lanes_widget.hide()
         layout.addWidget(self._lanes_widget)
 
+        # Task 7: PlayerControls 편집 토글 과 EditController 연결
+        self.controls.edit_mode_change_requested.connect(self._edit_controller.set_edit_mode)
+        self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
+        self._edit_controller.edit_mode_toggled.connect(self._lanes_widget.setVisible)
+
         # 재생 위치/지속시간 → lanes 에 전파
         self.player.position_changed.connect(self._lanes_widget.set_position_ms)
         self.player.duration_changed.connect(self._lanes_widget.set_duration_ms)

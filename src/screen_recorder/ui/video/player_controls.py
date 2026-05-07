@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .edit_mode_toggle import EditModeToggle
 from .trim_lane import TrimLane
 from ..icons import load_icon
 from ...core.i18n import tr
@@ -40,6 +41,7 @@ class PlayerControls(QWidget):
     frame_step = Signal(int)          # -1 / +1
     snapshot_request = Signal()
     fullscreen_toggled = Signal()
+    edit_mode_change_requested = Signal(bool)   # 사용자가 편집 토글 클릭
     trim_execute_requested = Signal(int, int)   # (in_ms, out_ms)
     trim_cleared = Signal()
 
@@ -193,6 +195,10 @@ class PlayerControls(QWidget):
         self.cut_enter_btn.clicked.connect(self._on_cut_enter_clicked)
         layout.addWidget(self.cut_enter_btn)
 
+        self.edit_toggle = EditModeToggle()
+        self.edit_toggle.toggled_changed.connect(self.edit_mode_change_requested.emit)
+        layout.addWidget(self.edit_toggle)
+
         self._duration_ms = 0
         self._position_ms = 0
         self._in_ms: int | None = None
@@ -339,6 +345,10 @@ class PlayerControls(QWidget):
             self._refresh_cut_button()
         else:
             self.cut_btn.setEnabled(False)
+
+    def set_edit_mode_button(self, on: bool) -> None:
+        """외부 (VideoTab) 가 편집 모드 상태 변화를 알릴 때 — 버튼 시각만 업데이트."""
+        self.edit_toggle.set_on(on)
 
     # ---------- 트림 내부 ----------
     def _maybe_swap(self) -> None:
