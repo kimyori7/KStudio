@@ -134,6 +134,14 @@ class VideoTab(QWidget):
         self._lanes_widget.effect_changed.connect(self._edit_controller.update_effect)
         self._lanes_widget.effect_deleted.connect(self._edit_controller.remove_effect)
 
+        # ---- PreviewOverlay (Stage 3a) ----
+        from .video.preview_overlay import PreviewOverlay
+        self._preview_overlay = PreviewOverlay()
+        self.player.set_overlay(self._preview_overlay)
+        self._preview_overlay.set_sidecar(self._edit_controller.sidecar())
+        self.player.position_changed.connect(self._preview_overlay.set_position_ms)
+        self._edit_controller.sidecar_replaced.connect(self._preview_overlay.set_sidecar)
+
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label

@@ -95,6 +95,9 @@ class PlayerWidget(QStackedWidget):
         self.addWidget(self._video_surface)  # index 0
         self.addWidget(self._gif_label)      # index 1
 
+        # PreviewOverlay 자리 — 외부(VideoTab)가 set_overlay() 로 설치
+        self._overlay: QWidget | None = None
+
         # ---------- HUD 오버레이 (좌상: 액션 토스트, 우상: 현재 시각) ----------
         # 영상 위에 떠있는 작은 라벨들 — QStackedWidget 의 자식으로 두고 raise_() 로 항상 위.
         hud_style = (
@@ -151,9 +154,23 @@ class PlayerWidget(QStackedWidget):
         self._action_hud.raise_()
         self._time_hud.raise_()
 
+    def set_overlay(self, overlay: QWidget) -> None:
+        """투명 오버레이 위젯을 비디오 surface 위에 자식으로 띄움."""
+        if self._overlay is not None:
+            self._overlay.setParent(None)
+            self._overlay.deleteLater()
+        self._overlay = overlay
+        if overlay is not None:
+            overlay.setParent(self)
+            overlay.setGeometry(0, 0, self.width(), self.height())
+            overlay.show()
+            overlay.raise_()
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._reposition_huds()
+        if self._overlay is not None:
+            self._overlay.setGeometry(0, 0, self.width(), self.height())
 
     def load(self, path: Path) -> None:
         if self._movie is not None:
