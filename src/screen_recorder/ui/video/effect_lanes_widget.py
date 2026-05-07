@@ -6,6 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ...effects import Sidecar
+from .caption_lane import CaptionLane
 from .effect_lane import EffectLane
 
 
@@ -29,8 +30,9 @@ _TYPE_COLOR = {
 _LANE_ORDER = ["caption", "speed", "zoom", "broll", "cut"]
 
 # type → lane 클래스 dispatch. 누락된 type 은 base EffectLane 으로 fallback.
-# Task 3 에서 "caption" → CaptionLane 추가.
-EFFECT_LANE_CLASSES: dict[str, type] = {}
+EFFECT_LANE_CLASSES: dict[str, type] = {
+    "caption": CaptionLane,
+}
 
 
 class EffectLanesWidget(QWidget):
