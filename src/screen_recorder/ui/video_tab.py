@@ -78,8 +78,9 @@ class VideoTab(QWidget):
         layout.addWidget(self.controls)
 
         # 모델 → 컨트롤
-        self.player.position_changed.connect(self.controls.set_position_ms)
-        self.player.duration_changed.connect(self.controls.set_duration_ms)
+        # position / duration 은 InsertPlaybackController 경유 (Stage 4d) 로 연결.
+        # 아래에서 _insert_ctrl 초기화 후 combined_position_changed / combined_duration_changed
+        # 를 controls 에 연결한다. player.position_changed 는 controller 를 통해 흐른다.
         self.player.duration_changed.connect(self.duration_resolved.emit)
         self.player.playing_changed.connect(self.controls.set_playing)
 
@@ -149,6 +150,27 @@ class VideoTab(QWidget):
         # 자유 위치 캡션 드래그 끝나면 (release) 시점에 EditController 로 한 번 update.
         self._preview_overlay.caption_position_changed.connect(
             self._edit_controller.update_effect
+        )
+
+        # ---- InsertPlaybackController (Stage 4d) ----
+        from .video.insert_playback import InsertPlaybackController
+        self._insert_ctrl = InsertPlaybackController(
+            main_player=self.player, insert_host=self.player,
+        )
+        # 메인/보조 player position → controller → controls 슬라이더
+        self.player.position_changed.connect(self._insert_ctrl.on_main_position_changed)
+        self.player.insert_position_changed.connect(self._insert_ctrl.on_insert_position_changed)
+        self._insert_ctrl.combined_position_changed.connect(self.controls.set_position_ms)
+        self._insert_ctrl.combined_duration_changed.connect(self.controls.set_duration_ms)
+        # 사이드카 변경 → controller 갱신
+        self._edit_controller.sidecar_replaced.connect(
+            lambda sc: self._insert_ctrl.set_sidecar(sc, self.player.duration_ms())
+        )
+        # 영상 길이 확정 → controller 재계산
+        self.player.duration_changed.connect(
+            lambda d: self._insert_ctrl.set_sidecar(
+                self._edit_controller.sidecar(), int(d),
+            )
         )
 
     # ---------- API ----------
@@ -375,8 +397,8 @@ class VideoTab(QWidget):
                        or self.controls.out_ms() is not None)
         if trim_active and self.player.is_playing():
             self.player.pause()
-        self.player.seek_ms(ms)
         self._reset_frame_step_accum()
+        self._insert_ctrl.seek_combined_ms(int(ms))
 
     def _on_user_play_toggle(self) -> None:
         """재생 토글 (스페이스 / 컨트롤바 ▶ 버튼) — 누적 카운터 초기화."""

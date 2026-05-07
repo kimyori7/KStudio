@@ -70,6 +70,8 @@ class PlayerWidget(QStackedWidget):
     playing_changed = Signal(bool)
     position_changed = Signal(int)   # ms
     duration_changed = Signal(int)   # ms
+    insert_position_changed = Signal(int)    # ms — 보조 player
+    insert_duration_changed = Signal(int)    # ms
 
     def __init__(self) -> None:
         super().__init__()
@@ -94,6 +96,23 @@ class PlayerWidget(QStackedWidget):
 
         self.addWidget(self._video_surface)  # index 0
         self.addWidget(self._gif_label)      # index 1
+
+        # ---- 보조 player (CutEffect 의 B 영상 끼워넣기 — Stage 4d) ----
+        self._insert_surface = _VideoSurface()
+        self._insert_media = QMediaPlayer(self)
+        self._insert_audio = QAudioOutput(self)
+        self._insert_media.setAudioOutput(self._insert_audio)
+        self._insert_media.setVideoSink(self._insert_surface.video_sink)
+        self._insert_media.positionChanged.connect(
+            lambda v: self.insert_position_changed.emit(int(v))
+        )
+        self._insert_media.durationChanged.connect(
+            lambda v: self.insert_duration_changed.emit(int(v))
+        )
+        self._insert_media.mediaStatusChanged.connect(self._on_insert_media_status)
+        self._insert_pending_seek_ms: int = -1   # setSource 후 mediaStatus 가 LoadedMedia 되면 seek
+        self._insert_pending_play: bool = False
+        self.addWidget(self._insert_surface)     # index 2
 
         # PreviewOverlay 자리 — 외부(VideoTab)가 set_overlay() 로 설치
         self._overlay: QWidget | None = None
@@ -379,3 +398,51 @@ class PlayerWidget(QStackedWidget):
 
     def _emit_position(self) -> None:
         self.position_changed.emit(self.position_ms())
+
+    # ---------- 보조 player API (Stage 4d — InsertPlaybackController 가 호출) ----------
+    def set_insert_source(self, path, *, seek_ms: int = 0,
+                           play_after_load: bool = False) -> None:
+        """B 영상 로드. setSource 후 LoadedMedia 시그널이 와야 seek/play 가능하므로
+        pending 값에 저장하고 _on_insert_media_status 에서 처리."""
+        self._insert_pending_seek_ms = max(0, int(seek_ms))
+        self._insert_pending_play = play_after_load
+        self._insert_media.setSource(QUrl.fromLocalFile(str(path)))
+
+    def play_insert(self) -> None:
+        self._insert_media.play()
+
+    def pause_insert(self) -> None:
+        self._insert_media.pause()
+
+    def stop_insert(self) -> None:
+        self._insert_media.stop()
+        self._insert_surface.clear_frame()
+
+    def seek_insert_ms(self, ms: int) -> None:
+        self._insert_media.setPosition(max(0, int(ms)))
+
+    def show_insert_surface(self, on: bool) -> None:
+        """index 2 (insert surface) 활성화 / 비활성화. 비활성 시 메인 surface 로 복귀."""
+        if on:
+            self.setCurrentIndex(2)
+        else:
+            # GIF 모드면 1, 아니면 0 (메인 영상).
+            self.setCurrentIndex(1 if self._is_gif else 0)
+
+    def insert_position_ms(self) -> int:
+        return int(self._insert_media.position())
+
+    def insert_duration_ms(self) -> int:
+        return int(self._insert_media.duration())
+
+    def _on_insert_media_status(self, status) -> None:
+        """setSource 후 LoadedMedia 가 오면 pending 시크/재생 적용."""
+        from PySide6.QtMultimedia import QMediaPlayer as _QMP
+        if status != _QMP.MediaStatus.LoadedMedia:
+            return
+        if self._insert_pending_seek_ms >= 0:
+            self._insert_media.setPosition(self._insert_pending_seek_ms)
+            self._insert_pending_seek_ms = -1
+        if self._insert_pending_play:
+            self._insert_media.play()
+            self._insert_pending_play = False
