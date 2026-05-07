@@ -525,6 +525,7 @@ class MainWindow(QMainWindow):
         for act_name in (
             "open_action", "save_action", "save_as_action", "export_png_action",
             "background_remove_action", "original_action",
+            "toggle_edit_mode_action",  # Ctrl+E — 영상 모드 Ctrl+E 는 VideoTab.keyPressEvent 가 처리
         ):
             a = getattr(self.menu_bar, act_name, None)
             if a is not None:

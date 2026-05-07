@@ -116,6 +116,9 @@ class VideoTab(QWidget):
         self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
         self._edit_controller.edit_mode_toggled.connect(self._lanes_widget.setVisible)
 
+        # lanes → VideoTab effect_selected 버블 (MainWindow 인스펙터 패널용)
+        self._lanes_widget.effect_selected.connect(self.effect_selected.emit)
+
         # 재생 위치/지속시간 → lanes 에 전파
         self.player.position_changed.connect(self._lanes_widget.set_position_ms)
         self.player.duration_changed.connect(self._lanes_widget.set_duration_ms)
