@@ -17,6 +17,10 @@ from .history import History
 from .priority import sort_for_render, RENDER_ORDER
 from .overlap import overlaps_existing
 from .types import EFFECT_CLASSES, effect_class_for
+from .timeline import (
+    TimelineSegment, build_combined_timeline,
+    combined_to_source, source_to_combined,
+)
 
 __all__ = [
     "Effect", "EffectList",
@@ -26,4 +30,6 @@ __all__ = [
     "sort_for_render", "RENDER_ORDER",
     "overlaps_existing",
     "EFFECT_CLASSES", "effect_class_for",
+    "TimelineSegment", "build_combined_timeline",
+    "combined_to_source", "source_to_combined",
 ]
