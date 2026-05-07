@@ -7,6 +7,7 @@ from PySide6.QtGui import QCursor, QImage, QKeyEvent
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
+from ..effects.types.caption import CaptionEffect
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 
@@ -30,6 +31,11 @@ class VideoTab(QWidget):
     trim_requested = Signal(object, int, int)  # (Path src, int in_ms, int out_ms)
     edit_mode_toggled = Signal(bool)           # 편집 모드 ON/OFF
     effect_selected = Signal(object)           # Effect | None — MainWindow 인스펙터 패널용
+
+    _DEFAULT_DURATION_MS: dict[str, int] = {
+        "caption": 3000, "speed": 5000, "zoom": 2000,
+        "broll": 5000, "cut": 1000,
+    }
 
     def __init__(self, *, path: Path, source_label: str, duration_ms: int,
                  player_settings: PlayerSettings,
@@ -123,6 +129,11 @@ class VideoTab(QWidget):
         self.player.position_changed.connect(self._lanes_widget.set_position_ms)
         self.player.duration_changed.connect(self._lanes_widget.set_duration_ms)
 
+        # lane 시그널 → controller
+        self._lanes_widget.request_add.connect(self._on_lane_request_add)
+        self._lanes_widget.effect_changed.connect(self._edit_controller.update_effect)
+        self._lanes_widget.effect_deleted.connect(self._edit_controller.remove_effect)
+
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label
@@ -144,6 +155,42 @@ class VideoTab(QWidget):
     def edit_controller(self):
         return self._edit_controller
 
+    # ---------- 효과 추가 흐름 ----------
+    def _on_lane_request_add(self, effect_type: str, in_ms: int) -> None:
+        """Lane 우클릭 → 효과 추가 요청. 편집 모드 체크 후 위임."""
+        if not self.is_edit_mode_on():
+            return
+        self._add_effect_at(effect_type, in_ms)
+
+    def _add_effect_at(self, effect_type: str, in_ms: int) -> bool:
+        """현재 사이드카에 effect_type 의 새 효과를 in_ms 위치에 추가.
+
+        영상 끝 가까우면 길이를 영상 끝까지 clamp. 100ms 미만으로 작으면 거부.
+        """
+        duration_ms = self._get_duration_ms()
+        if duration_ms <= 0:
+            return False
+        default_len = self._DEFAULT_DURATION_MS.get(effect_type, 3000)
+        out_ms = min(in_ms + default_len, duration_ms)
+        if out_ms - in_ms < 100:
+            return False
+        if effect_type == "caption":
+            eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms)
+        else:
+            return False  # 다른 type 은 다음 stage 에서
+        return self._edit_controller.add_effect(eff)
+
+    def _get_duration_ms(self) -> int:
+        """영상 길이 조회 — player 또는 lanes_widget 에서 fallback."""
+        d = self.player.duration_ms()
+        if d > 0:
+            return d
+        return self._lanes_widget._duration_ms
+
+    def _get_position_ms(self) -> int:
+        """현재 재생 위치 조회 — lanes_widget 또는 player 에서 fallback."""
+        return self._lanes_widget._position_ms or self.player.position_ms()
+
     def _on_sidecar_replaced(self, sc) -> None:
         """controller 가 사이드카를 갱신 (undo/redo 또는 effect 변경)."""
         self._lanes_widget.set_sidecar(sc)
@@ -155,6 +202,10 @@ class VideoTab(QWidget):
         # Ctrl+E — 편집 모드 토글
         if k == Qt.Key_E and (m & Qt.ControlModifier):
             self.set_edit_mode(not self.is_edit_mode_on())
+            event.accept(); return
+        # T — 편집 모드 ON 일 때만 캡션 추가 (현재 위치 + 기본 길이)
+        if self.is_edit_mode_on() and k == Qt.Key_T and m == Qt.NoModifier:
+            self._add_effect_at("caption", self._get_position_ms())
             event.accept(); return
         if k == Qt.Key_Space:
             self.player.toggle_play()
