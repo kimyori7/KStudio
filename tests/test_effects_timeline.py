@@ -91,7 +91,7 @@ def test_build_cuts_sorted_by_in_ms():
     c1 = CutEffect(in_ms=7000, out_ms=8000)  # 뒤
     c2 = CutEffect(in_ms=2000, out_ms=3000)  # 앞
     segs = build_combined_timeline(10000, [c1, c2])
-    # 결합: 0~2000 (main), 2000~5000 (3000~7000 main, 1000 자르기 적용), 5000~7000 (8000~10000 main)
+    # 결합: 0~2000 (main 0~2000), 2000~6000 (main 3000~7000, c2 적용 후), 6000~8000 (main 8000~10000, c1 적용 후)
     assert segs == [
         _seg(0, 2000, "main", None, 0, 2000),
         _seg(2000, 6000, "main", None, 3000, 7000),
