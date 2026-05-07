@@ -28,6 +28,10 @@ _TYPE_COLOR = {
 # 효과 lane 의 표시 순서 (위 → 아래) — spec 의 RENDER_ORDER 와 일관
 _LANE_ORDER = ["caption", "speed", "zoom", "broll", "cut"]
 
+# type → lane 클래스 dispatch. 누락된 type 은 base EffectLane 으로 fallback.
+# Task 3 에서 "caption" → CaptionLane 추가.
+EFFECT_LANE_CLASSES: dict[str, type] = {}
+
 
 class EffectLanesWidget(QWidget):
     """사이드카에 들어 있는 type 별로 EffectLane 을 자동 생성하는 컨테이너.
@@ -63,7 +67,8 @@ class EffectLanesWidget(QWidget):
         # 새 type 에 대해 lane 추가 (정해진 순서대로)
         for t in _LANE_ORDER:
             if t in used_types and t not in self._lanes:
-                lane = EffectLane(
+                cls = EFFECT_LANE_CLASSES.get(t, EffectLane)
+                lane = cls(
                     effect_type=t,
                     header_label=_TYPE_LABEL.get(t, t),
                     color=_TYPE_COLOR.get(t, "#888888"),
@@ -78,6 +83,10 @@ class EffectLanesWidget(QWidget):
                 lane.effect_deleted.connect(self.effect_deleted.emit)
                 self._lanes[t] = lane
                 self._insert_lane_in_order(t, lane)
+
+        # 모든 lane 에 자기 type 의 효과들 전달
+        for t, lane in self._lanes.items():
+            lane.set_effects([e for e in sidecar.effects if e.type == t])
 
     def set_duration_ms(self, ms: int) -> None:
         self._duration_ms = max(0, int(ms))

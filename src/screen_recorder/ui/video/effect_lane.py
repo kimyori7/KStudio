@@ -39,6 +39,7 @@ class EffectLane(QWidget):
         self._color_hex = color
         self._duration_ms = 0
         self._position_ms = 0
+        self._effects: list = []
         self.setFixedHeight(_LANE_HEIGHT)
         self.setMouseTracking(True)
         self.setContextMenuPolicy(Qt.PreventContextMenu)  # 우클릭은 우리 시그널로
@@ -65,6 +66,15 @@ class EffectLane(QWidget):
 
     def set_position_ms(self, ms: int) -> None:
         self._position_ms = max(0, int(ms))
+        self.update()
+
+    def effects(self) -> list:
+        """이 lane 이 보관 중인 (자기 type 의) 효과들."""
+        return list(self._effects)
+
+    def set_effects(self, effects) -> None:
+        """외부에서 효과 목록 갱신. 자기 effect_type 만 필터링해 보관."""
+        self._effects = [e for e in effects if e.type == self._effect_type]
         self.update()
 
     # ---------- helpers ----------

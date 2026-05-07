@@ -90,3 +90,19 @@ def test_request_add_at_bubbles_with_type(qtbot):
     with qtbot.waitSignal(w.request_add, timeout=1000) as blocker:
         lane.request_add_at.emit(5000)
     assert blocker.args == ["caption", 5000]
+
+
+def test_caption_type_uses_caption_lane_class(qtbot):
+    """type='caption' lane 은 CaptionLane 인스턴스여야 (Task 3 에서 도입)."""
+    # CaptionLane 미도입 시점엔 base EffectLane 으로 fallback. Task 3 commit 후
+    # 이 테스트는 CaptionLane import 가 가능해진다.
+    w = EffectLanesWidget()
+    qtbot.addWidget(w)
+    sc = Sidecar(source_path="x", source_hash="h", trim=Trim(in_ms=0, out_ms=10_000),
+                 effects=[CaptionEffect(in_ms=0, out_ms=1000, text="a")])
+    w.set_sidecar(sc)
+    lane = w.lane_for_type("caption")
+    assert lane is not None
+    # Stage 3 Task 3 후엔 CaptionLane 의 인스턴스. 그 전에는 base.
+    # 여기선 단순히 effects 가 lane 에 전달됐는지 확인.
+    assert len(lane.effects()) == 1
