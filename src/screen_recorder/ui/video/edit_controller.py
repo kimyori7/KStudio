@@ -1,12 +1,13 @@
 """영상 탭의 편집 상태 보유자 — Sidecar + History + autosave + 편집 모드."""
 from __future__ import annotations
+import copy
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ...effects import (
-    History, Sidecar, SidecarStore, Trim, compute_video_hash,
+    History, Sidecar, SidecarStore, Trim, compute_video_hash, overlaps_existing,
 )
 
 
@@ -68,6 +69,38 @@ class EditController(QObject):
         self._sidecar = self._history.current()
         self.sidecar_replaced.emit(self._sidecar)
         self._autosave_timer.start()
+
+    def add_effect(self, effect) -> bool:
+        """효과 추가 — 같은 type 의 시간 겹침 검사 후 push.
+
+        반환값: 추가 성공이면 True, 겹쳐서 거부면 False.
+        """
+        if overlaps_existing(self._sidecar.effects, effect):
+            return False
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.effects.append(effect)
+        self.update_sidecar(new_sc)
+        return True
+
+    def update_effect(self, effect) -> bool:
+        """기존 효과를 같은 id 로 교체. 없으면 no-op."""
+        for i, e in enumerate(self._sidecar.effects):
+            if e.id == effect.id:
+                new_sc = copy.deepcopy(self._sidecar)
+                new_sc.effects[i] = effect
+                self.update_sidecar(new_sc)
+                return True
+        return False
+
+    def remove_effect(self, effect_id: str) -> bool:
+        """id 로 효과 삭제. 없으면 no-op."""
+        new_effects = [e for e in self._sidecar.effects if e.id != effect_id]
+        if len(new_effects) == len(self._sidecar.effects):
+            return False
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.effects = new_effects
+        self.update_sidecar(new_sc)
+        return True
 
     def undo(self) -> bool:
         if not self._history.can_undo():
