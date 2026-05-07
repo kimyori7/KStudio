@@ -58,6 +58,15 @@ class CutEffect(Effect):
 
     @property
     def insert_duration_ms(self) -> int:
+        """B 가 결과 영상에서 차지하는 길이.
+
+        src 가 비어있으면 0. src_out_ms == 0 이면 src_duration_ms 까지 사용.
+
+        주의: src 가 채워졌지만 src_out_ms 와 src_duration_ms 가 모두 0 이면
+        반환값 0 은 'zero-length' 가 아닌 '아직 길이 미상' 을 의미한다.
+        UI 흐름은 src 지정 직후 ffprobe 로 src_duration_ms 를 채우므로 이 상태는
+        보통 영상 효과를 처음 추가하고 ffprobe 가 끝나기 전 일시적으로만 발생.
+        """
         if not self.has_insert:
             return 0
         end = self.src_out_ms or self.src_duration_ms

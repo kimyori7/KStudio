@@ -92,9 +92,6 @@ def test_load_missing_file_returns_empty_sidecar(tmp_path: Path):
 
 def test_sidecar_cut_with_insert_roundtrip():
     """CutEffect + B 영상 필드들이 JSON round-trip 으로 보존됨."""
-    from screen_recorder.effects.sidecar import Sidecar
-    from screen_recorder.effects.types.cut import CutEffect
-
     sc = Sidecar(
         source_path="D:/Recordings/a.mp4",
         source_hash="abc123",
@@ -125,9 +122,6 @@ def test_sidecar_cut_with_insert_roundtrip():
 
 def test_sidecar_cut_splice_with_insert_roundtrip():
     """splice point (in_ms == out_ms) cut 도 round-trip 보존."""
-    from screen_recorder.effects.sidecar import Sidecar
-    from screen_recorder.effects.types.cut import CutEffect
-
     sc = Sidecar(effects=[CutEffect(
         in_ms=3000, out_ms=3000,
         src="D:/Clips/b.mp4",
@@ -143,9 +137,6 @@ def test_sidecar_cut_splice_with_insert_roundtrip():
 
 def test_sidecar_cut_simple_roundtrip():
     """src 비어있는 단순 자르기도 round-trip 보존 (기본값으로 복원)."""
-    from screen_recorder.effects.sidecar import Sidecar
-    from screen_recorder.effects.types.cut import CutEffect
-
     sc = Sidecar(effects=[CutEffect(in_ms=5000, out_ms=8000)])
     restored = Sidecar.from_dict(sc.to_dict())
     e = restored.effects[0]
@@ -157,8 +148,6 @@ def test_sidecar_cut_simple_roundtrip():
 
 def test_sidecar_cut_legacy_dict_loads_with_defaults():
     """기존 사이드카 (src 필드 없음) 도 dataclass 기본값으로 정상 로드."""
-    from screen_recorder.effects.sidecar import Sidecar
-
     legacy = {
         "version": 1,
         "source_path": "",

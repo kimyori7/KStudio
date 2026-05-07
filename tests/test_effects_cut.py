@@ -24,12 +24,12 @@ def test_cut_splice_construct():
 
 
 def test_cut_negative_in_ms_rejected():
-    with pytest.raises(ValueError, match="in_ms"):
+    with pytest.raises(ValueError, match=r"^in_ms"):
         CutEffect(in_ms=-1, out_ms=100)
 
 
 def test_cut_out_less_than_in_rejected():
-    with pytest.raises(ValueError, match="out_ms"):
+    with pytest.raises(ValueError, match=r"^out_ms"):
         CutEffect(in_ms=200, out_ms=100)
 
 
@@ -79,3 +79,10 @@ def test_cut_no_insert_default():
     """src 가 비어있으면 has_insert == False, src 관련 검증 통과."""
     c = CutEffect(in_ms=0, out_ms=100)
     assert not c.has_insert
+
+
+def test_cut_insert_duration_unknown_when_no_src_times():
+    """src 가 있지만 src_out_ms 도 src_duration_ms 도 0 이면 길이 미상 = 0."""
+    c = CutEffect(in_ms=0, out_ms=0, src=r"D:\Clips\b.mp4")
+    assert c.has_insert
+    assert c.insert_duration_ms == 0  # 'unknown', not zero-length — see property docstring
