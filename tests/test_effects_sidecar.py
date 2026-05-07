@@ -86,3 +86,95 @@ def test_load_missing_file_returns_empty_sidecar(tmp_path: Path):
     sc = load(target, missing_ok=True, source_path="src.mp4", source_hash="h")
     assert sc.effects == []
     assert sc.source_hash == "h"
+
+
+# ---- Stage 4a: CutEffect 확장 round-trip ----
+
+def test_sidecar_cut_with_insert_roundtrip():
+    """CutEffect + B 영상 필드들이 JSON round-trip 으로 보존됨."""
+    from screen_recorder.effects.sidecar import Sidecar
+    from screen_recorder.effects.types.cut import CutEffect
+
+    sc = Sidecar(
+        source_path="D:/Recordings/a.mp4",
+        source_hash="abc123",
+        effects=[CutEffect(
+            in_ms=4000, out_ms=7000,
+            src="D:/Clips/intro.mp4",
+            src_in_ms=500, src_out_ms=4500,
+            src_duration_ms=6000,
+            scale_mode="fill",
+        )],
+    )
+    d = sc.to_dict()
+    restored = Sidecar.from_dict(d)
+
+    assert len(restored.effects) == 1
+    e = restored.effects[0]
+    assert isinstance(e, CutEffect)
+    assert e.in_ms == 4000
+    assert e.out_ms == 7000
+    assert e.src == "D:/Clips/intro.mp4"
+    assert e.src_in_ms == 500
+    assert e.src_out_ms == 4500
+    assert e.src_duration_ms == 6000
+    assert e.scale_mode == "fill"
+    assert e.has_insert
+    assert e.insert_duration_ms == 4000
+
+
+def test_sidecar_cut_splice_with_insert_roundtrip():
+    """splice point (in_ms == out_ms) cut 도 round-trip 보존."""
+    from screen_recorder.effects.sidecar import Sidecar
+    from screen_recorder.effects.types.cut import CutEffect
+
+    sc = Sidecar(effects=[CutEffect(
+        in_ms=3000, out_ms=3000,
+        src="D:/Clips/b.mp4",
+        src_in_ms=0, src_out_ms=2000,
+        src_duration_ms=2000,
+    )])
+    restored = Sidecar.from_dict(sc.to_dict())
+    e = restored.effects[0]
+    assert e.is_splice
+    assert e.has_insert
+    assert e.insert_duration_ms == 2000
+
+
+def test_sidecar_cut_simple_roundtrip():
+    """src 비어있는 단순 자르기도 round-trip 보존 (기본값으로 복원)."""
+    from screen_recorder.effects.sidecar import Sidecar
+    from screen_recorder.effects.types.cut import CutEffect
+
+    sc = Sidecar(effects=[CutEffect(in_ms=5000, out_ms=8000)])
+    restored = Sidecar.from_dict(sc.to_dict())
+    e = restored.effects[0]
+    assert isinstance(e, CutEffect)
+    assert not e.has_insert
+    assert e.src == ""
+    assert e.scale_mode == "fit"
+
+
+def test_sidecar_cut_legacy_dict_loads_with_defaults():
+    """기존 사이드카 (src 필드 없음) 도 dataclass 기본값으로 정상 로드."""
+    from screen_recorder.effects.sidecar import Sidecar
+
+    legacy = {
+        "version": 1,
+        "source_path": "",
+        "source_hash": "",
+        "trim": {"in_ms": 0, "out_ms": 0},
+        "effects": [{
+            "id": "uuid-legacy",
+            "type": "cut",
+            "in_ms": 1000,
+            "out_ms": 2000,
+        }],
+    }
+    sc = Sidecar.from_dict(legacy)
+    assert len(sc.effects) == 1
+    e = sc.effects[0]
+    assert e.in_ms == 1000
+    assert e.out_ms == 2000
+    assert e.src == ""
+    assert e.scale_mode == "fit"
