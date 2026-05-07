@@ -60,17 +60,15 @@ class EffectLanesWidget(QWidget):
 
     # ---------- public ----------
     def set_sidecar(self, sidecar: Sidecar) -> None:
-        """사이드카의 effects 에 따라 lane 들을 동기화한다."""
-        used_types = {e.type for e in sidecar.effects}
-        # 기존 lane 중 사용 안 되는 type 제거
-        for t in list(self._lanes.keys()):
-            if t not in used_types:
-                lane = self._lanes.pop(t)
-                self._layout.removeWidget(lane)
-                lane.deleteLater()
-        # 새 type 에 대해 lane 추가 (정해진 순서대로)
+        """사이드카에 따라 lane 들을 동기화한다.
+
+        편집 모드 진입 시 사용자가 즉시 lane 영역을 볼 수 있도록 _LANE_ORDER 의 모든
+        type 에 대해 lane 을 만든다 (효과 0 개여도 빈 lane 표시). 효과 type 별 막대는
+        해당 lane 안에 그려진다.
+        """
+        # _LANE_ORDER 의 모든 type 에 대해 lane 생성 (없으면). 정해진 순서대로.
         for t in _LANE_ORDER:
-            if t in used_types and t not in self._lanes:
+            if t not in self._lanes:
                 cls = EFFECT_LANE_CLASSES.get(t, EffectLane)
                 lane = cls(
                     effect_type=t,
