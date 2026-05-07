@@ -158,6 +158,21 @@ _EN: dict[str, str] = {
     "B-roll": "B-roll",
     "컷": "Cut",
     "효과를 선택하면 여기에 옵션이 표시됩니다.": "Select an effect to see its options here.",
+
+    # ===== CaptionInspector 폼 라벨 (Stage 3a Task 4) =====
+    "폰트": "Font",
+    "굵게": "Bold",
+    "글자 색": "Text color",
+    "외곽선": "Outline",
+    "외곽선 색": "Outline color",
+    "두께": "Width",
+    "그림자": "Shadow",
+    "배경": "Background",
+    "배경 색": "Background color",
+    "불투명도": "Opacity",
+    "위치": "Position",
+    "페이드 인": "Fade in",
+    "페이드 아웃": "Fade out",
 }
 
 
