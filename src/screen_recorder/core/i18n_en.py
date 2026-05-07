@@ -16,6 +16,7 @@ _EN: dict[str, str] = {
     # ===== 메뉴 / 글로벌 액션 =====
     "파일": "File",
     "편집": "Edit",
+    "편집 모드 켜기/끄기 (Ctrl+E)": "Toggle edit mode (Ctrl+E)",
     "보기": "View",
     "창": "Window",
     "이미지": "Image",
@@ -146,7 +147,11 @@ _EN: dict[str, str] = {
     "녹화 중 메인 창을 트레이로 숨기기": "Hide main window to tray during recording",
     "녹화 중 미니 컨트롤(⏹ ⏸) 표시": "Show mini control (⏹ ⏸) during recording",
     "언어 변경은 앱 재시작 후 적용됩니다.": "Language change takes effect after restart.",
+
+    # ===== 영상 효과 편집 모드 (Stage 2+) =====
+    "효과를 선택하면 여기에 옵션이 표시됩니다.": "Select an effect to see its options here.",
 }
+
 
 
 register({k: {"en": v} for k, v in _EN.items()})
