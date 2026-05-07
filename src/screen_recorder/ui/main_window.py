@@ -363,6 +363,10 @@ class MainWindow(QMainWindow):
         ra = self.global_toolbar.find_action("remove_bg")
         if ra is not None:
             ra.triggered.connect(self._on_remove_background)
+        # 영상 내보내기 — 글로벌 툴바 버튼 + 단축키.
+        self.global_toolbar.export_video_requested.connect(self._on_export_video)
+        from PySide6.QtGui import QShortcut, QKeySequence
+        QShortcut(QKeySequence("Ctrl+Shift+E"), self).activated.connect(self._on_export_video)
 
         # 메뉴
         self.menu_bar.new_requested.connect(self._on_file_new)
@@ -370,6 +374,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.save_requested.connect(self._on_file_save)
         self.menu_bar.save_as_requested.connect(self._on_file_save_as)
         self.menu_bar.export_requested.connect(self._on_export)
+        self.menu_bar.export_video_requested.connect(self._on_export_video)
         self.menu_bar.open_save_folder_requested.connect(self._open_save_folder)
         self.menu_bar.quit_requested.connect(self.close)
         self.menu_bar.preferences_requested.connect(self._open_preferences)
@@ -2001,6 +2006,76 @@ class MainWindow(QMainWindow):
             ok = img.save(str(p), fmt.upper())
         if not ok:
             QMessageBox.warning(self, "내보내기 실패", f"{p}")
+
+    def _on_export_video(self) -> None:
+        """현재 활성 영상 탭의 사이드카를 적용한 새 mp4 생성."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from .export_dialog import ExportDialog
+        from ..encode.export_pipeline import build_export_args, default_output_path
+        from ..encode.export_job import ExportJob
+
+        tab = self.tab_area.current_video_tab() if hasattr(self.tab_area, "current_video_tab") else None
+        if tab is None:
+            return
+        sidecar = tab._edit_controller.sidecar()
+        src_path = tab._source_path
+        main_duration = tab.player.duration_ms()
+        if main_duration <= 0:
+            QMessageBox.warning(self, "내보내기", "영상 길이가 확정되지 않았습니다.")
+            return
+
+        # 출력 경로 — 기본은 원본 폴더의 _edited.mp4. 사용자 변경 가능.
+        default = default_output_path(src_path)
+        dst, _ = QFileDialog.getSaveFileName(
+            self, "내보낼 파일", str(default), "MP4 (*.mp4)"
+        )
+        if not dst:
+            return
+        dst = Path(dst)
+
+        # 영상 해상도 — 첫 프레임 / player surface 크기 사용.
+        # 정확한 영상 코덱 해상도는 ffprobe 가 필요하나 surface 크기로 대체 가능.
+        surface_w = max(1, tab.player.width())
+        surface_h = max(1, tab.player.height())
+
+        try:
+            argv, pngs = build_export_args(
+                sidecar=sidecar, src_path=src_path, dst_path=dst,
+                main_duration_ms=main_duration,
+                surface_w=surface_w, surface_h=surface_h,
+                ffmpeg_path=self.ffmpeg_path,
+            )
+        except NotImplementedError as e:
+            QMessageBox.warning(self, "내보내기", f"미구현 효과: {e}")
+            return
+
+        # 결합 시간축 길이 = ExportJob 의 progress 분모
+        from ..effects.timeline import build_combined_timeline
+        from ..effects.types.cut import CutEffect
+        cuts = [e for e in sidecar.effects if isinstance(e, CutEffect)]
+        segs = build_combined_timeline(main_duration, cuts)
+        total_combined_ms = segs[-1].combined_end_ms if segs else main_duration
+
+        dialog = ExportDialog(total_duration_ms=total_combined_ms, parent=self)
+        job = ExportJob(
+            ffmpeg_path=self.ffmpeg_path,
+            argv=argv, png_paths=pngs, dst_path=dst,
+            total_duration_ms=total_combined_ms,
+        )
+        job.progress.connect(dialog.set_progress)
+        job.finished.connect(dialog.set_finished)
+        job.error.connect(dialog.set_error)
+        dialog.cancel_requested.connect(job.cancel)
+        dialog.open_folder_requested.connect(self._open_in_explorer)
+        job.start()
+        dialog.show()
+
+    def _open_in_explorer(self, path) -> None:
+        """결과 파일을 탐색기에서 선택된 채로 열기."""
+        import sys
+        import subprocess
+        if sys.platform == "win32":
+            subprocess.run(["explorer", "/select,", str(Path(path))])
 
     def _on_remove_background(self) -> None:
         """현재 활성 ImageLayer 의 배경을 rembg 로 제거 (마스크 추가).

@@ -3,14 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QTabWidget, QWidget
+from PySide6.QtWidgets import QTabWidget, QToolButton, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
 from .mode_controller import AppMode, ModeController
 from .edit_tab import EditTab
+from .icons import load_icon
 from .video_tab import VideoTab
+
+
+_SCROLL_BTN_PX = 32       # 스크롤 버튼 가로/세로
+_SCROLL_ICON_PX = 20      # 그 안에 들어가는 chevron 아이콘 크기
 
 
 class TabArea(QTabWidget):
@@ -38,6 +43,10 @@ class TabArea(QTabWidget):
         self.tabCloseRequested.connect(self._on_close_requested)
         self.currentChanged.connect(self._on_current_changed)
         self._mode.mode_changed.connect(self._refresh_visibility)
+        # QTabBar 의 기본 스크롤 버튼은 16px 정도로 작고 아이콘이 거의 안 보임 →
+        # lucide chevron 아이콘 + 32px 크기로 교체. Qt 가 버튼을 lazy 생성/숨김 하므로
+        # 첫 노출 직전과 매 탭 추가 시점에 한 번씩 ensure 호출.
+        self._customize_scroll_buttons()
 
     # ---------- 추가 ----------
     def add_screenshot(self, *, image: QImage, source_label: str, entry_id: int,
@@ -156,9 +165,50 @@ class TabArea(QTabWidget):
         self.tab_added.emit(widget, mode)
         # 새 탭 추가는 모드 자동 전환을 트리거
         self._mode.set_mode(mode)
+        # 스크롤 버튼은 Qt 가 lazy 생성/표시 — 새 탭으로 overflow 가 막 일어나는
+        # 시점에 처음 만들어질 수 있으니 매 추가 시 재커스터마이즈.
+        self._customize_scroll_buttons()
         return idx
 
+    # ---------- 스크롤 버튼 커스터마이즈 ----------
+    def _customize_scroll_buttons(self) -> None:
+        """QTabBar 의 기본 좌/우 스크롤 버튼을 lucide chevron 으로 교체 + 크게.
+
+        Qt 의 QTabBar 는 overflow 시 두 개의 QToolButton 자식을 만들어 양쪽 끝에
+        붙인다. 기본 크기가 16~20px 로 작고 아이콘이 거의 안 보여 사용성이 떨어짐.
+        runtime 에 그 자식들을 찾아 SVG 아이콘 + 32px 로 교체. arrowType 을
+        NoArrow 로 설정해야 Qt 의 기본 화살표 그리기가 비활성화돼 우리 아이콘이
+        그대로 보임.
+        """
+        bar = self.tabBar()
+        if bar is None:
+            return
+        for btn in bar.findChildren(QToolButton):
+            arrow = btn.arrowType()
+            if arrow == Qt.LeftArrow:
+                icon_name = "chevron-left"
+            elif arrow == Qt.RightArrow:
+                icon_name = "chevron-right"
+            else:
+                continue  # 다른 QToolButton (탭 close 등) 은 건드리지 않음
+            btn.setArrowType(Qt.NoArrow)
+            btn.setIcon(load_icon(icon_name, size=_SCROLL_ICON_PX))
+            btn.setIconSize(QSize(_SCROLL_ICON_PX, _SCROLL_ICON_PX))
+            btn.setFixedSize(_SCROLL_BTN_PX, _SCROLL_BTN_PX)
+            btn.setAutoRaise(True)  # 평소엔 평면, hover 시만 배경
+            btn.setCursor(Qt.PointingHandCursor)
+
     # ---------- 조회 ----------
+    def current_video_tab(self) -> Optional["VideoTab"]:
+        """현재 활성 탭이 VideoTab 이면 반환, 아니면 None."""
+        idx = self.currentIndex()
+        if idx < 0 or idx >= len(self._tabs):
+            return None
+        widget, mode, _ = self._tabs[idx]
+        if mode is AppMode.VIDEO and isinstance(widget, VideoTab):
+            return widget
+        return None
+
     def count_visible(self) -> int:
         n = 0
         for i in range(self.count()):

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QWidget
 
 from ...effects import Sidecar
 from ...effects.types.caption import CaptionEffect, Position
+from . import caption_renderer
 
 
 class PreviewOverlay(QWidget):
@@ -70,85 +71,38 @@ class PreviewOverlay(QWidget):
             self._draw_caption(p, eff)
 
     def _draw_caption(self, p: QPainter, c: CaptionEffect) -> None:
-        if not (c.in_ms <= self._position_ms < c.out_ms):
-            return
-        alpha = self._fade_alpha(c)
-        if alpha <= 0:
-            return
-        # 폰트
-        f = QFont(c.font.family, c.font.size)
-        f.setBold(c.font.bold)
-        p.setFont(f)
-        fm = p.fontMetrics()
-        text = c.text
-        text_w = fm.horizontalAdvance(text) if text else 0
-        text_h = fm.height()
-
-        # 드래그 중이면 임시 override offset 으로 그림 (history push 안 됨, release 시점만 emit).
+        # 드래그 중인 경우 임시 override position 사용
         position = c.position
         if c.id == self._drag_caption_id and self._drag_override_offset is not None:
             position = Position(anchor="free",
                                 offset_x=self._drag_override_offset[0],
                                 offset_y=self._drag_override_offset[1])
-
-        # 위치
+        # caption_renderer 의 모든 그리기를 호출하기 전에 free 캡션의 hit-test bbox 를 기록.
+        # 텍스트 width 계산을 위해 폰트는 잠시 set 후 fontMetrics 만 사용.
+        f = QFont(c.font.family, c.font.size)
+        f.setBold(c.font.bold)
+        p.setFont(f)
+        fm = p.fontMetrics()
+        text_w = fm.horizontalAdvance(c.text) if c.text else 0
+        text_h = fm.height()
         pad = 8
-        x, y = self._anchor_xy(position, text_w, text_h, pad)
-        # 9-zone 모드의 offset 은 픽셀 단위 미세 조정. free 모드는 _anchor_xy 가 이미
-        # offset_x/y(정규화 0~1) 로 절대 위치를 계산하므로 추가로 더하지 않는다.
+        x, y = caption_renderer.anchor_xy(
+            position, text_w=text_w, text_h=text_h, pad=pad,
+            surface_w=self.width(), surface_h=self.height(),
+        )
         if position.anchor != "free":
             x += int(position.offset_x)
             y += int(position.offset_y)
-        # free 모드 캡션의 hit-test 영역 (텍스트 + 약간의 padding) 저장.
         if position.anchor == "free":
             self._free_bboxes[c.id] = QRect(
-                x - pad, y - text_h - pad,
-                text_w + 2 * pad, text_h + 2 * pad,
+                x - pad, y - text_h - pad, text_w + 2 * pad, text_h + 2 * pad,
             )
-
-        # 배경 박스
-        if c.background is not None:
-            bg = QColor(c.background.color)
-            bg.setAlphaF(c.background.opacity * alpha)
-            p.setPen(Qt.NoPen)
-            p.setBrush(bg)
-            p.drawRoundedRect(x - pad, y - text_h, text_w + 2 * pad, text_h + pad, 4, 4)
-
-        # 외곽선
-        if c.stroke is not None and c.stroke.width > 0:
-            stroke = QColor(c.stroke.color)
-            stroke.setAlphaF(alpha)
-            pen = QPen(stroke)
-            pen.setWidth(c.stroke.width)
-            p.setPen(pen)
-            p.drawText(x, y, text)
-
-        # 그림자
-        if c.shadow:
-            sh = QColor(0, 0, 0)
-            sh.setAlphaF(0.6 * alpha)
-            p.setPen(sh)
-            p.drawText(x + 2, y + 2, text)
-
-        # 본 텍스트
-        fill = QColor(c.fill)
-        fill.setAlphaF(alpha)
-        p.setPen(fill)
-        p.drawText(x, y, text)
-
-    def _fade_alpha(self, c: CaptionEffect) -> float:
-        """fade in/out 을 고려한 알파 (0..1)."""
-        t = self._position_ms - c.in_ms
-        dur = c.out_ms - c.in_ms
-        if t < 0 or t >= dur:
-            return 0.0
-        a = 1.0
-        if c.fade.in_ms > 0 and t < c.fade.in_ms:
-            a *= t / c.fade.in_ms
-        time_to_end = dur - t
-        if c.fade.out_ms > 0 and time_to_end < c.fade.out_ms:
-            a *= time_to_end / c.fade.out_ms
-        return max(0.0, min(1.0, a))
+        # 실제 그리기는 (override 적용된) effect 인스턴스로 caption_renderer 호출.
+        eff_for_draw = replace(c, position=position) if position is not c.position else c
+        caption_renderer.draw_caption(
+            p, eff_for_draw, position_ms=self._position_ms,
+            surface_w=self.width(), surface_h=self.height(),
+        )
 
     # ---------- mouse (free 캡션 드래그) ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -208,31 +162,3 @@ class PreviewOverlay(QWidget):
         self.unsetCursor()
         event.accept()
 
-    def _anchor_xy(self, position, text_w: int, text_h: int, pad: int):
-        """위젯 크기 기준 position → (text 베이스라인 좌표 x, y).
-
-        - 9-zone anchor: 미리 정해진 9개 위치 중 하나 (offset 은 _draw_caption 이 픽셀 단위로 추가).
-        - free anchor: offset_x/offset_y 가 정규화 좌표 (0=좌/상, 1=우/하). 텍스트 중심이
-          (offset_x * w, offset_y * h) 가 되도록 베이스라인 위치 계산.
-        """
-        w, h = self.width(), self.height()
-        anchor = position.anchor
-        if anchor == "free":
-            cx = position.offset_x * w
-            cy = position.offset_y * h
-            return (int(cx - text_w / 2), int(cy + text_h / 2))
-        rows = anchor.split("-")[0]   # top/middle/bottom
-        cols = anchor.split("-")[1]   # left/center/right
-        if cols == "left":
-            x = pad
-        elif cols == "center":
-            x = (w - text_w) // 2
-        else:
-            x = w - text_w - pad
-        if rows == "top":
-            y = pad + text_h
-        elif rows == "middle":
-            y = (h + text_h) // 2
-        else:  # bottom
-            y = h - pad
-        return (x, y)

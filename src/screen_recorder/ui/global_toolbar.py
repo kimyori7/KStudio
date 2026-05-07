@@ -99,6 +99,7 @@ class GlobalToolbar(QWidget):
     save_clicked = Signal()
     copy_clicked = Signal()
     preferences_clicked = Signal()
+    export_video_requested = Signal()   # 영상 내보내기 (영상 모드 전용)
 
     def __init__(self) -> None:
         super().__init__()
@@ -141,6 +142,12 @@ class GlobalToolbar(QWidget):
         self.stop_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.stop_btn.clicked.connect(self.stop_clicked.emit)
         layout.addWidget(self.stop_btn)
+
+        # ---------- 영상 모드: 내보내기 버튼 ----------
+        self.export_video_btn = QPushButton(tr("📤 내보내기"))
+        self.export_video_btn.setToolTip(tr("현재 영상 탭을 새 MP4 로 내보내기 (Ctrl+Shift+E)"))
+        self.export_video_btn.clicked.connect(self.export_video_requested.emit)
+        layout.addWidget(self.export_video_btn)
 
         # ---------- 이미지 모드: 캡처 버튼 ----------
         self.capture_region_btn = QPushButton(tr("영역 캡처"))
@@ -348,6 +355,7 @@ class GlobalToolbar(QWidget):
         self.record_btn.setVisible(is_video and idle)
         self.pause_btn.setVisible(is_video and active)
         self.stop_btn.setVisible(is_video and active)
+        self.export_video_btn.setVisible(is_video)
 
         # 영상 모드 전용 — 대상 토글, 형식 토글
         for btn in self._target_btns.values():
