@@ -366,6 +366,8 @@ class MainWindow(QMainWindow):
         self.menu_bar.preferences_requested.connect(self._open_preferences)
         self.menu_bar.undo_requested.connect(self._on_undo)
         self.menu_bar.redo_requested.connect(self._on_redo)
+        self.menu_bar.toggle_edit_mode_requested.connect(self._toggle_edit_mode_via_menu)
+        self.menu_bar.open_sidecar_dir_requested.connect(self._open_sidecar_dir)
         self.menu_bar.background_remove_requested.connect(self._on_remove_background)
         self.menu_bar.image_scale_requested.connect(self._on_image_scale)
         self.menu_bar.original_zoom_requested.connect(self._on_original)
@@ -2387,6 +2389,26 @@ class MainWindow(QMainWindow):
             save_dir = self.app_settings.screenshot.save_dir or str(default_image_dir())
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(save_dir))
+
+    def _toggle_edit_mode_via_menu(self) -> None:
+        """Edit → 편집 모드 토글. 현재 탭이 VideoTab 이면 편집 모드 토글."""
+        tab = self.tab_area.currentWidget()
+        if isinstance(tab, VideoTab):
+            tab.set_edit_mode(not tab.is_edit_mode_on())
+
+    def _open_sidecar_dir(self) -> None:
+        """Edit → 사이드카 폴더 열기. 사이드카 디렉토리를 탐색기로 연다."""
+        import subprocess
+        import sys
+        from screen_recorder.effects import default_sidecar_dir
+        d = default_sidecar_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", str(d)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(d)])
+        else:
+            subprocess.Popen(["xdg-open", str(d)])
 
     def _show_about(self) -> None:
         """도움말 → 정보. QMessageBox.about 한 줄 설명 + 저작권."""

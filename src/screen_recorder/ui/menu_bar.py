@@ -21,6 +21,8 @@ class KStudioMenuBar(QMenuBar):
     undo_requested = Signal()
     redo_requested = Signal()
     preferences_requested = Signal()
+    toggle_edit_mode_requested = Signal()
+    open_sidecar_dir_requested = Signal()
     # 이미지
     background_remove_requested = Signal()
     image_scale_requested = Signal()
@@ -103,6 +105,16 @@ class KStudioMenuBar(QMenuBar):
         self.redo_action.setShortcut(QKeySequence("Ctrl+Y"))
         self.redo_action.triggered.connect(self.redo_requested.emit)
         m_edit.addAction(self.redo_action)
+
+        m_edit.addSeparator()
+        self.toggle_edit_mode_action = QAction(tr("편집 모드 토글"), self)
+        self.toggle_edit_mode_action.setShortcut(QKeySequence("Ctrl+E"))
+        self.toggle_edit_mode_action.triggered.connect(self.toggle_edit_mode_requested.emit)
+        m_edit.addAction(self.toggle_edit_mode_action)
+
+        self.open_sidecar_dir_action = QAction(tr("사이드카 폴더 열기"), self)
+        self.open_sidecar_dir_action.triggered.connect(self.open_sidecar_dir_requested.emit)
+        m_edit.addAction(self.open_sidecar_dir_action)
 
         m_edit.addSeparator()
         self.preferences_action = QAction(tr("환경설정…"), self)
@@ -200,6 +212,8 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
         "edit": [
             mb.undo_action,
             mb.redo_action,
+            mb.toggle_edit_mode_action,
+            mb.open_sidecar_dir_action,
             mb.preferences_action,
         ],
         "image": [

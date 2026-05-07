@@ -149,6 +149,14 @@ _EN: dict[str, str] = {
     "언어 변경은 앱 재시작 후 적용됩니다.": "Language change takes effect after restart.",
 
     # ===== 영상 효과 편집 모드 (Stage 2+) =====
+    "편집 모드 토글": "Toggle edit mode",
+    "사이드카 폴더 열기": "Open sidecar folder",
+    "효과 인스펙터": "Effect Inspector",
+    "캡션": "Caption",
+    "배속": "Speed",
+    "줌": "Zoom",
+    "B-roll": "B-roll",
+    "컷": "Cut",
     "효과를 선택하면 여기에 옵션이 표시됩니다.": "Select an effect to see its options here.",
 }
 
