@@ -10,9 +10,9 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QColorDialog, QFontComboBox, QFormLayout,
-    QGridLayout, QHBoxLayout, QLabel, QPushButton, QRadioButton, QSlider,
-    QSpinBox, QTextEdit, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QColorDialog, QDoubleSpinBox, QFontComboBox,
+    QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton, QRadioButton,
+    QSlider, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from ....core.i18n import tr
@@ -108,7 +108,7 @@ class CaptionInspector(InspectorBase):
         bg_row.addWidget(self.bg_opacity, stretch=1)
         form.addRow("", bg_row)
 
-        # ---- 위치 9-zone ----
+        # ---- 위치 9-zone + 자유 위치 ----
         self.anchor_group = QButtonGroup(self)
         self.anchor_buttons: dict[str, QRadioButton] = {}
         anchor_grid = QGridLayout()
@@ -116,11 +116,41 @@ class CaptionInspector(InspectorBase):
             for c, anchor in enumerate(row):
                 rb = QRadioButton()
                 rb.setToolTip(anchor)
-                rb.toggled.connect(lambda on, a=anchor: on and self._on_any_change())
+                rb.toggled.connect(lambda on, a=anchor: on and self._on_anchor_change())
                 self.anchor_group.addButton(rb)
                 self.anchor_buttons[anchor] = rb
                 anchor_grid.addWidget(rb, r, c)
         form.addRow(tr("위치"), anchor_grid)
+
+        # 자유 위치 라디오 + 정규화 좌표 입력. free 모드일 때 9-zone 라디오는 모두 unchecked.
+        free_row = QHBoxLayout()
+        self.free_anchor_radio = QRadioButton(tr("자유 위치"))
+        self.free_anchor_radio.setToolTip(tr("미리보기에서 캡션을 드래그하거나 아래 좌표 입력"))
+        self.free_anchor_radio.toggled.connect(
+            lambda on: on and self._on_anchor_change(free=True)
+        )
+        self.anchor_group.addButton(self.free_anchor_radio)
+        self.anchor_buttons["free"] = self.free_anchor_radio
+        free_row.addWidget(self.free_anchor_radio)
+        free_row.addWidget(QLabel(tr("X")))
+        self.free_x_spin = QDoubleSpinBox()
+        self.free_x_spin.setRange(0.0, 1.0)
+        self.free_x_spin.setSingleStep(0.05)
+        self.free_x_spin.setDecimals(2)
+        self.free_x_spin.setValue(0.5)
+        self.free_x_spin.valueChanged.connect(self._on_any_change)
+        free_row.addWidget(self.free_x_spin)
+        free_row.addWidget(QLabel(tr("Y")))
+        self.free_y_spin = QDoubleSpinBox()
+        self.free_y_spin.setRange(0.0, 1.0)
+        self.free_y_spin.setSingleStep(0.05)
+        self.free_y_spin.setDecimals(2)
+        self.free_y_spin.setValue(0.5)
+        self.free_y_spin.valueChanged.connect(self._on_any_change)
+        free_row.addWidget(self.free_y_spin)
+        form.addRow("", free_row)
+        # 9-zone 선택 시 free 좌표 입력은 비활성화 (시각적 신호).
+        self._update_free_spinbox_enabled(False)
 
         # ---- 페이드 ----
         fade_row = QHBoxLayout()
@@ -172,6 +202,11 @@ class CaptionInspector(InspectorBase):
             rb = self.anchor_buttons.get(effect.position.anchor)
             if rb is not None:
                 rb.setChecked(True)
+            is_free = (effect.position.anchor == "free")
+            self._update_free_spinbox_enabled(is_free)
+            if is_free:
+                self.free_x_spin.setValue(effect.position.offset_x)
+                self.free_y_spin.setValue(effect.position.offset_y)
             self.fade_in_spin.setValue(effect.fade.in_ms)
             self.fade_out_spin.setValue(effect.fade.out_ms)
         finally:
@@ -188,6 +223,33 @@ class CaptionInspector(InspectorBase):
             w.setEnabled(enabled)
         for rb in self.anchor_buttons.values():
             rb.setEnabled(enabled)
+        if not enabled:
+            self.free_x_spin.setEnabled(False)
+            self.free_y_spin.setEnabled(False)
+
+    def _update_free_spinbox_enabled(self, free: bool) -> None:
+        """free anchor 일 때만 X/Y spinbox 활성화 (시각적 신호)."""
+        self.free_x_spin.setEnabled(free)
+        self.free_y_spin.setEnabled(free)
+
+    def _on_anchor_change(self, *, free: bool = False) -> None:
+        """라디오 변경 핸들러. free 토글 시 spinbox 활성화 갱신 + 9-zone → free 전환 시
+        offset 을 정규화 좌표(0~1)로 초기화 (둘은 의미가 다른 단위)."""
+        if self._emitting_guard or self._effect is None:
+            return
+        if free:
+            self._update_free_spinbox_enabled(True)
+            # 9-zone 의 픽셀 offset → free 의 정규화 의미로 자동 변환은 어렵다.
+            # 사용자가 free 로 처음 전환하면 화면 정중앙으로 초기화. 이후 미세 조정.
+            self._emitting_guard = True
+            try:
+                self.free_x_spin.setValue(0.5)
+                self.free_y_spin.setValue(0.5)
+            finally:
+                self._emitting_guard = False
+        else:
+            self._update_free_spinbox_enabled(False)
+        self._on_any_change()
 
     def _refresh_color_button(self, btn: QPushButton, color_hex: str) -> None:
         btn.setText(color_hex)
@@ -224,6 +286,13 @@ class CaptionInspector(InspectorBase):
             if rb.isChecked():
                 anchor = a
                 break
+        # free 일 때만 spinbox 값을 사용. 9-zone 모드는 기존 offset(픽셀 단위 미세 조정) 유지.
+        if anchor == "free":
+            offset_x = self.free_x_spin.value()
+            offset_y = self.free_y_spin.value()
+        else:
+            offset_x = self._effect.position.offset_x
+            offset_y = self._effect.position.offset_y
         new_eff = replace(
             self._effect,
             text=self.text_edit.toPlainText(),
@@ -238,8 +307,8 @@ class CaptionInspector(InspectorBase):
                                    opacity=self.bg_opacity.value() / 100.0)
                         if self.bg_check.isChecked() else None),
             position=Position(anchor=anchor,
-                              offset_x=self._effect.position.offset_x,
-                              offset_y=self._effect.position.offset_y),
+                              offset_x=offset_x,
+                              offset_y=offset_y),
             fade=Fade(in_ms=self.fade_in_spin.value(),
                       out_ms=self.fade_out_spin.value()),
         )

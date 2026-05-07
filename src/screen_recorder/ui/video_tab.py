@@ -146,6 +146,10 @@ class VideoTab(QWidget):
         self._preview_overlay.set_sidecar(self._edit_controller.sidecar())
         self.player.position_changed.connect(self._preview_overlay.set_position_ms)
         self._edit_controller.sidecar_replaced.connect(self._preview_overlay.set_sidecar)
+        # 자유 위치 캡션 드래그 끝나면 (release) 시점에 EditController 로 한 번 update.
+        self._preview_overlay.caption_position_changed.connect(
+            self._edit_controller.update_effect
+        )
 
     # ---------- API ----------
     def source_label(self) -> str:
@@ -200,6 +204,13 @@ class VideoTab(QWidget):
             if end - start < 100:
                 return False
             eff = CutEffect(in_ms=start, out_ms=end)
+        elif effect_type in ("speed", "zoom", "broll"):
+            # 미구현 type — 사용자에게 안내만, 사이드카는 변경 안 함.
+            label = {"speed": "배속", "zoom": "줌", "broll": "곁들임 영상"}.get(
+                effect_type, effect_type
+            )
+            self.player.flash_action(f"{label} 효과는 아직 구현 중 (다음 단계)")
+            return False
         else:
             return False
         return self._edit_controller.add_effect(eff)
