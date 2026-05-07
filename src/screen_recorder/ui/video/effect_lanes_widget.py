@@ -16,7 +16,7 @@ _TYPE_LABEL = {
     "caption": "캡션",
     "speed":   "배속",
     "zoom":    "줌",
-    "broll":   "B-roll",
+    "broll":   "곁들임 영상",   # B-roll: 원본 영상 위에 다른 영상을 띄우는 효과
     "cut":     "컷",
 }
 _TYPE_COLOR = {

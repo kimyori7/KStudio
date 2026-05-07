@@ -45,6 +45,10 @@ class VideoTab(QWidget):
                  sidecar_dir: Path | None = None) -> None:
         super().__init__()
         self.setFocusPolicy(Qt.StrongFocus)
+        # 영상 탭 자체는 텍스트 입력을 받지 않으므로 IME 비활성화.
+        # 한글 IME ON 상태에서 알파벳 키(T/C/D/F 등) 가 IME 에 가로채여 단축키가
+        # 안 먹히는 문제를 방지. 자식 위젯(인스펙터의 QTextEdit 등) 은 영향 없음.
+        self.setAttribute(Qt.WA_InputMethodEnabled, False)
         self._source_label = source_label
         self._source_path = Path(path)
         self._settings = player_settings

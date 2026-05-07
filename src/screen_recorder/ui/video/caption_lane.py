@@ -118,9 +118,17 @@ class CaptionLane(EffectLane):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._drag_id is None or self._duration_ms <= 0:
-            return super().mouseMoveEvent(event)
         x = int(event.position().x())
+        # 드래그 중이 아니면 hover 커서 갱신 후 종료.
+        if self._drag_id is None or self._duration_ms <= 0:
+            _, kind = self._hit_test(x)
+            if kind in ("left", "right"):
+                self.setCursor(Qt.SizeHorCursor)
+            elif kind == "move":
+                self.setCursor(Qt.SizeAllCursor)
+            else:
+                self.unsetCursor()
+            return super().mouseMoveEvent(event)
         body_w = max(1, self.width() - _HEADER_WIDTH)
         delta_ms = int((x - self._drag_start_x) * self._duration_ms / body_w)
         new_in, new_out = self._drag_orig_in, self._drag_orig_out
