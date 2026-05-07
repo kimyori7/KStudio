@@ -240,6 +240,10 @@ class MainWindow(QMainWindow):
         self.inspector_dock.setWidget(self.inspector_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.inspector_dock)
         self.inspector_dock.hide()   # 기본 숨김
+        # 인스펙터 효과 변경 → 현재 활성 VideoTab 에만 전달 (단일 연결).
+        # per-tab 연결 방식은 탭 N 개 열면 N 번 발화해 비활성 탭 사이드카도 덮어쓰는
+        # 데이터 무결성 버그를 일으킴 (Stage 2 에서 도입, Stage 3a 에서 최초 노출).
+        self.inspector_panel.effect_changed.connect(self._on_inspector_effect_changed)
 
         # 호환성: 기존 코드에서 _left_dock_container 참조 가능 — 더이상 의미 없으나 None 으로 둔다.
         self._left_dock_container = None
@@ -1070,13 +1074,25 @@ class MainWindow(QMainWindow):
     # ---------- 인스펙터 도크 hookup ----------
 
     def _hookup_video_tab_inspector(self, tab) -> None:
-        """영상 탭의 편집 모드/효과 선택을 인스펙터 도크에 연결."""
+        """영상 탭의 편집 모드/효과 선택을 인스펙터 도크에 연결.
+
+        effect_changed 는 _on_inspector_effect_changed 에서 현재 활성 탭에만 단일 라우팅.
+        per-tab 연결을 하면 탭 N 개마다 누적돼 비활성 탭 사이드카를 덮어쓰는 버그 발생.
+        """
         tab.edit_mode_toggled.connect(self.inspector_dock.setVisible)
         tab.effect_selected.connect(self.inspector_panel.set_effect)
-        self.inspector_panel.effect_changed.connect(
-            lambda eff, t=tab: t.edit_controller().update_sidecar(
-                self._patch_sidecar_effect(t.sidecar(), eff)
-            )
+
+    def _on_inspector_effect_changed(self, new_effect) -> None:
+        """인스펙터에서 효과가 수정됐을 때 현재 활성 VideoTab 에만 적용.
+
+        inspector_panel.effect_changed 는 단일 연결(__init__ 에서 한 번만). 탭 전환 후에도
+        항상 *현재* 활성 탭에만 적용되므로 비활성 탭의 사이드카/히스토리를 오염시키지 않는다.
+        """
+        widget = self.tab_area.currentWidget()
+        if not isinstance(widget, VideoTab):
+            return
+        widget.edit_controller().update_sidecar(
+            self._patch_sidecar_effect(widget.sidecar(), new_effect)
         )
 
     def _patch_sidecar_effect(self, sidecar, new_effect):
