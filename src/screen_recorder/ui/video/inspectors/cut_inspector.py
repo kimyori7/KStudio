@@ -170,7 +170,13 @@ class CutInspector(InspectorBase):
             return
         self.out_ms_spin.setEnabled(not checked)
         if checked:
-            self.out_ms_spin.setValue(self.in_ms_spin.value())
+            # blockSignals: 프로그램적 setValue 가 valueChanged 를 발화해
+            # _on_any_change 가 두 번 호출되는 더블 에밋 방지.
+            self.out_ms_spin.blockSignals(True)
+            try:
+                self.out_ms_spin.setValue(self.in_ms_spin.value())
+            finally:
+                self.out_ms_spin.blockSignals(False)
         self._on_any_change()
 
     def _on_any_change(self, *_) -> None:

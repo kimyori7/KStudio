@@ -84,3 +84,18 @@ def test_combined_length_label_updates(inspector):
     inspector.set_effect(e)
     # 결합 후 = (자르기 -3000) + (B +4000) = +1000ms 만큼 늘어남 (원본 길이는 모르므로 차이만 표기)
     assert "1.0s" in inspector.combined_label.text() or "+1" in inspector.combined_label.text()
+
+
+def test_splice_toggle_emits_once(inspector, qtbot):
+    """splice 토글 ON 시 effect_changed 가 정확히 1회만 발화 — 더블 에밋 회귀 방지.
+
+    이전 버그: setValue(in_ms_spin.value()) → valueChanged → _on_any_change(emit#1)
+    + 명시 _on_any_change(emit#2). undo 2번 필요했음.
+    """
+    e = CutEffect(in_ms=4000, out_ms=7000, src="x.mp4", src_duration_ms=2000, src_out_ms=2000)
+    inspector.set_effect(e)
+    received = []
+    inspector.effect_changed.connect(received.append)
+    inspector.splice_check.setChecked(True)
+    assert len(received) == 1
+    assert received[0].is_splice
