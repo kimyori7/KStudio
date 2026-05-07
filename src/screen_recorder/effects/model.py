@@ -10,12 +10,15 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Effect:
     """모든 효과 종류의 공통 베이스.
 
     각 종류별 dataclass(Caption/Speed/Zoom/Broll/Cut) 가 이 클래스를 상속해
     추가 필드를 가진다. 시간 단위는 모두 ms (정수).
+
+    kw_only=True — 인스턴스 생성은 항상 키워드 인자로. 자식 dataclass 가
+    type 을 default 로 override 할 때의 "non-default after default" 함정 회피.
     """
     type: str
     in_ms: int

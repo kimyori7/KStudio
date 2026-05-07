@@ -64,8 +64,9 @@ class Fade:
     out_ms: int = 300
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CaptionEffect(Effect):
+    type: Literal["caption"] = "caption"
     text: str = ""
     font: Font = field(default_factory=Font)
     fill: str = "#ffffff"
@@ -74,39 +75,3 @@ class CaptionEffect(Effect):
     background: Background | None = None
     position: Position = field(default_factory=Position)
     fade: Fade = field(default_factory=Fade)
-
-    def __init__(
-        self,
-        in_ms: int,
-        out_ms: int,
-        text: str = "",
-        font: Font | None = None,
-        fill: str = "#ffffff",
-        stroke: Stroke | None = None,
-        shadow: bool = False,
-        background: Background | None = None,
-        position: Position | None = None,
-        fade: Fade | None = None,
-        id: str | None = None,
-    ) -> None:
-        self.type = "caption"
-        self.in_ms = in_ms
-        self.out_ms = out_ms
-        self.text = text
-        self.font = font if font is not None else Font()
-        self.fill = fill
-        self.stroke = stroke
-        self.shadow = shadow
-        self.background = background
-        self.position = position if position is not None else Position()
-        self.fade = fade if fade is not None else Fade()
-
-        # Need to set id before calling parent validation
-        if id is None:
-            from ..model import _new_id
-            self.id = _new_id()
-        else:
-            self.id = id
-
-        # Call parent validation
-        Effect.__post_init__(self)
