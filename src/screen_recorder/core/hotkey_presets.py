@@ -60,7 +60,7 @@ GLOBAL_PRESETS: dict[str, dict[str, HotkeySettings | EditorShortcuts]] = {
 # 곰플 호환은 frame_step 을 A/D 로 (곰플 표준), 스냅샷을 Ctrl+G 로 (곰플 연속 캡처 키).
 # 팟플 호환은 만들지 않음 — 팟플의 frame step Ctrl+←/Ctrl+→ 는 KStudio 의 시크 단축키
 # (skip_large) 와, 캡처 Ctrl+S 는 KStudio file_save 와, 영역캡처 Ctrl+E 는 KStudio
-# 트림 실행과 의미 충돌. 정직하게 빼고 사용자가 환경설정에서 직접 조정.
+# 영상 편집 모드 토글과 의미 충돌. 정직하게 빼고 사용자가 환경설정에서 직접 조정.
 PLAYER_PRESETS: dict[str, PlayerHotkeys] = {
     "kstudio-default": PlayerHotkeys(
         frame_back="D",

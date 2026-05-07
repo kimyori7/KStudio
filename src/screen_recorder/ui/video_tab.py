@@ -311,7 +311,7 @@ class VideoTab(QWidget):
         self.controls.speed_combo.setCurrentIndex(target)
 
     def _on_trim_execute(self, in_ms: int, out_ms: int) -> None:
-        """PlayerControls / Ctrl+E 가 트림 요청 → MainWindow 로 bubble."""
+        """PlayerControls / Ctrl+Enter 가 트림 요청 → MainWindow 로 bubble."""
         self.trim_requested.emit(self._source_path, int(in_ms), int(out_ms))
 
     def _on_snapshot(self) -> None:

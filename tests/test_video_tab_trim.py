@@ -36,11 +36,12 @@ def fixture_mp4(tmp_path, ffmpeg_or_skip):
 
 
 @pytest.fixture
-def video_tab(qtbot, fixture_mp4):
+def video_tab(qtbot, fixture_mp4, tmp_path):
     from screen_recorder.ui.video_tab import VideoTab
     tab = VideoTab(
         path=fixture_mp4, source_label="region",
         duration_ms=2_000, player_settings=PlayerSettings(),
+        sidecar_dir=tmp_path / "sidecars",
     )
     qtbot.addWidget(tab)
     tab.controls.set_duration_ms(2_000)
