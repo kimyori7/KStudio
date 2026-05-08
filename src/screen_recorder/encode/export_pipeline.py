@@ -3,9 +3,12 @@
 Stage 4c 의 build_combined_timeline 으로 segment 리스트를 받고, 각 segment 별
 trim/setpts/scale → concat → 캡션 PNG overlay 의 filter_complex 빌드.
 
-지원 효과: trim(사이드카 .trim), cut (insert 포함), caption, speed (Stage 5).
-미지원: zoom/broll → NotImplementedError.
+지원 효과: trim(사이드카 .trim), cut (insert 포함), caption, speed (Stage 5),
+        zoom (Stage 6, 정적).
+미지원: broll → NotImplementedError.
 미지원 조합: speed + cut(범위/insert) → NotImplementedError (v2 follow-up).
+        zoom + cut(범위/insert) → NotImplementedError (v2 follow-up).
+        zoom + speed → NotImplementedError (v2 follow-up).
 """
 from __future__ import annotations
 import tempfile
@@ -17,10 +20,11 @@ from ..effects.timeline import TimelineSegment, build_combined_timeline
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
+from ..effects.types.zoom import ZoomEffect
 from .caption_png import render_caption_png
 
 
-_SUPPORTED_TYPES = {"caption", "cut", "speed"}
+_SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom"}
 
 
 def _atempo_chain(rate: float) -> str:
@@ -81,6 +85,53 @@ def _speed_overlapping_segment(speeds: list[SpeedEffect], seg: TimelineSegment) 
     return None
 
 
+def _zoom_overlapping_segment(zooms: list[ZoomEffect], seg: TimelineSegment) -> Optional[ZoomEffect]:
+    """seg 와 시간상 겹치는 ZoomEffect 를 반환 (없으면 None).
+
+    겹침 분류 — _speed_overlapping_segment 와 동일 규칙:
+    - 완전 포함: zoom.in_ms <= seg.start AND zoom.out_ms >= seg.end → 매칭
+    - 완전 밖: zoom.out_ms <= seg.start OR zoom.in_ms >= seg.end → 미매칭
+    - 부분 겹침: NotImplementedError (v1 에서 명시적으로 차단)
+
+    v1 에서는 zoom + cut/speed 조합을 차단하므로 seg.source 는 항상 'main' 이다.
+    """
+    seg_start = seg.source_start_ms
+    seg_end = seg.source_end_ms
+    for z in zooms:
+        if z.out_ms <= seg_start or z.in_ms >= seg_end:
+            continue   # 완전 밖
+        if z.in_ms <= seg_start and z.out_ms >= seg_end:
+            return z   # 완전 포함
+        # 부분 겹침
+        raise NotImplementedError(
+            f"ZoomEffect partial overlap with segment "
+            f"(zoom: {z.in_ms}-{z.out_ms}, segment: {seg_start}-{seg_end}); "
+            f"v1 requires zoom regions to fully contain or sit outside each segment"
+        )
+    return None
+
+
+def _zoom_crop_scale_filter(z: ZoomEffect, surface_w: int, surface_h: int) -> str:
+    """ZoomEffect → crop+scale ffmpeg 필터 문자열.
+
+    중심 (cx*w, cy*h) 로부터 (w/scale × h/scale) 영역을 잘라낸 뒤 원본 surface 크기로
+    다시 scale. v1: start.scale 만 사용 (정적 줌).
+
+    예: cx=0.5, cy=0.5, scale=2.0, surface 1920×1080 → crop=960:540:480:270,scale=1920:1080.
+    """
+    scale = max(0.1, float(z.start.scale))
+    cx = float(z.start.cx)
+    cy = float(z.start.cy)
+    crop_w = surface_w / scale
+    crop_h = surface_h / scale
+    crop_x = cx * surface_w - crop_w / 2.0
+    crop_y = cy * surface_h - crop_h / 2.0
+    return (
+        f"crop={crop_w:.0f}:{crop_h:.0f}:{crop_x:.0f}:{crop_y:.0f},"
+        f"scale={surface_w}:{surface_h}"
+    )
+
+
 def default_output_path(src: Path) -> Path:
     """원본 폴더에 <src_stem>_edited.mp4. 충돌 시 _edited_2.mp4, _edited_3.mp4 ..."""
     src = Path(src)
@@ -128,6 +179,7 @@ def build_export_args(
     cuts = [e for e in sidecar.effects if isinstance(e, CutEffect)]
     captions = [e for e in sidecar.effects if isinstance(e, CaptionEffect)]
     speeds = [e for e in sidecar.effects if isinstance(e, SpeedEffect)]
+    zooms = [e for e in sidecar.effects if isinstance(e, ZoomEffect)]
 
     # 0.5) speed + cut(non-trivial) 조합은 v2 — 명시적 차단.
     # 기준: range cut (out > in) 또는 insert 가 있는 splice. 단순 splice (in==out, no src) 는
@@ -139,6 +191,21 @@ def build_export_args(
                     "speed+cut combined export is v2 follow-up "
                     f"(cut: {c.in_ms}-{c.out_ms}, has_insert={c.has_insert})"
                 )
+
+    # 0.6) zoom + cut(non-trivial) 또는 zoom + speed 조합은 v2 — 명시적 차단.
+    # zoom 은 segment 마다 crop+scale 필터를 추가하는 방식이라 cut/speed 와의 결합은
+    # filter_complex 그래프가 복잡해져 v2 follow-up.
+    if zooms:
+        for c in cuts:
+            if c.out_ms > c.in_ms or c.has_insert:
+                raise NotImplementedError(
+                    "zoom+cut combined export is v2 follow-up "
+                    f"(cut: {c.in_ms}-{c.out_ms}, has_insert={c.has_insert})"
+                )
+        if speeds:
+            raise NotImplementedError(
+                "zoom+speed combined export is v2 follow-up"
+            )
 
     # 1) 결합 시간축 segment 리스트
     segments = build_combined_timeline(int(main_duration_ms), cuts)
@@ -194,12 +261,20 @@ def build_export_args(
             speed_v_filter = f",setpts=PTS/{r:g}"
             speed_a_filter = "," + _atempo_chain(r)
 
+        # zoom 효과 적용 결정 — main segment 만 (위에서 zoom×cut/speed 차단).
+        zoom_match: Optional[ZoomEffect] = None
+        if seg.source == "main" and zooms:
+            zoom_match = _zoom_overlapping_segment(zooms, seg)
+        zoom_filter = ""
+        if zoom_match is not None:
+            zoom_filter = "," + _zoom_crop_scale_filter(zoom_match, surface_w, surface_h)
+
         if seg.source == "main":
             in_s = seg.source_start_ms / 1000.0
             out_s = seg.source_end_ms / 1000.0
             fc_parts.append(
                 f"[0:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
-                f"{_scale_filter('stretch', surface_w, surface_h)}[{v_label}]"
+                f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}[{v_label}]"
             )
             fc_parts.append(
                 f"[0:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}[{a_label}]"
