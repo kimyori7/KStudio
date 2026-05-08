@@ -95,6 +95,13 @@ class VideoTab(QWidget):
             self._edit_controller.sidecar(),
             source_duration_ms=int(duration_ms or 0),
         )
+        # Stage A: 썸네일 서비스 — 사이드카 변경마다 모든 segment 의 썸네일을 비동기 요청.
+        from ..services.thumbnail_extractor import ThumbnailExtractor
+        from ..services.thumbnail_worker import ThumbnailRequest, ThumbnailService
+        self._thumb_extractor = ThumbnailExtractor()
+        self._thumb_service = ThumbnailService(self._thumb_extractor)
+        self._thumb_request_cls = ThumbnailRequest
+        self._edit_controller.sidecar_replaced.connect(self._request_all_thumbnails)
 
         # ---- VideoTimeline (Task 3) ----
         self.timeline = VideoTimeline()
@@ -129,6 +136,13 @@ class VideoTab(QWidget):
         self.controls.edit_mode_change_requested.connect(self._edit_controller.set_edit_mode)
         self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
         self._edit_controller.edit_mode_toggled.connect(self.timeline.set_edit_mode)
+
+        # 썸네일 서비스 → 트랙 lane (segment_id 별로 setSlot).
+        self._thumb_service.thumbnail_ready.connect(
+            self.timeline.video_track_lane.set_thumbnail
+        )
+        # 처음 채워진 segment 의 썸네일도 즉시 요청.
+        self._request_all_thumbnails(self._edit_controller.sidecar())
 
         # Timeline 시그널
         self.timeline.seek_request.connect(self._on_user_seek_request)
@@ -278,6 +292,13 @@ class VideoTab(QWidget):
 
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
+
+    def _request_all_thumbnails(self, sc) -> None:
+        """사이드카의 모든 segment 의 썸네일을 비동기 요청."""
+        for seg in sc.video_track:
+            self._thumb_service.request(self._thumb_request_cls(
+                segment_id=seg.id, src=seg.src, ms=seg.src_in_ms,
+            ))
 
     # ---------- Speed preview (Stage 5) ----------
     def _on_position_for_speed(self, ms: int) -> None:
