@@ -112,6 +112,35 @@ def test_no_zoom_no_drawing(qtbot):
     assert max(pixels) <= 5
 
 
+def test_zoom_guide_drawn_inside_video_frame_rect(qtbot):
+    """letterbox: provider 가 위젯의 일부분만 영상 frame 으로 알려주면 사각형도 그 안.
+
+    시나리오: overlay 800x600, 영상 frame = (0, 75, 800, 450) (16:9 letterbox).
+    cx=cy=0.5, scale=2.0 → 사각형은 영상 frame 의 정 가운데 + 절반 크기.
+    위/아래 검은 띠 영역(0~75, 525~600) 에는 노란 픽셀이 없어야 한다.
+    """
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    ov.resize(800, 600)
+    frame_rect = QRect(0, 75, 800, 450)
+    ov.set_video_frame_rect_provider(lambda: frame_rect)
+
+    pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
+    eff = ZoomEffect(in_ms=0, out_ms=10_000, start=pt, end=pt)
+    ov.set_sidecar(_zoom_sidecar(eff))
+    ov.set_position_ms(3000)
+    img = _render_to_image(ov, w=800, h=600)
+    # 위 letterbox 띠 (y < 75): 노란 픽셀 없음.
+    top = img.copy(0, 0, 800, 75)
+    assert not _has_yellow_pixel(top)
+    # 아래 letterbox 띠 (y > 525): 노란 픽셀 없음.
+    bottom = img.copy(0, 525, 800, 75)
+    assert not _has_yellow_pixel(bottom)
+    # 영상 frame 안: 노란 픽셀 검출.
+    inside = img.copy(0, 75, 800, 450)
+    assert _has_yellow_pixel(inside)
+
+
 def test_zoom_drag_updates_cx_cy_and_emits(qtbot):
     """줌 가이드 사각형 가운데를 드래그 → start.cx/cy 갱신 + effect_drag_changed.
 

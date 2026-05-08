@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl, Signal, QTimer
+from PySide6.QtCore import Qt, QRect, QUrl, Signal, QTimer
 from PySide6.QtGui import QImage, QMovie, QPixmap, QPainter
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 from PySide6.QtWidgets import QStackedWidget, QLabel, QWidget
@@ -42,6 +42,21 @@ class _VideoSurface(QWidget):
 
     def current_image(self) -> QImage:
         return self._frame.copy() if not self._frame.isNull() else QImage()
+
+    def video_frame_rect(self) -> QRect:
+        """현재 영상 프레임이 surface 안에서 차지하는 letterbox 사각형.
+
+        영상 native size 와 surface size 의 aspect ratio 가 다를 때 위/아래 또는 좌/우에
+        검은 띠가 생긴다. 오버레이를 영상 안에만 그리거나 드래그하기 위해 이 rect 가 필요.
+        프레임이 아직 없으면 surface 전체를 반환 (화면 비율 정보가 없을 때의 기본값).
+        """
+        src = self._frame if not self._frame.isNull() else self._thumbnail
+        if src.isNull():
+            return self.rect()
+        scaled = src.size().scaled(self.size(), Qt.KeepAspectRatio)
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        return QRect(x, y, scaled.width(), scaled.height())
 
     def _on_frame(self, frame) -> None:
         img = frame.toImage()
@@ -370,6 +385,16 @@ class PlayerWidget(QStackedWidget):
         if self._is_gif and self._movie is not None:
             return self._movie.currentImage()
         return self._video_surface.current_image()
+
+    def video_frame_rect(self) -> QRect:
+        """비디오 프레임이 player 안에서 차지하는 letterbox 사각형 (player 좌표).
+
+        오버레이를 영상 프레임 안에만 그리거나 드래그를 그 안에 가두기 위해 사용.
+        GIF 의 경우 movie.scaledSize() 가 없어 단순화 — surface 전체를 반환.
+        """
+        if self._is_gif:
+            return self.rect()
+        return self._video_surface.video_frame_rect()
 
     def _on_media_state(self, state) -> None:
         self.playing_changed.emit(state == QMediaPlayer.PlayingState)

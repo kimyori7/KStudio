@@ -143,6 +143,11 @@ class VideoTab(QWidget):
         from .video.preview_overlay import PreviewOverlay
         self._preview_overlay = PreviewOverlay()
         self.player.set_overlay(self._preview_overlay)
+        # 영상 프레임 rect (letterbox 영역 제외) 를 매 paint 마다 player 에서 조회.
+        # 이 rect 안에서만 캡션·줌·곁들임 가이드가 그려지고 드래그도 그 안으로 갇힌다.
+        self._preview_overlay.set_video_frame_rect_provider(
+            self.player.video_frame_rect
+        )
         self._preview_overlay.set_sidecar(self._edit_controller.sidecar())
         self.player.position_changed.connect(self._preview_overlay.set_position_ms)
         self._edit_controller.sidecar_replaced.connect(self._preview_overlay.set_sidecar)

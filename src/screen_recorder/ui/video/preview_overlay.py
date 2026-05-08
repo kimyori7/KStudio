@@ -13,7 +13,7 @@ anchor='free' 로 전환되고 정규화 좌표(0~1) 로 저장. 호버 시 손 
 """
 from __future__ import annotations
 from dataclasses import replace
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent, QPen
@@ -75,6 +75,9 @@ class PreviewOverlay(QWidget):
         self._drag_eff_id: Optional[str] = None
         self._drag_start_norm: tuple[float, float] = (0.5, 0.5)
         self._drag_override_norm: Optional[tuple[float, float]] = None
+        # 영상 프레임 rect provider — letterbox 시 검은 띠를 제외한 실제 영상 영역.
+        # None 이면 self.rect() (위젯 전체) 사용. 이 rect 안에서만 그리고 드래그한다.
+        self._frame_rect_provider: Optional[Callable[[], QRect]] = None
 
     # ---------- public ----------
     def set_sidecar(self, sc: Optional[Sidecar]) -> None:
@@ -84,6 +87,23 @@ class PreviewOverlay(QWidget):
     def set_position_ms(self, ms: int) -> None:
         self._position_ms = max(0, int(ms))
         self.update()
+
+    def set_video_frame_rect_provider(self, fn: Optional[Callable[[], QRect]]) -> None:
+        """영상 프레임 rect (letterbox 영역 제외) 를 매번 조회하는 콜백 설치.
+
+        호출자(VideoTab) 가 player.video_frame_rect 를 lambda 로 넘긴다.
+        None 이면 위젯 전체를 영상 프레임으로 간주 (테스트 호환).
+        """
+        self._frame_rect_provider = fn
+        self.update()
+
+    # ---------- internal: frame rect ----------
+    def _frame_rect(self) -> QRect:
+        if self._frame_rect_provider is not None:
+            r = self._frame_rect_provider()
+            if r.isValid() and r.width() > 0 and r.height() > 0:
+                return r
+        return self.rect()
 
     # ---------- paint ----------
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -136,36 +156,45 @@ class PreviewOverlay(QWidget):
         text_w = fm.horizontalAdvance(c.text) if c.text else 0
         text_h = fm.height()
         pad = 8
+        # 위치 계산은 영상 프레임 rect 안에서 — letterbox 가 있으면 검은 띠를 피해 그려진다.
+        frame = self._frame_rect()
         x, y = caption_renderer.anchor_xy(
             position, text_w=text_w, text_h=text_h, pad=pad,
-            surface_w=self.width(), surface_h=self.height(),
+            surface_w=frame.width(), surface_h=frame.height(),
         )
         if position.anchor != "free":
             x += int(position.offset_x)
             y += int(position.offset_y)
+        x += frame.x()
+        y += frame.y()
         # 모든 anchor 의 캡션을 hit-test 대상으로 등록 — 호버/드래그 가능.
         # 보이는 (in_ms~out_ms 범위 내) 캡션만 등록해 안 보이는 캡션 클릭 방지.
         if c.in_ms <= self._position_ms < c.out_ms:
             self._caption_bboxes[c.id] = QRect(
                 x - pad, y - text_h - pad, text_w + 2 * pad, text_h + 2 * pad,
             )
-        # 실제 그리기는 (override 적용된) effect 인스턴스로 caption_renderer 호출.
+        # 실제 그리기는 frame 좌표에서 painter 를 translate 후 caption_renderer 호출 —
+        # caption_renderer 는 surface 안에서 그리므로 translate 가 letterbox 보정.
+        p.save()
+        p.translate(frame.x(), frame.y())
         eff_for_draw = replace(c, position=position) if position is not c.position else c
         caption_renderer.draw_caption(
             p, eff_for_draw, position_ms=self._position_ms,
-            surface_w=self.width(), surface_h=self.height(),
+            surface_w=frame.width(), surface_h=frame.height(),
         )
+        p.restore()
 
     # ---------- zoom guide (Stage 6) ----------
     def _draw_zoom_guide(self, p: QPainter, eff: ZoomEffect) -> None:
         """활성 ZoomEffect 의 영역을 노란 사각형으로 표시.
 
-        v1: start.cx/cy/scale 만 사용 (정적 줌). 사각형의 중심은 (cx*w, cy*h),
-        크기는 (w/scale, h/scale). 사각형의 일부가 화면 밖으로 나갈 수 있으나
-        Qt 가 자동 클립.
+        v1: start.cx/cy/scale 만 사용 (정적 줌). 사각형의 중심은 영상 프레임 안의
+        (cx*w, cy*h), 크기는 (w/scale, h/scale) — letterbox 가 있어도 영상 안에서만
+        그려진다.
         """
-        w = max(1, self.width())
-        h = max(1, self.height())
+        frame = self._frame_rect()
+        w = max(1, frame.width())
+        h = max(1, frame.height())
         # 드래그 중인 줌이면 override (cx, cy) 사용 — 즉시 사각형이 따라 움직임.
         cx_n = float(eff.start.cx)
         cy_n = float(eff.start.cy)
@@ -178,8 +207,8 @@ class PreviewOverlay(QWidget):
         cy_px = cy_n * h
         rect_w = w / scale
         rect_h = h / scale
-        rx = int(round(cx_px - rect_w / 2.0))
-        ry = int(round(cy_px - rect_h / 2.0))
+        rx = int(round(cx_px - rect_w / 2.0)) + frame.x()
+        ry = int(round(cy_px - rect_h / 2.0)) + frame.y()
         rw = int(round(rect_w))
         rh = int(round(rect_h))
         # hit-test bbox 등록 — 그려진 순서대로 push.
@@ -218,8 +247,9 @@ class PreviewOverlay(QWidget):
         """
         from pathlib import Path
         assert eff.pip is not None   # 호출자가 보장
-        w = max(1, self.width())
-        h = max(1, self.height())
+        frame = self._frame_rect()
+        w = max(1, frame.width())
+        h = max(1, frame.height())
         ratio = max(0.05, min(0.9, float(eff.pip.size_ratio)))
         rect_w = int(round(w * ratio))
         rect_h = int(round(h * ratio))
@@ -244,6 +274,9 @@ class PreviewOverlay(QWidget):
                 rx, ry = m, h - rect_h - m
             else:   # bottom-right (기본)
                 rx, ry = w - rect_w - m, h - rect_h - m
+        # frame 좌표 → widget 좌표.
+        rx += frame.x()
+        ry += frame.y()
         # hit-test bbox 등록.
         self._overlay_hits.append((QRect(rx, ry, rect_w, rect_h), "broll", eff.id))
 
@@ -272,16 +305,17 @@ class PreviewOverlay(QWidget):
             event.ignore()
             return
         pos = event.position().toPoint()
+        frame = self._frame_rect()
+        fw = max(1, frame.width())
+        fh = max(1, frame.height())
         # 캡션 hit-test 우선 — 캡션 텍스트는 보통 가이드 위에 그려진다고 가정.
         for cid, bbox in reversed(list(self._caption_bboxes.items())):
             if bbox.contains(pos):
                 self._drag_caption_id = cid
                 self._drag_start_pos = pos
-                w = max(1, self.width())
-                h = max(1, self.height())
-                cx = (bbox.left() + bbox.right()) / 2.0
-                cy = (bbox.top() + bbox.bottom()) / 2.0
-                self._drag_start_offset_norm = (cx / w, cy / h)
+                cx = (bbox.left() + bbox.right()) / 2.0 - frame.x()
+                cy = (bbox.top() + bbox.bottom()) / 2.0 - frame.y()
+                self._drag_start_offset_norm = (cx / fw, cy / fh)
                 self._drag_override_offset = self._drag_start_offset_norm
                 self.setCursor(Qt.ClosedHandCursor)
                 event.accept()
@@ -293,16 +327,17 @@ class PreviewOverlay(QWidget):
             self._drag_kind = kind
             self._drag_eff_id = eff_id
             self._drag_start_pos = pos
-            w = max(1, self.width())
-            h = max(1, self.height())
-            cx = (bbox.left() + bbox.right()) / 2.0
-            cy = (bbox.top() + bbox.bottom()) / 2.0
             if kind == "zoom":
-                # 줌은 사각형 중심 = (cx_norm * w, cy_norm * h). 시작 정규화 = bbox 중심.
-                self._drag_start_norm = (cx / w, cy / h)
+                # 줌은 사각형 중심 = (cx_norm * w + frame.x, ...).
+                cx = (bbox.left() + bbox.right()) / 2.0 - frame.x()
+                cy = (bbox.top() + bbox.bottom()) / 2.0 - frame.y()
+                self._drag_start_norm = (cx / fw, cy / fh)
             else:
-                # 곁들임은 좌상단 = (pos_x * w, pos_y * h). 시작 정규화 = bbox 좌상단.
-                self._drag_start_norm = (bbox.left() / w, bbox.top() / h)
+                # 곁들임은 좌상단 = (pos_x * w + frame.x, ...).
+                self._drag_start_norm = (
+                    (bbox.left() - frame.x()) / fw,
+                    (bbox.top() - frame.y()) / fh,
+                )
             self._drag_override_norm = self._drag_start_norm
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
@@ -327,17 +362,18 @@ class PreviewOverlay(QWidget):
             self.unsetCursor()
             event.ignore()
             return
-        w = max(1, self.width())
-        h = max(1, self.height())
+        frame = self._frame_rect()
+        fw = max(1, frame.width())
+        fh = max(1, frame.height())
         delta_x = pos.x() - self._drag_start_pos.x()
         delta_y = pos.y() - self._drag_start_pos.y()
         if self._drag_caption_id is not None:
-            new_x = max(0.0, min(1.0, self._drag_start_offset_norm[0] + delta_x / w))
-            new_y = max(0.0, min(1.0, self._drag_start_offset_norm[1] + delta_y / h))
+            new_x = max(0.0, min(1.0, self._drag_start_offset_norm[0] + delta_x / fw))
+            new_y = max(0.0, min(1.0, self._drag_start_offset_norm[1] + delta_y / fh))
             self._drag_override_offset = (new_x, new_y)
         else:
-            new_x = max(0.0, min(1.0, self._drag_start_norm[0] + delta_x / w))
-            new_y = max(0.0, min(1.0, self._drag_start_norm[1] + delta_y / h))
+            new_x = max(0.0, min(1.0, self._drag_start_norm[0] + delta_x / fw))
+            new_y = max(0.0, min(1.0, self._drag_start_norm[1] + delta_y / fh))
             self._drag_override_norm = (new_x, new_y)
         self.update()
         event.accept()
