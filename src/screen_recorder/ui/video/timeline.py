@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QWidget
 
 from .effect_lane import _HEADER_WIDTH
+from .trim_lane import TrimLane
 
 
 _LANE_HEIGHT = 24
@@ -109,9 +110,6 @@ class TimelineSliderLane(QWidget):
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
         self._dragging = False
-
-
-from .trim_lane import TrimLane
 
 
 class TrimMarkerLane(TrimLane):
