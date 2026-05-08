@@ -150,6 +150,12 @@ class VideoTab(QWidget):
         self.timeline.effect_selected.connect(self.effect_selected.emit)
         self.timeline.effect_changed.connect(self._edit_controller.update_effect)
         self.timeline.effect_deleted.connect(self._edit_controller.remove_effect)
+        # Stage B: VideoTrackLane 시그널들.
+        track = self.timeline.video_track_lane
+        track.request_split.connect(self._edit_controller.split_segment)
+        track.request_delete.connect(self._edit_controller.delete_segment)
+        track.request_insert_at.connect(self._on_track_insert_at)
+        track.segment_selected.connect(self._on_segment_selected)
 
         self.player.load(path)
         if thumbnail is not None and not thumbnail.isNull():
@@ -299,6 +305,66 @@ class VideoTab(QWidget):
                 segment_id=seg.id, src=seg.src, ms=seg.src_in_ms,
             ))
 
+    # ---------- Stage B: 트랙 segment 흐름 ----------
+    def _on_segment_selected(self, segment_id: str) -> None:
+        """segment 선택 시 그 segment 의 시작 ms 로 시크."""
+        cursor_ms = 0
+        for seg in self.sidecar().video_track:
+            if seg.id == segment_id:
+                self.player.seek_ms(int(cursor_ms))
+                return
+            cursor_ms += seg.duration_ms
+
+    def _on_track_insert_at(self, idx: int) -> None:
+        """트랙의 idx 위치에 영상/이미지 파일을 다이얼로그로 선택해 삽입."""
+        from PySide6.QtWidgets import QFileDialog
+        from ..effects.segment import VideoSegment
+        path_str, _filter = QFileDialog.getOpenFileName(
+            self, "삽입할 영상/이미지 선택", "",
+            "영상·이미지 (*.mp4 *.mov *.avi *.mkv *.webm *.gif *.png *.jpg *.jpeg)",
+        )
+        if not path_str:
+            return
+        new_seg = self._build_segment_for_path(path_str)
+        if new_seg is None:
+            return
+        self._edit_controller.insert_segment(at_idx=int(idx), segment=new_seg)
+
+    def _split_at_current_position(self) -> bool:
+        """현재 재생 위치 (combined ms) 가 들어 있는 segment 를 그 자리에서 split.
+
+        - combined ms 가 segment 경계에 정확히 닿으면 split 거부 (이미 분리됨)
+        - 어느 segment 에도 안 들어가면 거부
+        """
+        pos_ms = self._get_position_ms()
+        cursor = 0
+        for seg in self.sidecar().video_track:
+            seg_dur = seg.duration_ms
+            if cursor < pos_ms < cursor + seg_dur:
+                local_ms = pos_ms - cursor
+                return self._edit_controller.split_segment(seg.id, at_local_ms=local_ms)
+            cursor += seg_dur
+        return False
+
+    def _build_segment_for_path(self, path_str: str) -> "Optional[object]":
+        """파일 경로 → VideoSegment. 영상은 ffprobe 로 길이 채움, 이미지는 default."""
+        from pathlib import Path as _Path
+        from ..effects.segment import VideoSegment
+        from ..services.media_probe import probe_duration_ms
+        ext = _Path(path_str).suffix.lower()
+        if ext in {".png", ".jpg", ".jpeg"}:
+            return VideoSegment(
+                src=path_str, media_kind="image", image_duration_ms=3000,
+            )
+        if ext == ".gif":
+            return VideoSegment(src=path_str, media_kind="gif", src_duration_ms=0)
+        # 영상 — ffprobe 로 길이 조회.
+        dur = probe_duration_ms(path_str)
+        return VideoSegment(
+            src=path_str, src_in_ms=0, src_out_ms=0,
+            src_duration_ms=int(dur or 0), media_kind="video",
+        )
+
     # ---------- Speed preview (Stage 5) ----------
     def _on_position_for_speed(self, ms: int) -> None:
         """현재 재생 위치 → 활성 SpeedEffect 결정.
@@ -358,6 +424,15 @@ class VideoTab(QWidget):
         if self.is_edit_mode_on() and k == Qt.Key_C and m == Qt.ShiftModifier:
             self._add_effect_at("cut_range", self._get_position_ms())
             event.accept(); return
+        # Stage B 단축키 — S = 현재 위치에서 트랙 자르기, Delete = 선택된 segment 삭제.
+        if self.is_edit_mode_on() and k == Qt.Key_S and m == Qt.NoModifier:
+            if self._split_at_current_position():
+                event.accept(); return
+        if self.is_edit_mode_on() and k in (Qt.Key_Delete, Qt.Key_Backspace) and m == Qt.NoModifier:
+            sid = self.timeline.video_track_lane._selected_id
+            if sid:
+                self._edit_controller.delete_segment(sid)
+                event.accept(); return
         if k == Qt.Key_Space:
             self.player.toggle_play()
             self._reset_frame_step_accum()
