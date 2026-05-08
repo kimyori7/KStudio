@@ -79,3 +79,19 @@ def test_set_sidecar_with_caption_propagates_to_effect_lanes(timeline):
     cap_lane = timeline.effect_lanes.lane_for_type("caption")
     assert cap_lane is not None
     assert len(cap_lane.effects()) == 1
+
+
+def test_trim_in_drag_to_zero_emits_zero_not_lost(timeline, qtbot):
+    """in 마커를 0 으로 드래그하면 (0, out_ms) 가 emit — 0 = 시작점 (Sidecar 와 일관)."""
+    timeline.set_trim(in_ms=2_000, out_ms=5_000)
+    with qtbot.waitSignal(timeline.trim_changed, timeout=300) as blocker:
+        timeline.trim_marker_lane.in_changed.emit(0)
+    assert blocker.args == [0, 5_000]
+
+
+def test_trim_in_drag_with_no_out_emits_zero_for_out(timeline, qtbot):
+    """out 이 없는 상태에서 in 만 드래그하면 out 자리에 0 (sentinel) emit."""
+    timeline.set_trim(in_ms=2_000, out_ms=None)
+    with qtbot.waitSignal(timeline.trim_changed, timeout=300) as blocker:
+        timeline.trim_marker_lane.in_changed.emit(3_000)
+    assert blocker.args == [3_000, 0]

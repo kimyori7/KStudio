@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from ...effects import Sidecar
 from .effect_lane import _HEADER_WIDTH
 from .effect_lanes_widget import EffectLanesWidget
 from .trim_lane import TrimLane
@@ -198,7 +199,7 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.set_position_ms(ms)
         self.effect_lanes.set_position_ms(ms)
 
-    def set_sidecar(self, sidecar) -> None:
+    def set_sidecar(self, sidecar: Sidecar) -> None:
         self.effect_lanes.set_sidecar(sidecar)
         # trim 도 사이드카에서 가져와 표시
         t = sidecar.trim
@@ -222,14 +223,21 @@ class VideoTimeline(QWidget):
         in_ms, out_ms = self._normalized(ms, cur_out)
         self.trim_marker_lane.set_in_ms(in_ms)
         self.trim_marker_lane.set_out_ms(out_ms)
-        self.trim_changed.emit(in_ms or 0, out_ms or 0)
+        # 시그널은 int (0 = 마커 없음 — Sidecar.trim 의 0/0 sentinel 과 일관).
+        self.trim_changed.emit(
+            in_ms if in_ms is not None else 0,
+            out_ms if out_ms is not None else 0,
+        )
 
     def _on_trim_out_changed(self, ms: int) -> None:
         cur_in = self.trim_marker_lane.in_ms()
         in_ms, out_ms = self._normalized(cur_in, ms)
         self.trim_marker_lane.set_in_ms(in_ms)
         self.trim_marker_lane.set_out_ms(out_ms)
-        self.trim_changed.emit(in_ms or 0, out_ms or 0)
+        self.trim_changed.emit(
+            in_ms if in_ms is not None else 0,
+            out_ms if out_ms is not None else 0,
+        )
 
     @staticmethod
     def _normalized(in_ms: int | None, out_ms: int | None) -> tuple[int | None, int | None]:
