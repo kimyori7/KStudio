@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtGui import QAction, QCursor
+from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
 from ...effects import Sidecar
 from .caption_lane import CaptionLane
@@ -55,6 +56,8 @@ class EffectLanesWidget(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(2)
         self._lanes: dict[str, EffectLane] = {}
+        # 마지막에 띄운 QMenu — 테스트 검사용. UI 흐름엔 필수 아님.
+        self._last_menu: QMenu | None = None
         self._duration_ms = 0
         self._position_ms = 0
 
@@ -77,9 +80,7 @@ class EffectLanesWidget(QWidget):
                 )
                 lane.set_duration_ms(self._duration_ms)
                 lane.set_position_ms(self._position_ms)
-                lane.request_add_at.connect(
-                    lambda ms, t=t: self.request_add.emit(t, ms)
-                )
+                lane.request_add_at.connect(self._show_add_menu_at)
                 lane.effect_selected.connect(self.effect_selected.emit)
                 lane.effect_changed.connect(self.effect_changed.emit)
                 lane.effect_deleted.connect(self.effect_deleted.emit)
@@ -122,3 +123,35 @@ class EffectLanesWidget(QWidget):
                 insert_at = i
                 break
         self._layout.insertWidget(insert_at, lane)
+
+    # 통합 추가 메뉴 — caption/cut splice/cut range 활성, speed/zoom/broll 비활성+툴팁.
+    _MENU_ITEMS: list[tuple[str, str, bool, str]] = [
+        # (label, effect_type, enabled, tooltip)
+        ("+ 캡션 추가",                "caption",    True,  ""),
+        ("+ 컷 (splice) 추가",         "cut_splice", True,  "현재 위치를 잘라 붙이기 (길이 0)"),
+        ("+ 컷 (구간) 추가",            "cut_range",  True,  "구간 자르기 — 1초 길이로 시작"),
+        ("+ 배속 추가 (Stage 5)",       "speed",      False, "다음 단계에서 구현"),
+        ("+ 줌 추가 (Stage 6)",         "zoom",       False, "다음 단계에서 구현"),
+        ("+ 곁들임 영상 추가 (Stage 7)", "broll",      False, "다음 단계에서 구현"),
+    ]
+
+    def _show_add_menu_at(self, ms: int) -> None:
+        """어느 lane 의 우클릭이든 호출. 6항목 통합 메뉴 띄움.
+
+        popup() 사용 (non-blocking) — exec() 는 modal 이라 단위 테스트가 hang.
+        실제 사용엔 클릭 시 정상 동작 (action.triggered 가 emit 됨).
+        """
+        menu = QMenu(self)
+        for label, eff_type, enabled, tooltip in self._MENU_ITEMS:
+            action = QAction(label, menu)
+            action.setEnabled(enabled)
+            if tooltip:
+                action.setToolTip(tooltip)
+            if enabled:
+                action.triggered.connect(
+                    lambda _checked=False, t=eff_type, m=ms: self.request_add.emit(t, m)
+                )
+            menu.addAction(action)
+        menu.setToolTipsVisible(True)
+        self._last_menu = menu
+        menu.popup(QCursor.pos())
