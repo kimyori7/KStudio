@@ -113,3 +113,27 @@ def test_mute_audio_mode_mutes_during_region(qtbot, sample_mp4, tmp_path):
     assert True in mute_calls          # 음소거 ON
     tab._on_position_for_speed(8000)   # 이탈
     assert mute_calls[-1] is False     # 음소거 복원 (is_muted=False 였음)
+
+
+def test_mute_to_auto_adjacent_regions_restore_mute(qtbot, sample_mp4, tmp_path):
+    """인접한 mute → auto SpeedEffect 전환 시 두 번째 구간에서 mute 복원.
+
+    이전 버그: mute 구간에서 인접한 auto 구간으로 바로 진입 시, 첫 구간에서 활성
+    인지된 _speed_prev_muted 가 두 번째 구간에서도 풀리지 않아 음소거가 남음.
+    """
+    tab = _make_tab(qtbot, sample_mp4, tmp_path)
+    rate_calls, mute_calls = _stub_player(tab)
+
+    # 1초~3초 mute, 3초~5초 auto (인접)
+    tab._edit_controller.add_effect(
+        SpeedEffect(in_ms=1000, out_ms=3000, rate=2.0, audio="mute")
+    )
+    tab._edit_controller.add_effect(
+        SpeedEffect(in_ms=3000, out_ms=5000, rate=2.0, audio="auto")
+    )
+
+    tab._on_position_for_speed(2000)   # mute 구간 진입
+    assert True in mute_calls
+    tab._on_position_for_speed(4000)   # auto 구간 진입 — mute 복원되어야 함
+    # 마지막 mute 호출이 False (is_muted 가 False 였으므로 그 값으로 복원)
+    assert mute_calls[-1] is False

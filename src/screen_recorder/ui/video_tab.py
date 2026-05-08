@@ -275,13 +275,18 @@ class VideoTab(QWidget):
                 break
         if active_eff is not None:
             if self._active_speed_id != active_eff.id:
-                # 새 구간 진입 — rate 와 mute 적용. 이전에 다른 구간 활성이었으면
-                # 이전 mute 상태는 그대로 유지(이미 보존되어 있음).
+                # 새 구간 진입 — rate 적용.
                 self.player.set_playback_rate(active_eff.rate)
+                # 이전 구간이 mute 였다면, 새 구간이 mute 가 아닐 때 이전 mute 상태로 복원.
+                # (mute → auto 인접 전환 시 두 번째 구간에서도 음소거가 남는 버그 방지)
                 if active_eff.audio == "mute":
                     if self._speed_prev_muted is None:
                         self._speed_prev_muted = self.player.is_muted()
                     self.player.set_muted(True)
+                else:
+                    if self._speed_prev_muted is not None:
+                        self.player.set_muted(self._speed_prev_muted)
+                        self._speed_prev_muted = None
                 self._active_speed_id = active_eff.id
         else:
             if self._active_speed_id is not None:
