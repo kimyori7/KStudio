@@ -67,7 +67,7 @@ from .mode_controller import ModeController, AppMode
 from .preferences_dialog import PreferencesDialog
 from .status_bar import StatusBar
 from .tray import TrayController
-from .capture_exclude import exclude_from_capture
+from .capture_exclude import exclude_from_capture, include_in_capture
 from .app_icon import app_icon
 from .overlay.recording_border import RecordingBorder
 from .overlay.adjustable_region import AdjustableRegionBorder
@@ -477,9 +477,23 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, e):
         super().showEvent(e)
-        if not self._self_excluded:
-            self._self_excluded = exclude_from_capture(self)
+        # dev_keep_main_visible: KStudio UI 자체를 캡쳐에 담고 싶을 때.
+        # 이전 세션에 켰었다면 exclude 적용을 건너뜀 — 안 켰으면 평소대로 exclude.
+        if not self.app_settings.preferences.dev_keep_main_visible:
+            if not self._self_excluded:
+                self._self_excluded = exclude_from_capture(self)
         self._apply_dark_titlebar()
+
+    def apply_dev_capture_visibility(self, visible_in_capture: bool) -> None:
+        """dev_keep_main_visible 토글 시 즉시 affinity 동기화 — 메인 창과 메인 인스펙터 dock.
+
+        True: 캡쳐에 포함 (WDA_NONE). False: 제외 (WDA_EXCLUDEFROMCAPTURE).
+        """
+        if visible_in_capture:
+            include_in_capture(self)
+            self._self_excluded = False
+        else:
+            self._self_excluded = exclude_from_capture(self)
 
     def _apply_dark_titlebar(self) -> None:
         """Windows DWM 다크 타이틀바 활성화 (Win10 1809+ / Win11)."""
@@ -2607,6 +2621,16 @@ class MainWindow(QMainWindow):
             )
             # OS 시스템 단축키 가로채기 토글 — 즉시 hotkey 매니저에 반영.
             sp.intercept_system_keys_changed.connect(self._on_intercept_system_keys_changed)
+        # 일반 패널의 dev_keep_main_visible 토글 시 즉시 capture affinity 갱신.
+        pp = getattr(dialog, "preferences_panel", None)
+        if pp is not None:
+            pp.settings_changed.connect(
+                lambda: self.apply_dev_capture_visibility(
+                    self.app_settings.preferences.dev_keep_main_visible
+                )
+            )
+            # 변경 즉시 디스크에 저장 — 사용자가 다이얼로그를 X 로 닫아도 유실 안 됨.
+            pp.settings_changed.connect(self._persist_settings)
         dialog.exec()
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()
