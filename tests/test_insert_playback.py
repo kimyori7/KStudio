@@ -128,3 +128,43 @@ def test_main_at_cut_in_with_no_src_skips_insert():
     insert.set_insert_source.assert_not_called()
     main.seek_ms.assert_called_with(6000)
     assert ctrl._active_cut_id is None
+
+
+def test_splice_with_no_insert_does_not_pause_main():
+    """splice (in == out) + insert 없음 → 완전 no-op. main pause 안 됨, 재생 계속.
+
+    이전 버그: splice 위치에서 main 이 멈춤 (사용자 보고). 원인은 _enter_insert 가
+    main.pause() 를 부른 뒤 seek+play 를 했지만 _active_cut_id 가 안 set 되어 다음
+    position 업데이트마다 다시 들어가 무한 루프 → 시각적으로 정지 상태.
+    """
+    ctrl, main, insert = _make_controller(10000)
+    sc = _sidecar_with_cut(5000, 5000, src="", src_dur=0)
+    ctrl.set_sidecar(sc, 10000)
+    ctrl.on_main_position_changed(5000)
+    main.pause.assert_not_called()
+    main.seek_ms.assert_not_called()
+    insert.set_insert_source.assert_not_called()
+
+
+def test_no_insert_range_cut_does_not_reenter_on_subsequent_positions():
+    """단순 자르기 range (in < out, src 없음) → 첫 진입에서만 seek+play, 이후 재진입 없음.
+
+    이전 버그: _enter_insert 의 no-insert 분기가 _active_cut_id 를 안 set 하고
+    main.seek_ms+play 만 → 다음 position 업데이트(= out_ms 도달) 때 같은 cut 이
+    _next_cut_at_or_after 에 다시 잡혀 무한 재진입.
+    """
+    ctrl, main, insert = _make_controller(10000)
+    sc = _sidecar_with_cut(3000, 6000, src="", src_dur=0)
+    ctrl.set_sidecar(sc, 10000)
+    ctrl.on_main_position_changed(3000)
+    # 첫 진입: seek_ms(6000) + play 호출됨.
+    main.seek_ms.assert_called_with(6000)
+    main.play.assert_called_once()
+    main.seek_ms.reset_mock()
+    main.play.reset_mock()
+    main.pause.reset_mock()
+    # 이제 main 이 6000 에 도달 (seek 직후 첫 position event).
+    ctrl.on_main_position_changed(6000)
+    # 같은 cut 으로 재진입 안 됨.
+    main.pause.assert_not_called()
+    main.seek_ms.assert_not_called()

@@ -43,6 +43,10 @@ class InsertPlaybackController(QObject):
         self._main_duration_ms: int = 0
         self._cuts_by_id: dict[str, CutEffect] = {}
         self._active_cut_id: Optional[str] = None     # 현재 insert 재생 중인 cut
+        # no-insert cut (splice / 단순 자르기) 처리 직후, 같은 cut 으로 재진입 방지용.
+        # main 이 cut 범위를 완전히 벗어나면 (= _next_cut_at_or_after 가 None 또는
+        # 다른 cut 반환) 자동 클리어. 사용자 시크 시도 클리어.
+        self._last_consumed_cut_id: Optional[str] = None
 
     # ---------- public ----------
     def set_sidecar(self, sidecar: Sidecar, main_duration_ms: int) -> None:
@@ -60,6 +64,8 @@ class InsertPlaybackController(QObject):
 
     def seek_combined_ms(self, t_combined: int) -> None:
         """슬라이더 드래그 → 결합 ms → 적절한 player 로 시크."""
+        # 사용자 시크 시 consumed 상태 초기화 — seek 후 같은 cut 에 재진입 가능.
+        self._last_consumed_cut_id = None
         if not self._segments:
             self._insert.show_insert_surface(False)
             self._main.seek_ms(int(t_combined))
@@ -96,9 +102,17 @@ class InsertPlaybackController(QObject):
             return
         # 진입점 검사 — 다음 cut 의 in_ms 도달?
         next_cut = self._next_cut_at_or_after(int(ms))
+        # consumed 상태 정리: cut 이 안 잡히거나 다른 cut 이 잡히면 클리어.
+        if next_cut is None or (self._last_consumed_cut_id is not None
+                                 and next_cut.id != self._last_consumed_cut_id):
+            self._last_consumed_cut_id = None
         if next_cut is not None and ms >= next_cut.in_ms:
-            self._enter_insert(next_cut)
-            return
+            # splice + insert 없음 → 완전 no-op (main 그대로 통과). 같은 cut 재진입 방지.
+            if next_cut.is_splice and not next_cut.has_insert:
+                self._last_consumed_cut_id = next_cut.id
+            elif next_cut.id != self._last_consumed_cut_id:
+                self._enter_insert(next_cut)
+                return
         try:
             t = source_to_combined("main", None, int(ms), self._segments)
         except ValueError:
@@ -141,8 +155,10 @@ class InsertPlaybackController(QObject):
         self._main.pause()
         if not cut.has_insert:
             # 단순 자르기 — insert 없이 그냥 cut.out_ms 로 건너뛴다.
+            # consumed 표시로 다음 position 업데이트(= out_ms 도달) 때 재진입 차단.
             self._main.seek_ms(int(cut.out_ms))
             self._main.play()
+            self._last_consumed_cut_id = cut.id
             return
         self._insert.set_insert_source(
             Path(cut.src),
@@ -159,3 +175,5 @@ class InsertPlaybackController(QObject):
         self._main.seek_ms(int(cut.out_ms))
         self._main.play()
         self._active_cut_id = None
+        # 같은 cut 재진입 방지 (out_ms 에 닿은 main 이 다시 cut 으로 잡힘).
+        self._last_consumed_cut_id = cut.id
