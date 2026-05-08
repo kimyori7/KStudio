@@ -20,6 +20,7 @@ from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent, QPe
 from PySide6.QtWidgets import QWidget
 
 from ...effects import Sidecar
+from ...effects.types.broll import BrollEffect
 from ...effects.types.caption import CaptionEffect, Position
 from ...effects.types.zoom import ZoomEffect
 from . import caption_renderer
@@ -30,6 +31,13 @@ from . import caption_renderer
 _ZOOM_GUIDE_COLOR = QColor(255, 200, 0, 200)
 _ZOOM_LABEL_BG = QColor(0, 0, 0, 160)
 _ZOOM_LABEL_FG = QColor(255, 255, 255, 240)
+
+# Stage 7 — broll PiP 가이드 사각형 색. _TYPE_COLOR["broll"] (#f59e0b) 와 매칭되는
+# 주황 외곽선 + 반투명 검정 채움 + 흰 라벨. 줌 가이드(노랑 외곽선만) 와 구분.
+_BROLL_GUIDE_COLOR = QColor(245, 158, 11, 220)
+_BROLL_FILL_COLOR = QColor(0, 0, 0, 110)
+_BROLL_LABEL_FG = QColor(255, 255, 255, 240)
+_BROLL_MARGIN = 8   # px — 화면 가장자리에서 사각형까지 여백
 
 
 class PreviewOverlay(QWidget):
@@ -89,6 +97,18 @@ class PreviewOverlay(QWidget):
             if not (eff.in_ms <= self._position_ms < eff.out_ms):
                 continue
             self._draw_zoom_guide(p, eff)
+
+        # Stage 7 — 활성 BrollEffect (PiP) 가 있으면 가이드 사각형 그리기.
+        # v1: 실제 영상 PiP 는 export 에서만 적용. 미리보기는 모서리에 사각형 + 라벨.
+        # placement='fullscreen' 은 v1 미지원 — 가이드 미표시.
+        for eff in self._sidecar.effects:
+            if not isinstance(eff, BrollEffect):
+                continue
+            if not (eff.in_ms <= self._position_ms < eff.out_ms):
+                continue
+            if eff.placement != "pip" or eff.pip is None:
+                continue
+            self._draw_broll_guide(p, eff)
 
     def _draw_caption(self, p: QPainter, c: CaptionEffect) -> None:
         # 드래그 중인 경우 임시 override position 사용
@@ -168,6 +188,50 @@ class PreviewOverlay(QWidget):
         p.setPen(_ZOOM_LABEL_FG)
         p.drawText(lx + pad, ly, text_w + pad, text_h + pad,
                    Qt.AlignVCenter | Qt.AlignLeft, label)
+
+    # ---------- broll PiP guide (Stage 7) ----------
+    def _draw_broll_guide(self, p: QPainter, eff: BrollEffect) -> None:
+        """활성 BrollEffect(PiP) 의 영역을 모서리에 주황 사각형으로 표시.
+
+        v1: 실제 영상 PiP 는 export 에서만 적용. 미리보기는 사각형 + 파일명 라벨.
+        eff.pip 가 None 이거나 placement='fullscreen' 이면 호출 측에서 미리 차단.
+        """
+        from pathlib import Path
+        assert eff.pip is not None   # 호출자가 보장
+        w = max(1, self.width())
+        h = max(1, self.height())
+        ratio = max(0.05, min(0.9, float(eff.pip.size_ratio)))
+        rect_w = int(round(w * ratio))
+        rect_h = int(round(h * ratio))
+        m = _BROLL_MARGIN
+        corner = eff.pip.corner
+        if corner == "top-left":
+            rx, ry = m, m
+        elif corner == "top-right":
+            rx, ry = w - rect_w - m, m
+        elif corner == "bottom-left":
+            rx, ry = m, h - rect_h - m
+        else:   # bottom-right (기본)
+            rx, ry = w - rect_w - m, h - rect_h - m
+
+        # 채움 + 외곽선.
+        p.fillRect(rx, ry, rect_w, rect_h, _BROLL_FILL_COLOR)
+        pen = QPen(_BROLL_GUIDE_COLOR)
+        pen.setWidth(2)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(rx, ry, rect_w, rect_h)
+
+        # 중앙 라벨 — 🎞 + 파일명 basename.
+        basename = Path(eff.src).name if eff.src else ""
+        label = f"🎞 {basename or '?'}"
+        f = QFont()
+        f.setPointSize(9)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(_BROLL_LABEL_FG)
+        p.drawText(rx, ry, rect_w, rect_h,
+                   Qt.AlignCenter, label)
 
     # ---------- mouse (캡션 드래그 — anchor 무관, 자동으로 free 전환) ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
