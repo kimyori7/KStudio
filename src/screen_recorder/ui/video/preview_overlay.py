@@ -215,14 +215,17 @@ class PreviewOverlay(QWidget):
         ry = int(round(cy_px - rect_h / 2.0)) + frame.y()
         rw = int(round(rect_w))
         rh = int(round(rect_h))
-        # hit-test bbox 등록 — 그려진 순서대로 push.
+        # hit-test bbox 등록 — 그려진 순서대로 push (이론적 사각형 크기, 시각적 inset 전).
         self._overlay_hits.append((QRect(rx, ry, rw, rh), "zoom", eff.id))
         # 외곽선만 (내부는 투명) — 사각형이 영상을 덮지 않도록.
         pen = QPen(_ZOOM_GUIDE_COLOR)
         pen.setWidth(2)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawRect(rx, ry, rw, rh)
+        # 펜이 사각형 가장자리에 걸쳐 그려져 절반(1px)이 사각형 밖으로 나가는 걸 막기 위해
+        # 시각적 사각형을 1px 안쪽으로 inset (clamp 가 모서리 정렬되었을 때 frame 밖으로
+        # 살짝 새는 현상 방지).
+        p.drawRect(rx + 1, ry + 1, max(1, rw - 2), max(1, rh - 2))
         # 라벨 — 사각형 좌상단 안쪽에 작은 박스 + 텍스트.
         label = f"⊕ {eff.start.scale:g}×"
         f = QFont()
@@ -284,13 +287,14 @@ class PreviewOverlay(QWidget):
         # hit-test bbox 등록.
         self._overlay_hits.append((QRect(rx, ry, rect_w, rect_h), "broll", eff.id))
 
-        # 채움 + 외곽선.
+        # 채움 + 외곽선. 펜 폭(2)이 사각형 가장자리 밖으로 1px 새는 걸 막기 위해
+        # 시각적 사각형을 1px 안쪽으로 inset.
         p.fillRect(rx, ry, rect_w, rect_h, _BROLL_FILL_COLOR)
         pen = QPen(_BROLL_GUIDE_COLOR)
         pen.setWidth(2)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawRect(rx, ry, rect_w, rect_h)
+        p.drawRect(rx + 1, ry + 1, max(1, rect_w - 2), max(1, rect_h - 2))
 
         # 중앙 라벨 — 🎞 + 파일명 basename.
         basename = Path(eff.src).name if eff.src else ""
