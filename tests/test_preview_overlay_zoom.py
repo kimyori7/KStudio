@@ -110,3 +110,54 @@ def test_no_zoom_no_drawing(qtbot):
     pixels = [QColor.fromRgba(img.pixel(x, y)).alpha()
               for x in range(0, img.width(), 40) for y in range(0, img.height(), 40)]
     assert max(pixels) <= 5
+
+
+def test_zoom_drag_updates_cx_cy_and_emits(qtbot):
+    """줌 가이드 사각형 가운데를 드래그 → start.cx/cy 갱신 + effect_drag_changed.
+
+    v1: 정적 줌 (start == end). 드래그도 양쪽 모두 동일한 값으로 갱신.
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    ov.resize(640, 360)
+    ov.show()
+    qtbot.waitExposed(ov)
+
+    pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
+    eff = ZoomEffect(in_ms=0, out_ms=10_000, start=pt, end=pt)
+    ov.set_sidecar(_zoom_sidecar(eff))
+    ov.set_position_ms(3000)
+
+    # bbox 기록을 위해 paintEvent 한번 강제. _draw_zoom_guide 가 직접 bbox 등록.
+    img = _render_to_image(ov)
+    assert _has_yellow_pixel(img)
+
+    # 줌 가이드 중심은 (320, 180). 거기서 시작해 (340, 200) 으로 드래그 → +20px 양 축.
+    # 화면 640x360 이므로 정규화 +0.03125 (x), +0.0556 (y) → cx ~= 0.531, cy ~= 0.556
+    start = QPoint(320, 180)
+    end = QPoint(340, 200)
+    press = QMouseEvent(QMouseEvent.MouseButtonPress, start,
+                         ov.mapToGlobal(start), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    move = QMouseEvent(QMouseEvent.MouseMove, end,
+                        ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    release = QMouseEvent(QMouseEvent.MouseButtonRelease, end,
+                           ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+
+    with qtbot.waitSignal(ov.effect_drag_changed, timeout=500) as blocker:
+        ov.mousePressEvent(press)
+        ov.mouseMoveEvent(move)
+        ov.mouseReleaseEvent(release)
+    new_eff = blocker.args[0]
+    assert isinstance(new_eff, ZoomEffect)
+    assert new_eff.id == eff.id
+    # cx/cy 가 ~0.5 → 약간 큰 값 (±0.05 톨러런스)
+    assert new_eff.start.cx > 0.5 and new_eff.start.cx < 0.6
+    assert new_eff.start.cy > 0.5 and new_eff.start.cy < 0.6
+    # v1 정적 줌 — end 도 동일 갱신.
+    assert new_eff.start.cx == new_eff.end.cx
+    assert new_eff.start.cy == new_eff.end.cy
+    # scale 은 그대로
+    assert new_eff.start.scale == 2.0

@@ -15,6 +15,11 @@ _VALID_CORNER = {"top-left", "top-right", "bottom-left", "bottom-right"}
 class PipConfig:
     corner: str = "bottom-right"
     size_ratio: float = 0.3   # 영상 너비 대비 (0.1 ~ 0.5)
+    # pos_x / pos_y 가 둘 다 None 이 아니면 corner 보다 우선해 자유 위치로 그린다.
+    # 좌표는 PiP 사각형의 좌상단을 기준으로 한 정규화 (0~1) 좌표 — 영상 안에서만 의미.
+    # 드래그로 설정. corner 는 처음 추가 시 기본값으로만 쓰이고 자유 위치 후엔 무시된다.
+    pos_x: float | None = None
+    pos_y: float | None = None
 
     def __post_init__(self) -> None:
         if self.corner not in _VALID_CORNER:
@@ -25,6 +30,11 @@ class PipConfig:
             raise ValueError(
                 f"size_ratio must be in [0.1, 0.5], got {self.size_ratio}"
             )
+        for name, v in (("pos_x", self.pos_x), ("pos_y", self.pos_y)):
+            if v is None:
+                continue
+            if not (0.0 <= float(v) <= 1.0):
+                raise ValueError(f"{name} must be in [0, 1], got {v}")
 
 
 @dataclass(kw_only=True)

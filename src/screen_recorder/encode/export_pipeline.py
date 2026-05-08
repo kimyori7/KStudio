@@ -141,8 +141,16 @@ _BROLL_MARGIN_PX = 8   # PiP 사각형의 화면 가장자리 여백 (preview_ov
 
 
 def _broll_pip_xy(corner: str, surface_w: int, surface_h: int,
-                   pip_w: int, pip_h: int) -> tuple[int, int]:
-    """PiP 모서리 별 ffmpeg overlay x,y 좌표 (8px 여백). preview_overlay 와 같은 규칙."""
+                   pip_w: int, pip_h: int,
+                   pos_x: float | None = None,
+                   pos_y: float | None = None) -> tuple[int, int]:
+    """PiP 좌표 (ffmpeg overlay x, y).
+
+    pos_x, pos_y 가 둘 다 set 이면 자유 위치 — 정규화 좌표를 픽셀로 변환.
+    아니면 corner + 8px 여백 (preview_overlay 와 같은 규칙).
+    """
+    if pos_x is not None and pos_y is not None:
+        return int(round(float(pos_x) * surface_w)), int(round(float(pos_y) * surface_h))
     m = _BROLL_MARGIN_PX
     if corner == "top-left":
         return m, m
@@ -394,7 +402,10 @@ def build_export_args(
         ratio = float(broll.pip.size_ratio)
         pip_w = int(round(surface_w * ratio))
         pip_h = int(round(surface_h * ratio))
-        bx, by = _broll_pip_xy(broll.pip.corner, surface_w, surface_h, pip_w, pip_h)
+        bx, by = _broll_pip_xy(
+            broll.pip.corner, surface_w, surface_h, pip_w, pip_h,
+            pos_x=broll.pip.pos_x, pos_y=broll.pip.pos_y,
+        )
         in_s = broll.in_ms / 1000.0
         out_s = broll.out_ms / 1000.0
         # broll 입력을 scale 후 PTS 를 in_s 만큼 시프트 — 그러면 broll 의 0초가 in_s 에 정렬.

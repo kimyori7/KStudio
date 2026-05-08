@@ -48,6 +48,7 @@ class PreviewOverlay(QWidget):
     """
 
     caption_position_changed = Signal(object)   # CaptionEffect — 드래그 후 새 position
+    effect_drag_changed = Signal(object)        # ZoomEffect / BrollEffect — 드래그 후 갱신
 
     def __init__(self) -> None:
         super().__init__()
@@ -61,11 +62,19 @@ class PreviewOverlay(QWidget):
         self._position_ms: int = 0
         # paintEvent 마다 모든 캡션의 bounding box 저장 — mousePress/Move hit-test 용.
         self._caption_bboxes: dict[str, "QRect"] = {}
-        # 드래그 상태
+        # 줌·곁들임 가이드의 bbox + effect id — paint 마다 갱신, 드래그 hit-test 용.
+        # 그려진 순서대로 기록 (위로 갈수록 z-order 위) — 역순으로 hit-test.
+        self._overlay_hits: list[tuple[QRect, str, str]] = []   # (bbox, kind, eff_id)
+        # 드래그 상태 — 캡션
         self._drag_caption_id: Optional[str] = None
         self._drag_start_pos = None       # QPoint
         self._drag_start_offset_norm: tuple[float, float] = (0.5, 0.5)
         self._drag_override_offset: Optional[tuple[float, float]] = None
+        # 드래그 상태 — 줌·곁들임 (한 번에 하나만 활성). drag_kind in {"zoom", "broll"}.
+        self._drag_kind: Optional[str] = None
+        self._drag_eff_id: Optional[str] = None
+        self._drag_start_norm: tuple[float, float] = (0.5, 0.5)
+        self._drag_override_norm: Optional[tuple[float, float]] = None
 
     # ---------- public ----------
     def set_sidecar(self, sc: Optional[Sidecar]) -> None:
@@ -79,6 +88,7 @@ class PreviewOverlay(QWidget):
     # ---------- paint ----------
     def paintEvent(self, event: QPaintEvent) -> None:
         self._caption_bboxes = {}   # 매 paint 마다 갱신
+        self._overlay_hits = []
         if self._sidecar is None:
             return
         p = QPainter(self)
@@ -99,7 +109,7 @@ class PreviewOverlay(QWidget):
             self._draw_zoom_guide(p, eff)
 
         # Stage 7 — 활성 BrollEffect (PiP) 가 있으면 가이드 사각형 그리기.
-        # v1: 실제 영상 PiP 는 export 에서만 적용. 미리보기는 모서리에 사각형 + 라벨.
+        # v1: 실제 영상 PiP 는 export 에서만 적용. 미리보기는 사각형 + 라벨.
         # placement='fullscreen' 은 v1 미지원 — 가이드 미표시.
         for eff in self._sidecar.effects:
             if not isinstance(eff, BrollEffect):
@@ -156,15 +166,24 @@ class PreviewOverlay(QWidget):
         """
         w = max(1, self.width())
         h = max(1, self.height())
+        # 드래그 중인 줌이면 override (cx, cy) 사용 — 즉시 사각형이 따라 움직임.
+        cx_n = float(eff.start.cx)
+        cy_n = float(eff.start.cy)
+        if (self._drag_kind == "zoom"
+                and self._drag_eff_id == eff.id
+                and self._drag_override_norm is not None):
+            cx_n, cy_n = self._drag_override_norm
         scale = max(0.1, float(eff.start.scale))
-        cx_px = float(eff.start.cx) * w
-        cy_px = float(eff.start.cy) * h
+        cx_px = cx_n * w
+        cy_px = cy_n * h
         rect_w = w / scale
         rect_h = h / scale
         rx = int(round(cx_px - rect_w / 2.0))
         ry = int(round(cy_px - rect_h / 2.0))
         rw = int(round(rect_w))
         rh = int(round(rect_h))
+        # hit-test bbox 등록 — 그려진 순서대로 push.
+        self._overlay_hits.append((QRect(rx, ry, rw, rh), "zoom", eff.id))
         # 외곽선만 (내부는 투명) — 사각형이 영상을 덮지 않도록.
         pen = QPen(_ZOOM_GUIDE_COLOR)
         pen.setWidth(2)
@@ -191,9 +210,10 @@ class PreviewOverlay(QWidget):
 
     # ---------- broll PiP guide (Stage 7) ----------
     def _draw_broll_guide(self, p: QPainter, eff: BrollEffect) -> None:
-        """활성 BrollEffect(PiP) 의 영역을 모서리에 주황 사각형으로 표시.
+        """활성 BrollEffect(PiP) 의 영역을 주황 사각형으로 표시.
 
         v1: 실제 영상 PiP 는 export 에서만 적용. 미리보기는 사각형 + 파일명 라벨.
+        pip.pos_x / pos_y 가 둘 다 set 이면 corner 보다 우선 (자유 위치).
         eff.pip 가 None 이거나 placement='fullscreen' 이면 호출 측에서 미리 차단.
         """
         from pathlib import Path
@@ -203,16 +223,29 @@ class PreviewOverlay(QWidget):
         ratio = max(0.05, min(0.9, float(eff.pip.size_ratio)))
         rect_w = int(round(w * ratio))
         rect_h = int(round(h * ratio))
-        m = _BROLL_MARGIN
-        corner = eff.pip.corner
-        if corner == "top-left":
-            rx, ry = m, m
-        elif corner == "top-right":
-            rx, ry = w - rect_w - m, m
-        elif corner == "bottom-left":
-            rx, ry = m, h - rect_h - m
-        else:   # bottom-right (기본)
-            rx, ry = w - rect_w - m, h - rect_h - m
+        # 드래그 override > pos_x/pos_y > corner.
+        if (self._drag_kind == "broll"
+                and self._drag_eff_id == eff.id
+                and self._drag_override_norm is not None):
+            nx, ny = self._drag_override_norm
+            rx = int(round(nx * w))
+            ry = int(round(ny * h))
+        elif eff.pip.pos_x is not None and eff.pip.pos_y is not None:
+            rx = int(round(float(eff.pip.pos_x) * w))
+            ry = int(round(float(eff.pip.pos_y) * h))
+        else:
+            m = _BROLL_MARGIN
+            corner = eff.pip.corner
+            if corner == "top-left":
+                rx, ry = m, m
+            elif corner == "top-right":
+                rx, ry = w - rect_w - m, m
+            elif corner == "bottom-left":
+                rx, ry = m, h - rect_h - m
+            else:   # bottom-right (기본)
+                rx, ry = w - rect_w - m, h - rect_h - m
+        # hit-test bbox 등록.
+        self._overlay_hits.append((QRect(rx, ry, rect_w, rect_h), "broll", eff.id))
 
         # 채움 + 외곽선.
         p.fillRect(rx, ry, rect_w, rect_h, _BROLL_FILL_COLOR)
@@ -233,17 +266,15 @@ class PreviewOverlay(QWidget):
         p.drawText(rx, ry, rect_w, rect_h,
                    Qt.AlignCenter, label)
 
-    # ---------- mouse (캡션 드래그 — anchor 무관, 자동으로 free 전환) ----------
+    # ---------- mouse (캡션·줌·곁들임 드래그) ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.LeftButton or self._sidecar is None:
             event.ignore()
             return
         pos = event.position().toPoint()
-        # 위에서 아래로 마지막 그려진 캡션이 가장 위에 있으니 역순 hit-test.
+        # 캡션 hit-test 우선 — 캡션 텍스트는 보통 가이드 위에 그려진다고 가정.
         for cid, bbox in reversed(list(self._caption_bboxes.items())):
             if bbox.contains(pos):
-                # 드래그 시작 — 캡션 hit. anchor 무관: bbox 중심을 정규화 좌표 시작점으로 사용
-                # → 어느 anchor 든 자연스럽게 free 로 전환된다.
                 self._drag_caption_id = cid
                 self._drag_start_pos = pos
                 w = max(1, self.width())
@@ -255,14 +286,40 @@ class PreviewOverlay(QWidget):
                 self.setCursor(Qt.ClosedHandCursor)
                 event.accept()
                 return
-        # 캡션 hit 안 됨 → 하부 영상 surface 로 통과.
+        # 줌·곁들임 가이드 hit-test — 그려진 역순 (위에 있는 것 먼저).
+        for bbox, kind, eff_id in reversed(self._overlay_hits):
+            if not bbox.contains(pos):
+                continue
+            self._drag_kind = kind
+            self._drag_eff_id = eff_id
+            self._drag_start_pos = pos
+            w = max(1, self.width())
+            h = max(1, self.height())
+            cx = (bbox.left() + bbox.right()) / 2.0
+            cy = (bbox.top() + bbox.bottom()) / 2.0
+            if kind == "zoom":
+                # 줌은 사각형 중심 = (cx_norm * w, cy_norm * h). 시작 정규화 = bbox 중심.
+                self._drag_start_norm = (cx / w, cy / h)
+            else:
+                # 곁들임은 좌상단 = (pos_x * w, pos_y * h). 시작 정규화 = bbox 좌상단.
+                self._drag_start_norm = (bbox.left() / w, bbox.top() / h)
+            self._drag_override_norm = self._drag_start_norm
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        # hit 없음 → 하부 영상 surface 로 통과.
         event.ignore()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
-        if self._drag_caption_id is None:
-            # 드래그 중 아니면 호버: 캡션 위면 OpenHand, 아니면 기본.
+        if self._drag_caption_id is None and self._drag_kind is None:
+            # 드래그 중 아니면 호버 커서 갱신: 캡션 / 가이드 위면 OpenHand.
             for bbox in self._caption_bboxes.values():
+                if bbox.contains(pos):
+                    self.setCursor(Qt.OpenHandCursor)
+                    event.accept()
+                    return
+            for bbox, _kind, _id in self._overlay_hits:
                 if bbox.contains(pos):
                     self.setCursor(Qt.OpenHandCursor)
                     event.accept()
@@ -270,34 +327,70 @@ class PreviewOverlay(QWidget):
             self.unsetCursor()
             event.ignore()
             return
-        delta_x = pos.x() - self._drag_start_pos.x()
-        delta_y = pos.y() - self._drag_start_pos.y()
         w = max(1, self.width())
         h = max(1, self.height())
-        new_x = max(0.0, min(1.0, self._drag_start_offset_norm[0] + delta_x / w))
-        new_y = max(0.0, min(1.0, self._drag_start_offset_norm[1] + delta_y / h))
-        self._drag_override_offset = (new_x, new_y)
+        delta_x = pos.x() - self._drag_start_pos.x()
+        delta_y = pos.y() - self._drag_start_pos.y()
+        if self._drag_caption_id is not None:
+            new_x = max(0.0, min(1.0, self._drag_start_offset_norm[0] + delta_x / w))
+            new_y = max(0.0, min(1.0, self._drag_start_offset_norm[1] + delta_y / h))
+            self._drag_override_offset = (new_x, new_y)
+        else:
+            new_x = max(0.0, min(1.0, self._drag_start_norm[0] + delta_x / w))
+            new_y = max(0.0, min(1.0, self._drag_start_norm[1] + delta_y / h))
+            self._drag_override_norm = (new_x, new_y)
         self.update()
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._drag_caption_id is None:
-            event.ignore()
+        # 캡션 드래그 종료
+        if self._drag_caption_id is not None:
+            if self._sidecar is not None and self._drag_override_offset is not None:
+                for eff in self._sidecar.effects:
+                    if eff.id == self._drag_caption_id and eff.type == "caption":
+                        new_pos = Position(anchor="free",
+                                           offset_x=self._drag_override_offset[0],
+                                           offset_y=self._drag_override_offset[1])
+                        new_eff = replace(eff, position=new_pos)
+                        self.caption_position_changed.emit(new_eff)
+                        break
+            self._drag_caption_id = None
+            self._drag_start_pos = None
+            self._drag_override_offset = None
+            self.unsetCursor()
+            event.accept()
             return
-        # release 시점 한 번만 시그널 emit → EditController 가 history push 1회.
-        # 어느 anchor 였든 free 로 전환됨.
-        if self._sidecar is not None and self._drag_override_offset is not None:
-            for eff in self._sidecar.effects:
-                if eff.id == self._drag_caption_id and eff.type == "caption":
-                    new_pos = Position(anchor="free",
-                                       offset_x=self._drag_override_offset[0],
-                                       offset_y=self._drag_override_offset[1])
-                    new_eff = replace(eff, position=new_pos)
-                    self.caption_position_changed.emit(new_eff)
+        # 줌·곁들임 드래그 종료
+        if self._drag_kind is not None and self._sidecar is not None:
+            kind = self._drag_kind
+            eff_id = self._drag_eff_id
+            override = self._drag_override_norm
+            self._drag_kind = None
+            self._drag_eff_id = None
+            self._drag_start_pos = None
+            self._drag_override_norm = None
+            self.unsetCursor()
+            if override is not None:
+                for eff in self._sidecar.effects:
+                    if eff.id != eff_id:
+                        continue
+                    new_eff = self._apply_drag_to_effect(kind, eff, override)
+                    if new_eff is not None:
+                        self.effect_drag_changed.emit(new_eff)
                     break
-        self._drag_caption_id = None
-        self._drag_start_pos = None
-        self._drag_override_offset = None
-        self.unsetCursor()
-        event.accept()
+            event.accept()
+            return
+        event.ignore()
+
+    def _apply_drag_to_effect(self, kind: str, eff, norm: tuple[float, float]):
+        """드래그 결과 정규화 좌표를 effect 에 반영한 새 effect 반환. 실패면 None."""
+        nx, ny = norm
+        if kind == "zoom" and isinstance(eff, ZoomEffect):
+            new_start = replace(eff.start, cx=nx, cy=ny)
+            new_end = replace(eff.end, cx=nx, cy=ny)
+            return replace(eff, start=new_start, end=new_end)
+        if kind == "broll" and isinstance(eff, BrollEffect) and eff.pip is not None:
+            new_pip = replace(eff.pip, pos_x=nx, pos_y=ny)
+            return replace(eff, pip=new_pip)
+        return None
 

@@ -149,6 +149,10 @@ class VideoTab(QWidget):
         self._preview_overlay.caption_position_changed.connect(
             self._edit_controller.update_effect
         )
+        # 줌·곁들임 가이드 드래그 후 새 effect → update_effect.
+        self._preview_overlay.effect_drag_changed.connect(
+            self._edit_controller.update_effect
+        )
 
         # ---- InsertPlaybackController (Stage 4d) ----
         from .video.insert_playback import InsertPlaybackController

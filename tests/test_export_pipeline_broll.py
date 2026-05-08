@@ -256,3 +256,18 @@ def test_pip_xy_bottom_right():
 def test_pip_xy_unknown_corner_falls_back_to_bottom_right():
     """알 수 없는 corner → 기본 우하단."""
     assert _broll_pip_xy("invalid", 1920, 1080, 576, 324) == (1336, 748)
+
+
+def test_pip_xy_pos_x_y_overrides_corner():
+    """pos_x / pos_y 가 둘 다 set 이면 corner 무시 — 자유 위치."""
+    # 1920x1080 surface 에서 정규화 (0.25, 0.5) → (480, 540)
+    assert _broll_pip_xy(
+        "top-left", 1920, 1080, 576, 324, pos_x=0.25, pos_y=0.5
+    ) == (480, 540)
+
+
+def test_pip_xy_partial_pos_falls_back_to_corner():
+    """pos_x 만 있고 pos_y 없으면 corner 사용 (둘 다 set 일 때만 자유 위치)."""
+    assert _broll_pip_xy(
+        "bottom-right", 1920, 1080, 576, 324, pos_x=0.25, pos_y=None
+    ) == (1336, 748)
