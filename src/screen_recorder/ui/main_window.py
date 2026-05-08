@@ -753,6 +753,9 @@ class MainWindow(QMainWindow):
 
     def _should_minimize_main(self) -> bool:
         prefs = self.app_settings.preferences
+        # 개발자 모드: KStudio UI 자체를 녹화에 담고 싶을 때 — 항상 보이게 유지.
+        if prefs.dev_keep_main_visible:
+            return False
         return prefs.use_mini_control and prefs.minimize_to_tray
 
     def _on_start_clicked(self):
