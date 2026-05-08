@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QCursor
 from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
@@ -142,6 +142,8 @@ class EffectLanesWidget(QWidget):
         실제 사용엔 클릭 시 정상 동작 (action.triggered 가 emit 됨).
         """
         menu = QMenu(self)
+        # 메뉴 닫힐 때 자동 삭제 — 매 우클릭마다 새 QMenu 가 self 의 자식으로 누적되는 것 방지.
+        menu.setAttribute(Qt.WA_DeleteOnClose, True)
         for label, eff_type, enabled, tooltip in self._MENU_ITEMS:
             action = QAction(label, menu)
             action.setEnabled(enabled)

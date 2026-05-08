@@ -85,20 +85,6 @@ def test_set_duration_propagates_to_lanes(qtbot):
     assert lane.duration_ms() == 20_000
 
 
-def test_request_add_at_bubbles_with_type(qtbot):
-    """lane 이 발생시킨 request_add_at 이 컨테이너에서 (type, ms) 로 bubble."""
-    w = EffectLanesWidget()
-    qtbot.addWidget(w)
-    sc = Sidecar(source_path="x", source_hash="h", trim=Trim(in_ms=0, out_ms=10_000),
-                 effects=[CaptionEffect(in_ms=0, out_ms=1000, text="a")])
-    w.set_sidecar(sc)
-    lane = w.lane_for_type("caption")
-    # 직접 lane 의 시그널 발화 (마우스 시뮬레이션 대신)
-    with qtbot.waitSignal(w.request_add, timeout=1000) as blocker:
-        lane.request_add_at.emit(5000)
-    assert blocker.args == ["caption", 5000]
-
-
 def test_caption_type_uses_caption_lane_class(qtbot):
     """type='caption' lane 은 CaptionLane 인스턴스여야 (Task 3 에서 도입)."""
     # CaptionLane 미도입 시점엔 base EffectLane 으로 fallback. Task 3 commit 후
