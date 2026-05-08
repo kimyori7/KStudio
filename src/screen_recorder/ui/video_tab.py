@@ -89,6 +89,12 @@ class VideoTab(QWidget):
         self._edit_controller = EditController(self._source_path, sc_dir)
         self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
         self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
+        # Stage A: 사이드카가 비어 있으면 source 1 segment 로 자동 채움.
+        from ..effects.sidecar import ensure_default_track
+        ensure_default_track(
+            self._edit_controller.sidecar(),
+            source_duration_ms=int(duration_ms or 0),
+        )
 
         # ---- VideoTimeline (Task 3) ----
         self.timeline = VideoTimeline()
