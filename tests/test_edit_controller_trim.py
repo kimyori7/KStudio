@@ -1,10 +1,8 @@
 """EditController.update_trim — 사이드카 trim 영구 저장."""
 from __future__ import annotations
-from pathlib import Path
 
 import pytest
 
-from screen_recorder.effects import Sidecar
 from screen_recorder.ui.video.edit_controller import EditController
 
 
