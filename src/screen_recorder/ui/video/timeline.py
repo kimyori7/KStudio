@@ -109,3 +109,37 @@ class TimelineSliderLane(QWidget):
 
     def mouseReleaseEvent(self, _event: QMouseEvent) -> None:
         self._dragging = False
+
+
+from .trim_lane import TrimLane
+
+
+class TrimMarkerLane(TrimLane):
+    """자르기 in/out 마커 — TrimLane 베이스 + 헤더(56px) 추가.
+
+    `_lane_left_pad` 만 56 으로 override. paintEvent 마지막에 헤더 영역을 덮어
+    그리고 라벨(✂ 자르기)을 그린다. mouse 이벤트는 베이스 그대로 사용 (헤더
+    영역 클릭은 자동으로 본체 좌표 < pad 가 되므로 seek/mark 영향 없음).
+    """
+
+    def _lane_left_pad(self) -> int:
+        return _HEADER_WIDTH
+
+    def _lane_right_pad(self) -> int:
+        return 0
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        # 베이스가 본체 전체에 그린 뒤(필름스트립 포함), 위에 헤더만 덮어쓴다.
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.fillRect(0, 0, _HEADER_WIDTH, self.height(), _HEADER_BG)
+        p.setPen(_HEADER_TEXT)
+        p.drawText(6, 0, _HEADER_WIDTH - 8, self.height(),
+                   Qt.AlignVCenter | Qt.AlignLeft, "✂ 자르기")
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        # 헤더 클릭은 무시 (베이스의 ms_for_pixel 이 음수→0 으로 clamp 돼
+        # 헤더 클릭만으로도 in 점 0 이 마크되는 부작용 방지).
+        if int(event.position().x()) < _HEADER_WIDTH:
+            return
+        super().mousePressEvent(event)
