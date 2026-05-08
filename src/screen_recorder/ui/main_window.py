@@ -123,6 +123,9 @@ class MainWindow(QMainWindow):
         # 사용자 실제 settings.json 에 기록돼 영구 오염됨. 사용자 의도 변경은
         # __init__ 종료 후에만 발생하므로 그때부터 persist 허용.
         self._initializing = True
+        # 모드 전환 시 그 모드의 마지막 활성 탭으로 복원하기 위한 기록.
+        # 탭 전환 시 _on_active_tab_changed 가 갱신.
+        self._last_entry_per_mode: dict[AppMode, int] = {}
         # 트림 잡 lifecycle 추적 — 한 번에 하나만 진행.
         self._active_trim_job: TrimJob | None = None
         self._active_trim_src_widget = None
@@ -1059,15 +1062,37 @@ class MainWindow(QMainWindow):
         주의: 모드 전환은 _open_entry 의 부수효과(currentChanged → mode_controller)
         에 의존하면 안 된다. focus_entry 가 이미 current 인 탭이면 no-op 이라 모드 시그널이
         발화되지 않아 다른 UI 들이 갱신 안 됨. 항상 명시적으로 set_mode 를 호출.
+
+        탭 전환 정책:
+        1) 그 모드의 마지막 활성 탭 (`_last_entry_per_mode`) 으로 복원 — 사용자가
+           영상 시청·편집 중이었으면 시간/진행상태가 보존된 탭이 그대로 보임.
+        2) 그 모드 탭이 하나라도 있지만 last 기록이 없으면 첫 탭 선택 (tab_area 의
+           visibility 동기화가 자동 처리).
+        3) 탭이 하나도 없으면 라이브러리의 첫 entry 로 새 탭 오픈.
         """
         self.mode_controller.set_mode(mode)
+        # 1) 마지막 활성 탭 우선.
+        last_eid = self._last_entry_per_mode.get(mode)
+        if last_eid is not None and self.tab_area.find_index_by_entry(last_eid) >= 0:
+            self.tab_area.focus_entry(last_eid)
+            if mode is AppMode.VIDEO:
+                self._focus_current_video_tab()
+            return
+        # 2) 마지막 기록은 없지만 그 모드 탭이 이미 있으면 tab_area 의 visibility
+        #    동기화가 알아서 visible 한 첫 탭을 보여줌 — 추가 작업 불필요.
+        target_app_mode = mode
+        has_existing_tab = any(
+            m is target_app_mode for _w, m, _e in self.tab_area._tabs
+        )
+        if has_existing_tab:
+            if mode is AppMode.VIDEO:
+                self._focus_current_video_tab()
+            return
+        # 3) 그 모드 탭이 전혀 없으면 라이브러리에서 첫 entry 로 새로 오픈.
         target_kind = EntryKind.VIDEO if mode is AppMode.VIDEO else EntryKind.SCREENSHOT
         entries = self.library_model.entries(kind=target_kind)
         if entries:
             self._open_entry(entries[0].id)
-        # 영상 모드면 추가로 한 번 더 포커스 — _open_entry 가 이미 current 인 탭에서
-        # focus_entry 를 호출하면 currentChanged 가 발화 안 해 _focus_current_video_tab
-        # 이 자동으로 안 돌 수 있다.
         if mode is AppMode.VIDEO:
             self._focus_current_video_tab()
 
@@ -2664,6 +2689,10 @@ class MainWindow(QMainWindow):
         eid = self.tab_area.current_entry_id()
         if eid is not None:
             self.library_panel.focus_entry(eid)
+        # 모드별 마지막 활성 탭 기록 — 모드 토글 시 복원에 사용.
+        cur_mode = self.mode_controller.mode()
+        if eid is not None and cur_mode is not None:
+            self._last_entry_per_mode[cur_mode] = eid
 
         tab = self._current_screenshot_tab()
         if tab is None:
