@@ -186,27 +186,21 @@ class VideoTab(QWidget):
             self._edit_controller.update_effect
         )
 
-        # ---- InsertPlaybackController (Stage 4d) ----
-        from .video.insert_playback import InsertPlaybackController
-        self._insert_ctrl = InsertPlaybackController(
-            main_player=self.player, insert_host=self.player,
+        # ---- SegmentPlaybackController (Stage C — 새 트랙 모델) ----
+        from .video.segment_playback import SegmentPlaybackController
+        self._segment_ctrl = SegmentPlaybackController(self.player)
+        self.player.position_changed.connect(self._segment_ctrl.on_main_position_changed)
+        self._segment_ctrl.combined_position_changed.connect(self.timeline.set_position_ms)
+        self._segment_ctrl.combined_position_changed.connect(self.controls.set_position_ms)
+        self._segment_ctrl.combined_duration_changed.connect(self.timeline.set_duration_ms)
+        self._segment_ctrl.combined_duration_changed.connect(self.controls.set_duration_ms)
+        self._segment_ctrl.active_segment_changed.connect(
+            self.timeline.video_track_lane.set_selected_id
         )
-        # 메인/보조 player position → controller → timeline / controls
-        self.player.position_changed.connect(self._insert_ctrl.on_main_position_changed)
-        self.player.insert_position_changed.connect(self._insert_ctrl.on_insert_position_changed)
-        self._insert_ctrl.combined_position_changed.connect(self.timeline.set_position_ms)
-        self._insert_ctrl.combined_position_changed.connect(self.controls.set_position_ms)
-        self._insert_ctrl.combined_duration_changed.connect(self.timeline.set_duration_ms)
-        self._insert_ctrl.combined_duration_changed.connect(self.controls.set_duration_ms)
-        # 사이드카 변경 → controller 갱신
-        self._edit_controller.sidecar_replaced.connect(
-            lambda sc: self._insert_ctrl.set_sidecar(sc, self.player.duration_ms())
-        )
-        self.player.duration_changed.connect(
-            lambda d: self._insert_ctrl.set_sidecar(
-                self._edit_controller.sidecar(), int(d),
-            )
-        )
+        # 사이드카 변경 → controller 의 segment 리스트 갱신.
+        self._edit_controller.sidecar_replaced.connect(self._segment_ctrl.set_sidecar)
+        # 초기 segment 리스트 적용.
+        self._segment_ctrl.set_sidecar(self._edit_controller.sidecar())
 
         # ---- Speed preview (Stage 5) ----
         # position_changed 마다 활성 SpeedEffect 를 찾아 진입/이탈 시 playback rate 전환.
@@ -554,19 +548,9 @@ class VideoTab(QWidget):
         self._frame_step_accum_ms = 0
 
     def _on_user_seek_request(self, ms: int) -> None:
-        """슬라이더 드래그/클릭 또는 트림 레인 시크 — 누적 카운터 초기화.
-
-        트림 모드(사이드카 trim in/out 둘 중 하나라도 마크된 상태)에서 시크하면
-        자동 일시정지. 편집 작업 중에는 사용자가 정확한 프레임을 보면서 점을
-        찍어야 하므로 영상이 그대로 재생되며 다음 프레임으로 흘러가면 안 됨
-        (Premiere 등 표준).
-        """
-        t = self.sidecar().trim
-        trim_active = (t.in_ms != 0 or t.out_ms != 0)
-        if trim_active and self.player.is_playing():
-            self.player.pause()
+        """슬라이더 드래그/클릭 또는 트림 레인 시크 — segment 시간축에서 시크."""
         self._reset_frame_step_accum()
-        self._insert_ctrl.seek_combined_ms(int(ms))
+        self._segment_ctrl.seek_combined_ms(int(ms))
 
     def _on_user_play_toggle(self) -> None:
         """재생 토글 (스페이스 / 컨트롤바 ▶ 버튼) — 누적 카운터 초기화."""
