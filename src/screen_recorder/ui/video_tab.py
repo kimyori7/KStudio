@@ -30,7 +30,7 @@ class VideoTab(QWidget):
 
     snapshot_requested = Signal(QImage, str)   # (이미지, 원본@시각 라벨)
     duration_resolved = Signal(int)            # ms — 영상 로드 후 실제 길이 확정
-    trim_requested = Signal(object, int, int)  # (Path src, int in_ms, int out_ms)
+    trim_requested = Signal(object, int, int)  # 보존: 외부 (MCP/CLI) 호출용 — 현재 발화 지점 없음
     edit_mode_toggled = Signal(bool)           # 편집 모드 ON/OFF
     effect_selected = Signal(object)           # Effect | None — MainWindow 인스펙터 패널용
 
@@ -411,7 +411,11 @@ class VideoTab(QWidget):
         self.controls.speed_combo.setCurrentIndex(target)
 
     def _on_trim_execute(self, in_ms: int, out_ms: int) -> None:
-        """PlayerControls / Ctrl+Enter 가 트림 요청 → MainWindow 로 bubble."""
+        """트림 즉시 실행 — 현재 호출자 없음.
+
+        Ctrl+Enter 단축키 / PlayerControls 트림 버튼은 timeline 통합 시 제거됨.
+        trim_requested 시그널은 보존 — 미래 MCP/CLI 외부 호출 진입점.
+        """
         self.trim_requested.emit(self._source_path, int(in_ms), int(out_ms))
 
     def _mark_trim(self, side: str, ms: int) -> None:

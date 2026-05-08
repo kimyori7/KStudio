@@ -105,7 +105,6 @@ def test_seek_without_trim_does_not_pause(video_tab):
     video_tab.player.pause = lambda: pause_calls.append(True)
     video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
 
-    video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
     video_tab._on_user_seek_request(2_000)
     assert pause_calls == []
     assert seek_calls == [2_000]
