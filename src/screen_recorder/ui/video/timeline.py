@@ -13,6 +13,7 @@ from ...effects import Sidecar
 from .effect_lane import _HEADER_WIDTH
 from .effect_lanes_widget import EffectLanesWidget
 from .trim_lane import TrimLane
+from .video_track_lane import VideoTrackLane
 
 
 _LANE_HEIGHT = 24
@@ -166,10 +167,12 @@ class VideoTimeline(QWidget):
 
         self.slider_lane = TimelineSliderLane()
         self.trim_marker_lane = TrimMarkerLane()
+        self.video_track_lane = VideoTrackLane()
         self.effect_lanes = EffectLanesWidget()
 
         layout.addWidget(self.slider_lane)
         layout.addWidget(self.trim_marker_lane)
+        layout.addWidget(self.video_track_lane)
         layout.addWidget(self.effect_lanes)
 
         # ---- 시그널 fan-in ----
@@ -184,6 +187,7 @@ class VideoTimeline(QWidget):
 
         # 초기엔 OFF — 슬라이더만 보임
         self.trim_marker_lane.hide()
+        self.video_track_lane.hide()
         self.effect_lanes.hide()
 
     # ---------- 외부 API ----------
@@ -191,6 +195,7 @@ class VideoTimeline(QWidget):
         ms = max(0, int(ms))
         self.slider_lane.set_duration_ms(ms)
         self.trim_marker_lane.set_duration_ms(ms)
+        self.video_track_lane.set_duration_ms(ms)
         self.effect_lanes.set_duration_ms(ms)
 
     def set_position_ms(self, ms: int) -> None:
@@ -201,7 +206,9 @@ class VideoTimeline(QWidget):
 
     def set_sidecar(self, sidecar: Sidecar) -> None:
         self.effect_lanes.set_sidecar(sidecar)
-        # trim 도 사이드카에서 가져와 표시
+        # video_track 표시 갱신.
+        self.video_track_lane.set_segments(sidecar.video_track)
+        # trim 도 사이드카에서 가져와 표시 (Stage D 에서 제거 예정).
         t = sidecar.trim
         in_ms = t.in_ms if t.in_ms > 0 else None
         out_ms = t.out_ms if t.out_ms > 0 else None
@@ -215,6 +222,7 @@ class VideoTimeline(QWidget):
 
     def set_edit_mode(self, on: bool) -> None:
         self.trim_marker_lane.setVisible(on)
+        self.video_track_lane.setVisible(on)
         self.effect_lanes.setVisible(on)
 
     # ---------- 내부 ----------
