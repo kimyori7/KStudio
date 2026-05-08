@@ -102,6 +102,15 @@ class EditController(QObject):
         self.update_sidecar(new_sc)
         return True
 
+    def update_trim(self, in_ms: int, out_ms: int) -> None:
+        """사이드카의 trim 을 갱신. History push + autosave 트리거.
+
+        in_ms, out_ms 는 정규화된 값이어야 함 (in <= out). 둘 다 0 = 트림 없음.
+        """
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.trim = Trim(in_ms=int(in_ms), out_ms=int(out_ms))
+        self.update_sidecar(new_sc)
+
     def undo(self) -> bool:
         if not self._history.can_undo():
             return False
