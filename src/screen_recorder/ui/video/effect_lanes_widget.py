@@ -31,8 +31,8 @@ _TYPE_COLOR = {
     "cut":     "#ef4444",   # 빨강
 }
 
-# 효과 lane 의 표시 순서 (위 → 아래) — spec 의 RENDER_ORDER 와 일관
-_LANE_ORDER = ["caption", "speed", "zoom", "broll", "cut"]
+# 효과 lane 의 표시 순서 (위 → 아래). cut 은 트랙 lane 으로 흡수돼 제거 (Stage D).
+_LANE_ORDER = ["caption", "speed", "zoom", "broll"]
 
 # type → lane 클래스 dispatch. 누락된 type 은 base EffectLane 으로 fallback.
 EFFECT_LANE_CLASSES: dict[str, type] = {
@@ -130,12 +130,10 @@ class EffectLanesWidget(QWidget):
                 break
         self._layout.insertWidget(insert_at, lane)
 
-    # 통합 추가 메뉴 — Stage 7 부터 모든 항목 활성화.
+    # 통합 추가 메뉴 — Stage D (2026-05-08): 자르기 항목들은 트랙 lane 의 우클릭으로 이동.
     _MENU_ITEMS: list[tuple[str, str, bool, str]] = [
         # (label, effect_type, enabled, tooltip)
         ("+ 캡션 추가",                "caption",    True,  ""),
-        ("+ 자르기 (한 점)",            "cut_splice", True,  "현재 위치에서 잘라 붙이기 (길이 0) — 양쪽이 한 프레임에서 끊겨 이어짐"),
-        ("+ 자르기 (구간)",             "cut_range",  True,  "구간 잘라내기 — 1초 길이로 시작, 인스펙터에서 길이 조정"),
         ("+ 배속 추가",                 "speed",      True,  "구간 배속 — 기본 2.0× 5초"),
         ("+ 줌 추가",                   "zoom",       True,  "구간 줌 — 기본 2.0× 2초 정적 줌"),
         ("+ 곁들임 영상 추가",          "broll",      True,  "PiP — 화면 모서리에 작은 영상"),

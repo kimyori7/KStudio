@@ -200,6 +200,15 @@ def build_export_args(
 
     png_dir 가 None 이면 tempfile.mkdtemp().
     """
+    # Stage D (2026-05-08): 다중 segment 트랙 export 는 v2 follow-up.
+    # 단일 segment (= 원본 영상 그대로) 인 경우 기존 코드가 그대로 동작.
+    if len(sidecar.video_track) > 1:
+        raise NotImplementedError(
+            "다중 segment 트랙 export 는 v2 — 현재는 효과(캡션/배속/줌/곁들임) 와 "
+            "단일 segment (자르기·삽입 없음) 만 export 가능. 트랙을 1개 segment 로 "
+            "단순화한 후 다시 시도해 주세요."
+        )
+
     # 0) 미지원 효과 검증
     for e in sidecar.effects:
         if e.type not in _SUPPORTED_TYPES:

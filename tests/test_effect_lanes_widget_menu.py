@@ -20,30 +20,26 @@ def widget(qtbot):
 
 
 def test_right_click_on_caption_lane_shows_menu(widget, qtbot):
-    """캡션 lane 우클릭 → 6항목 메뉴 (캡션·자르기 한점·자르기 구간·배속·줌·곁들임)."""
+    """캡션 lane 우클릭 → 4항목 메뉴 (캡션·배속·줌·곁들임). 자르기는 트랙 lane 으로 이동."""
     cap_lane = widget.lane_for_type("caption")
     assert cap_lane is not None
 
-    # request_add_at 가 widget 의 _show_add_menu_at 를 호출 → popup (non-blocking)
     cap_lane.request_add_at.emit(3_000)
     menu = widget._last_menu
     assert menu is not None
     actions = menu.actions()
     labels = [a.text() for a in actions if not a.isSeparator()]
     assert any("캡션" in l for l in labels)
-    assert any("자르기 (한 점)" in l for l in labels)
-    assert any("자르기 (구간)" in l for l in labels)
     assert any("배속" in l for l in labels)
     assert any("줌" in l for l in labels)
     assert any("곁들임" in l for l in labels)
-    menu.close()   # cleanup
+    # 자르기 항목은 더 이상 없음.
+    assert not any("자르기" in l for l in labels)
+    menu.close()
 
 
 def test_all_menu_items_enabled(widget, qtbot):
-    """Stage 7 (2026-05-08) 부터 메뉴의 6개 항목이 모두 활성화.
-
-    Stage 5: speed 활성화. Stage 6: zoom 활성화. Stage 7: broll 활성화.
-    """
+    """Stage D 부터 메뉴는 4개 항목 — 자르기는 트랙 lane 으로 이동."""
     cap_lane = widget.lane_for_type("caption")
     cap_lane.request_add_at.emit(3_000)
     menu = widget._last_menu
@@ -51,8 +47,7 @@ def test_all_menu_items_enabled(widget, qtbot):
     actions = [a for a in menu.actions() if not a.isSeparator()]
     assert all(a.isEnabled() for a in actions), \
         f"disabled actions: {[a.text() for a in actions if not a.isEnabled()]}"
-    # 메뉴 항목이 정확히 6개 — 캡션 / 자르기(한점) / 자르기(구간) / 배속 / 줌 / 곁들임.
-    assert len(actions) == 6
+    assert len(actions) == 4
     menu.close()
 
 
@@ -67,35 +62,13 @@ def test_clicking_caption_emits_request_add(widget, qtbot):
     menu.close()
 
 
-def test_clicking_cut_splice_emits_request_add(widget, qtbot):
-    cap_lane = widget.lane_for_type("caption")
-    cap_lane.request_add_at.emit(2_500)
-    menu = widget._last_menu
-    splice_action = next(a for a in menu.actions() if "한 점" in a.text())
-    with qtbot.waitSignal(widget.request_add, timeout=500) as blocker:
-        splice_action.trigger()
-    assert blocker.args == ["cut_splice", 2_500]
-    menu.close()
-
-
-def test_clicking_cut_range_emits_request_add(widget, qtbot):
-    cap_lane = widget.lane_for_type("caption")
-    cap_lane.request_add_at.emit(4_000)
-    menu = widget._last_menu
-    range_action = next(a for a in menu.actions() if "구간" in a.text())
-    with qtbot.waitSignal(widget.request_add, timeout=500) as blocker:
-        range_action.trigger()
-    assert blocker.args == ["cut_range", 4_000]
-    menu.close()
-
-
 def test_right_click_on_speed_lane_shows_same_menu(widget, qtbot):
-    """speed lane 우클릭이라도 메뉴는 동일 — 모든 type 항목 노출."""
+    """speed lane 우클릭이라도 메뉴는 동일 — 4개 항목."""
     speed_lane = widget.lane_for_type("speed")
     assert speed_lane is not None
     speed_lane.request_add_at.emit(1_000)
     menu = widget._last_menu
     labels = [a.text() for a in menu.actions() if not a.isSeparator()]
     assert any("캡션" in l for l in labels)
-    assert any("자르기" in l for l in labels)
+    assert any("배속" in l for l in labels)
     menu.close()

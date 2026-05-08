@@ -422,12 +422,8 @@ class VideoTab(QWidget):
         if self.is_edit_mode_on() and k == Qt.Key_T and m == Qt.NoModifier:
             self._add_effect_at("caption", self._get_position_ms())
             event.accept(); return
-        if self.is_edit_mode_on() and k == Qt.Key_C and m == Qt.NoModifier:
-            self._add_effect_at("cut_splice", self._get_position_ms())
-            event.accept(); return
-        if self.is_edit_mode_on() and k == Qt.Key_C and m == Qt.ShiftModifier:
-            self._add_effect_at("cut_range", self._get_position_ms())
-            event.accept(); return
+        # 기존 C / Shift+C (cut 효과 추가) 는 새 트랙 모델에서 제거됨 (Stage D).
+        # 자르기는 트랙 lane 의 우클릭 메뉴 또는 단축키 S 로.
         # Stage B 단축키 — S = 현재 위치에서 트랙 자르기, Delete = 선택된 segment 삭제.
         if self.is_edit_mode_on() and k == Qt.Key_S and m == Qt.NoModifier:
             if self._split_at_current_position():

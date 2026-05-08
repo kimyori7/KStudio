@@ -166,12 +166,14 @@ class VideoTimeline(QWidget):
         layout.setSpacing(0)
 
         self.slider_lane = TimelineSliderLane()
+        # TrimMarkerLane 은 새 segment 모델에서 양 끝 자르기를 첫/끝 segment 의
+        # src_in/out 로 흡수하므로 제거. 하위 호환을 위해 attribute 는 남겨두지만 layout 에 미추가.
         self.trim_marker_lane = TrimMarkerLane()
+        self.trim_marker_lane.hide()
         self.video_track_lane = VideoTrackLane()
         self.effect_lanes = EffectLanesWidget()
 
         layout.addWidget(self.slider_lane)
-        layout.addWidget(self.trim_marker_lane)
         layout.addWidget(self.video_track_lane)
         layout.addWidget(self.effect_lanes)
 
