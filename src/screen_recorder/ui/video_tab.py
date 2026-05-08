@@ -122,6 +122,9 @@ class VideoTab(QWidget):
         self.player.duration_changed.connect(self.duration_resolved.emit)
         self.player.duration_changed.connect(self.timeline.set_duration_ms)
         self.player.duration_changed.connect(self.controls.set_duration_ms)
+        # 첫 segment 의 src_duration_ms 가 비어 있으면 (init 시 duration_ms=0 로 들어온 경우)
+        # player 가 실제 길이 로드한 시점에 채워주고 segment_ctrl·track lane 갱신.
+        self.player.duration_changed.connect(self._on_player_duration_for_segment)
         self.player.playing_changed.connect(self.controls.set_playing)
 
         # 컨트롤 → 모델
@@ -300,6 +303,30 @@ class VideoTab(QWidget):
             self._thumb_service.request(self._thumb_request_cls(
                 segment_id=seg.id, src=seg.src, ms=seg.src_in_ms,
             ))
+
+    def _on_player_duration_for_segment(self, ms: int) -> None:
+        """player 가 실제 길이를 로드한 시점에 첫 segment 의 src_duration_ms 채움.
+
+        영상 탭 init 시 duration_ms=0 으로 들어오면 ensure_default_track 이 만든 segment
+        의 src_duration_ms 도 0. → duration_ms 가 0 이라 트랙 박스가 안 그려짐 / segment
+        playback 도 끝점 검출 못 함. player 의 duration_changed 가 양수로 도착할 때
+        보정해 트랙 lane / segment_ctrl / 썸네일 동기화.
+        """
+        if ms <= 0:
+            return
+        from dataclasses import replace
+        sc = self._edit_controller.sidecar()
+        if not sc.video_track:
+            return
+        first = sc.video_track[0]
+        if first.src_duration_ms > 0:
+            return
+        # 직접 mutate (history push 안 함 — duration 보정은 사용자 액션 아님).
+        sc.video_track[0] = replace(first, src_duration_ms=int(ms))
+        # 후속 갱신: segment_ctrl 새 길이 emit, track lane 다시 그림, 썸네일 재요청.
+        self._segment_ctrl.set_sidecar(sc)
+        self.timeline.set_sidecar(sc)
+        self._request_all_thumbnails(sc)
 
     # ---------- Stage B: 트랙 segment 흐름 ----------
     def _on_segment_selected(self, segment_id: str) -> None:
