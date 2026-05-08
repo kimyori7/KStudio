@@ -84,13 +84,14 @@ class EffectLane(QWidget):
             return 0
         body_width = max(1, self.width() - _HEADER_WIDTH)
         rel = max(0, min(body_width, x - _HEADER_WIDTH))
-        return int(rel * self._duration_ms / body_width)
+        return int(round(rel * self._duration_ms / body_width))
 
     def _ms_to_x(self, ms: int) -> int:
         if self._duration_ms <= 0:
             return _HEADER_WIDTH
         body_width = max(1, self.width() - _HEADER_WIDTH)
-        return _HEADER_WIDTH + int(ms * body_width / self._duration_ms)
+        ratio = max(0.0, min(1.0, ms / self._duration_ms))
+        return _HEADER_WIDTH + int(round(ratio * body_width))
 
     # ---------- paint ----------
     def paintEvent(self, event: QPaintEvent) -> None:

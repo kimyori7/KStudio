@@ -29,9 +29,9 @@ def test_pixel_for_ms_zero_at_header_edge(lane):
 
 
 def test_pixel_for_ms_full_at_right_edge(lane):
-    """ms=duration 은 위젯 오른쪽 끝(width-1)에 위치."""
+    """ms=duration 은 위젯 오른쪽 끝과 정확히 일치 (formula 결정적)."""
     px = lane._pixel_for_ms(10_000)
-    assert px >= lane.width() - 2   # 라운딩 1px 허용
+    assert px == lane.width()
 
 
 def test_click_in_body_emits_seek_request(lane, qtbot):
