@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from .effect_lane import _HEADER_WIDTH
+from .effect_lanes_widget import EffectLanesWidget
 from .trim_lane import TrimLane
 
 
@@ -141,3 +142,98 @@ class TrimMarkerLane(TrimLane):
         if int(event.position().x()) < _HEADER_WIDTH:
             return
         super().mousePressEvent(event)
+
+
+class VideoTimeline(QWidget):
+    """슬라이더·트림·효과 5종 lane 을 한 시간축으로 묶은 컨테이너.
+
+    OFF: 슬라이더만 보임. ON: 7줄 모두 보임.
+    """
+
+    seek_request = Signal(int)              # ms — slider/trim 어디서든 시크
+    trim_changed = Signal(int, int)         # (in_ms, out_ms) — drag 후 (swap 적용)
+    request_add = Signal(str, int)          # (effect_type, ms)
+    effect_selected = Signal(object)        # Effect | None
+    effect_changed = Signal(object)         # Effect
+    effect_deleted = Signal(str)            # effect_id
+
+    def __init__(self) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.slider_lane = TimelineSliderLane()
+        self.trim_marker_lane = TrimMarkerLane()
+        self.effect_lanes = EffectLanesWidget()
+
+        layout.addWidget(self.slider_lane)
+        layout.addWidget(self.trim_marker_lane)
+        layout.addWidget(self.effect_lanes)
+
+        # ---- 시그널 fan-in ----
+        self.slider_lane.seek_request.connect(self.seek_request.emit)
+        self.trim_marker_lane.seek_request.connect(self.seek_request.emit)
+        self.trim_marker_lane.in_changed.connect(self._on_trim_in_changed)
+        self.trim_marker_lane.out_changed.connect(self._on_trim_out_changed)
+        self.effect_lanes.request_add.connect(self.request_add.emit)
+        self.effect_lanes.effect_selected.connect(self.effect_selected.emit)
+        self.effect_lanes.effect_changed.connect(self.effect_changed.emit)
+        self.effect_lanes.effect_deleted.connect(self.effect_deleted.emit)
+
+        # 초기엔 OFF — 슬라이더만 보임
+        self.trim_marker_lane.hide()
+        self.effect_lanes.hide()
+
+    # ---------- 외부 API ----------
+    def set_duration_ms(self, ms: int) -> None:
+        ms = max(0, int(ms))
+        self.slider_lane.set_duration_ms(ms)
+        self.trim_marker_lane.set_duration_ms(ms)
+        self.effect_lanes.set_duration_ms(ms)
+
+    def set_position_ms(self, ms: int) -> None:
+        ms = max(0, int(ms))
+        self.slider_lane.set_position_ms(ms)
+        self.trim_marker_lane.set_position_ms(ms)
+        self.effect_lanes.set_position_ms(ms)
+
+    def set_sidecar(self, sidecar) -> None:
+        self.effect_lanes.set_sidecar(sidecar)
+        # trim 도 사이드카에서 가져와 표시
+        t = sidecar.trim
+        in_ms = t.in_ms if t.in_ms > 0 else None
+        out_ms = t.out_ms if t.out_ms > 0 else None
+        self.trim_marker_lane.set_in_ms(in_ms)
+        self.trim_marker_lane.set_out_ms(out_ms)
+
+    def set_trim(self, in_ms: int | None, out_ms: int | None) -> None:
+        """외부에서 트림 표시값을 직접 갱신 (사이드카 흐름 외)."""
+        self.trim_marker_lane.set_in_ms(in_ms)
+        self.trim_marker_lane.set_out_ms(out_ms)
+
+    def set_edit_mode(self, on: bool) -> None:
+        self.trim_marker_lane.setVisible(on)
+        self.effect_lanes.setVisible(on)
+
+    # ---------- 내부 ----------
+    def _on_trim_in_changed(self, ms: int) -> None:
+        cur_out = self.trim_marker_lane.out_ms()
+        in_ms, out_ms = self._normalized(ms, cur_out)
+        self.trim_marker_lane.set_in_ms(in_ms)
+        self.trim_marker_lane.set_out_ms(out_ms)
+        self.trim_changed.emit(in_ms or 0, out_ms or 0)
+
+    def _on_trim_out_changed(self, ms: int) -> None:
+        cur_in = self.trim_marker_lane.in_ms()
+        in_ms, out_ms = self._normalized(cur_in, ms)
+        self.trim_marker_lane.set_in_ms(in_ms)
+        self.trim_marker_lane.set_out_ms(out_ms)
+        self.trim_changed.emit(in_ms or 0, out_ms or 0)
+
+    @staticmethod
+    def _normalized(in_ms: int | None, out_ms: int | None) -> tuple[int | None, int | None]:
+        """둘 다 있으면 swap, 한쪽만 있으면 그대로."""
+        if in_ms is not None and out_ms is not None and out_ms < in_ms:
+            return out_ms, in_ms
+        return in_ms, out_ms
