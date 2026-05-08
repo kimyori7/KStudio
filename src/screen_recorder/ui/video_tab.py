@@ -1,6 +1,7 @@
 """영상 탭 — PlayerWidget + PlayerControls + 곰/팟식 단축키."""
 from __future__ import annotations
 from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import Qt, QEvent, QTimer, Signal
 from PySide6.QtGui import QCursor, QImage, QKeyEvent
@@ -57,6 +58,13 @@ class VideoTab(QWidget):
         # 영상 플레이어 키 — main_window 가 settings 의 인스턴스를 그대로 넘김.
         # 사용자가 환경설정에서 키를 바꾸면 같은 인스턴스가 자동으로 반영.
         self._player_hotkeys = player_hotkeys or PlayerHotkeys()
+
+        # 배속 구간 진입/이탈 추적 (Stage 5 — preview).
+        # 현재 활성 SpeedEffect 의 id (없으면 None). position_changed 시 갱신해
+        # 진입 시 player.set_playback_rate(rate), 이탈 시 1.0 으로 복원.
+        self._active_speed_id: Optional[str] = None
+        # 'mute' audio 모드 진입 시 이전 mute 상태를 보존했다가 이탈 시 복원.
+        self._speed_prev_muted: Optional[bool] = None
 
         # 프레임 스킵 누적 — D/F 키와 ◀/▶ 버튼으로 프레임 단위 이동할 때마다 누적,
         # 다른 종류의 시크(슬라이더 드래그, 화살표 초단위 이동, Home/End) 가 일어나면 0 으로 리셋.
@@ -164,6 +172,10 @@ class VideoTab(QWidget):
             )
         )
 
+        # ---- Speed preview (Stage 5) ----
+        # position_changed 마다 활성 SpeedEffect 를 찾아 진입/이탈 시 playback rate 전환.
+        self.player.position_changed.connect(self._on_position_for_speed)
+
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label
@@ -243,6 +255,42 @@ class VideoTab(QWidget):
 
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
+
+    # ---------- Speed preview (Stage 5) ----------
+    def _on_position_for_speed(self, ms: int) -> None:
+        """현재 재생 위치 → 활성 SpeedEffect 결정.
+
+        구간 진입: player.set_playback_rate(eff.rate). audio='mute' 면 set_muted(True),
+        이탈 시: rate=1.0 으로 복원, mute 도 이전 상태로 복원.
+
+        v1: Qt 의 setPlaybackRate 가 자동으로 atempo 를 적용하므로 'atempo' / 'auto' 는
+        구분 없이 같은 동작 (rate 만 설정). 'mute' 만 set_muted 로 별도 처리.
+        """
+        active_eff = None
+        for eff in self.sidecar().effects:
+            if eff.type != "speed":
+                continue
+            if eff.in_ms <= ms < eff.out_ms:
+                active_eff = eff
+                break
+        if active_eff is not None:
+            if self._active_speed_id != active_eff.id:
+                # 새 구간 진입 — rate 와 mute 적용. 이전에 다른 구간 활성이었으면
+                # 이전 mute 상태는 그대로 유지(이미 보존되어 있음).
+                self.player.set_playback_rate(active_eff.rate)
+                if active_eff.audio == "mute":
+                    if self._speed_prev_muted is None:
+                        self._speed_prev_muted = self.player.is_muted()
+                    self.player.set_muted(True)
+                self._active_speed_id = active_eff.id
+        else:
+            if self._active_speed_id is not None:
+                # 구간 이탈 — rate 와 mute 모두 복원.
+                self.player.set_playback_rate(1.0)
+                if self._speed_prev_muted is not None:
+                    self.player.set_muted(self._speed_prev_muted)
+                    self._speed_prev_muted = None
+                self._active_speed_id = None
 
     # ---------- 단축키 ----------
     def keyPressEvent(self, event: QKeyEvent) -> None:
