@@ -18,7 +18,7 @@ _TYPE_LABEL = {
     "speed":   "배속",
     "zoom":    "줌",
     "broll":   "곁들임 영상",   # B-roll: 원본 영상 위에 다른 영상을 띄우는 효과
-    "cut":     "컷",
+    "cut":     "자르기 (중간)",   # 자르기 lane 과 통일된 이름. 양 끝 자르기 = TrimMarkerLane.
 }
 _TYPE_COLOR = {
     "caption": "#3b82f6",   # 파랑
@@ -128,8 +128,8 @@ class EffectLanesWidget(QWidget):
     _MENU_ITEMS: list[tuple[str, str, bool, str]] = [
         # (label, effect_type, enabled, tooltip)
         ("+ 캡션 추가",                "caption",    True,  ""),
-        ("+ 컷 (splice) 추가",         "cut_splice", True,  "현재 위치를 잘라 붙이기 (길이 0)"),
-        ("+ 컷 (구간) 추가",            "cut_range",  True,  "구간 자르기 — 1초 길이로 시작"),
+        ("+ 자르기 (한 점)",            "cut_splice", True,  "현재 위치에서 잘라 붙이기 (길이 0) — 양쪽이 한 프레임에서 끊겨 이어짐"),
+        ("+ 자르기 (구간)",             "cut_range",  True,  "구간 잘라내기 — 1초 길이로 시작, 인스펙터에서 길이 조정"),
         ("+ 배속 추가 (Stage 5)",       "speed",      False, "다음 단계에서 구현"),
         ("+ 줌 추가 (Stage 6)",         "zoom",       False, "다음 단계에서 구현"),
         ("+ 곁들임 영상 추가 (Stage 7)", "broll",      False, "다음 단계에서 구현"),

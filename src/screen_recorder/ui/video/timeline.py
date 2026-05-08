@@ -135,7 +135,7 @@ class TrimMarkerLane(TrimLane):
         p.fillRect(0, 0, _HEADER_WIDTH, self.height(), _HEADER_BG)
         p.setPen(_HEADER_TEXT)
         p.drawText(6, 0, _HEADER_WIDTH - 8, self.height(),
-                   Qt.AlignVCenter | Qt.AlignLeft, "✂ 자르기")
+                   Qt.AlignVCenter | Qt.AlignLeft, "✂ 자르기 (양끝)")
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # 헤더 클릭은 무시 (베이스의 ms_for_pixel 이 음수→0 으로 clamp 돼

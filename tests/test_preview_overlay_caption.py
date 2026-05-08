@@ -75,6 +75,70 @@ def test_caption_outside_window_not_rendered(qtbot):
     assert max(pixels) <= 5
 
 
+def test_drag_on_anchored_caption_converts_to_free(qtbot):
+    """anchor='middle-center' 캡션을 화면에서 드래그 → release 시 anchor='free' 로 전환된 effect emit."""
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    eff = CaptionEffect(in_ms=2000, out_ms=4000, text="HELLO",
+                         position=Position(anchor="middle-center"))
+    sc = Sidecar(source_path="x", source_hash="h", trim=Trim(in_ms=0, out_ms=10_000),
+                 effects=[eff])
+    ov.set_sidecar(sc)
+    ov.set_position_ms(3000)
+    ov.resize(640, 360)
+    # 보이는 캡션을 paint 해 bbox 등록.
+    _render_to_image(ov, 640, 360)
+    assert eff.id in ov._caption_bboxes, "anchor='middle-center' 캡션도 hit-test 등록되어야"
+    bbox = ov._caption_bboxes[eff.id]
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QEvent
+    center = bbox.center()
+    target = QPoint(center.x() + 120, center.y() + 80)
+    # press
+    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(center),
+                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    ov.mousePressEvent(press)
+    assert ov._drag_caption_id == eff.id
+    # move
+    move = QMouseEvent(QEvent.MouseMove, QPointF(target),
+                       Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+    ov.mouseMoveEvent(move)
+    received: list = []
+    ov.caption_position_changed.connect(received.append)
+    # release
+    release = QMouseEvent(QEvent.MouseButtonRelease, QPointF(target),
+                          Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+    ov.mouseReleaseEvent(release)
+    assert len(received) == 1
+    new_eff = received[0]
+    assert new_eff.position.anchor == "free"
+    # 좌표는 정규화 (0~1) 범위 안.
+    assert 0.0 <= new_eff.position.offset_x <= 1.0
+    assert 0.0 <= new_eff.position.offset_y <= 1.0
+
+
+def test_hover_over_caption_sets_open_hand_cursor(qtbot):
+    """캡션 위 호버 시 OpenHand 커서로 변경 (드래그 가능 시각화)."""
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    eff = CaptionEffect(in_ms=2000, out_ms=4000, text="HELLO",
+                         position=Position(anchor="middle-center"))
+    sc = Sidecar(source_path="x", source_hash="h", trim=Trim(in_ms=0, out_ms=10_000),
+                 effects=[eff])
+    ov.set_sidecar(sc)
+    ov.set_position_ms(3000)
+    ov.resize(640, 360)
+    _render_to_image(ov, 640, 360)
+    bbox = ov._caption_bboxes[eff.id]
+    from PySide6.QtCore import QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+    move = QMouseEvent(QEvent.MouseMove, QPointF(bbox.center()),
+                       Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    ov.mouseMoveEvent(move)
+    assert ov.cursor().shape() == Qt.OpenHandCursor
+
+
 def test_fade_alpha_at_start(qtbot):
     """fade.in_ms=400, position=in_ms+100 → alpha 약 25%."""
     ov = PreviewOverlay()

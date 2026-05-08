@@ -20,7 +20,7 @@ def widget(qtbot):
 
 
 def test_right_click_on_caption_lane_shows_menu(widget, qtbot):
-    """캡션 lane 우클릭 → 6항목 메뉴 (캡션·컷 splice·컷 구간·배속·줌·곁들임)."""
+    """캡션 lane 우클릭 → 6항목 메뉴 (캡션·자르기 한점·자르기 구간·배속·줌·곁들임)."""
     cap_lane = widget.lane_for_type("caption")
     assert cap_lane is not None
 
@@ -31,8 +31,8 @@ def test_right_click_on_caption_lane_shows_menu(widget, qtbot):
     actions = menu.actions()
     labels = [a.text() for a in actions if not a.isSeparator()]
     assert any("캡션" in l for l in labels)
-    assert any("컷 (splice)" in l for l in labels)
-    assert any("컷 (구간)" in l for l in labels)
+    assert any("자르기 (한 점)" in l for l in labels)
+    assert any("자르기 (구간)" in l for l in labels)
     assert any("배속" in l for l in labels)
     assert any("줌" in l for l in labels)
     assert any("곁들임" in l for l in labels)
@@ -67,7 +67,7 @@ def test_clicking_cut_splice_emits_request_add(widget, qtbot):
     cap_lane = widget.lane_for_type("caption")
     cap_lane.request_add_at.emit(2_500)
     menu = widget._last_menu
-    splice_action = next(a for a in menu.actions() if "splice" in a.text())
+    splice_action = next(a for a in menu.actions() if "한 점" in a.text())
     with qtbot.waitSignal(widget.request_add, timeout=500) as blocker:
         splice_action.trigger()
     assert blocker.args == ["cut_splice", 2_500]
@@ -93,5 +93,5 @@ def test_right_click_on_speed_lane_shows_same_menu(widget, qtbot):
     menu = widget._last_menu
     labels = [a.text() for a in menu.actions() if not a.isSeparator()]
     assert any("캡션" in l for l in labels)
-    assert any("컷" in l for l in labels)
+    assert any("자르기" in l for l in labels)
     menu.close()
