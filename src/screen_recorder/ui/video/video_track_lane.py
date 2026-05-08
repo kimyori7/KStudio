@@ -7,7 +7,8 @@ from typing import Optional
 
 from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import (
-    QAction, QColor, QContextMenuEvent, QImage, QMouseEvent, QPainter, QPen,
+    QAction, QColor, QContextMenuEvent, QDragEnterEvent, QDragMoveEvent,
+    QDropEvent, QImage, QMouseEvent, QPainter, QPen,
 )
 from PySide6.QtWidgets import QMenu, QWidget
 
@@ -41,10 +42,12 @@ class VideoTrackLane(QWidget):
     request_split = Signal(str, int)        # (segment_id, at_local_ms)
     request_delete = Signal(str)            # segment_id
     request_insert_at = Signal(int)         # at_idx (segment 사이 또는 끝)
+    request_insert_files = Signal(list, int)   # (paths: list[str], at_idx) — 드래그-드롭
 
     def __init__(self) -> None:
         super().__init__()
         self.setMinimumHeight(_BOX_HEIGHT + 8)
+        self.setAcceptDrops(True)   # 외부 / 라이브러리 드래그-드롭 활성화
         self._segments: list[VideoSegment] = []
         self._duration_ms: int = 0
         self._selected_id: Optional[str] = None
@@ -52,6 +55,8 @@ class VideoTrackLane(QWidget):
         self._pending_select: Optional[str] = None
         # 마지막 popup 한 메뉴 — 테스트 검사용 (UI 흐름엔 필수 아님).
         self._last_menu: Optional[QMenu] = None
+        # 드롭 indicator x 좌표 — None 이면 안 그림.
+        self._drop_indicator_x: Optional[int] = None
 
     # ---------- public API ----------
     def set_segments(self, segments: list[VideoSegment]) -> None:
@@ -138,6 +143,13 @@ class VideoTrackLane(QWidget):
             p.drawRect(r)
             # duration 라벨 (좌하단).
             self._draw_duration_label(p, r, box["duration_ms"])
+        # 드롭 indicator (수직 흰 선) — drag-drop 중에만 그림.
+        if self._drop_indicator_x is not None:
+            pen = QPen(QColor(255, 255, 255, 230))
+            pen.setWidth(3)
+            p.setPen(pen)
+            ix = self._drop_indicator_x
+            p.drawLine(ix, 4, ix, self.height() - 4)
 
     def _draw_duration_label(self, p: QPainter, r: QRect, dur_ms: int) -> None:
         secs = dur_ms / 1000.0
@@ -230,3 +242,48 @@ class VideoTrackLane(QWidget):
             if r.contains(x, r.center().y()):
                 return i + 1
         return len(boxes)
+
+    # ---------- drag-drop (Stage B Task B5) ----------
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        x = int(event.position().x())
+        boxes = self._segment_rects()
+        # drop indicator 위치 — insert 인덱스 기준 사각형 사이.
+        idx = self._x_to_insert_index(x, boxes)
+        if idx <= 0:
+            ind_x = boxes[0]["rect"].left() if boxes else _HEADER_WIDTH
+        elif idx >= len(boxes):
+            ind_x = (boxes[-1]["rect"].right() + 1) if boxes else _HEADER_WIDTH
+        else:
+            ind_x = boxes[idx]["rect"].left()
+        self._drop_indicator_x = ind_x
+        self.update()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._drop_indicator_x = None
+        self.update()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
+        if not paths:
+            event.ignore()
+            return
+        x = int(event.position().x())
+        boxes = self._segment_rects()
+        idx = self._x_to_insert_index(x, boxes)
+        self._drop_indicator_x = None
+        self.update()
+        event.acceptProposedAction()
+        self.request_insert_files.emit(paths, idx)

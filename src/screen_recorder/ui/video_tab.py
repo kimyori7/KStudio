@@ -155,6 +155,7 @@ class VideoTab(QWidget):
         track.request_split.connect(self._edit_controller.split_segment)
         track.request_delete.connect(self._edit_controller.delete_segment)
         track.request_insert_at.connect(self._on_track_insert_at)
+        track.request_insert_files.connect(self._on_track_insert_files)
         track.segment_selected.connect(self._on_segment_selected)
 
         self.player.load(path)
@@ -314,6 +315,14 @@ class VideoTab(QWidget):
                 self.player.seek_ms(int(cursor_ms))
                 return
             cursor_ms += seg.duration_ms
+
+    def _on_track_insert_files(self, paths: list, idx: int) -> None:
+        """드래그-드롭 / 라이브러리 드롭 → 여러 파일을 idx 부터 순서대로 삽입."""
+        for i, p in enumerate(paths):
+            seg = self._build_segment_for_path(str(p))
+            if seg is None:
+                continue
+            self._edit_controller.insert_segment(at_idx=int(idx) + i, segment=seg)
 
     def _on_track_insert_at(self, idx: int) -> None:
         """트랙의 idx 위치에 영상/이미지 파일을 다이얼로그로 선택해 삽입."""
