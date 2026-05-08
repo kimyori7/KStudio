@@ -158,6 +158,23 @@ def _coerce_nested(f, raw: Any) -> Any:
     return raw
 
 
+def ensure_default_track(sidecar: Sidecar, source_duration_ms: int) -> None:
+    """video_track 이 비어 있으면 source_path 가 가리키는 영상 1개 segment 로 채움.
+
+    이미 segment 가 있으면 no-op. 영상 첫 로드 시 호출 (사이드카가 새로 생성됐거나
+    v1 폐기 후 빈 상태일 때 단일 클립 트랙을 자연스럽게 시작).
+    """
+    if sidecar.video_track:
+        return
+    sidecar.video_track.append(VideoSegment(
+        src=sidecar.source_path,
+        src_in_ms=0,
+        src_out_ms=0,
+        src_duration_ms=int(max(0, source_duration_ms)),
+        media_kind="video",
+    ))
+
+
 # ---- file I/O ----
 def save_atomic(path: Path, sc: Sidecar) -> None:
     """JSON 직렬화 후 임시파일 → rename. 저장 중 프로세스 죽어도 기존 파일 보존."""
