@@ -63,9 +63,12 @@ def test_build_args_with_caption_adds_png_input():
 
 
 def test_build_args_unsupported_effect_raises():
-    """speed/zoom/broll 은 NotImplementedError."""
-    from screen_recorder.effects.types.speed import SpeedEffect
-    sc = Sidecar(effects=[SpeedEffect(in_ms=0, out_ms=1000, rate=2.0)])
+    """zoom/broll 은 여전히 NotImplementedError (Stage 6, 7 에서 활성화 예정).
+
+    Stage 5 에서 speed 가 지원 추가되어 ZoomEffect 로 회귀 테스트 변경.
+    """
+    from screen_recorder.effects.types.zoom import ZoomEffect
+    sc = Sidecar(effects=[ZoomEffect(in_ms=0, out_ms=1000)])
     with pytest.raises(NotImplementedError):
         build_export_args(
             sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
