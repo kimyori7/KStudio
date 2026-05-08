@@ -71,6 +71,12 @@ def build_export_args(
     # 1) 결합 시간축 segment 리스트
     segments = build_combined_timeline(int(main_duration_ms), cuts)
 
+    # 1.5) sidecar.trim 적용 — main segment 만 clip, insert 는 그대로.
+    trim_in = max(0, int(sidecar.trim.in_ms))
+    trim_out = int(sidecar.trim.out_ms) if sidecar.trim.out_ms > 0 else int(main_duration_ms)
+    if trim_in > 0 or trim_out < main_duration_ms:
+        segments = _apply_trim_to_main_segments(segments, trim_in, trim_out)
+
     # 2) 캡션 PNG 생성
     png_dir_path = Path(png_dir) if png_dir is not None else Path(tempfile.mkdtemp(prefix="kstudio_export_"))
     png_paths: list[Path] = []
@@ -172,3 +178,46 @@ def build_export_args(
     ])
 
     return argv, png_paths
+
+
+def _apply_trim_to_main_segments(
+    segments: list,
+    trim_in_ms: int,
+    trim_out_ms: int,
+) -> list:
+    """main segment 의 source_start/end 를 [trim_in, trim_out] 으로 clip.
+    범위 밖 main segment 는 제거. insert segment 는 그대로 통과.
+    combined_start/end 는 재계산.
+    """
+    from ..effects.timeline import TimelineSegment
+    out: list = []
+    combined_cursor = 0
+    for seg in segments:
+        if seg.source == "insert":
+            length = seg.combined_end_ms - seg.combined_start_ms
+            out.append(TimelineSegment(
+                combined_start_ms=combined_cursor,
+                combined_end_ms=combined_cursor + length,
+                source="insert",
+                source_id=seg.source_id,
+                source_start_ms=seg.source_start_ms,
+                source_end_ms=seg.source_end_ms,
+            ))
+            combined_cursor += length
+            continue
+        # main: trim 범위와 교집합
+        new_start = max(seg.source_start_ms, trim_in_ms)
+        new_end = min(seg.source_end_ms, trim_out_ms)
+        if new_end <= new_start:
+            continue
+        length = new_end - new_start
+        out.append(TimelineSegment(
+            combined_start_ms=combined_cursor,
+            combined_end_ms=combined_cursor + length,
+            source="main",
+            source_id=None,
+            source_start_ms=new_start,
+            source_end_ms=new_end,
+        ))
+        combined_cursor += length
+    return out
