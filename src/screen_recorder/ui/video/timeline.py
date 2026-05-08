@@ -168,7 +168,9 @@ class VideoTimeline(QWidget):
         self.slider_lane = TimelineSliderLane()
         # TrimMarkerLane 은 새 segment 모델에서 양 끝 자르기를 첫/끝 segment 의
         # src_in/out 로 흡수하므로 제거. 하위 호환을 위해 attribute 는 남겨두지만 layout 에 미추가.
+        # parent 를 self 로 지정해 별도 top-level 창으로 뜨지 않도록 보장 (회귀 fix).
         self.trim_marker_lane = TrimMarkerLane()
+        self.trim_marker_lane.setParent(self)
         self.trim_marker_lane.hide()
         self.video_track_lane = VideoTrackLane()
         self.effect_lanes = EffectLanesWidget()
@@ -223,7 +225,9 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.set_out_ms(out_ms)
 
     def set_edit_mode(self, on: bool) -> None:
-        self.trim_marker_lane.setVisible(on)
+        # trim_marker_lane 은 Stage D 에서 layout 에서 제외됨 (segment 트랙으로 흡수).
+        # parent 없는 widget 이라 setVisible(True) 하면 별도 top-level 창으로 떠 버리는 회귀.
+        # → 토글 대상에서 빼고 영구히 숨김 유지.
         self.video_track_lane.setVisible(on)
         self.effect_lanes.setVisible(on)
 
