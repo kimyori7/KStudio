@@ -1067,7 +1067,7 @@ class MainWindow(QMainWindow):
             if entry_id is not None:
                 entry = self.library_model.get(entry_id)
                 if entry is not None and entry.filmstrip:
-                    widget.controls.trim_lane.set_filmstrip(entry.filmstrip)
+                    widget.timeline.trim_marker_lane.set_filmstrip(entry.filmstrip)
                 # duration 이 이미 확정돼 있으면 추출 시작 (영상 라이브러리에서 다시 열기 등).
                 if entry is not None and entry.duration_ms > 0 and not entry.filmstrip:
                     self._start_filmstrip_extraction(entry_id)
@@ -2988,7 +2988,6 @@ class MainWindow(QMainWindow):
 
         cur = self.tab_area.currentWidget()
         if isinstance(cur, VideoTab):
-            cur.controls.set_cut_button_enabled(False)
             self._active_trim_src_widget = cur
         else:
             self._active_trim_src_widget = None
@@ -3020,8 +3019,7 @@ class MainWindow(QMainWindow):
 
         if isinstance(self._active_trim_src_widget, VideoTab):
             try:
-                self._active_trim_src_widget.controls.clear_trim()
-                self._active_trim_src_widget.controls.set_cut_button_enabled(True)
+                self._active_trim_src_widget._edit_controller.update_trim(0, 0)
             except RuntimeError:
                 pass
         self._reset_trim_state()
@@ -3038,10 +3036,8 @@ class MainWindow(QMainWindow):
         from .toast import show_toast
         show_toast(self, f"✂ 자르기 실패 — {msg}", duration_ms=3000)
         if isinstance(self._active_trim_src_widget, VideoTab):
-            try:
-                self._active_trim_src_widget.controls.set_cut_button_enabled(True)
-            except RuntimeError:
-                pass
+            # PlayerControls.set_cut_button_enabled 제거됨 (timeline 통합) — no-op.
+            pass
         self._reset_trim_state()
         self.status_bar.state_label.setText("● 대기 중")
         self.status_bar.state_label.setStyleSheet("color: #A0A4AB;")
@@ -3088,7 +3084,7 @@ class MainWindow(QMainWindow):
         entry.filmstrip = images
         widget = self.tab_area.tab_widget_for_entry(entry_id)
         if widget is not None and isinstance(widget, VideoTab):
-            widget.controls.trim_lane.set_filmstrip(images)
+            widget.timeline.trim_marker_lane.set_filmstrip(images)
 
     @Slot(int, str)
     def _on_filmstrip_error(self, entry_id: int, msg: str) -> None:
