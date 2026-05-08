@@ -21,7 +21,15 @@ from PySide6.QtWidgets import QWidget
 
 from ...effects import Sidecar
 from ...effects.types.caption import CaptionEffect, Position
+from ...effects.types.zoom import ZoomEffect
 from . import caption_renderer
+
+
+# Stage 6 — 줌 가이드 사각형 색. 노란/주황 반투명, 헤더 색(_TYPE_COLOR["zoom"]) 과 다른
+# 색을 사용해 lane 막대와 시각적으로 구분 (lane 은 초록, 가이드는 노랑).
+_ZOOM_GUIDE_COLOR = QColor(255, 200, 0, 200)
+_ZOOM_LABEL_BG = QColor(0, 0, 0, 160)
+_ZOOM_LABEL_FG = QColor(255, 255, 255, 240)
 
 
 class PreviewOverlay(QWidget):
@@ -73,6 +81,15 @@ class PreviewOverlay(QWidget):
                 continue
             self._draw_caption(p, eff)
 
+        # Stage 6 — 활성 ZoomEffect 가 있으면 가이드 사각형 그리기.
+        # v1: 실제 픽셀 줌은 export 에서만 적용. 미리보기는 사각형으로 영역 표시.
+        for eff in self._sidecar.effects:
+            if not isinstance(eff, ZoomEffect):
+                continue
+            if not (eff.in_ms <= self._position_ms < eff.out_ms):
+                continue
+            self._draw_zoom_guide(p, eff)
+
     def _draw_caption(self, p: QPainter, c: CaptionEffect) -> None:
         # 드래그 중인 경우 임시 override position 사용
         position = c.position
@@ -108,6 +125,49 @@ class PreviewOverlay(QWidget):
             p, eff_for_draw, position_ms=self._position_ms,
             surface_w=self.width(), surface_h=self.height(),
         )
+
+    # ---------- zoom guide (Stage 6) ----------
+    def _draw_zoom_guide(self, p: QPainter, eff: ZoomEffect) -> None:
+        """활성 ZoomEffect 의 영역을 노란 사각형으로 표시.
+
+        v1: start.cx/cy/scale 만 사용 (정적 줌). 사각형의 중심은 (cx*w, cy*h),
+        크기는 (w/scale, h/scale). 사각형의 일부가 화면 밖으로 나갈 수 있으나
+        Qt 가 자동 클립.
+        """
+        w = max(1, self.width())
+        h = max(1, self.height())
+        scale = max(0.1, float(eff.start.scale))
+        cx_px = float(eff.start.cx) * w
+        cy_px = float(eff.start.cy) * h
+        rect_w = w / scale
+        rect_h = h / scale
+        rx = int(round(cx_px - rect_w / 2.0))
+        ry = int(round(cy_px - rect_h / 2.0))
+        rw = int(round(rect_w))
+        rh = int(round(rect_h))
+        # 외곽선만 (내부는 투명) — 사각형이 영상을 덮지 않도록.
+        pen = QPen(_ZOOM_GUIDE_COLOR)
+        pen.setWidth(2)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(rx, ry, rw, rh)
+        # 라벨 — 사각형 좌상단 안쪽에 작은 박스 + 텍스트.
+        label = f"⊕ {eff.start.scale:g}×"
+        f = QFont()
+        f.setPointSize(9)
+        f.setBold(True)
+        p.setFont(f)
+        fm = p.fontMetrics()
+        text_w = fm.horizontalAdvance(label)
+        text_h = fm.height()
+        pad = 4
+        # 라벨 박스는 사각형의 좌상단 안쪽 (사각형이 너무 작으면 외부도 가능).
+        lx = rx + 2
+        ly = ry + 2
+        p.fillRect(lx, ly, text_w + pad * 2, text_h + pad, _ZOOM_LABEL_BG)
+        p.setPen(_ZOOM_LABEL_FG)
+        p.drawText(lx + pad, ly, text_w + pad, text_h + pad,
+                   Qt.AlignVCenter | Qt.AlignLeft, label)
 
     # ---------- mouse (캡션 드래그 — anchor 무관, 자동으로 free 전환) ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
