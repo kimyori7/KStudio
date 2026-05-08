@@ -237,6 +237,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.register_inspector("caption", CaptionInspector)
         from .video.inspectors.cut_inspector import CutInspector            # NEW
         self.inspector_panel.register_inspector("cut", CutInspector)        # NEW
+        from .video.inspectors.speed_inspector import SpeedInspector        # Stage 5
+        self.inspector_panel.register_inspector("speed", SpeedInspector)    # Stage 5
         self.inspector_dock = QDockWidget("효과 인스펙터", self)
         self.inspector_dock.setObjectName("InspectorDock")
         self.inspector_dock.setWidget(self.inspector_panel)
@@ -246,6 +248,8 @@ class MainWindow(QMainWindow):
         # per-tab 연결 방식은 탭 N 개 열면 N 번 발화해 비활성 탭 사이드카도 덮어쓰는
         # 데이터 무결성 버그를 일으킴 (Stage 2 에서 도입, Stage 3a 에서 최초 노출).
         self.inspector_panel.effect_changed.connect(self._on_inspector_effect_changed)
+        # 인스펙터 내 삭제 버튼(Stage 5+) → 현재 활성 탭의 EditController.remove_effect.
+        self.inspector_panel.effect_deleted.connect(self._on_inspector_effect_deleted)
 
         # 호환성: 기존 코드에서 _left_dock_container 참조 가능 — 더이상 의미 없으나 None 으로 둔다.
         self._left_dock_container = None
@@ -1101,6 +1105,16 @@ class MainWindow(QMainWindow):
         widget.edit_controller().update_sidecar(
             self._patch_sidecar_effect(widget.sidecar(), new_effect)
         )
+
+    def _on_inspector_effect_deleted(self, effect_id: str) -> None:
+        """인스펙터에서 효과 삭제 버튼 클릭 시 현재 활성 VideoTab 의 사이드카에서 제거.
+
+        effect_changed 와 같은 단일 라우팅 패턴 — 탭 전환 후에도 항상 활성 탭에만 적용.
+        """
+        widget = self.tab_area.currentWidget()
+        if not isinstance(widget, VideoTab):
+            return
+        widget.edit_controller().remove_effect(effect_id)
 
     def _patch_sidecar_effect(self, sidecar, new_effect):
         """사이드카에서 같은 id 의 효과를 new_effect 로 교체한 새 Sidecar 반환."""

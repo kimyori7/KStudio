@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from ..core.settings import PlayerHotkeys, PlayerSettings
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
+from ..effects.types.speed import SpeedEffect
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 from .video.timeline import VideoTimeline
@@ -217,9 +218,12 @@ class VideoTab(QWidget):
             if end - start < 100:
                 return False
             eff = CutEffect(in_ms=start, out_ms=end)
-        elif effect_type in ("speed", "zoom", "broll"):
+        elif effect_type == "speed":
+            # 기본 2.0× 배속 — 사용자가 인스펙터에서 자유롭게 변경 가능.
+            eff = SpeedEffect(in_ms=in_ms, out_ms=out_ms, rate=2.0)
+        elif effect_type in ("zoom", "broll"):
             # 미구현 type — 사용자에게 안내만, 사이드카는 변경 안 함.
-            label = {"speed": "배속", "zoom": "줌", "broll": "곁들임 영상"}.get(
+            label = {"zoom": "줌", "broll": "곁들임 영상"}.get(
                 effect_type, effect_type
             )
             self.player.flash_action(f"{label} 효과는 아직 구현 중 (다음 단계)")

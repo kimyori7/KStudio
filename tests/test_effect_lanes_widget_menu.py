@@ -40,15 +40,21 @@ def test_right_click_on_caption_lane_shows_menu(widget, qtbot):
 
 
 def test_unimplemented_items_are_disabled(widget, qtbot):
-    """speed/zoom/broll 메뉴 항목은 disabled."""
+    """zoom/broll 메뉴 항목은 여전히 disabled (Stage 6, 7 에서 활성화 예정).
+
+    Stage 5 (2026-05-08): speed 메뉴 활성화 → 배속은 enabled 로 이동.
+    """
     cap_lane = widget.lane_for_type("caption")
     cap_lane.request_add_at.emit(3_000)
     menu = widget._last_menu
     assert menu is not None
     by_label = {a.text(): a for a in menu.actions() if not a.isSeparator()}
-    for label_substr in ("배속", "줌", "곁들임"):
+    for label_substr in ("줌", "곁들임"):
         match = next(a for k, a in by_label.items() if label_substr in k)
         assert not match.isEnabled()
+    # 배속은 이제 enabled.
+    speed_action = next(a for k, a in by_label.items() if "배속" in k)
+    assert speed_action.isEnabled()
     menu.close()
 
 

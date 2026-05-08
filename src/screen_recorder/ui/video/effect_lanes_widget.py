@@ -10,6 +10,7 @@ from ...effects import Sidecar
 from .caption_lane import CaptionLane
 from .cut_lane import CutLane
 from .effect_lane import EffectLane
+from .speed_lane import SpeedLane
 
 
 # type 별 라벨·색 (spec 의 결정 — 추후 i18n 으로 빠질 수도)
@@ -35,6 +36,7 @@ _LANE_ORDER = ["caption", "speed", "zoom", "broll", "cut"]
 EFFECT_LANE_CLASSES: dict[str, type] = {
     "caption": CaptionLane,
     "cut": CutLane,
+    "speed": SpeedLane,
 }
 
 
@@ -130,7 +132,7 @@ class EffectLanesWidget(QWidget):
         ("+ 캡션 추가",                "caption",    True,  ""),
         ("+ 자르기 (한 점)",            "cut_splice", True,  "현재 위치에서 잘라 붙이기 (길이 0) — 양쪽이 한 프레임에서 끊겨 이어짐"),
         ("+ 자르기 (구간)",             "cut_range",  True,  "구간 잘라내기 — 1초 길이로 시작, 인스펙터에서 길이 조정"),
-        ("+ 배속 추가 (Stage 5)",       "speed",      False, "다음 단계에서 구현"),
+        ("+ 배속 추가",                 "speed",      True,  "구간 배속 — 기본 2.0× 5초"),
         ("+ 줌 추가 (Stage 6)",         "zoom",       False, "다음 단계에서 구현"),
         ("+ 곁들임 영상 추가 (Stage 7)", "broll",      False, "다음 단계에서 구현"),
     ]

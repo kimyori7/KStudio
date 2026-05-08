@@ -20,6 +20,7 @@ class InspectorPanel(QWidget):
     """type → 인스펙터 클래스 매핑 + 현재 효과에 맞는 폼 표시."""
 
     effect_changed = Signal(object)   # Effect — 인스펙터에서 bubble
+    effect_deleted = Signal(str)      # effect_id — 인스펙터의 삭제 버튼이 발화 시 bubble
 
     def __init__(self) -> None:
         super().__init__()
@@ -55,6 +56,10 @@ class InspectorPanel(QWidget):
             return
         inspector.set_effect(effect)
         inspector.effect_changed.connect(self.effect_changed.emit)
+        # effect_deleted 시그널은 모든 인스펙터에 있는 건 아니므로(SpeedInspector 만)
+        # hasattr 로 안전하게 연결.
+        if hasattr(inspector, "effect_deleted"):
+            inspector.effect_deleted.connect(self.effect_deleted.emit)
         self._swap_current(inspector)
 
     def current_inspector(self) -> QWidget:
