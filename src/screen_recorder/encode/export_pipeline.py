@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..effects import Sidecar
-from ..effects.timeline import build_combined_timeline
+from ..effects.timeline import TimelineSegment, build_combined_timeline
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from .caption_png import render_caption_png
@@ -181,16 +181,15 @@ def build_export_args(
 
 
 def _apply_trim_to_main_segments(
-    segments: list,
+    segments: list[TimelineSegment],
     trim_in_ms: int,
     trim_out_ms: int,
-) -> list:
+) -> list[TimelineSegment]:
     """main segment 의 source_start/end 를 [trim_in, trim_out] 으로 clip.
     범위 밖 main segment 는 제거. insert segment 는 그대로 통과.
     combined_start/end 는 재계산.
     """
-    from ..effects.timeline import TimelineSegment
-    out: list = []
+    out: list[TimelineSegment] = []
     combined_cursor = 0
     for seg in segments:
         if seg.source == "insert":
