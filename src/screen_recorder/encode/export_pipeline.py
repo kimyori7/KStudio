@@ -1,14 +1,18 @@
 """export_pipeline — Sidecar + main_duration → ffmpeg argv.
 
 Stage 4c 의 build_combined_timeline 으로 segment 리스트를 받고, 각 segment 별
-trim/setpts/scale → concat → 캡션 PNG overlay 의 filter_complex 빌드.
+trim/setpts/scale → concat → 캡션 PNG overlay → broll PiP overlay 의
+filter_complex 빌드.
 
 지원 효과: trim(사이드카 .trim), cut (insert 포함), caption, speed (Stage 5),
-        zoom (Stage 6, 정적).
-미지원: broll → NotImplementedError.
-미지원 조합: speed + cut(범위/insert) → NotImplementedError (v2 follow-up).
-        zoom + cut(범위/insert) → NotImplementedError (v2 follow-up).
-        zoom + speed → NotImplementedError (v2 follow-up).
+        zoom (Stage 6, 정적), broll PiP (Stage 7).
+미지원 조합:
+  - speed + cut(범위/insert) → NotImplementedError (v2 follow-up).
+  - zoom + cut(범위/insert) → NotImplementedError (v2 follow-up).
+  - zoom + speed → NotImplementedError (v2 follow-up).
+  - broll(fullscreen placement) → NotImplementedError (v2; cut+insert 사용 권장).
+  - broll + cut(범위/insert) / + speed / + zoom → NotImplementedError (v2 follow-up).
+  - broll audio_mix != 'original_only' → NotImplementedError (v2 audio mixing).
 """
 from __future__ import annotations
 import tempfile
@@ -17,6 +21,7 @@ from typing import Optional
 
 from ..effects import Sidecar
 from ..effects.timeline import TimelineSegment, build_combined_timeline
+from ..effects.types.broll import BrollEffect
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
@@ -24,7 +29,7 @@ from ..effects.types.zoom import ZoomEffect
 from .caption_png import render_caption_png
 
 
-_SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom"}
+_SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom", "broll"}
 
 
 def _atempo_chain(rate: float) -> str:
@@ -132,6 +137,22 @@ def _zoom_crop_scale_filter(z: ZoomEffect, surface_w: int, surface_h: int) -> st
     )
 
 
+_BROLL_MARGIN_PX = 8   # PiP 사각형의 화면 가장자리 여백 (preview_overlay 와 일관)
+
+
+def _broll_pip_xy(corner: str, surface_w: int, surface_h: int,
+                   pip_w: int, pip_h: int) -> tuple[int, int]:
+    """PiP 모서리 별 ffmpeg overlay x,y 좌표 (8px 여백). preview_overlay 와 같은 규칙."""
+    m = _BROLL_MARGIN_PX
+    if corner == "top-left":
+        return m, m
+    if corner == "top-right":
+        return surface_w - pip_w - m, m
+    if corner == "bottom-left":
+        return m, surface_h - pip_h - m
+    return surface_w - pip_w - m, surface_h - pip_h - m   # bottom-right (기본)
+
+
 def default_output_path(src: Path) -> Path:
     """원본 폴더에 <src_stem>_edited.mp4. 충돌 시 _edited_2.mp4, _edited_3.mp4 ..."""
     src = Path(src)
@@ -180,6 +201,36 @@ def build_export_args(
     captions = [e for e in sidecar.effects if isinstance(e, CaptionEffect)]
     speeds = [e for e in sidecar.effects if isinstance(e, SpeedEffect)]
     zooms = [e for e in sidecar.effects if isinstance(e, ZoomEffect)]
+    brolls = [e for e in sidecar.effects if isinstance(e, BrollEffect)]
+
+    # 0.7) broll v1 제약 — placement / audio_mix / 다른 효과와의 결합 검증.
+    if brolls:
+        for b in brolls:
+            if b.placement != "pip":
+                raise NotImplementedError(
+                    "fullscreen broll export is v2 — use cut+insert instead "
+                    f"(broll placement={b.placement!r})"
+                )
+            if b.pip is None:
+                raise NotImplementedError(
+                    "broll placement='pip' requires PipConfig (broll.pip is None)"
+                )
+            if b.audio_mix != "original_only":
+                raise NotImplementedError(
+                    f"broll audio_mix={b.audio_mix!r} export is v2 follow-up; "
+                    "v1 supports only 'original_only'"
+                )
+        # broll + range cut / insert 결합은 v2.
+        for c in cuts:
+            if c.out_ms > c.in_ms or c.has_insert:
+                raise NotImplementedError(
+                    "broll+cut combined export is v2 follow-up "
+                    f"(cut: {c.in_ms}-{c.out_ms}, has_insert={c.has_insert})"
+                )
+        if speeds:
+            raise NotImplementedError("broll+speed combined export is v2 follow-up")
+        if zooms:
+            raise NotImplementedError("broll+zoom combined export is v2 follow-up")
 
     # 0.5) speed + cut(non-trivial) 조합은 v2 — 명시적 차단.
     # 기준: range cut (out > in) 또는 insert 가 있는 splice. 단순 splice (in==out, no src) 는
@@ -240,6 +291,13 @@ def build_export_args(
     for i, png in enumerate(png_paths):
         argv.extend(["-i", str(png)])
         png_input_index[i] = next_input
+        next_input += 1
+
+    # broll PiP 입력 — 캡션 PNG 다음 차례. 각 broll 마다 -i 추가.
+    broll_input_index: dict[int, int] = {}   # brolls idx → ffmpeg input index
+    for i, broll in enumerate(brolls):
+        argv.extend(["-i", broll.src])
+        broll_input_index[i] = next_input
         next_input += 1
 
     # 4) filter_complex 빌드
@@ -324,6 +382,30 @@ def build_export_args(
         next_v = f"v{i+1}"
         fc_parts.append(
             f"[{cur_v}][cap{i}]overlay=enable='between(t\\,{in_s}\\,{out_s})'[{next_v}]"
+        )
+        cur_v = next_v
+
+    # broll PiP overlay (Stage 7 v1) — 캡션 overlay 다음.
+    # 각 broll 의 입력 스트림을 size_ratio 만큼 scale + setpts 시프트 후 corner 위치에 overlay.
+    # placement/pip/audio_mix 는 이미 위에서 검증됨 (PiP only, audio=original_only).
+    for i, broll in enumerate(brolls):
+        broll_idx = broll_input_index[i]
+        assert broll.pip is not None   # 위 가드가 보장
+        ratio = float(broll.pip.size_ratio)
+        pip_w = int(round(surface_w * ratio))
+        pip_h = int(round(surface_h * ratio))
+        bx, by = _broll_pip_xy(broll.pip.corner, surface_w, surface_h, pip_w, pip_h)
+        in_s = broll.in_ms / 1000.0
+        out_s = broll.out_ms / 1000.0
+        # broll 입력을 scale 후 PTS 를 in_s 만큼 시프트 — 그러면 broll 의 0초가 in_s 에 정렬.
+        fc_parts.append(
+            f"[{broll_idx}:v]scale={pip_w}:{pip_h},"
+            f"setpts=PTS-STARTPTS+{in_s:.3f}/TB[broll{i}]"
+        )
+        next_v = f"vb{i}"
+        fc_parts.append(
+            f"[{cur_v}][broll{i}]overlay={bx}:{by}:"
+            f"enable='between(t\\,{in_s}\\,{out_s})'[{next_v}]"
         )
         cur_v = next_v
 
