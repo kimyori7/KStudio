@@ -141,6 +141,91 @@ def test_zoom_guide_drawn_inside_video_frame_rect(qtbot):
     assert _has_yellow_pixel(inside)
 
 
+def test_zoom_drag_clamps_corners_inside_frame(qtbot):
+    """드래그가 좌상단 모서리까지 이동해도 사각형 모서리는 frame 안에 머문다.
+
+    scale=2.0 → 사각형 크기 = frame 의 절반. cx 허용 범위 = [0.25, 0.75], cy 같은 식.
+    드래그를 좌상단(0,0) 까지 이동했을 때 emit 되는 cx/cy 가 0.25 미만이 아니어야 한다.
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    ov.resize(640, 360)
+    ov.show()
+    qtbot.waitExposed(ov)
+
+    pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
+    eff = ZoomEffect(in_ms=0, out_ms=10_000, start=pt, end=pt)
+    ov.set_sidecar(_zoom_sidecar(eff))
+    ov.set_position_ms(3000)
+    _render_to_image(ov)   # bbox 등록.
+
+    # 줌 가이드 중심은 (320, 180). 좌상단(0, 0) 까지 드래그 → cx/cy 가 0 으로 가려는데
+    # corner 클램프로 [0.25, 0.25] 에서 멈춰야 한다 (사각형의 좌상단이 (0, 0) 이 됨).
+    start = QPoint(320, 180)
+    end = QPoint(0, 0)
+    press = QMouseEvent(QMouseEvent.MouseButtonPress, start,
+                         ov.mapToGlobal(start), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    move = QMouseEvent(QMouseEvent.MouseMove, end,
+                        ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    release = QMouseEvent(QMouseEvent.MouseButtonRelease, end,
+                           ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+
+    with qtbot.waitSignal(ov.effect_drag_changed, timeout=500) as blocker:
+        ov.mousePressEvent(press)
+        ov.mouseMoveEvent(move)
+        ov.mouseReleaseEvent(release)
+    new_eff = blocker.args[0]
+    # cx/cy 가 0.25 미만으로 내려가면 사각형 모서리가 frame 밖으로 나간다.
+    assert new_eff.start.cx >= 0.25 - 1e-6
+    assert new_eff.start.cy >= 0.25 - 1e-6
+    # 0.5 이하 (좌상단 쪽 이동) 인지도 확인.
+    assert new_eff.start.cx <= 0.5
+    assert new_eff.start.cy <= 0.5
+
+
+def test_zoom_drag_clamps_corners_at_right_bottom(qtbot):
+    """드래그를 우하단 끝으로 이동해도 cx/cy 가 [0.25, 0.75] 안.
+
+    scale=2.0, 우하단(640,360) 까지 드래그 → cx, cy <= 0.75.
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    ov.resize(640, 360)
+    ov.show()
+    qtbot.waitExposed(ov)
+
+    pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
+    eff = ZoomEffect(in_ms=0, out_ms=10_000, start=pt, end=pt)
+    ov.set_sidecar(_zoom_sidecar(eff))
+    ov.set_position_ms(3000)
+    _render_to_image(ov)
+
+    start = QPoint(320, 180)
+    end = QPoint(640, 360)
+    press = QMouseEvent(QMouseEvent.MouseButtonPress, start,
+                         ov.mapToGlobal(start), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    move = QMouseEvent(QMouseEvent.MouseMove, end,
+                        ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    release = QMouseEvent(QMouseEvent.MouseButtonRelease, end,
+                           ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+
+    with qtbot.waitSignal(ov.effect_drag_changed, timeout=500) as blocker:
+        ov.mousePressEvent(press)
+        ov.mouseMoveEvent(move)
+        ov.mouseReleaseEvent(release)
+    new_eff = blocker.args[0]
+    assert new_eff.start.cx <= 0.75 + 1e-6
+    assert new_eff.start.cy <= 0.75 + 1e-6
+    assert new_eff.start.cx >= 0.5
+    assert new_eff.start.cy >= 0.5
+
+
 def test_zoom_drag_updates_cx_cy_and_emits(qtbot):
     """줌 가이드 사각형 가운데를 드래그 → start.cx/cy 갱신 + effect_drag_changed.
 

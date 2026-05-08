@@ -160,6 +160,54 @@ def test_pip_pos_x_y_overrides_corner(qtbot):
     assert _has_orange_pixel(img, region=region)
 
 
+def test_pip_drag_clamps_so_pip_corners_stay_in_frame(qtbot):
+    """드래그 후 PiP 사각형의 모서리가 frame 밖으로 나가지 않는다.
+
+    size_ratio=0.3 → pos_x 허용 범위 = [0, 0.7], pos_y 같은 식.
+    좌상단(0,0) 으로 드래그 → pos_x=0, pos_y=0 (사각형 좌상단 = frame 좌상단).
+    우하단(640,360) 으로 드래그 → pos_x=0.7, pos_y=0.7 (사각형이 frame 안).
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    ov.resize(640, 360)
+    ov.show()
+    qtbot.waitExposed(ov)
+
+    eff = BrollEffect(
+        in_ms=0, out_ms=10_000, src="x.mp4",
+        placement="pip",
+        pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+    )
+    ov.set_sidecar(_broll_sidecar(eff))
+    ov.set_position_ms(3000)
+    _render_to_image(ov, w=640, h=360)
+
+    # 우하단 사각형 안의 한 점 → 우하단 모서리 너머(700, 400) 로 드래그.
+    # pos_x, pos_y 는 [0, 0.7] 로 잘려야 한다.
+    start = QPoint(500, 280)
+    end = QPoint(700, 400)
+    press = QMouseEvent(QMouseEvent.MouseButtonPress, start,
+                         ov.mapToGlobal(start), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    move = QMouseEvent(QMouseEvent.MouseMove, end,
+                        ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    release = QMouseEvent(QMouseEvent.MouseButtonRelease, end,
+                           ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+
+    with qtbot.waitSignal(ov.effect_drag_changed, timeout=500) as blocker:
+        ov.mousePressEvent(press)
+        ov.mouseMoveEvent(move)
+        ov.mouseReleaseEvent(release)
+    new_eff = blocker.args[0]
+    assert new_eff.pip is not None
+    assert new_eff.pip.pos_x is not None and new_eff.pip.pos_y is not None
+    # size_ratio=0.3 → 우하단 모서리가 frame 안에 있으려면 pos_x, pos_y <= 0.7.
+    assert new_eff.pip.pos_x <= 0.7 + 1e-6
+    assert new_eff.pip.pos_y <= 0.7 + 1e-6
+
+
 def test_pip_drag_emits_pos_x_y_and_keeps_corner(qtbot):
     """곁들임 PiP 사각형 드래그 → pip.pos_x / pos_y 갱신 + effect_drag_changed.
 

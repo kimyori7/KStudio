@@ -75,6 +75,10 @@ class PreviewOverlay(QWidget):
         self._drag_eff_id: Optional[str] = None
         self._drag_start_norm: tuple[float, float] = (0.5, 0.5)
         self._drag_override_norm: Optional[tuple[float, float]] = None
+        # 드래그 정규화 좌표의 허용 범위 (xmin, xmax, ymin, ymax) — 사각형의 모서리가
+        # 영상 frame 안에 머물도록 효과별 크기를 고려해 mousePress 시 계산.
+        # 줌(scale=2) → cx/cy 가능 범위 = [0.25, 0.75], 곁들임(size_ratio=0.3) → pos_x/y = [0, 0.7].
+        self._drag_clamp: tuple[float, float, float, float] = (0.0, 1.0, 0.0, 1.0)
         # 영상 프레임 rect provider — letterbox 시 검은 띠를 제외한 실제 영상 영역.
         # None 이면 self.rect() (위젯 전체) 사용. 이 rect 안에서만 그리고 드래그한다.
         self._frame_rect_provider: Optional[Callable[[], QRect]] = None
@@ -338,7 +342,8 @@ class PreviewOverlay(QWidget):
                     (bbox.left() - frame.x()) / fw,
                     (bbox.top() - frame.y()) / fh,
                 )
-            self._drag_override_norm = self._drag_start_norm
+            self._drag_clamp = self._compute_drag_clamp(kind, eff_id)
+            self._drag_override_norm = self._clamp_norm(self._drag_start_norm)
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
@@ -372,11 +377,47 @@ class PreviewOverlay(QWidget):
             new_y = max(0.0, min(1.0, self._drag_start_offset_norm[1] + delta_y / fh))
             self._drag_override_offset = (new_x, new_y)
         else:
-            new_x = max(0.0, min(1.0, self._drag_start_norm[0] + delta_x / fw))
-            new_y = max(0.0, min(1.0, self._drag_start_norm[1] + delta_y / fh))
-            self._drag_override_norm = (new_x, new_y)
+            raw = (self._drag_start_norm[0] + delta_x / fw,
+                   self._drag_start_norm[1] + delta_y / fh)
+            self._drag_override_norm = self._clamp_norm(raw)
         self.update()
         event.accept()
+
+    def _compute_drag_clamp(self, kind: str, eff_id: str) -> tuple[float, float, float, float]:
+        """드래그 정규화 좌표 (사각형 표현 점) 의 허용 범위 계산.
+
+        줌: cx, cy 가 사각형 중심 — 모서리가 frame 안에 있으려면
+        cx ∈ [half_w, 1 - half_w], 같은 식으로 cy. half_w = 0.5/scale.
+        scale < 1 (사각형이 frame 보다 큼) 인 경우 범위가 음수가 되는데, 그땐 0.5 로 잠금.
+
+        곁들임: pos_x, pos_y 가 좌상단 — 우/하 모서리가 frame 안에 있으려면
+        pos_x ∈ [0, 1 - size_ratio], 같은 식으로 pos_y.
+
+        eff 를 못 찾으면 [0, 1] 폴백.
+        """
+        if self._sidecar is None:
+            return (0.0, 1.0, 0.0, 1.0)
+        eff = next((e for e in self._sidecar.effects if e.id == eff_id), None)
+        if eff is None:
+            return (0.0, 1.0, 0.0, 1.0)
+        if kind == "zoom" and isinstance(eff, ZoomEffect):
+            scale = max(0.1, float(eff.start.scale))
+            half = 0.5 / scale
+            if half >= 0.5:
+                # 사각형이 frame 보다 크거나 같음 — 가운데로 잠금.
+                return (0.5, 0.5, 0.5, 0.5)
+            return (half, 1.0 - half, half, 1.0 - half)
+        if kind == "broll" and isinstance(eff, BrollEffect) and eff.pip is not None:
+            ratio = max(0.05, min(0.9, float(eff.pip.size_ratio)))
+            return (0.0, 1.0 - ratio, 0.0, 1.0 - ratio)
+        return (0.0, 1.0, 0.0, 1.0)
+
+    def _clamp_norm(self, norm: tuple[float, float]) -> tuple[float, float]:
+        """현재 _drag_clamp 로 정규화 좌표 를 잘라낸다."""
+        xmin, xmax, ymin, ymax = self._drag_clamp
+        nx = max(xmin, min(xmax, norm[0]))
+        ny = max(ymin, min(ymax, norm[1]))
+        return (nx, ny)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         # 캡션 드래그 종료
