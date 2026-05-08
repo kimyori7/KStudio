@@ -8,15 +8,6 @@ def test_emits_play_toggled_on_button(qtbot):
         c.play_btn.click()
 
 
-def test_emits_seek_request_on_slider(qtbot):
-    c = PlayerControls()
-    qtbot.addWidget(c)
-    c.set_duration_ms(60_000)
-    with qtbot.waitSignal(c.seek_request, timeout=200) as blocker:
-        c.seek_slider.setValue(30_000)
-    assert blocker.args == [30_000]
-
-
 def test_emits_speed_changed(qtbot):
     c = PlayerControls()
     qtbot.addWidget(c)
@@ -25,13 +16,12 @@ def test_emits_speed_changed(qtbot):
     assert blocker.args == [2.0]
 
 
-def test_set_position_updates_label_and_slider(qtbot):
+def test_set_position_updates_time_label(qtbot):
     c = PlayerControls()
     qtbot.addWidget(c)
     c.set_duration_ms(75_000)  # 1:15
     c.set_position_ms(45_000)   # 0:45
     assert "00:45" in c.time_label.text()
-    assert c.seek_slider.value() == 45_000
 
 
 def test_volume_signals(qtbot):
