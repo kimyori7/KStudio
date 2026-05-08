@@ -1,4 +1,9 @@
-"""사이드카 직렬화 + atomic write."""
+"""사이드카 직렬화 + atomic write.
+
+NOTE: 이 파일의 대부분 테스트는 v1 (top-level effects + trim) 모델 가정. v2 (2026-05-08)
+부터는 video_track 기반으로 전환되어 v1 데이터는 자동 폐기. 새 v2 round-trip 은
+test_segment_sidecar.py 에서. 여기는 Stage D 에서 cut/trim 정리 시 함께 제거.
+"""
 import json
 from pathlib import Path
 
@@ -8,6 +13,9 @@ from screen_recorder.effects.sidecar import Sidecar, Trim, save_atomic, load
 from screen_recorder.effects.types.caption import CaptionEffect, Font
 from screen_recorder.effects.types.speed import SpeedEffect
 from screen_recorder.effects.types.cut import CutEffect
+
+
+pytestmark = pytest.mark.skip(reason="v1 sidecar model deprecated — see test_segment_sidecar.py")
 
 
 def _sample_sidecar() -> Sidecar:

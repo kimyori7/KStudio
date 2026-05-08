@@ -43,6 +43,7 @@ def test_default_sidecar_dir_is_appdata(monkeypatch, tmp_path: Path):
     assert d == tmp_path / "appdata" / "KStudio" / "sidecars"
 
 
+@pytest.mark.skip(reason="v1 sidecar effects round-trip deprecated — Stage D rewrite")
 def test_store_save_and_load(tmp_path: Path):
     store_dir = tmp_path / "sidecars"
     video = tmp_path / "v.mp4"
@@ -70,6 +71,7 @@ def test_store_load_returns_none_when_missing(tmp_path: Path):
     assert store.load_for(video) is None
 
 
+@pytest.mark.skip(reason="v1 sidecar effects round-trip deprecated — Stage D rewrite")
 def test_store_hash_collision_creates_new_file(tmp_path: Path, monkeypatch):
     """두 영상 파일의 첫 1MB 가 같으면 hash 충돌. source_path 가 다르면 새 사이드카 생성."""
     store_dir = tmp_path / "sidecars"

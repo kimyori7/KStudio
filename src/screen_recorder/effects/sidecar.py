@@ -1,4 +1,8 @@
-"""사이드카 (.kstudio) JSON 직렬화 + atomic write."""
+"""사이드카 (.kstudio) JSON 직렬화 + atomic write.
+
+Schema v2 (2026-05-08): video_track 기반 NLE 모델. 기존 v1 의 trim / effects (전역)
+는 폐기 — 사용자 결정 (마이그레이션 없음).
+"""
 from __future__ import annotations
 from dataclasses import dataclass, field, fields, is_dataclass, asdict
 import json
@@ -7,14 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from .model import Effect
+from .segment import VideoSegment
 from .types import effect_class_for
 
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
 
 @dataclass
 class Trim:
+    """레거시 (v1) — 새 모델에서는 첫/끝 segment 의 src_in/out 으로 흡수. Stage D 에서 제거."""
     in_ms: int = 0
     out_ms: int = 0
 
@@ -24,6 +30,8 @@ class Sidecar:
     version: int = CURRENT_VERSION
     source_path: str = ""
     source_hash: str = ""
+    video_track: list[VideoSegment] = field(default_factory=list)
+    # 레거시 (v1) — Stage D 에서 제거.
     trim: Trim = field(default_factory=Trim)
     effects: list[Effect] = field(default_factory=list)
 
@@ -33,22 +41,59 @@ class Sidecar:
             "version": self.version,
             "source_path": self.source_path,
             "source_hash": self.source_hash,
-            "trim": asdict(self.trim),
-            "effects": [_effect_to_dict(e) for e in self.effects],
+            "video_track": [_segment_to_dict(s) for s in self.video_track],
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Sidecar":
-        trim_d = d.get("trim") or {}
-        effects_d = d.get("effects") or []
+        version = int(d.get("version", 1))
+        if version < 2:
+            # v1 → v2: 옛 데이터 모두 폐기, 빈 track 으로 시작 (사용자 결정).
+            return cls(
+                version=CURRENT_VERSION,
+                source_path=str(d.get("source_path", "")),
+                source_hash=str(d.get("source_hash", "")),
+                video_track=[],
+            )
+        track_raw = d.get("video_track") or []
         return cls(
-            version=int(d.get("version", CURRENT_VERSION)),
+            version=CURRENT_VERSION,
             source_path=str(d.get("source_path", "")),
             source_hash=str(d.get("source_hash", "")),
-            trim=Trim(in_ms=int(trim_d.get("in_ms", 0)),
-                      out_ms=int(trim_d.get("out_ms", 0))),
-            effects=[_effect_from_dict(e) for e in effects_d],
+            video_track=[_segment_from_dict(s) for s in track_raw],
         )
+
+
+def _segment_to_dict(seg: VideoSegment) -> dict[str, Any]:
+    """VideoSegment → 사전. effects 도 nested 직렬화."""
+    return {
+        "id": seg.id,
+        "src": seg.src,
+        "src_in_ms": seg.src_in_ms,
+        "src_out_ms": seg.src_out_ms,
+        "src_duration_ms": seg.src_duration_ms,
+        "media_kind": seg.media_kind,
+        "image_duration_ms": seg.image_duration_ms,
+        "effects": [_effect_to_dict(e) for e in seg.effects],
+    }
+
+
+def _segment_from_dict(d: dict[str, Any]) -> VideoSegment:
+    """사전 → VideoSegment. effects 도 nested 역직렬화."""
+    eff_raw = d.get("effects") or []
+    kw: dict[str, Any] = {
+        "src": str(d.get("src", "")),
+        "src_in_ms": int(d.get("src_in_ms", 0)),
+        "src_out_ms": int(d.get("src_out_ms", 0)),
+        "src_duration_ms": int(d.get("src_duration_ms", 0)),
+        "media_kind": str(d.get("media_kind", "video")),
+        "image_duration_ms": int(d.get("image_duration_ms", 3000)),
+        "effects": [_effect_from_dict(e) for e in eff_raw],
+    }
+    sid = d.get("id")
+    if sid:
+        kw["id"] = str(sid)
+    return VideoSegment(**kw)
 
 
 def _effect_to_dict(e: Effect) -> dict[str, Any]:
