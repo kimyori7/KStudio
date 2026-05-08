@@ -240,9 +240,14 @@ class VideoTab(QWidget):
             pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
             eff = ZoomEffect(in_ms=in_ms, out_ms=out_ms, start=pt, end=pt)
         elif effect_type == "broll":
-            # 미구현 type — 사용자에게 안내만, 사이드카는 변경 안 함.
-            self.player.flash_action("곁들임 영상 효과는 아직 구현 중 (다음 단계)")
-            return False
+            # v1: PiP — 우하단 30% 크기 기본. src 는 빈 문자열로 시작 — 인스펙터에서
+            # 파일 선택. fullscreen 은 인스펙터에서 placement 변경 가능 (export v2).
+            from ..effects.types.broll import BrollEffect, PipConfig
+            eff = BrollEffect(
+                in_ms=in_ms, out_ms=out_ms,
+                placement="pip",
+                pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+            )
         else:
             return False
         return self._edit_controller.add_effect(eff)

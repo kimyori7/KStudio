@@ -39,25 +39,20 @@ def test_right_click_on_caption_lane_shows_menu(widget, qtbot):
     menu.close()   # cleanup
 
 
-def test_unimplemented_items_are_disabled(widget, qtbot):
-    """곁들임 메뉴 항목만 disabled (Stage 7 에서 활성화 예정).
+def test_all_menu_items_enabled(widget, qtbot):
+    """Stage 7 (2026-05-08) 부터 메뉴의 6개 항목이 모두 활성화.
 
-    Stage 5 (2026-05-08): speed 메뉴 활성화 → 배속 enabled.
-    Stage 6 (2026-05-08): zoom 메뉴 활성화 → 줌 enabled.
+    Stage 5: speed 활성화. Stage 6: zoom 활성화. Stage 7: broll 활성화.
     """
     cap_lane = widget.lane_for_type("caption")
     cap_lane.request_add_at.emit(3_000)
     menu = widget._last_menu
     assert menu is not None
-    by_label = {a.text(): a for a in menu.actions() if not a.isSeparator()}
-    # 곁들임만 여전히 disabled.
-    broll_action = next(a for k, a in by_label.items() if "곁들임" in k)
-    assert not broll_action.isEnabled()
-    # 배속·줌은 이제 enabled.
-    speed_action = next(a for k, a in by_label.items() if "배속" in k)
-    assert speed_action.isEnabled()
-    zoom_action = next(a for k, a in by_label.items() if "줌" in k)
-    assert zoom_action.isEnabled()
+    actions = [a for a in menu.actions() if not a.isSeparator()]
+    assert all(a.isEnabled() for a in actions), \
+        f"disabled actions: {[a.text() for a in actions if not a.isEnabled()]}"
+    # 메뉴 항목이 정확히 6개 — 캡션 / 자르기(한점) / 자르기(구간) / 배속 / 줌 / 곁들임.
+    assert len(actions) == 6
     menu.close()
 
 

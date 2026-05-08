@@ -7,6 +7,7 @@ from PySide6.QtGui import QAction, QCursor
 from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
 from ...effects import Sidecar
+from .broll_lane import BrollLane
 from .caption_lane import CaptionLane
 from .cut_lane import CutLane
 from .effect_lane import EffectLane
@@ -39,6 +40,7 @@ EFFECT_LANE_CLASSES: dict[str, type] = {
     "cut": CutLane,
     "speed": SpeedLane,
     "zoom": ZoomLane,
+    "broll": BrollLane,
 }
 
 
@@ -128,7 +130,7 @@ class EffectLanesWidget(QWidget):
                 break
         self._layout.insertWidget(insert_at, lane)
 
-    # 통합 추가 메뉴 — caption/cut splice/cut range 활성, speed/zoom/broll 비활성+툴팁.
+    # 통합 추가 메뉴 — Stage 7 부터 모든 항목 활성화.
     _MENU_ITEMS: list[tuple[str, str, bool, str]] = [
         # (label, effect_type, enabled, tooltip)
         ("+ 캡션 추가",                "caption",    True,  ""),
@@ -136,7 +138,7 @@ class EffectLanesWidget(QWidget):
         ("+ 자르기 (구간)",             "cut_range",  True,  "구간 잘라내기 — 1초 길이로 시작, 인스펙터에서 길이 조정"),
         ("+ 배속 추가",                 "speed",      True,  "구간 배속 — 기본 2.0× 5초"),
         ("+ 줌 추가",                   "zoom",       True,  "구간 줌 — 기본 2.0× 2초 정적 줌"),
-        ("+ 곁들임 영상 추가 (Stage 7)", "broll",      False, "다음 단계에서 구현"),
+        ("+ 곁들임 영상 추가",          "broll",      True,  "PiP — 화면 모서리에 작은 영상"),
     ]
 
     def _show_add_menu_at(self, ms: int) -> None:
