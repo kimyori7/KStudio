@@ -70,6 +70,22 @@ class EditController(QObject):
         self.sidecar_replaced.emit(self._sidecar)
         self._autosave_timer.start()
 
+    def ensure_default_track(self, source_duration_ms: int) -> None:
+        """첫 로드 시 빈 video_track 에 source 1 segment 자동 채움.
+
+        호출 후 사이드카 상태를 History 의 baseline 으로 다시 설정 — 사용자가
+        Ctrl+Z 로 "빈 트랙" 까지 되돌리지 않도록 한다.
+
+        시그널은 emit 하지 않음 — VideoTab init 흐름에서 timeline 이 아직 없을 수 있어
+        호출자가 직접 timeline.set_sidecar() 로 초기 상태를 그린다.
+        """
+        from ...effects.sidecar import ensure_default_track as _impl
+        had_track = bool(self._sidecar.video_track)
+        _impl(self._sidecar, source_duration_ms=source_duration_ms)
+        if not had_track and self._sidecar.video_track:
+            # 새로 채웠으니 history baseline 만 갱신 (emit 안 함).
+            self._history = History(initial=self._sidecar)
+
     def add_effect(self, effect) -> bool:
         """효과 추가 — 같은 type 의 시간 겹침 검사 후 push.
 
@@ -119,6 +135,93 @@ class EditController(QObject):
         new_sc = copy.deepcopy(self._sidecar)
         new_sc.trim = Trim(in_ms=int(in_ms), out_ms=int(out_ms))
         self.update_sidecar(new_sc)
+
+    # ---------- Stage B: video_track segment 단위 API ----------
+    _MIN_SPLIT_MS = 100
+
+    def split_segment(self, segment_id: str, at_local_ms: int) -> bool:
+        """segment 를 at_local_ms (segment-local) 에서 둘로 쪼갠다.
+
+        쪼개진 두 segment 모두 최소 100ms 폭 보장. 거부 시 False.
+        """
+        from dataclasses import replace
+        from ...effects.segment import VideoSegment
+        track = self._sidecar.video_track
+        idx = next((i for i, s in enumerate(track) if s.id == segment_id), -1)
+        if idx < 0:
+            return False
+        seg = track[idx]
+        dur = seg.duration_ms
+        if dur <= 0:
+            return False
+        if at_local_ms < self._MIN_SPLIT_MS or (dur - at_local_ms) < self._MIN_SPLIT_MS:
+            return False
+        # 첫째: 원본 in ~ in+at, 둘째: in+at ~ 원본 out (or duration).
+        split_at_src = seg.src_in_ms + at_local_ms
+        first_out = split_at_src
+        second_in = split_at_src
+        second_out = seg.src_out_ms if seg.src_out_ms > 0 else seg.src_duration_ms
+        first = replace(seg, src_out_ms=first_out)
+        second = VideoSegment(
+            src=seg.src,
+            src_in_ms=second_in,
+            src_out_ms=second_out,
+            src_duration_ms=seg.src_duration_ms,
+            media_kind=seg.media_kind,
+            image_duration_ms=seg.image_duration_ms,
+            effects=[],   # 쪼갤 때 효과는 첫째에만 보존 (간단화 — Stage C 에서 정교화).
+        )
+        # 첫째에는 원본 effects 유지.
+        first = replace(first, effects=list(seg.effects))
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.video_track[idx] = first
+        new_sc.video_track.insert(idx + 1, second)
+        self.update_sidecar(new_sc)
+        return True
+
+    def insert_segment(self, at_idx: int, segment) -> bool:
+        """segment 를 at_idx 위치에 삽입. idx 는 [0, len(track)] 으로 clamp."""
+        track_len = len(self._sidecar.video_track)
+        idx = max(0, min(track_len, int(at_idx)))
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.video_track.insert(idx, segment)
+        self.update_sidecar(new_sc)
+        return True
+
+    def delete_segment(self, segment_id: str) -> bool:
+        """id 로 segment 제거. 못 찾으면 False."""
+        track = self._sidecar.video_track
+        if not any(s.id == segment_id for s in track):
+            return False
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.video_track = [s for s in new_sc.video_track if s.id != segment_id]
+        self.update_sidecar(new_sc)
+        return True
+
+    def move_segment(self, from_idx: int, to_idx: int) -> bool:
+        """from_idx 의 segment 를 to_idx 위치로 이동. 인덱스 범위 외면 False."""
+        track = self._sidecar.video_track
+        n = len(track)
+        if not (0 <= from_idx < n) or not (0 <= to_idx < n):
+            return False
+        if from_idx == to_idx:
+            return True
+        new_sc = copy.deepcopy(self._sidecar)
+        seg = new_sc.video_track.pop(from_idx)
+        new_sc.video_track.insert(to_idx, seg)
+        self.update_sidecar(new_sc)
+        return True
+
+    def update_segment(self, segment) -> bool:
+        """기존 segment 를 같은 id 로 교체. 못 찾으면 False."""
+        track = self._sidecar.video_track
+        idx = next((i for i, s in enumerate(track) if s.id == segment.id), -1)
+        if idx < 0:
+            return False
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.video_track[idx] = segment
+        self.update_sidecar(new_sc)
+        return True
 
     def undo(self) -> bool:
         if not self._history.can_undo():

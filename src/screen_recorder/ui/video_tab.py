@@ -89,10 +89,9 @@ class VideoTab(QWidget):
         self._edit_controller = EditController(self._source_path, sc_dir)
         self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
         self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
-        # Stage A: 사이드카가 비어 있으면 source 1 segment 로 자동 채움.
-        from ..effects.sidecar import ensure_default_track
-        ensure_default_track(
-            self._edit_controller.sidecar(),
+        # Stage A: 사이드카가 비어 있으면 source 1 segment 로 자동 채움
+        # (history baseline 도 새 segment 상태로 reset — 사용자가 undo 로 빈 트랙까지 안 감).
+        self._edit_controller.ensure_default_track(
             source_duration_ms=int(duration_ms or 0),
         )
         # Stage A: 썸네일 서비스 — 사이드카 변경마다 모든 segment 의 썸네일을 비동기 요청.
