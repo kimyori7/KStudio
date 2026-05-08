@@ -6,8 +6,10 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import (
+    QAction, QColor, QContextMenuEvent, QImage, QMouseEvent, QPainter, QPen,
+)
+from PySide6.QtWidgets import QMenu, QWidget
 
 from ...effects.segment import VideoSegment
 
@@ -35,6 +37,10 @@ class VideoTrackLane(QWidget):
     """
 
     segment_selected = Signal(str)      # segment id
+    # Stage B: 우클릭 메뉴 시그널들.
+    request_split = Signal(str, int)        # (segment_id, at_local_ms)
+    request_delete = Signal(str)            # segment_id
+    request_insert_at = Signal(int)         # at_idx (segment 사이 또는 끝)
 
     def __init__(self) -> None:
         super().__init__()
@@ -44,6 +50,8 @@ class VideoTrackLane(QWidget):
         self._selected_id: Optional[str] = None
         self._thumbnails: dict[str, QImage] = {}
         self._pending_select: Optional[str] = None
+        # 마지막 popup 한 메뉴 — 테스트 검사용 (UI 흐름엔 필수 아님).
+        self._last_menu: Optional[QMenu] = None
 
     # ---------- public API ----------
     def set_segments(self, segments: list[VideoSegment]) -> None:
@@ -168,3 +176,57 @@ class VideoTrackLane(QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    # ---------- context menu (Stage B) ----------
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        pos = event.pos()
+        boxes = self._segment_rects()
+        # segment 위에서 우클릭인지 확인.
+        hit = next((b for b in boxes if b["rect"].contains(pos)), None)
+        menu = QMenu(self)
+        menu.setAttribute(Qt.WA_DeleteOnClose, True)
+        if hit is not None:
+            sid = hit["id"]
+            seg = next((s for s in self._segments if s.id == sid), None)
+            if seg is None:
+                return
+            # 클릭 x 좌표 → segment-local ms 변환.
+            local_ms = self._x_to_segment_local_ms(pos.x(), hit["rect"], seg)
+            split_action = QAction("✂ 여기서 자르기", menu)
+            split_action.triggered.connect(
+                lambda _checked=False, s=sid, m=local_ms: self.request_split.emit(s, m)
+            )
+            menu.addAction(split_action)
+            menu.addSeparator()
+            del_action = QAction("🗑 삭제", menu)
+            del_action.triggered.connect(
+                lambda _checked=False, s=sid: self.request_delete.emit(s)
+            )
+            menu.addAction(del_action)
+        else:
+            # 빈 영역 — 클릭 위치에서 가장 가까운 segment 사이의 idx 계산.
+            insert_idx = self._x_to_insert_index(pos.x(), boxes)
+            insert_action = QAction("➕ 영상 파일 삽입…", menu)
+            insert_action.triggered.connect(
+                lambda _checked=False, i=insert_idx: self.request_insert_at.emit(i)
+            )
+            menu.addAction(insert_action)
+        self._last_menu = menu
+        menu.popup(event.globalPos())
+
+    def _x_to_segment_local_ms(self, x: int, rect: QRect, seg: VideoSegment) -> int:
+        """클릭 x → segment 안 local ms (0 ~ duration_ms)."""
+        if rect.width() <= 0:
+            return 0
+        rel = max(0, min(rect.width(), x - rect.left()))
+        return int(round(rel * seg.duration_ms / rect.width()))
+
+    def _x_to_insert_index(self, x: int, boxes: list[dict]) -> int:
+        """클릭 x 좌표 → 어느 idx 위치에 삽입할지. boxes 의 사이/끝."""
+        for i, b in enumerate(boxes):
+            r = b["rect"]
+            if x < r.left():
+                return i
+            if r.contains(x, r.center().y()):
+                return i + 1
+        return len(boxes)
