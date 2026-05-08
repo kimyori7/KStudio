@@ -157,6 +157,7 @@ class VideoTab(QWidget):
         track.request_insert_at.connect(self._on_track_insert_at)
         track.request_insert_files.connect(self._on_track_insert_files)
         track.segment_selected.connect(self._on_segment_selected)
+        track.segment_moved.connect(self._edit_controller.move_segment)
 
         self.player.load(path)
         if thumbnail is not None and not thumbnail.isNull():

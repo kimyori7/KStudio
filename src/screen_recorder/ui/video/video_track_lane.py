@@ -43,6 +43,7 @@ class VideoTrackLane(QWidget):
     request_delete = Signal(str)            # segment_id
     request_insert_at = Signal(int)         # at_idx (segment 사이 또는 끝)
     request_insert_files = Signal(list, int)   # (paths: list[str], at_idx) — 드래그-드롭
+    segment_moved = Signal(int, int)        # (from_idx, to_idx) — 박스 드래그로 재배치
 
     def __init__(self) -> None:
         super().__init__()
@@ -57,6 +58,10 @@ class VideoTrackLane(QWidget):
         self._last_menu: Optional[QMenu] = None
         # 드롭 indicator x 좌표 — None 이면 안 그림.
         self._drop_indicator_x: Optional[int] = None
+        # Reorder 드래그 상태.
+        self._reorder_drag_id: Optional[str] = None
+        self._reorder_press_x: int = 0
+        self._reorder_started: bool = False
 
     # ---------- public API ----------
     def set_segments(self, segments: list[VideoSegment]) -> None:
@@ -167,6 +172,8 @@ class VideoTrackLane(QWidget):
                    Qt.AlignVCenter | Qt.AlignLeft, text)
 
     # ---------- mouse ----------
+    _DRAG_THRESHOLD_PX = 5
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.LeftButton:
             return super().mousePressEvent(event)
@@ -174,17 +181,69 @@ class VideoTrackLane(QWidget):
         for box in self._segment_rects():
             if box["rect"].contains(pos):
                 self._pending_select = box["id"]
+                self._reorder_drag_id = box["id"]
+                self._reorder_press_x = pos.x()
+                self._reorder_started = False
                 event.accept()
                 return
         self._pending_select = None
+        self._reorder_drag_id = None
         event.ignore()
 
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        # 드래그 임계값 넘으면 reorder 모드 진입.
+        if self._reorder_drag_id is None:
+            return super().mouseMoveEvent(event)
+        x = int(event.position().x())
+        if not self._reorder_started:
+            if abs(x - self._reorder_press_x) < self._DRAG_THRESHOLD_PX:
+                return
+            self._reorder_started = True
+            self._pending_select = None   # 드래그 시작했으니 단순 클릭 선택은 취소.
+        # drop indicator 위치 갱신.
+        boxes = self._segment_rects()
+        idx = self._x_to_insert_index(x, boxes)
+        if idx <= 0:
+            ind_x = boxes[0]["rect"].left() if boxes else _HEADER_WIDTH
+        elif idx >= len(boxes):
+            ind_x = (boxes[-1]["rect"].right() + 1) if boxes else _HEADER_WIDTH
+        else:
+            ind_x = boxes[idx]["rect"].left()
+        self._drop_indicator_x = ind_x
+        self.update()
+        event.accept()
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        # Reorder 드래그 종료 — emit segment_moved 또는 단순 클릭.
         sid = self._pending_select
+        reorder_id = self._reorder_drag_id
+        started = self._reorder_started
+        self._pending_select = None
+        self._reorder_drag_id = None
+        self._reorder_started = False
+        self._drop_indicator_x = None
+        if reorder_id is not None and started and event.button() == Qt.LeftButton:
+            x = int(event.position().x())
+            from_idx = next((i for i, s in enumerate(self._segments) if s.id == reorder_id), -1)
+            if from_idx < 0:
+                self.update()
+                event.accept()
+                return
+            boxes = self._segment_rects()
+            to_idx = self._x_to_insert_index(x, boxes)
+            # _x_to_insert_index 는 "삽입 위치" — 같은 idx 안에서 자기 자신을 거치면 보정.
+            if to_idx > from_idx:
+                to_idx -= 1
+            if from_idx != to_idx and 0 <= to_idx < len(self._segments):
+                self.segment_moved.emit(from_idx, to_idx)
+            self.update()
+            event.accept()
+            return
+        # 드래그 안 시작했으면 단순 선택.
         if sid is not None and event.button() == Qt.LeftButton:
-            self._pending_select = None
             self.set_selected_id(sid)
             self.segment_selected.emit(sid)
+            self.update()
             event.accept()
             return
         super().mouseReleaseEvent(event)
