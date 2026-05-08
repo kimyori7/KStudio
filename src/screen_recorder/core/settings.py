@@ -104,10 +104,10 @@ class PreferencesSettings:
     dock_state_b64: str = ""              # 호환성 (구버전 단일 키) — image 가 비었을 때 fallback
     dock_state_image_b64: str = ""        # 이미지 모드 dock 레이아웃
     dock_state_video_b64: str = ""        # 영상 모드 dock 레이아웃
-    # 개발자 모드 — KStudio UI 자체를 녹화 중에도 보이게 유지. minimize_to_tray /
-    # use_mini_control 보다 우선해 메인 창을 가리지 않는다. 사용자가 KStudio UI
-    # 버그를 영상으로 보여주거나 디버깅할 때 유용.
-    dev_keep_main_visible: bool = False
+    # KStudio UI 자체를 녹화·스크린샷에 포함시킬지. 켜면 minimize_to_tray /
+    # use_mini_control 무시 + WDA_EXCLUDEFROMCAPTURE 해제 → 메인 창이 결과에 정상 포함.
+    # 글로벌 툴바 ("내 화면에 보이기" 체크박스) 에서 토글.
+    keep_visible_during_capture: bool = False
 
 
 @dataclass

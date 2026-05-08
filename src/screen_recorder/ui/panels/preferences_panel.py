@@ -39,30 +39,14 @@ class PreferencesPanel(QWidget):
         hint.setStyleSheet("color: #888; font-size: 9pt;")
         form.addRow("", hint)
 
-        # 개발자 옵션 — UI 디버깅/시연용. 사용자에게는 "(개발자)" prefix 로 구분.
-        dev_label = QLabel(tr("개발자 옵션"))
-        dev_label.setStyleSheet("color: #555; font-weight: bold; margin-top: 8px;")
-        form.addRow(dev_label)
-
-        self.dev_keep_main = QCheckBox(
-            tr("녹화 중 메인 창 그대로 유지 (UI 자체를 녹화·스크린샷에 담을 때)")
-        )
-        self.dev_keep_main.setChecked(settings.dev_keep_main_visible)
-        self.dev_keep_main.setToolTip(tr(
-            "설정 시 '트레이로 숨기기' / '미니 컨트롤' 보다 우선해 메인 창을 가리지 않는다."
-        ))
-        form.addRow(self.dev_keep_main)
-
         self.autostart.toggled.connect(self._sync)
         self.tray.toggled.connect(self._sync)
         self.mini_control.toggled.connect(self._sync)
         self.lang.currentIndexChanged.connect(self._sync)
-        self.dev_keep_main.toggled.connect(self._sync)
 
     def _sync(self):
         self.settings.autostart = self.autostart.isChecked()
         self.settings.minimize_to_tray = self.tray.isChecked()
         self.settings.use_mini_control = self.mini_control.isChecked()
         self.settings.language = self.lang.currentData()
-        self.settings.dev_keep_main_visible = self.dev_keep_main.isChecked()
         self.settings_changed.emit()

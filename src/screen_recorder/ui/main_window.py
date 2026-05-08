@@ -375,6 +375,16 @@ class MainWindow(QMainWindow):
         self.global_toolbar.export_video_requested.connect(self._on_export_video)
         from PySide6.QtGui import QShortcut, QKeySequence
         QShortcut(QKeySequence("Ctrl+Shift+E"), self).activated.connect(self._on_export_video)
+        # "내 화면에 보이기" 토글 — 캡쳐 affinity + minimize 둘 다 즉시 동기화.
+        self.global_toolbar.keep_visible_during_capture_changed.connect(
+            self._on_keep_visible_during_capture_changed
+        )
+        # 초기 상태 반영 — 저장된 값으로 체크박스 상태 동기화 (시그널 발화 안 하도록 block).
+        self.global_toolbar.keep_visible_chk.blockSignals(True)
+        self.global_toolbar.keep_visible_chk.setChecked(
+            self.app_settings.preferences.keep_visible_during_capture
+        )
+        self.global_toolbar.keep_visible_chk.blockSignals(False)
 
         # 메뉴
         self.menu_bar.new_requested.connect(self._on_file_new)
@@ -477,15 +487,15 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, e):
         super().showEvent(e)
-        # dev_keep_main_visible: KStudio UI 자체를 캡쳐에 담고 싶을 때.
+        # keep_visible_during_capture: KStudio UI 자체를 캡쳐에 담고 싶을 때.
         # 이전 세션에 켰었다면 exclude 적용을 건너뜀 — 안 켰으면 평소대로 exclude.
-        if not self.app_settings.preferences.dev_keep_main_visible:
+        if not self.app_settings.preferences.keep_visible_during_capture:
             if not self._self_excluded:
                 self._self_excluded = exclude_from_capture(self)
         self._apply_dark_titlebar()
 
-    def apply_dev_capture_visibility(self, visible_in_capture: bool) -> None:
-        """dev_keep_main_visible 토글 시 즉시 affinity 동기화 — 메인 창과 메인 인스펙터 dock.
+    def apply_capture_visibility(self, visible_in_capture: bool) -> None:
+        """keep_visible_during_capture 토글 시 즉시 affinity 동기화 — 메인 창.
 
         True: 캡쳐에 포함 (WDA_NONE). False: 제외 (WDA_EXCLUDEFROMCAPTURE).
         """
@@ -494,6 +504,12 @@ class MainWindow(QMainWindow):
             self._self_excluded = False
         else:
             self._self_excluded = exclude_from_capture(self)
+
+    def _on_keep_visible_during_capture_changed(self, checked: bool) -> None:
+        """글로벌 툴바 토글 → settings 갱신 + affinity 즉시 반영 + 저장."""
+        self.app_settings.preferences.keep_visible_during_capture = bool(checked)
+        self.apply_capture_visibility(bool(checked))
+        self._persist_settings()
 
     def _apply_dark_titlebar(self) -> None:
         """Windows DWM 다크 타이틀바 활성화 (Win10 1809+ / Win11)."""
@@ -767,8 +783,8 @@ class MainWindow(QMainWindow):
 
     def _should_minimize_main(self) -> bool:
         prefs = self.app_settings.preferences
-        # 개발자 모드: KStudio UI 자체를 녹화에 담고 싶을 때 — 항상 보이게 유지.
-        if prefs.dev_keep_main_visible:
+        # "내 화면에 보이기" 토글 ON: KStudio UI 가 녹화에 담기길 원함 → 절대 숨기지 않음.
+        if prefs.keep_visible_during_capture:
             return False
         return prefs.use_mini_control and prefs.minimize_to_tray
 
@@ -2621,15 +2637,9 @@ class MainWindow(QMainWindow):
             )
             # OS 시스템 단축키 가로채기 토글 — 즉시 hotkey 매니저에 반영.
             sp.intercept_system_keys_changed.connect(self._on_intercept_system_keys_changed)
-        # 일반 패널의 dev_keep_main_visible 토글 시 즉시 capture affinity 갱신.
+        # 일반 패널 변경 시 즉시 디스크에 저장 — 다이얼로그를 X 로 닫아도 유실 안 됨.
         pp = getattr(dialog, "preferences_panel", None)
         if pp is not None:
-            pp.settings_changed.connect(
-                lambda: self.apply_dev_capture_visibility(
-                    self.app_settings.preferences.dev_keep_main_visible
-                )
-            )
-            # 변경 즉시 디스크에 저장 — 사용자가 다이얼로그를 X 로 닫아도 유실 안 됨.
             pp.settings_changed.connect(self._persist_settings)
         dialog.exec()
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).

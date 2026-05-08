@@ -5,7 +5,7 @@ from PySide6.QtCore import QSize, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QComboBox, QFrame, QLabel, QButtonGroup,
-    QKeySequenceEdit,
+    QCheckBox, QKeySequenceEdit,
 )
 
 from ..core.i18n import tr
@@ -100,6 +100,7 @@ class GlobalToolbar(QWidget):
     copy_clicked = Signal()
     preferences_clicked = Signal()
     export_video_requested = Signal()   # 영상 내보내기 (영상 모드 전용)
+    keep_visible_during_capture_changed = Signal(bool)   # 캡처 중 KStudio UI 보이기 토글
 
     def __init__(self) -> None:
         super().__init__()
@@ -234,6 +235,18 @@ class GlobalToolbar(QWidget):
             layout.addWidget(btn)
         self._current_format_key = "video"
         self._format_btns["video"].setChecked(True)
+
+        # KStudio UI 자체를 캡쳐에 포함시킬지 토글 — 영상/GIF 버튼 오른쪽.
+        # 켜면 녹화 / 스크린샷 시 메인 창이 가려지지 않고 affinity 도 풀려 결과에 정상 포함.
+        self.keep_visible_chk = QCheckBox(tr("내 화면에 보이기"))
+        self.keep_visible_chk.setToolTip(tr(
+            "켜면 녹화·스크린샷 중에도 KStudio UI 가 가려지지 않고 결과에 정상 포함됩니다.\n"
+            "(꺼져 있으면 KStudio 는 자동으로 숨겨지거나 캡쳐에서 제외됩니다.)"
+        ))
+        self.keep_visible_chk.toggled.connect(
+            self.keep_visible_during_capture_changed.emit
+        )
+        layout.addWidget(self.keep_visible_chk)
 
         layout.addStretch(1)
 

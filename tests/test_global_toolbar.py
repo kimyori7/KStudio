@@ -92,6 +92,25 @@ def test_format_changed_signal(qtbot):
     assert blocker.args[0] == "gif"
 
 
+def test_keep_visible_toggle_emits_signal(qtbot):
+    """'내 화면에 보이기' 체크박스 토글 → keep_visible_during_capture_changed."""
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    assert tb.keep_visible_chk.isChecked() is False
+    with qtbot.waitSignal(tb.keep_visible_during_capture_changed, timeout=200) as blocker:
+        tb.keep_visible_chk.setChecked(True)
+    assert blocker.args == [True]
+
+
+def test_keep_visible_toggle_off_emits_false(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    tb.keep_visible_chk.setChecked(True)
+    with qtbot.waitSignal(tb.keep_visible_during_capture_changed, timeout=200) as blocker:
+        tb.keep_visible_chk.setChecked(False)
+    assert blocker.args == [False]
+
+
 def test_set_target_updates_button_state(qtbot):
     tb = GlobalToolbar()
     qtbot.addWidget(tb)
