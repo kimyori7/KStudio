@@ -11,6 +11,7 @@ from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
+from .video.timeline import VideoTimeline
 
 
 # 풀스크린 컨트롤 오버레이 동작 상수
@@ -71,33 +72,56 @@ class VideoTab(QWidget):
         self.player = PlayerWidget()
         self.controls = PlayerControls()
 
+        # ---- 편집 모드 통합 (Stage 2) ----
+        from .video.edit_controller import EditController
+        from ..effects import default_sidecar_dir
+
+        sc_dir = Path(sidecar_dir) if sidecar_dir is not None else default_sidecar_dir()
+        self._edit_controller = EditController(self._source_path, sc_dir)
+        self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
+        self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
+
+        # ---- VideoTimeline (Task 3) ----
+        self.timeline = VideoTimeline()
+        self.timeline.set_sidecar(self._edit_controller.sidecar())
+        if duration_ms > 0:
+            self.timeline.set_duration_ms(duration_ms)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.player, stretch=1)
         layout.addWidget(self.controls)
+        layout.addWidget(self.timeline)
+
+        # 편집 모드 OFF 일 땐 trim/effects 숨김 (slider 만 보임)
+        self.timeline.set_edit_mode(False)
 
         # 모델 → 컨트롤
-        # position / duration 은 InsertPlaybackController 경유 (Stage 4d) 로 연결.
-        # 아래에서 _insert_ctrl 초기화 후 combined_position_changed / combined_duration_changed
-        # 를 controls 에 연결한다. player.position_changed 는 controller 를 통해 흐른다.
         self.player.duration_changed.connect(self.duration_resolved.emit)
+        self.player.duration_changed.connect(self.timeline.set_duration_ms)
+        self.player.duration_changed.connect(self.controls.set_duration_ms)
         self.player.playing_changed.connect(self.controls.set_playing)
 
         # 컨트롤 → 모델
-        # 재생 토글(스페이스 / 컨트롤바 ▶ 클릭) 도 시점이 바뀌니 누적 프레임 스킵 리셋.
         self.controls.play_toggled.connect(self._on_user_play_toggle)
-        # 사용자가 슬라이더를 드래그/클릭하면 누적 프레임 스킵 카운터 리셋. 프로그래매틱
-        # set_position_ms 는 controls 쪽에서 blockSignals 처리되므로 여기로 들어오지 않음.
-        self.controls.seek_request.connect(self._on_user_seek_request)
         self.controls.volume_changed.connect(self.player.set_volume)
         self.controls.mute_toggled.connect(self._toggle_mute)
         self.controls.speed_changed.connect(self.player.set_playback_rate)
         self.controls.frame_step.connect(self._on_frame_step_button)
         self.controls.snapshot_request.connect(self._on_snapshot)
         self.controls.fullscreen_toggled.connect(self._on_fullscreen_toggled)
-        # 트림 시그널 — PlayerControls → MainWindow 로 bubble
-        self.controls.trim_execute_requested.connect(self._on_trim_execute)
+        self.controls.edit_mode_change_requested.connect(self._edit_controller.set_edit_mode)
+        self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
+        self._edit_controller.edit_mode_toggled.connect(self.timeline.set_edit_mode)
+
+        # Timeline 시그널
+        self.timeline.seek_request.connect(self._on_user_seek_request)
+        self.timeline.trim_changed.connect(self._on_timeline_trim_changed)
+        self.timeline.request_add.connect(self._on_lane_request_add)
+        self.timeline.effect_selected.connect(self.effect_selected.emit)
+        self.timeline.effect_changed.connect(self._edit_controller.update_effect)
+        self.timeline.effect_deleted.connect(self._edit_controller.remove_effect)
 
         self.player.load(path)
         if thumbnail is not None and not thumbnail.isNull():
@@ -106,40 +130,6 @@ class VideoTab(QWidget):
         if duration_ms > 0:
             self.controls.set_duration_ms(duration_ms)
 
-        # ---- 편집 모드 통합 (Stage 2) ----
-        from .video.edit_controller import EditController
-        from .video.effect_lanes_widget import EffectLanesWidget
-        from ..effects import default_sidecar_dir
-
-        sc_dir = Path(sidecar_dir) if sidecar_dir is not None else default_sidecar_dir()
-        self._edit_controller = EditController(self._source_path, sc_dir)
-        self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
-        self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
-
-        self._lanes_widget = EffectLanesWidget()
-        self._lanes_widget.set_sidecar(self._edit_controller.sidecar())
-        if duration_ms > 0:
-            self._lanes_widget.set_duration_ms(duration_ms)
-        self._lanes_widget.hide()
-        layout.addWidget(self._lanes_widget)
-
-        # Task 7: PlayerControls 편집 토글 과 EditController 연결
-        self.controls.edit_mode_change_requested.connect(self._edit_controller.set_edit_mode)
-        self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
-        self._edit_controller.edit_mode_toggled.connect(self._lanes_widget.setVisible)
-
-        # lanes → VideoTab effect_selected 버블 (MainWindow 인스펙터 패널용)
-        self._lanes_widget.effect_selected.connect(self.effect_selected.emit)
-
-        # 재생 위치/지속시간 → lanes 에 전파
-        self.player.position_changed.connect(self._lanes_widget.set_position_ms)
-        self.player.duration_changed.connect(self._lanes_widget.set_duration_ms)
-
-        # lane 시그널 → controller
-        self._lanes_widget.request_add.connect(self._on_lane_request_add)
-        self._lanes_widget.effect_changed.connect(self._edit_controller.update_effect)
-        self._lanes_widget.effect_deleted.connect(self._edit_controller.remove_effect)
-
         # ---- PreviewOverlay (Stage 3a) ----
         from .video.preview_overlay import PreviewOverlay
         self._preview_overlay = PreviewOverlay()
@@ -147,7 +137,6 @@ class VideoTab(QWidget):
         self._preview_overlay.set_sidecar(self._edit_controller.sidecar())
         self.player.position_changed.connect(self._preview_overlay.set_position_ms)
         self._edit_controller.sidecar_replaced.connect(self._preview_overlay.set_sidecar)
-        # 자유 위치 캡션 드래그 끝나면 (release) 시점에 EditController 로 한 번 update.
         self._preview_overlay.caption_position_changed.connect(
             self._edit_controller.update_effect
         )
@@ -157,16 +146,17 @@ class VideoTab(QWidget):
         self._insert_ctrl = InsertPlaybackController(
             main_player=self.player, insert_host=self.player,
         )
-        # 메인/보조 player position → controller → controls 슬라이더
+        # 메인/보조 player position → controller → timeline / controls
         self.player.position_changed.connect(self._insert_ctrl.on_main_position_changed)
         self.player.insert_position_changed.connect(self._insert_ctrl.on_insert_position_changed)
+        self._insert_ctrl.combined_position_changed.connect(self.timeline.set_position_ms)
         self._insert_ctrl.combined_position_changed.connect(self.controls.set_position_ms)
+        self._insert_ctrl.combined_duration_changed.connect(self.timeline.set_duration_ms)
         self._insert_ctrl.combined_duration_changed.connect(self.controls.set_duration_ms)
         # 사이드카 변경 → controller 갱신
         self._edit_controller.sidecar_replaced.connect(
             lambda sc: self._insert_ctrl.set_sidecar(sc, self.player.duration_ms())
         )
-        # 영상 길이 확정 → controller 재계산
         self.player.duration_changed.connect(
             lambda d: self._insert_ctrl.set_sidecar(
                 self._edit_controller.sidecar(), int(d),
@@ -183,13 +173,14 @@ class VideoTab(QWidget):
 
     def set_edit_mode(self, on: bool) -> None:
         self._edit_controller.set_edit_mode(on)
-        self._lanes_widget.setVisible(on)
+        self.timeline.set_edit_mode(on)
 
     def sidecar(self):
         return self._edit_controller.sidecar()
 
     def lanes_widget(self):
-        return self._lanes_widget
+        """효과 lane 컨테이너 — 하위 호환. 신규 코드는 timeline.effect_lanes 사용."""
+        return self.timeline.effect_lanes
 
     def edit_controller(self):
         return self._edit_controller
@@ -238,19 +229,16 @@ class VideoTab(QWidget):
         return self._edit_controller.add_effect(eff)
 
     def _get_duration_ms(self) -> int:
-        """영상 길이 조회 — player 또는 lanes_widget 에서 fallback."""
         d = self.player.duration_ms()
         if d > 0:
             return d
-        return self._lanes_widget._duration_ms
+        return self.timeline.slider_lane.duration_ms()
 
     def _get_position_ms(self) -> int:
-        """현재 재생 위치 조회 — lanes_widget 또는 player 에서 fallback."""
-        return self._lanes_widget._position_ms or self.player.position_ms()
+        return self.timeline.slider_lane.position_ms() or self.player.position_ms()
 
     def _on_sidecar_replaced(self, sc) -> None:
-        """controller 가 사이드카를 갱신 (undo/redo 또는 effect 변경)."""
-        self._lanes_widget.set_sidecar(sc)
+        self.timeline.set_sidecar(sc)
 
     # ---------- 단축키 ----------
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -323,28 +311,22 @@ class VideoTab(QWidget):
             self.player.flash_action("⏭ 끝으로")
             self._reset_frame_step_accum()
             event.accept(); return
-        # ===== 트림 단축키 =====
-        if k == Qt.Key_BracketLeft:
-            self.controls.set_in_ms(self.player.position_ms())
+        # ===== 트림 단축키 (편집 모드 ON 에서만) =====
+        if self.is_edit_mode_on() and k == Qt.Key_BracketLeft:
+            self._mark_trim("in", self.player.position_ms())
             self.player.flash_action("[ 시작점")
             event.accept(); return
-        if k == Qt.Key_BracketRight:
-            self.controls.set_out_ms(self.player.position_ms())
+        if self.is_edit_mode_on() and k == Qt.Key_BracketRight:
+            self._mark_trim("out", self.player.position_ms())
             self.player.flash_action("] 끝점")
             event.accept(); return
-        if (k in (Qt.Key_Return, Qt.Key_Enter)) and (m & Qt.ControlModifier):
-            if self.controls.cut_btn.isEnabled():
-                self._on_trim_execute(
-                    self.controls.in_ms() or 0,
-                    self.controls.out_ms() or 0,
-                )
-            event.accept(); return
         if k == Qt.Key_Escape:
-            had = self.controls.in_ms() is not None or self.controls.out_ms() is not None
-            if had:
-                self.controls.clear_trim()
+            t = self.sidecar().trim
+            if t.in_ms != 0 or t.out_ms != 0:
+                self._edit_controller.update_trim(0, 0)
                 self.player.flash_action("✕ 트림 해제")
                 event.accept(); return
+        # Ctrl+Enter 트림 즉시 실행은 제거 — Ctrl+Shift+E (export) 가 통합 처리.
         super().keyPressEvent(event)
 
     def _matches_player_key(self, event: QKeyEvent, hotkey_str: str) -> bool:
@@ -389,12 +371,13 @@ class VideoTab(QWidget):
     def _on_user_seek_request(self, ms: int) -> None:
         """슬라이더 드래그/클릭 또는 트림 레인 시크 — 누적 카운터 초기화.
 
-        트림 모드(in/out 둘 중 하나라도 마크된 상태)에서 시크하면 자동 일시정지.
-        편집 작업 중에는 사용자가 정확한 프레임을 보면서 점을 찍어야 하므로
-        영상이 그대로 재생되며 다음 프레임으로 흘러가면 안 됨 (Premiere 등 표준).
+        트림 모드(사이드카 trim in/out 둘 중 하나라도 마크된 상태)에서 시크하면
+        자동 일시정지. 편집 작업 중에는 사용자가 정확한 프레임을 보면서 점을
+        찍어야 하므로 영상이 그대로 재생되며 다음 프레임으로 흘러가면 안 됨
+        (Premiere 등 표준).
         """
-        trim_active = (self.controls.in_ms() is not None
-                       or self.controls.out_ms() is not None)
+        t = self.sidecar().trim
+        trim_active = (t.in_ms != 0 or t.out_ms != 0)
         if trim_active and self.player.is_playing():
             self.player.pause()
         self._reset_frame_step_accum()
@@ -431,6 +414,22 @@ class VideoTab(QWidget):
         """PlayerControls / Ctrl+Enter 가 트림 요청 → MainWindow 로 bubble."""
         self.trim_requested.emit(self._source_path, int(in_ms), int(out_ms))
 
+    def _mark_trim(self, side: str, ms: int) -> None:
+        """[ / ] 키로 in 또는 out 마크. swap 정규화 후 EditController 에 영구 저장."""
+        cur = self.sidecar().trim
+        if side == "in":
+            new_in, new_out = int(ms), cur.out_ms
+        else:
+            new_in, new_out = cur.in_ms, int(ms)
+        # in 이 out 보다 뒤로 가면 swap
+        if new_in and new_out and new_out < new_in:
+            new_in, new_out = new_out, new_in
+        self._edit_controller.update_trim(new_in, new_out)
+
+    def _on_timeline_trim_changed(self, in_ms: int, out_ms: int) -> None:
+        """timeline 의 in/out marker drag 후 시그널 — 사이드카에 영구 저장."""
+        self._edit_controller.update_trim(int(in_ms), int(out_ms))
+
     def _on_snapshot(self) -> None:
         img = self.player.current_frame()
         if img.isNull():
@@ -457,6 +456,7 @@ class VideoTab(QWidget):
         # 순서가 뒤집힘 (player 가 controls 뒤로 들어감 → 컨트롤바가 화면 상단에 나옴).
         player_index = self.layout().indexOf(self.player)
         ctrl_index = self.layout().indexOf(self.controls)
+        timeline_index = self.layout().indexOf(self.timeline)
 
         # 새 top-level 창에 player 를 일시적으로 reparent.
         # holder 자체엔 layout 을 두지 않는다 — player 는 fillRect 로 깔고, controls
@@ -476,6 +476,10 @@ class VideoTab(QWidget):
         self.layout().removeWidget(self.controls)
         self.controls.setParent(holder)
         self.controls.show()
+        # 풀스크린 동안 timeline 도 같이 가린다 (시각적으로 어색하므로)
+        self.layout().removeWidget(self.timeline)
+        self.timeline.setParent(holder)
+        self.timeline.hide()
 
         # 자동 숨김 타이머
         hide_timer = QTimer(holder)
@@ -517,12 +521,18 @@ class VideoTab(QWidget):
                 self.controls.setParent(None)
             except RuntimeError:
                 pass
-            # 진입 전과 동일한 순서로 복귀 (player_index, ctrl_index 는 모두 modify
-            # 전에 잡아둔 값). 보통 player_index=0, ctrl_index=1.
+            try:
+                self.timeline.setParent(None)
+            except RuntimeError:
+                pass
+            # 진입 전과 동일한 순서로 복귀 (player_index, ctrl_index, timeline_index 는
+            # 모두 modify 전에 잡아둔 값). 보통 player_index=0, ctrl_index=1, timeline_index=2.
             self.layout().insertWidget(player_index, self.player, stretch=1)
             self.layout().insertWidget(ctrl_index, self.controls)
+            self.layout().insertWidget(timeline_index, self.timeline)
             self.player.show()
             self.controls.show()
+            self.timeline.show()
             self.player.setFocus()
 
         # 닫힐 때(Esc 등) 복귀 처리

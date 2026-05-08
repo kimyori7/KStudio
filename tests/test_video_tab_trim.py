@@ -1,4 +1,4 @@
-"""VideoTab 의 트림 단축키."""
+"""VideoTab 의 트림 단축키 — Sidecar.trim 영구 저장 흐름."""
 from __future__ import annotations
 
 import subprocess
@@ -44,9 +44,9 @@ def video_tab(qtbot, fixture_mp4, tmp_path):
         sidecar_dir=tmp_path / "sidecars",
     )
     qtbot.addWidget(tab)
-    tab.controls.set_duration_ms(2_000)
-    tab.controls.set_position_ms(800)
-    # player 가 실제로 800ms 위치에 있게 — 직접 stub
+    tab.timeline.set_duration_ms(2_000)
+    tab.timeline.set_position_ms(800)
+    # player 가 800ms 위치
     tab.player.position_ms = lambda: 800
     return tab
 
@@ -56,36 +56,31 @@ def _send_key(widget, key, modifiers=Qt.NoModifier):
     widget.keyPressEvent(ev)
 
 
-def test_bracket_left_marks_in_at_current_position(video_tab):
+def test_bracket_left_only_works_in_edit_mode(video_tab):
+    """[ 는 편집 모드 OFF 에서 동작 안 함 — 사이드카 trim 변하지 않음."""
+    assert video_tab.is_edit_mode_on() is False
     _send_key(video_tab, Qt.Key_BracketLeft)
-    assert video_tab.controls.in_ms() == 800
+    assert video_tab.sidecar().trim.in_ms == 0
 
 
-def test_bracket_right_marks_out_at_current_position(video_tab):
+def test_bracket_left_marks_in_at_current_position_in_edit_mode(video_tab):
+    video_tab.set_edit_mode(True)
+    _send_key(video_tab, Qt.Key_BracketLeft)
+    assert video_tab.sidecar().trim.in_ms == 800
+
+
+def test_bracket_right_marks_out_at_current_position_in_edit_mode(video_tab):
+    video_tab.set_edit_mode(True)
     _send_key(video_tab, Qt.Key_BracketRight)
-    assert video_tab.controls.out_ms() == 800
+    assert video_tab.sidecar().trim.out_ms == 800
 
 
 def test_escape_clears_trim_when_in_or_out_set(video_tab):
-    video_tab.controls.set_in_ms(500)
+    video_tab.set_edit_mode(True)
+    video_tab._edit_controller.update_trim(in_ms=500, out_ms=1500)
     _send_key(video_tab, Qt.Key_Escape)
-    assert video_tab.controls.in_ms() is None
-
-
-def test_ctrl_enter_emits_trim_requested_when_active(video_tab, qtbot):
-    """Ctrl+Enter (트림 실행 — Ctrl+E 는 편집 모드 토글로 이동됨)."""
-    video_tab.controls.set_in_ms(500)
-    video_tab.controls.set_out_ms(1_500)
-    with qtbot.waitSignal(video_tab.trim_requested, timeout=500) as blocker:
-        _send_key(video_tab, Qt.Key_Return, Qt.ControlModifier)
-    assert blocker.args == [video_tab._source_path, 500, 1_500]
-
-
-def test_ctrl_enter_noop_when_button_disabled(video_tab, qtbot):
-    """in 만 있고 out 없으면 Ctrl+Enter 는 시그널 emit 안 함."""
-    video_tab.controls.set_in_ms(500)
-    with qtbot.assertNotEmitted(video_tab.trim_requested, wait=300):
-        _send_key(video_tab, Qt.Key_Return, Qt.ControlModifier)
+    assert video_tab.sidecar().trim.in_ms == 0
+    assert video_tab.sidecar().trim.out_ms == 0
 
 
 def test_seek_during_trim_auto_pauses(video_tab):
@@ -96,21 +91,29 @@ def test_seek_during_trim_auto_pauses(video_tab):
     video_tab.player.pause = lambda: pause_calls.append(True)
     video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
 
-    video_tab.controls.set_in_ms(500)   # 트림 활성
+    video_tab.set_edit_mode(True)
+    video_tab._edit_controller.update_trim(in_ms=500, out_ms=1500)
     video_tab._on_user_seek_request(2_000)
     assert pause_calls == [True]
     assert seek_calls == [2_000]
 
 
 def test_seek_without_trim_does_not_pause(video_tab):
-    """트림 비활성(in/out 모두 None) 상태에서 시크는 일시정지 안 함."""
     pause_calls = []
     seek_calls = []
     video_tab.player.is_playing = lambda: True
     video_tab.player.pause = lambda: pause_calls.append(True)
     video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
 
-    video_tab.controls.clear_trim()
+    video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
     video_tab._on_user_seek_request(2_000)
     assert pause_calls == []
     assert seek_calls == [2_000]
+
+
+def test_ctrl_enter_does_not_emit_trim_requested(video_tab, qtbot):
+    """Ctrl+Enter 단축키는 제거 — 시그널 emit 안 함 (export 는 Ctrl+Shift+E)."""
+    video_tab.set_edit_mode(True)
+    video_tab._edit_controller.update_trim(in_ms=500, out_ms=1_500)
+    with qtbot.assertNotEmitted(video_tab.trim_requested, wait=300):
+        _send_key(video_tab, Qt.Key_Return, Qt.ControlModifier)

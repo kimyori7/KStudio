@@ -29,8 +29,8 @@ def tab(qtbot, tmp_path):
     qtbot.addWidget(t)
     t.set_edit_mode(True)
     # 위치 = 5000ms
-    t._lanes_widget.set_duration_ms(10000)
-    t._lanes_widget.set_position_ms(5000)
+    t.timeline.set_duration_ms(10000)
+    t.timeline.set_position_ms(5000)
     return t
 
 

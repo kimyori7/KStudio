@@ -46,7 +46,7 @@ def test_t_shortcut_adds_caption_at_current_position(qtbot, sample_mp4, tmp_path
     qtbot.waitExposed(tab)
     tab.setFocus()
     # 현재 재생 위치를 명시적으로 설정 — player_widget 의 mock
-    tab._lanes_widget.set_position_ms(2000)
+    tab.timeline.set_position_ms(2000)
     qtbot.keyClick(tab, Qt.Key_T)
 
     sc = tab.sidecar()
