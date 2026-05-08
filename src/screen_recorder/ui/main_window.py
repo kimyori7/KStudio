@@ -239,6 +239,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.register_inspector("cut", CutInspector)        # NEW
         from .video.inspectors.speed_inspector import SpeedInspector        # Stage 5
         self.inspector_panel.register_inspector("speed", SpeedInspector)    # Stage 5
+        from .video.inspectors.zoom_inspector import ZoomInspector          # Stage 6
+        self.inspector_panel.register_inspector("zoom", ZoomInspector)      # Stage 6
         self.inspector_dock = QDockWidget("효과 인스펙터", self)
         self.inspector_dock.setObjectName("InspectorDock")
         self.inspector_dock.setWidget(self.inspector_panel)

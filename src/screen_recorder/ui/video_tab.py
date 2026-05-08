@@ -233,12 +233,15 @@ class VideoTab(QWidget):
         elif effect_type == "speed":
             # 기본 2.0× 배속 — 사용자가 인스펙터에서 자유롭게 변경 가능.
             eff = SpeedEffect(in_ms=in_ms, out_ms=out_ms, rate=2.0)
-        elif effect_type in ("zoom", "broll"):
+        elif effect_type == "zoom":
+            # v1: 정적 줌 — 화면 중앙 (cx=0.5, cy=0.5) 에 2.0× 배율. 사용자가
+            # 인스펙터에서 자유롭게 변경 가능. start == end 가정 (키프레임은 v2).
+            from ..effects.types.zoom import ZoomEffect, ZoomPoint
+            pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
+            eff = ZoomEffect(in_ms=in_ms, out_ms=out_ms, start=pt, end=pt)
+        elif effect_type == "broll":
             # 미구현 type — 사용자에게 안내만, 사이드카는 변경 안 함.
-            label = {"zoom": "줌", "broll": "곁들임 영상"}.get(
-                effect_type, effect_type
-            )
-            self.player.flash_action(f"{label} 효과는 아직 구현 중 (다음 단계)")
+            self.player.flash_action("곁들임 영상 효과는 아직 구현 중 (다음 단계)")
             return False
         else:
             return False
