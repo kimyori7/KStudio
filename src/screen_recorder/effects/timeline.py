@@ -43,9 +43,22 @@ def build_combined_timeline(
     if main_duration_ms < 0:
         raise ValueError(f"main_duration_ms must be >= 0, got {main_duration_ms}")
 
+    # range cut (in < out) 안에 들어간 splice (in == out) 는 의미 없음 — 무시.
+    # 드래그 리사이즈 등으로 사용자가 자기도 모르게 만든 상태에서 매 로드마다 크래시
+    # 나는 것을 막기 위해 방어적으로 드롭. range×range 겹침은 여전히 거부.
+    ranges = [c for c in cuts if c.in_ms < c.out_ms]
+    def _inside_a_range(c: CutEffect) -> bool:
+        if c.in_ms != c.out_ms:
+            return False
+        for r in ranges:
+            if r.in_ms <= c.in_ms < r.out_ms:
+                return True
+        return False
+    cuts = [c for c in cuts if not _inside_a_range(c)]
+
     sorted_cuts = sorted(cuts, key=lambda c: c.in_ms)
 
-    # 겹침 검증
+    # 겹침 검증 (splice 끼리, range 끼리, splice 가 range 의 시작점/끝점에 닿는 경우 등)
     for i in range(1, len(sorted_cuts)):
         prev = sorted_cuts[i - 1]
         cur = sorted_cuts[i]

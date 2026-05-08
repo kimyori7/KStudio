@@ -100,11 +100,27 @@ def test_build_cuts_sorted_by_in_ms():
 
 
 def test_build_overlapping_cuts_raises():
-    """겹치는 cut 은 거부 (Stage 4 검증 정책)."""
+    """range × range 겹침은 의도가 모호하므로 거부 (Stage 4 검증 정책)."""
     c1 = CutEffect(in_ms=2000, out_ms=5000)
     c2 = CutEffect(in_ms=4000, out_ms=7000)  # 2000-5000 과 겹침
     with pytest.raises(ValueError, match=r"overlap"):
         build_combined_timeline(10000, [c1, c2])
+
+
+def test_build_splice_inside_range_drops_splice():
+    """splice 가 range cut 안에 들어가면 의미가 없으니 무시 (크래시 방지).
+
+    원인: 드래그 리사이즈 등으로 사용자가 자기도 모르게 만든 상태일 때, 다음 로드부터
+    크래시 나는 것을 방지. 사이드카는 손상된 상태가 아니지만 결합 시간축은 range 만 반영.
+    """
+    rng = CutEffect(in_ms=8745, out_ms=9745)
+    splice = CutEffect(in_ms=8766, out_ms=8766)
+    segs = build_combined_timeline(10000, [rng, splice])
+    # range 만 반영 — splice 는 무시.
+    main_starts = [s.source_start_ms for s in segs if s.source == "main"]
+    main_ends = [s.source_end_ms for s in segs if s.source == "main"]
+    assert main_starts == [0, 9745]
+    assert main_ends == [8745, 10000]
 
 
 def test_build_splice_at_zero():

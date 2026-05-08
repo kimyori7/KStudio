@@ -83,9 +83,18 @@ class EditController(QObject):
         return True
 
     def update_effect(self, effect) -> bool:
-        """기존 효과를 같은 id 로 교체. 없으면 no-op."""
+        """기존 효과를 같은 id 로 교체. 없으면 no-op.
+
+        교체 시 같은 type 의 다른 효과들과 시간이 겹치면 거부 (False) — 사이드카 변경 없이
+        sidecar_replaced 만 다시 emit 해 UI 가 원본 위치로 resync 하도록 한다. 이는
+        드래그 리사이즈로 다른 효과 위로 침범할 때 결합 시간축 빌드가 깨지는 것을 막기 위함.
+        """
         for i, e in enumerate(self._sidecar.effects):
             if e.id == effect.id:
+                others = [x for x in self._sidecar.effects if x.id != effect.id]
+                if overlaps_existing(others, effect):
+                    self.sidecar_replaced.emit(self._sidecar)
+                    return False
                 new_sc = copy.deepcopy(self._sidecar)
                 new_sc.effects[i] = effect
                 self.update_sidecar(new_sc)

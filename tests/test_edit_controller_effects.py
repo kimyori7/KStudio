@@ -75,3 +75,27 @@ def test_undo_after_add_effect_restores_empty(qtbot, video, tmp_path):
     ec.add_effect(CaptionEffect(in_ms=0, out_ms=1000, text="x"))
     ec.undo()
     assert ec.sidecar().effects == []
+
+
+def test_update_effect_rejects_overlap_with_sibling(video, tmp_path):
+    """드래그 리사이즈로 다른 같은-type 효과와 겹치게 만들면 거부.
+
+    재현: splice cut 가 8766 에 있고, 그 옆 range cut 의 오른쪽 핸들을 드래그해
+    8745-9745 로 확장 → 결합 시간축 빌드 시 ValueError 크래시. 사전에 거부해야 한다.
+    """
+    from dataclasses import replace
+    from screen_recorder.effects.types.cut import CutEffect
+
+    ec = EditController(video, tmp_path / "sidecars")
+    splice = CutEffect(in_ms=8766, out_ms=8766)
+    rng = CutEffect(in_ms=5000, out_ms=6000)
+    assert ec.add_effect(splice) is True
+    assert ec.add_effect(rng) is True
+
+    # 드래그 리사이즈로 range 를 splice 위로 확장 → 거부.
+    expanded = replace(rng, in_ms=8745, out_ms=9745)
+    ok = ec.update_effect(expanded)
+    assert ok is False
+    # 사이드카는 원본 그대로.
+    rng_now = next(e for e in ec.sidecar().effects if e.id == rng.id)
+    assert (rng_now.in_ms, rng_now.out_ms) == (5000, 6000)
