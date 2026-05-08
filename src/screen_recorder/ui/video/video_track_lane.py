@@ -1,0 +1,170 @@
+"""VideoTrackLane — 필름스트립 (segment 별 썸네일 박스) + 좌클릭 선택.
+
+Stage A: 표시 + 선택만. 자르기/드래그/삭제/드롭은 Stage B.
+"""
+from __future__ import annotations
+from typing import Optional
+
+from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen
+from PySide6.QtWidgets import QWidget
+
+from ...effects.segment import VideoSegment
+
+
+_HEADER_WIDTH = 56     # effect lane 들과 일관 — 좌측에 라벨 자리.
+_BOX_HEIGHT = 50
+_BOX_GAP = 2
+_BG_COLOR = QColor(30, 30, 30)
+_BOX_FILL = QColor(60, 80, 110)
+_BOX_BORDER = QColor(120, 140, 170)
+_SELECTED_BORDER = QColor(255, 255, 255)
+_HEADER_BG = QColor(40, 40, 40)
+_HEADER_FG = QColor(220, 220, 220)
+_DURATION_FG = QColor(230, 230, 230)
+_DURATION_BG = QColor(0, 0, 0, 140)
+
+
+class VideoTrackLane(QWidget):
+    """비디오 트랙 lane — segment 들을 가로로 이어붙인 필름스트립.
+
+    Stage A 능력:
+    - segment 마다 썸네일 박스 그림 (없으면 회색 placeholder)
+    - 좌클릭으로 선택 → segment_selected 시그널
+    - set_selected_id / set_duration_ms / set_segments / set_thumbnail public API
+    """
+
+    segment_selected = Signal(str)      # segment id
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setMinimumHeight(_BOX_HEIGHT + 8)
+        self._segments: list[VideoSegment] = []
+        self._duration_ms: int = 0
+        self._selected_id: Optional[str] = None
+        self._thumbnails: dict[str, QImage] = {}
+        self._pending_select: Optional[str] = None
+
+    # ---------- public API ----------
+    def set_segments(self, segments: list[VideoSegment]) -> None:
+        self._segments = list(segments)
+        self.update()
+
+    def set_duration_ms(self, ms: int) -> None:
+        """결합 시간축 총 길이. 0 이면 segment 들의 duration 합 사용."""
+        self._duration_ms = max(0, int(ms))
+        self.update()
+
+    def set_selected_id(self, sid: Optional[str]) -> None:
+        self._selected_id = sid
+        self.update()
+
+    def set_thumbnail(self, segment_id: str, img: QImage) -> None:
+        """ThumbnailExtractor 추출 완료 후 호출."""
+        self._thumbnails[segment_id] = img
+        self.update()
+
+    def segments(self) -> list[VideoSegment]:
+        return list(self._segments)
+
+    # ---------- internal ----------
+    def _total_duration_ms(self) -> int:
+        if self._duration_ms > 0:
+            return self._duration_ms
+        return sum(max(0, s.duration_ms) for s in self._segments)
+
+    def _segment_rects(self) -> list[dict]:
+        """각 segment 의 화면 좌표 rect 와 id. 좌→우 순서. 헤더 폭 제외."""
+        total = self._total_duration_ms()
+        if total <= 0 or not self._segments:
+            return []
+        body_w = max(1, self.width() - _HEADER_WIDTH)
+        out: list[dict] = []
+        cursor_ms = 0
+        y = (self.height() - _BOX_HEIGHT) // 2
+        for seg in self._segments:
+            dur = max(0, seg.duration_ms)
+            x = _HEADER_WIDTH + int(round(cursor_ms * body_w / total))
+            w = int(round(dur * body_w / total)) - _BOX_GAP
+            w = max(1, w)
+            out.append({
+                "id": seg.id,
+                "rect": QRect(x, y, w, _BOX_HEIGHT),
+                "duration_ms": dur,
+            })
+            cursor_ms += dur
+        return out
+
+    # ---------- paint ----------
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.fillRect(self.rect(), _BG_COLOR)
+        # 헤더
+        p.fillRect(0, 0, _HEADER_WIDTH, self.height(), _HEADER_BG)
+        p.setPen(_HEADER_FG)
+        p.drawText(0, 0, _HEADER_WIDTH, self.height(),
+                   Qt.AlignCenter, "영상")
+        for box in self._segment_rects():
+            r = box["rect"]
+            sid = box["id"]
+            thumb = self._thumbnails.get(sid)
+            if thumb is not None and not thumb.isNull():
+                # KeepAspectRatioByExpanding 으로 확대 + 중앙 crop.
+                scaled = thumb.scaled(r.size(), Qt.KeepAspectRatioByExpanding,
+                                       Qt.SmoothTransformation)
+                ox = max(0, (scaled.width() - r.width()) // 2)
+                oy = max(0, (scaled.height() - r.height()) // 2)
+                src = QRect(ox, oy, r.width(), r.height())
+                p.drawImage(r, scaled, src)
+            else:
+                p.fillRect(r, _BOX_FILL)
+            # 외곽선 — 선택된 segment 는 굵은 흰색.
+            if sid == self._selected_id:
+                pen = QPen(_SELECTED_BORDER)
+                pen.setWidth(3)
+            else:
+                pen = QPen(_BOX_BORDER)
+                pen.setWidth(1)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(r)
+            # duration 라벨 (좌하단).
+            self._draw_duration_label(p, r, box["duration_ms"])
+
+    def _draw_duration_label(self, p: QPainter, r: QRect, dur_ms: int) -> None:
+        secs = dur_ms / 1000.0
+        text = f"{secs:.1f}s"
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+        pad = 3
+        # 좌하단.
+        bx = r.left() + 2
+        by = r.bottom() - th - 2
+        p.fillRect(bx, by, tw + pad * 2, th + pad, _DURATION_BG)
+        p.setPen(_DURATION_FG)
+        p.drawText(bx + pad, by, tw + pad, th + pad,
+                   Qt.AlignVCenter | Qt.AlignLeft, text)
+
+    # ---------- mouse ----------
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.LeftButton:
+            return super().mousePressEvent(event)
+        pos = event.position().toPoint()
+        for box in self._segment_rects():
+            if box["rect"].contains(pos):
+                self._pending_select = box["id"]
+                event.accept()
+                return
+        self._pending_select = None
+        event.ignore()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        sid = self._pending_select
+        if sid is not None and event.button() == Qt.LeftButton:
+            self._pending_select = None
+            self.set_selected_id(sid)
+            self.segment_selected.emit(sid)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
