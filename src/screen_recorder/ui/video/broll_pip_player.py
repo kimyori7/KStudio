@@ -38,6 +38,24 @@ class BrollPipPlayer(QObject):
     def loaded_src(self) -> Optional[str]:
         return self._loaded_src
 
+    # ---------- 활성/비활성 ----------
+    def activate(self, src: str, effect_id: str) -> None:
+        """broll src 로드 + 활성 id 설정. src 동일이면 setSource 재호출 안 함.
+
+        eff_id 만 바뀌는 경우 (드물지만 같은 src 를 두 효과가 공유) 도 지원.
+        """
+        self._active_eff_id = str(effect_id)
+        src = str(src)
+        if src != self._loaded_src:
+            self._loaded_src = src
+            self._player.setSource(QUrl.fromLocalFile(src))
+
+    def deactivate(self) -> None:
+        """활성 broll 없음. pause + 처음으로 seek."""
+        self._active_eff_id = None
+        self._player.pause()
+        self._player.setPosition(0)
+
     # ---------- 내부 ----------
     def _on_frame(self, frame) -> None:
         if self._active_eff_id is None:
