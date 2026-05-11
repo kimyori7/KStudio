@@ -152,6 +152,36 @@ _PATHS: dict[str, str] = {
         '<path d="M6 17.5V6"/>'
         '<rect width="20" height="12" x="2" y="6" rx="2"/>'
     ),
+    # 영화 필름 — 영상 모드 토글 아이콘 (🎞 대체).
+    "film": (
+        '<rect width="18" height="18" x="3" y="3" rx="2"/>'
+        '<path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/>'
+        '<path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/>'
+        '<path d="M17 16.5h4"/>'
+    ),
+    # 사진 — 이미지 모드 토글 아이콘 (🖼 대체).
+    "image": (
+        '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>'
+        '<circle cx="9" cy="9" r="2"/>'
+        '<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>'
+    ),
+    # 앱 창 (창 모드 아이콘) — 🪟 대체. 윈도우 + 타이틀바 라인.
+    "app-window": (
+        '<rect width="20" height="16" x="2" y="4" rx="2"/>'
+        '<path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/>'
+    ),
+    # 모니터 — 전체화면 + 모니터 라벨 아이콘 (🖥 대체).
+    "monitor": (
+        '<rect width="20" height="14" x="2" y="3" rx="2"/>'
+        '<line x1="8" x2="16" y1="21" y2="21"/>'
+        '<line x1="12" x2="12" y1="17" y2="21"/>'
+    ),
+    # 업로드 / 내보내기 — 📤 대체.
+    "upload": (
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<polyline points="17 8 12 3 7 8"/>'
+        '<line x1="12" x2="12" y1="3" y2="15"/>'
+    ),
     # 폴더 — 환경설정 폴더 picker 버튼용. 다른 아이콘과 달리 fill 색상 (노란/베이지)
     # 을 path 에 직접 명시 — _wrap 의 root-level fill="none" 보다 path attribute 가
     # 우선. stroke 는 wrapper 의 currentColor 가 그대로 적용돼 outline 도 테마 따라감.
