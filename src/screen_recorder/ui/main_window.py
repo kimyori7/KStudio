@@ -148,6 +148,11 @@ class MainWindow(QMainWindow):
             self.setGeometry(s.viewer_x, s.viewer_y, s.viewer_w, s.viewer_h)
         else:
             self.resize(1280, 820)
+        # 종료 시점이 최대화 상태였으면 windowState 에 플래그를 미리 세팅 — hidden 상태에서
+        # 적용해도 Qt 가 첫 show() 시 자동 반영. main.py 의 show() 흐름이나 트레이 모드
+        # (show 안 함) 둘 다 영향 없음. 사용자가 일반 크기로 줄이면 setGeometry 좌표/크기로 복귀.
+        if getattr(s, "viewer_maximized", False):
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
         # 창을 작게 만드는 것이 차단되지 않도록 최소 크기 명시 (캡처 후 lockup 방지).
         self.setMinimumSize(480, 320)
 
@@ -3860,12 +3865,17 @@ class MainWindow(QMainWindow):
                     w.edit_controller().flush_autosave()
             except (RuntimeError, AttributeError):
                 pass
-        # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출)
-        g = self.geometry()
+        # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출).
+        # 최대화/최소화 상태에서는 geometry() 가 모니터 전체 크기를 반환하므로 그걸 그대로
+        # 저장하면 다음 실행 시 최대화 해제해도 거대한 일반 창이 남는 회귀가 난다.
+        # normalGeometry() 는 showNormal() 시 복원될 "일반 창 크기" 를 별도로 보관한다.
+        is_max = self.isMaximized()
+        g = self.normalGeometry() if (is_max or self.isMinimized()) else self.geometry()
         self.app_settings.screenshot.viewer_x = g.x()
         self.app_settings.screenshot.viewer_y = g.y()
         self.app_settings.screenshot.viewer_w = g.width()
         self.app_settings.screenshot.viewer_h = g.height()
+        self.app_settings.screenshot.viewer_maximized = is_max
         # dock 레이아웃 영속화 — 현재 모드 기준.
         self._save_dock_state_for_mode(self.mode_controller.mode())
         self.hotkeys.shutdown()

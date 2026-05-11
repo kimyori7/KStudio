@@ -78,11 +78,14 @@ class ScreenshotSettings:
     filename_pattern: str = "screenshot_{date}_{time}"
     format: str = "png"
     magnifier_enabled: bool = True
-    # 뷰어 창 위치/크기 (-1이면 미설정)
+    # 뷰어 창 위치/크기 (-1이면 미설정). 최대화 상태에서도 "일반 창" 크기로 저장됨
+    # (normalGeometry 사용) — 다음 실행 시 최대화 해제하면 이 크기로 돌아온다.
     viewer_x: int = -1
     viewer_y: int = -1
     viewer_w: int = -1
     viewer_h: int = -1
+    # 종료 시점 최대화 상태였는지. True 면 다음 실행 시 일반 크기 적용 후 추가로 최대화.
+    viewer_maximized: bool = False
 
 
 @dataclass
