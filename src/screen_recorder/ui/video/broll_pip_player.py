@@ -27,7 +27,8 @@ class BrollPipPlayer(QObject):
     공급한다. 시간창 매칭·재생 미러·drift 보정은 후속 task 에서 추가.
     """
 
-    frame_ready = Signal(str, object)   # (effect_id, QImage)
+    frame_ready = Signal(str, object)        # (effect_id, QImage)
+    effect_deactivated = Signal(str)         # 직전 활성이었던 effect_id (cache 정리용)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -55,19 +56,27 @@ class BrollPipPlayer(QObject):
     def activate(self, src: str, effect_id: str) -> None:
         """broll src 로드 + 활성 id 설정. src 동일이면 setSource 재호출 안 함.
 
-        eff_id 만 바뀌는 경우 (드물지만 같은 src 를 두 효과가 공유) 도 지원.
+        직전 활성이 있던 채로 새 effect 로 전환되면 effect_deactivated(prev_id)
+        emit — PreviewOverlay 가 stale live frame 캐시 정리.
         """
-        self._active_eff_id = str(effect_id)
+        prev = self._active_eff_id
+        new_id = str(effect_id)
+        self._active_eff_id = new_id
         src = str(src)
         if src != self._loaded_src:
             self._loaded_src = src
             self._player.setSource(QUrl.fromLocalFile(src))
+        if prev is not None and prev != new_id:
+            self.effect_deactivated.emit(prev)
 
     def deactivate(self) -> None:
-        """활성 broll 없음. pause + 처음으로 seek."""
+        """활성 broll 없음. pause + 처음으로 seek. 직전 id 가 있으면 시그널 emit."""
+        prev = self._active_eff_id
         self._active_eff_id = None
         self._player.pause()
         self._player.setPosition(0)
+        if prev is not None:
+            self.effect_deactivated.emit(prev)
 
     # ---------- main 미러 ----------
     def set_playing(self, on: bool) -> None:

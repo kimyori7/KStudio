@@ -248,6 +248,23 @@ class VideoTab(QWidget):
         self._segment_ctrl.combined_position_changed.connect(self._on_position_for_zoom)
         # 사이드카 변경 후 평가는 다음 combined_position_changed emit 시 자동 — 별도 트리거 불필요.
 
+        # ---- Broll PIP 실시간 재생 (Phase 20) ----
+        # main 과 별도의 QMediaPlayer 로 broll src 재생 → frame 을 PreviewOverlay
+        # PIP 박스 안에 그림. position/play/speed 미러.
+        from .video.broll_pip_player import BrollPipPlayer
+        self._broll_pip = BrollPipPlayer(self)
+        self._broll_pip.set_sidecar(self._edit_controller.sidecar())
+        self._edit_controller.sidecar_replaced.connect(self._broll_pip.set_sidecar)
+        self._segment_ctrl.combined_position_changed.connect(
+            self._broll_pip.on_combined_position_changed
+        )
+        self.player.playing_changed.connect(self._broll_pip.set_playing)
+        self.controls.speed_changed.connect(self._broll_pip.set_speed)
+        self._broll_pip.frame_ready.connect(self._on_broll_pip_frame)
+        self._broll_pip.effect_deactivated.connect(
+            self._preview_overlay.clear_broll_live_frame
+        )
+
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label
@@ -367,6 +384,10 @@ class VideoTab(QWidget):
             self._thumb_service.request(self._thumb_request_cls(
                 segment_id=_BROLL_THUMB_PREFIX + src, src=src, ms=0,
             ))
+
+    def _on_broll_pip_frame(self, effect_id: str, img) -> None:
+        """BrollPipPlayer.frame_ready → PreviewOverlay 의 live frame 캐시 갱신."""
+        self._preview_overlay.set_broll_live_frame(effect_id, img)
 
     def _on_overlay_broll_dropped(self, effect_id: str, path: str) -> None:
         """영상 위 broll PIP 박스 위에 외부 파일 드롭 → 그 effect 의 src 갱신.
