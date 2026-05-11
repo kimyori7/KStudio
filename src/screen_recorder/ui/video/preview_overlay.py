@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable, Optional
 
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QDragEnterEvent, QDropEvent, QFont, QImage, QMouseEvent,
     QPainter, QPaintEvent, QPen,
@@ -145,6 +145,13 @@ class PreviewOverlay(QWidget):
         self._frame_rect_provider: Optional[Callable[[], QRect]] = None
         # broll PIP 가이드 안에 표시할 대표 썸네일 (src path 별). VideoTab 이 채워줌.
         self._broll_thumbs: dict[str, "QImage"] = {}
+        # paintEvent 의 마지막 호출 시각 — 5× 같은 고배속에서 매 position tick 마다
+        # update() 호출하면 paint 가 30Hz 이상으로 폭주해 누적 부하 발생. wall-clock
+        # 33ms 이내의 연속 호출은 합쳐 paint 1 회로 (사용자가 인지하는 부드러움은 유지).
+        self._last_paint_request_ms: int = 0
+        self._paint_throttle = QTimer(self)
+        self._paint_throttle.setSingleShot(True)
+        self._paint_throttle.timeout.connect(self.update)
 
     # ---------- public ----------
     def set_sidecar(self, sc: Optional[Sidecar]) -> None:
@@ -153,7 +160,19 @@ class PreviewOverlay(QWidget):
 
     def set_position_ms(self, ms: int) -> None:
         self._position_ms = max(0, int(ms))
-        self.update()
+        self._request_paint()
+
+    def _request_paint(self) -> None:
+        """30Hz 캡 update() — 직전 paint 로부터 33ms 이상 지났으면 즉시,
+        아니면 짧은 타이머로 합침."""
+        from PySide6.QtCore import QDateTime
+        now = QDateTime.currentMSecsSinceEpoch()
+        elapsed = now - self._last_paint_request_ms
+        if elapsed >= 33:
+            self._last_paint_request_ms = now
+            self.update()
+        elif not self._paint_throttle.isActive():
+            self._paint_throttle.start(33 - elapsed)
 
     def set_broll_thumbnail(self, src: str, img: Optional[QImage]) -> None:
         """broll PIP 가이드 안에 그릴 대표 썸네일을 src 단위로 저장. 빈 src 면 no-op.

@@ -6,6 +6,9 @@ from pathlib import Path
 
 # Qt의 DPI awareness 경고 숨김 (이미 프로세스 DPI가 설정된 경우 Qt가 재설정 못해서 생기는 무해한 경고)
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.window=false")
+# 미디어 백엔드를 ffmpeg 로 명시 (Qt 6.5+ 기본이지만 WMF 로 fallback 되는 환경 방지).
+# WMF 는 고배속 재생 시 프레임 스킵이 심하고 UI 정지 사례가 보고되어 ffmpeg 강제.
+os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 

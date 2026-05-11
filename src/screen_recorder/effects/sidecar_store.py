@@ -72,13 +72,16 @@ class SidecarStore:
         self.root = Path(root)
 
     # ---- public API ----
-    def load_for(self, video_path: Path) -> Sidecar | None:
+    def load_for(self, video_path: Path, hash_hint: str | None = None) -> Sidecar | None:
         """영상에 매칭되는 사이드카 로드. 없으면 None.
 
         충돌 회피: hash 가 같아도 사이드카의 source_path 가 다르면 다른 파일.
+        hash_hint: 호출자가 이미 hash 를 계산한 경우 그 값 사용 — 1MB 디스크 read +
+        SHA1 의 중복 작업 회피. 메인 스레드에서 탭 여는 동안 같은 hash 가 3번 계산되던
+        bottleneck fix.
         """
         video_path = Path(video_path)
-        h = compute_video_hash(video_path)
+        h = hash_hint if hash_hint else compute_video_hash(video_path)
         for candidate in self._candidates_for_hash(h):
             sc = load(candidate)
             if sc.source_path == str(video_path) or sc.source_path == "":

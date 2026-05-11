@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 import logging
+import os
+import sys
 from pathlib import Path
 import pygetwindow as gw
 
@@ -333,10 +335,150 @@ class MainWindow(QMainWindow):
         # 초기화 끝 — 이제부터 사용자 액션에 의한 persist 허용.
         self._initializing = False
 
+        # 5배속 재생 시 점진적 정지 현상 진단용 로깅. 환경변수
+        # KSTUDIO_PERF_DIAG=1 일 때만 활성 — 평소엔 비용 0. 카운터는
+        # SegmentPlaybackController / PlayerWidget 가 emit 마다 증가시키고
+        # 5초마다 메모리/스레드/ffmpeg 프로세스 수와 함께 로그.
+        if os.environ.get("KSTUDIO_PERF_DIAG") == "1":
+            self._enable_perf_diag()
+
         # 첫 실행 시 단축키 프리셋 다이얼로그 노출 (preset_name="" 일 때만).
         # 노출은 이벤트 루프 시작 후로 미뤄 메인 창이 먼저 보이도록 한다.
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._maybe_show_hotkey_preset_dialog)
+
+    # ---------- perf 진단 ----------
+    def _enable_perf_diag(self) -> None:
+        """KSTUDIO_PERF_DIAG=1 일 때만 활성. 5초마다 dump + 100ms 미세 stutter 감지.
+
+        100Hz stutter detector: 100ms 마다 타이머 fire. 직전 fire 와 차이가 150ms +
+        초과면 micro-stutter 로 기록. 5초 dump 에 worst N 개 표시.
+        """
+        import threading
+        from ..core import perf_diag
+        # micro stutter detector — 매 100ms 타이머 fire, 직전 대비 skew 측정.
+        self._diag_stutter_samples: list[int] = []
+        self._diag_stutter_last_ms: int = 0
+        self._diag_stutter_timer = QTimer(self)
+        self._diag_stutter_timer.setInterval(100)
+
+        def _stutter_tick():
+            from PySide6.QtCore import QDateTime
+            now = QDateTime.currentMSecsSinceEpoch()
+            if self._diag_stutter_last_ms:
+                skew = (now - self._diag_stutter_last_ms) - 100
+                if skew > 50:   # 50ms 초과 = micro stutter 후보.
+                    self._diag_stutter_samples.append(skew)
+            self._diag_stutter_last_ms = now
+        self._diag_stutter_timer.timeout.connect(_stutter_tick)
+        self._diag_stutter_timer.start()
+
+        self._diag_timer = QTimer(self)
+        self._diag_timer.setInterval(5000)
+
+        def _rss_mb() -> float:
+            """현재 프로세스 RSS (MB). Windows 우선, 실패 시 0.
+
+            ctypes restype 미지정 시 64-bit pseudo-handle (-1) 이 32-bit 로 잘려
+            GetProcessMemoryInfo 가 실패 → 항상 0 반환되던 버그 fix.
+            """
+            if sys.platform != "win32":
+                return 0.0
+            try:
+                import ctypes
+                from ctypes import wintypes
+                class _PMC(ctypes.Structure):
+                    _fields_ = [
+                        ("cb", wintypes.DWORD),
+                        ("PageFaultCount", wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t),
+                    ]
+                kernel32 = ctypes.windll.kernel32
+                psapi = ctypes.windll.psapi
+                kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+                psapi.GetProcessMemoryInfo.argtypes = [
+                    wintypes.HANDLE, ctypes.POINTER(_PMC), wintypes.DWORD,
+                ]
+                psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+                pmc = _PMC()
+                pmc.cb = ctypes.sizeof(_PMC)
+                handle = kernel32.GetCurrentProcess()
+                if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
+                    return 0.0
+                return pmc.WorkingSetSize / 1024 / 1024
+            except Exception:
+                return 0.0
+
+        # ffmpeg_count 는 background 스레드에서 비동기로 측정 — tasklist 가 메인
+        # 스레드에서 500-1000ms block 하던 게 사용자가 보는 "잠깐잠깐 멈춤" 의 원인.
+        # qimage_count 도 같은 이유 (gc.get_objects 가 수천 객체 순회 → 100-200ms).
+        self._diag_async_ffmpeg_count: int = 0
+        self._diag_async_qimage_count: int = 0
+
+        def _async_measure():
+            ffmpeg_n = 0
+            qi_n = 0
+            try:
+                if sys.platform == "win32":
+                    import subprocess
+                    r = subprocess.run(
+                        ["tasklist", "/FI", "IMAGENAME eq ffmpeg.exe",
+                         "/FO", "CSV", "/NH"],
+                        capture_output=True, timeout=3,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    out = r.stdout.decode("utf-8", "replace")
+                    ffmpeg_n = sum(1 for ln in out.splitlines() if "ffmpeg.exe" in ln)
+            except Exception:
+                pass
+            try:
+                import gc
+                qi_n = sum(1 for o in gc.get_objects() if type(o).__name__ == "QImage")
+            except Exception:
+                pass
+            self._diag_async_ffmpeg_count = ffmpeg_n
+            self._diag_async_qimage_count = qi_n
+
+        def _dump():
+            # 직전 측정 결과 사용 (현재 측정은 새 background 작업으로 시작).
+            ffmpeg_count = self._diag_async_ffmpeg_count
+            qimage_count = self._diag_async_qimage_count
+            counters = perf_diag.snapshot_and_reset()
+            stutters = sorted(self._diag_stutter_samples, reverse=True)[:3]
+            self._diag_stutter_samples.clear()
+            dur_pending = 0
+            thumb_pending = 0
+            try:
+                if hasattr(self, "_duration_probe_pool"):
+                    dur_pending = self._duration_probe_pool._work_queue.qsize()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "_thumb_probe_pool"):
+                    thumb_pending = self._thumb_probe_pool._work_queue.qsize()
+            except Exception:
+                pass
+            filmstrip_jobs = len(getattr(self, "_filmstrip_jobs", {}))
+            logging.warning(
+                "PERF_DIAG rss=%.1fMB threads=%d ffmpeg_procs=%d qimage=%d "
+                "dur_q=%d thumb_q=%d filmstrip=%d worst_stutters=%s counters=%s",
+                _rss_mb(), threading.active_count(), ffmpeg_count, qimage_count,
+                dur_pending, thumb_pending, filmstrip_jobs, stutters, counters,
+            )
+            # 다음 dump 를 위해 background 측정 트리거.
+            threading.Thread(target=_async_measure, daemon=True,
+                             name="PerfDiagAsync").start()
+
+        self._diag_timer.timeout.connect(_dump)
+        self._diag_timer.start()
+        logging.warning("PERF_DIAG enabled — 5초 주기 로깅 시작 (RSS 기반)")
 
         # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
         # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
@@ -963,7 +1105,13 @@ class MainWindow(QMainWindow):
         return 0
 
     def _extract_first_frame(self, path: Path) -> QImage:
-        """ffmpeg 으로 첫 프레임을 추출해 QImage 반환. 실패하면 회색 placeholder."""
+        """ffmpeg 으로 첫 프레임을 추출해 작은 썸네일 QImage 반환 (실패 시 placeholder).
+
+        ffmpeg 가 256×256 안에 맞춘 크기로 직접 인코딩 — 이전엔 원본 해상도(1080p) PNG
+        를 디스크에 쓰고 메인 스레드가 QPixmap.fromImage + scaled(SmoothTransformation)
+        로 축소했음. 이제 ffmpeg 단계에서 축소되므로 메인 스레드는 작은 QImage 1번만
+        다룬다 → 라이브러리 갱신 시 UI 끊김 최소.
+        """
         placeholder = QImage(64, 36, QImage.Format_ARGB32)
         placeholder.fill(0xFF222222)
         if not path.exists() or not self.ffmpeg_path.exists():
@@ -974,14 +1122,14 @@ class MainWindow(QMainWindow):
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 tmp = Path(f.name)
-            # Windows: CREATE_NO_WINDOW 로 콘솔 깜박임 방지.
             no_window = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             try:
-                # 첫 프레임 1장 추출. -ss 0 + -frames:v 1. -y 로 덮어쓰기.
-                # GIF 도 같은 명령으로 첫 프레임 추출됨.
+                # -vf scale='min(256,iw)':-2 — 256 안에 맞추되 aspect 유지 (-2 = 짝수 강제).
                 subprocess.run(
                     [str(self.ffmpeg_path), "-y", "-loglevel", "error",
-                     "-i", str(path), "-frames:v", "1", str(tmp)],
+                     "-i", str(path),
+                     "-vf", "scale='min(256,iw)':-2",
+                     "-frames:v", "1", str(tmp)],
                     check=True, capture_output=True, timeout=10,
                     creationflags=no_window,
                 )
@@ -1120,8 +1268,13 @@ class MainWindow(QMainWindow):
             self.library_model.entry_renamed.emit(entry_id, entry.display_name)
         except Exception:
             pass
-        # 정확한 duration 이 확정된 시점에 필름스트립(트림 레인 배경) 추출 시작.
-        self._start_filmstrip_extraction(entry_id)
+        # 필름스트립(트림 레인 배경) 추출은 *탭이 열렸을 때만* 시작 — 시작 시 14 영상
+        # 모두 duration 이 들어오면 14 ffmpeg subprocess 가 동시에 떠 OS 압박. 사용자가
+        # 실제 트림 레인을 보는 시점에만 필요하므로 _hookup_video_tab_inspector 등에서
+        # 명시 호출되도록 분리.
+        widget = self.tab_area.tab_widget_for_entry(entry_id)
+        if widget is not None and isinstance(widget, VideoTab):
+            self._start_filmstrip_extraction(entry_id)
 
     def _on_tab_closed_by_user(self, entry_id: int) -> None:
         # 라이브러리에는 그대로 남겨둔다 (탭만 닫힘).
@@ -2020,9 +2173,11 @@ class MainWindow(QMainWindow):
         if existing is not None:
             entry_id = existing.id
         else:
+            placeholder = QImage(64, 36, QImage.Format_ARGB32)
+            placeholder.fill(0xFF222222)
             entry = self.library_model.add(
                 EntryKind.VIDEO,
-                thumbnail=QImage(),
+                thumbnail=placeholder,
                 source_label="opened",
                 display_name=p.name,
                 path=p,
@@ -2030,6 +2185,12 @@ class MainWindow(QMainWindow):
                 origin="opened",
             )
             entry_id = entry.id
+            # 라이브러리 썸네일 + duration 백그라운드 추출. 탭이 열려 player 가
+            # 정확한 duration 을 emit 하기 전까지 (또는 탭을 안 여는 .kstudio 사이드카
+            # 흐름) 라이브러리에 0s 로 남아 있는 회귀 방지. 시간/썸네일 분리 — 시간
+            # 풀이 더 빠르게 응답.
+            self._probe_duration_async(p, entry_id)
+            self._extract_thumbnail_async(p, entry_id)
         self.tab_area.add_video(
             path=p, source_label="opened",
             duration_ms=0, entry_id=entry_id,
@@ -3121,7 +3282,8 @@ class MainWindow(QMainWindow):
         )
         self._restore_window_for_capture()
         self.tray.tray.showMessage("녹화 완료", str(p), QSystemTrayIcon.Information, 5000)
-        # 썸네일은 백그라운드에서 추출 → 끝나면 LibraryModel 갱신.
+        # 시간/썸네일 분리 — 시간이 먼저 채워지고 썸네일은 별도 풀로 천천히.
+        self._probe_duration_async(p, entry.id)
         self._extract_thumbnail_async(p, entry.id)
 
     def _populate_library_from_disk(self) -> None:
@@ -3160,46 +3322,58 @@ class MainWindow(QMainWindow):
             except OSError as e:
                 logging.getLogger(__name__).warning("library scan failed for %s: %s", d, e)
 
-        # 오래된 → 최신 순으로 add 하면 LibraryPanel 이 새 항목을 top 에 끼워 넣어
-        # 결과적으로 최신이 맨 위에 온다.
+        # add 는 오래된 → 최신 순서로 — LibraryPanel 이 새 항목을 top 에 끼워 넣어
+        # 최신이 맨 위에 오도록.
         candidates.sort(key=lambda t: t[2])
 
+        # 점진적 추가 — 한 entry 추가 후 event loop yield. 항목 많을 때 UI 클릭이
+        # 막히지 않도록. (관측: 이미지 12 + 영상 14 = 26 entry. 이미지 한 장당
+        # QImage(path) 가 100-200ms 소요해 동기 처리 시 2초+ block.)
+        # 이미지 썸네일도 백그라운드 풀에서 디코딩 → main thread 는 placeholder 추가만.
+        self._populate_pending = list(candidates)   # oldest first
+        self._populate_timer = QTimer(self)
+        self._populate_timer.setSingleShot(True)
+        self._populate_timer.setInterval(0)
+        self._populate_timer.timeout.connect(self._populate_one_step)
+        # 첫 step 은 짧은 지연 후 — 메인 창 paint 우선 처리해 사용자에 즉시 응답.
+        QTimer.singleShot(150, self._populate_timer.start)
+
+    def _populate_one_step(self) -> None:
+        """라이브러리 채우기 1 step — entry 1개 추가 후 event loop 로 yield."""
+        if not getattr(self, "_populate_pending", None):
+            return
         placeholder = QImage(64, 36, QImage.Format_ARGB32)
         placeholder.fill(0xFF222222)
-
-        for p, kind, _ in candidates:
-            if kind is EntryKind.IMAGE:
-                # .kstudio 는 직접 QImage 로 못 읽음 — placeholder.
-                if p.suffix.lower() == ".kstudio":
-                    thumb = placeholder
-                else:
-                    img = QImage(str(p))
-                    if img.isNull():
-                        thumb = placeholder
-                    else:
-                        thumb = img.scaled(
-                            128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation,
-                        )
-                self.library_model.add(
-                    EntryKind.IMAGE,
-                    thumbnail=thumb,
-                    source_label="opened",
-                    display_name=p.name,
-                    path=p,
-                    origin="opened",
-                )
-            else:
-                entry = self.library_model.add(
-                    EntryKind.VIDEO,
-                    thumbnail=placeholder,
-                    source_label="opened",
-                    display_name=p.name,
-                    path=p,
-                    duration_ms=0,
-                    origin="opened",
-                )
-                # 백그라운드에서 첫 프레임 썸네일 추출 → 라이브러리 항목 갱신.
-                self._extract_thumbnail_async(p, entry.id)
+        p, kind, _ = self._populate_pending.pop(0)
+        if kind is EntryKind.IMAGE:
+            # .kstudio 또는 일반 raster 모두 백그라운드 디코딩 풀로 보냄 (이전엔
+            # 메인 스레드 동기 디코딩 → 시작 시 2초+ block).
+            entry = self.library_model.add(
+                EntryKind.IMAGE,
+                thumbnail=placeholder,
+                source_label="opened",
+                display_name=p.name,
+                path=p,
+                origin="opened",
+            )
+            if p.suffix.lower() != ".kstudio":
+                self._decode_image_thumb_async(p, entry.id)
+        else:
+            entry = self.library_model.add(
+                EntryKind.VIDEO,
+                thumbnail=placeholder,
+                source_label="opened",
+                display_name=p.name,
+                path=p,
+                duration_ms=0,
+                origin="opened",
+            )
+            # duration (빠름) 과 thumbnail (느림) 분리 풀.
+            self._probe_duration_async(p, entry.id)
+            self._extract_thumbnail_async(p, entry.id)
+        # 다음 step — singleshot timer 가 이벤트 루프 통해 yield.
+        if self._populate_pending:
+            self._populate_timer.start()
 
     def _setup_library_disk_watcher(self) -> None:
         """이미지/영상 저장 폴더를 watch — 외부에서 파일이 삭제/이동되면 라이브러리에서도 제거.
@@ -3317,6 +3491,7 @@ class MainWindow(QMainWindow):
             display_name=out.name,
             thumbnail=entry.thumbnail,
         )
+        self._probe_duration_async(out, entry.id)
         self._extract_thumbnail_async(out, entry.id)
 
         if isinstance(self._active_trim_src_widget, VideoTab):
@@ -3396,22 +3571,131 @@ class MainWindow(QMainWindow):
         logging.getLogger(__name__).info("filmstrip extraction failed for entry %s: %s",
                                            entry_id, msg)
 
-    def _extract_thumbnail_async(self, path: Path, entry_id: int) -> None:
-        """ffmpeg 으로 첫 프레임 썸네일을 비동기 추출 → LibraryModel 갱신."""
-        import threading
+    def _probe_duration_ms(self, path: Path) -> int:
+        """ffprobe 로 영상 길이 (ms) 조회. 실패 시 0.
+
+        ffmpeg 과 같은 폴더에 있는 ffprobe 를 우선 사용 — 번들 환경 + PATH 양쪽 모두
+        지원. CREATE_NO_WINDOW 로 콘솔 깜박임 방지 (Windows).
+        """
+        import subprocess
+        import sys
+        try:
+            if not path.exists():
+                return 0
+            ffprobe = self.ffmpeg_path.parent / (
+                "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
+            )
+            candidate = str(ffprobe) if ffprobe.exists() else "ffprobe"
+            no_window = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            result = subprocess.run(
+                [candidate, "-v", "error",
+                 "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1",
+                 str(path)],
+                capture_output=True, timeout=10,
+                creationflags=no_window,
+            )
+            if result.returncode != 0:
+                return 0
+            text = result.stdout.decode("utf-8", "replace").strip()
+            if not text:
+                return 0
+            return int(round(float(text) * 1000))
+        except (subprocess.SubprocessError, FileNotFoundError, OSError, ValueError):
+            return 0
+
+    def _decode_image_thumb_async(self, path: Path, entry_id: int) -> None:
+        """이미지 파일을 백그라운드 스레드에서 디코딩 + 128×128 축소 → 라이브러리 갱신.
+
+        QImage 는 reentrant (스레드별 인스턴스 OK) — 워커 스레드에서 만든 QImage 를
+        QueuedConnection 으로 메인 스레드에 전달. 시작 시 이미지 12개 PNG 동기 디코딩이
+        2초+ 메인 스레드 block 하던 문제 fix. ffmpeg 가 필요 없는 가벼운 작업이라
+        duration probe 와 같은 풀 (max_workers=2) 공유.
+        """
+        from PySide6.QtCore import QMetaObject, Qt as Qt2, Q_ARG
+
         def _worker():
-            img = self._extract_first_frame(path)
-            if img.isNull():
+            try:
+                img = QImage(str(path))
+                if img.isNull():
+                    return
+                thumb = img.scaled(
+                    128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation,
+                )
+            except Exception:
                 return
-            # 메인 스레드에서 모델 업데이트하도록 dispatch.
-            from PySide6.QtCore import QMetaObject, Qt as Qt2, Q_ARG
             QMetaObject.invokeMethod(
                 self, "_apply_thumbnail",
                 Qt2.QueuedConnection,
                 Q_ARG(int, entry_id),
-                Q_ARG(QImage, img),
+                Q_ARG(QImage, thumb),
             )
-        threading.Thread(target=_worker, daemon=True, name="ThumbnailExtract").start()
+
+        if not hasattr(self, "_duration_probe_pool"):
+            from concurrent.futures import ThreadPoolExecutor
+            self._duration_probe_pool = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="DurationProbe"
+            )
+        self._duration_probe_pool.submit(_worker)
+
+    def _probe_duration_async(self, path: Path, entry_id: int) -> None:
+        """ffprobe 로 duration 만 비동기 조회 → LibraryModel 갱신.
+
+        ffprobe 는 metadata 만 읽으므로 영상당 ~50ms 이내. 시작 시 라이브러리의
+        모든 영상에 대해 빠르게 시간이 채워지도록 별도 풀 (max_workers=2) 사용 —
+        썸네일(ffmpeg 첫 프레임 추출, 영상당 수백ms~수초) 과 분리해 시간 인덱싱이
+        썸네일에 발목 잡히지 않게 한다.
+        """
+        from PySide6.QtCore import QMetaObject, Qt as Qt2, Q_ARG
+
+        def _worker():
+            dur = self._probe_duration_ms(path)
+            if dur > 0:
+                QMetaObject.invokeMethod(
+                    self, "_apply_entry_duration",
+                    Qt2.QueuedConnection,
+                    Q_ARG(int, entry_id),
+                    Q_ARG(int, dur),
+                )
+
+        if not hasattr(self, "_duration_probe_pool"):
+            from concurrent.futures import ThreadPoolExecutor
+            self._duration_probe_pool = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="DurationProbe"
+            )
+        self._duration_probe_pool.submit(_worker)
+
+    def _extract_thumbnail_async(self, path: Path, entry_id: int) -> None:
+        """ffmpeg 으로 첫 프레임 썸네일을 비동기 추출 → LibraryModel 갱신.
+
+        ffmpeg 첫 프레임 추출은 영상당 수백ms~수초로 무거움. 시작 시 라이브러리에
+        영상이 많아도 (50+) CPU·디스크 경합 최소화를 위해 max_workers=1 풀로 순차
+        처리. duration 은 별도 `_probe_duration_async` 가 빠르게 채워주므로 썸네일이
+        늦더라도 사용자가 시간/이름은 즉시 확인 가능.
+        """
+        from PySide6.QtCore import QMetaObject, Qt as Qt2, Q_ARG
+
+        def _worker():
+            img = self._extract_first_frame(path)
+            if not img.isNull():
+                QMetaObject.invokeMethod(
+                    self, "_apply_thumbnail",
+                    Qt2.QueuedConnection,
+                    Q_ARG(int, entry_id),
+                    Q_ARG(QImage, img),
+                )
+
+        if not hasattr(self, "_thumb_probe_pool"):
+            from concurrent.futures import ThreadPoolExecutor
+            self._thumb_probe_pool = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="ThumbnailExtract"
+            )
+        self._thumb_probe_pool.submit(_worker)
+
+    @Slot(int, int)
+    def _apply_entry_duration(self, entry_id: int, duration_ms: int) -> None:
+        """백그라운드 ffprobe 결과를 라이브러리 entry 에 반영 (재사용 가능 한 진입점)."""
+        self._on_video_duration_resolved(entry_id, duration_ms)
 
     @Slot(int, QImage)
     def _apply_thumbnail(self, entry_id: int, image: QImage) -> None:

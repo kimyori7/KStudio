@@ -42,7 +42,8 @@ class EditController(QObject):
         self._store = SidecarStore(sidecar_dir)
         self._edit_mode_on = False
 
-        # 진단 로그 — 사이드카 자동 로드 흐름 가시화 (Phase 19.5).
+        # hash 1회 계산 — 이전엔 진단·load_for·MISS fallback 에서 동일 hash 가 3번
+        # 계산되어 메인 스레드 1MB read*3 + SHA1*3 으로 탭 오픈 지연의 큰 원인.
         try:
             h = compute_video_hash(self._video_path)
             _log.info(
@@ -62,9 +63,9 @@ class EditController(QObject):
             except Exception as e:
                 _log.warning("sidecar load explicit FAIL — file=%s err=%s",
                              sidecar_path, e)
-        # 2) 명시 없거나 실패 시 hash 매칭.
+        # 2) 명시 없거나 실패 시 hash 매칭 — 이미 계산한 h 를 hint 로 전달.
         if loaded is None:
-            loaded = self._store.load_for(self._video_path)
+            loaded = self._store.load_for(self._video_path, hash_hint=h or None)
             if loaded is None:
                 _log.info(
                     "sidecar load_for: MISS (새 사이드카로 시작) — dir 안 후보들=%s",
@@ -72,7 +73,7 @@ class EditController(QObject):
                 )
                 loaded = Sidecar(
                     source_path=str(self._video_path),
-                    source_hash=h or compute_video_hash(self._video_path),
+                    source_hash=h,   # 위에서 이미 계산. fallback 호출 제거.
                     trim=Trim(in_ms=0, out_ms=0),
                 )
             else:

@@ -2,11 +2,11 @@
 from __future__ import annotations
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent
-from PySide6.QtGui import QPixmap, QIcon, QAction
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent, QRect
+from PySide6.QtGui import QPixmap, QIcon, QAction, QPainter, QFont, QFontMetrics, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QMenu,
-    QProxyStyle, QStyle,
+    QProxyStyle, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QApplication,
 )
 
 
@@ -16,8 +16,112 @@ class _FastTooltipStyle(QProxyStyle):
             return 500
         return super().styleHint(hint, option, widget, returnData)
 
+
+_ROLE_FOLDER = Qt.UserRole + 2   # 윗줄에 표시할 폴더 경로
+
 from ..library_model import LibraryEntry, LibraryModel, EntryKind
 from ..mode_controller import AppMode, ModeController
+
+
+class _TwoLineDelegate(QStyledItemDelegate):
+    """라이브러리 항목 2줄 표시 — 위: 폴더 (작게·흐리게), 아래: 파일명.
+
+    인라인 편집은 Qt.DisplayRole (= 파일명) 만 대상으로 두므로 기존 rename 로직
+    영향 없음.
+    """
+    _PADDING = 4
+    _ICON_TEXT_GAP = 6
+    _LINE_GAP = 2
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
+        s = super().sizeHint(option, index)
+        folder_font = QFont(option.font)
+        folder_font.setPointSizeF(max(7.0, folder_font.pointSizeF() - 1.0))
+        folder_h = QFontMetrics(folder_font).height()
+        name_h = QFontMetrics(option.font).height()
+        text_h = folder_h + self._LINE_GAP + name_h + self._PADDING * 2
+        icon_h = option.decorationSize.height() + self._PADDING * 2
+        return QSize(s.width(), max(text_h, icon_h))
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        painter.save()
+        # 1. 배경 / selection — style.drawControl(CE_ItemViewItem) 은 PySide6 +
+        #    proxy style (_FastTooltipStyle) 와 access violation 충돌 → 직접 그림.
+        if option.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+        elif option.state & QStyle.State_MouseOver:
+            painter.fillRect(option.rect, option.palette.alternateBase())
+
+        rect = option.rect.adjusted(self._PADDING, self._PADDING,
+                                     -self._PADDING, -self._PADDING)
+
+        # 2. 아이콘.
+        icon = index.data(Qt.DecorationRole)
+        icon_w = option.decorationSize.width()
+        icon_h = option.decorationSize.height()
+        icon_rect = QRect(rect.left(),
+                          rect.top() + (rect.height() - icon_h) // 2,
+                          icon_w, icon_h)
+        if icon is not None and not icon.isNull():
+            icon.paint(painter, icon_rect, Qt.AlignCenter)
+
+        # 3. 텍스트 영역.
+        text_left = icon_rect.right() + self._ICON_TEXT_GAP
+        text_rect = QRect(text_left, rect.top(),
+                          max(0, rect.right() - text_left), rect.height())
+
+        folder = index.data(_ROLE_FOLDER) or ""
+        filename = index.data(Qt.DisplayRole) or ""
+
+        if option.state & QStyle.State_Selected:
+            base_color = option.palette.highlightedText().color()
+        else:
+            base_color = option.palette.text().color()
+
+        folder_font = QFont(option.font)
+        folder_font.setPointSizeF(max(7.0, folder_font.pointSizeF() - 1.0))
+        folder_fm = QFontMetrics(folder_font)
+        name_fm = QFontMetrics(option.font)
+        folder_h = folder_fm.height()
+        name_h = name_fm.height()
+
+        # 폴더가 있을 때만 2줄로 — 없으면 파일명만 가운데 정렬.
+        if folder:
+            total_h = folder_h + self._LINE_GAP + name_h
+            top = text_rect.top() + (text_rect.height() - total_h) // 2
+
+            painter.setFont(folder_font)
+            if option.state & QStyle.State_Selected:
+                folder_color = base_color
+            else:
+                folder_color = QColor(base_color)
+                folder_color.setAlphaF(0.55)
+            painter.setPen(folder_color)
+            folder_elided = folder_fm.elidedText(
+                folder, Qt.ElideMiddle, text_rect.width()
+            )
+            painter.drawText(text_rect.left(), top + folder_fm.ascent(), folder_elided)
+
+            painter.setFont(option.font)
+            painter.setPen(base_color)
+            name_elided = name_fm.elidedText(
+                filename, Qt.ElideRight, text_rect.width()
+            )
+            painter.drawText(
+                text_rect.left(),
+                top + folder_h + self._LINE_GAP + name_fm.ascent(),
+                name_elided,
+            )
+        else:
+            top = text_rect.top() + (text_rect.height() - name_h) // 2
+            painter.setFont(option.font)
+            painter.setPen(base_color)
+            name_elided = name_fm.elidedText(
+                filename, Qt.ElideRight, text_rect.width()
+            )
+            painter.drawText(text_rect.left(), top + name_fm.ascent(), name_elided)
+
+        painter.restore()
 
 
 def _format_duration(ms: int) -> str:
@@ -49,6 +153,9 @@ class LibraryPanel(QWidget):
 
         self.list_widget = QListWidget()
         self.list_widget.setIconSize(QSize(48, 32))
+        # PySide6 — delegate Python 참조 유지 필수. 인스턴스 속성으로 보관해야 GC 안 됨.
+        self._item_delegate = _TwoLineDelegate(self.list_widget)
+        self.list_widget.setItemDelegate(self._item_delegate)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         self.list_widget.itemChanged.connect(self._on_item_changed)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -73,12 +180,15 @@ class LibraryPanel(QWidget):
         item = QListWidgetItem()
         item.setData(Qt.UserRole, entry.id)
         item.setData(Qt.UserRole + 1, entry.kind)
+        item.setData(_ROLE_FOLDER, self._render_folder(entry))
         item.setText(self._render_text(entry))
-        item.setToolTip(entry.display_name or entry.source_label)
+        item.setToolTip(self._render_tooltip(entry))
         item.setFlags(item.flags() | Qt.ItemIsEditable)
         if not entry.thumbnail.isNull():
+            # FastTransformation — 48×32 icon 에 SmoothTransformation 의 차이는 인지
+            # 불가능하지만 대량 갱신 시 메인 스레드 비용 크게 절감.
             item.setIcon(QIcon(QPixmap.fromImage(entry.thumbnail).scaled(
-                48, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                48, 32, Qt.KeepAspectRatio, Qt.FastTransformation
             )))
         if at_top:
             self.list_widget.insertItem(0, item)
@@ -99,6 +209,23 @@ class LibraryPanel(QWidget):
             base = f"{entry.source_label} {ts}"
         suffix = _format_duration(entry.duration_ms) if entry.kind is EntryKind.VIDEO else ""
         return f"{prefix} {base}{suffix}"
+
+    @staticmethod
+    def _render_folder(entry: LibraryEntry) -> str:
+        """윗줄에 표시할 부모 폴더 경로. path 없으면 빈 문자열."""
+        if entry.path is None:
+            return ""
+        try:
+            return str(entry.path.parent)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _render_tooltip(entry: LibraryEntry) -> str:
+        """툴팁 — 전체 경로(있으면) 우선, 없으면 표시명."""
+        if entry.path is not None:
+            return str(entry.path)
+        return entry.display_name or entry.source_label
 
     def focus_entry(self, entry_id: int) -> None:
         """외부에서 호출 — 해당 entry 의 list item 을 선택 상태로 (탭과 동기화)."""
@@ -136,7 +263,8 @@ class LibraryPanel(QWidget):
         self.list_widget.blockSignals(True)
         try:
             item.setText(self._render_text(entry))
-            item.setToolTip(entry.display_name or entry.source_label)
+            item.setData(_ROLE_FOLDER, self._render_folder(entry))
+            item.setToolTip(self._render_tooltip(entry))
             if not entry.thumbnail.isNull():
                 item.setIcon(QIcon(QPixmap.fromImage(entry.thumbnail).scaled(
                     48, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation
@@ -231,11 +359,17 @@ class LibraryPanel(QWidget):
         menu.exec(self.list_widget.viewport().mapToGlobal(pos))
 
     def _refresh_visibility(self, mode: AppMode) -> None:
+        # 항목 N 개에 대해 setHidden 호출 시 Qt 가 매번 layout invalidate 할 수 있어
+        # setUpdatesEnabled(False) 로 paint 일괄 처리. 모드 전환 시 버벅임 방지.
         wanted = self._kind_for_mode(mode)
-        for i in range(self.list_widget.count()):
-            it = self.list_widget.item(i)
-            kind = it.data(Qt.UserRole + 1)
-            it.setHidden(kind is not wanted)
+        self.list_widget.setUpdatesEnabled(False)
+        try:
+            for i in range(self.list_widget.count()):
+                it = self.list_widget.item(i)
+                kind = it.data(Qt.UserRole + 1)
+                it.setHidden(kind is not wanted)
+        finally:
+            self.list_widget.setUpdatesEnabled(True)
 
     @staticmethod
     def _kind_for_mode(mode: AppMode) -> EntryKind:

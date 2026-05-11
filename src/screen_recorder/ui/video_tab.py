@@ -18,7 +18,7 @@ from .video.timeline import VideoTimeline
 
 # 풀스크린 컨트롤 오버레이 동작 상수
 _FS_HIDE_DELAY_MS = 1000          # 재생 중 마우스 idle 시 숨김 지연
-_FS_BOTTOM_BAND_PX = 120          # 하단에서 이 높이 안에 마우스가 들어오면 다시 표시
+_FS_BOTTOM_BAND_PX = 180          # 하단에서 이 높이 안에 마우스가 들어오면 다시 표시 (controls + timeline 두 줄)
 
 # ThumbnailService 결과 라우팅 — segment_id 가 이 prefix 로 시작하면 broll PIP 미리보기용.
 _BROLL_THUMB_PREFIX = "broll:"
@@ -105,12 +105,16 @@ class VideoTab(QWidget):
             sidecar_path=Path(sidecar_path) if sidecar_path else None,
         )
         self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
+        self._edit_controller.sidecar_replaced.connect(self._warm_caption_fonts)
         self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
         # Stage A: 사이드카가 비어 있으면 source 1 segment 로 자동 채움
         # (history baseline 도 새 segment 상태로 reset — 사용자가 undo 로 빈 트랙까지 안 감).
         self._edit_controller.ensure_default_track(
             source_duration_ms=int(duration_ms or 0),
         )
+        # 사이드카에 캡션이 있으면 그 폰트들을 미리 measure → Qt 가 디스크에서 폰트
+        # 읽고 glyph cache 빌드해 두므로 재생 중 첫 caption 진입 시 stutter 안 남.
+        self._warm_caption_fonts(self._edit_controller.sidecar())
         # Stage A: 썸네일 서비스 — 사이드카 변경마다 모든 segment 의 썸네일을 비동기 요청.
         from ..services.thumbnail_extractor import ThumbnailExtractor
         from ..services.thumbnail_worker import ThumbnailRequest, ThumbnailService
@@ -394,6 +398,32 @@ class VideoTab(QWidget):
             return
         self.timeline.video_track_lane.set_thumbnail(key, int(ms), img)
 
+    def _warm_caption_fonts(self, sidecar) -> None:
+        """사이드카의 캡션이 쓸 폰트들을 미리 measure — Qt 가 디스크에서 폰트 로드
+        + glyph cache 를 빌드하게 해 첫 caption 진입 시 stutter 제거.
+
+        같은 (family, size, bold) 조합은 한 번만 워밍. fontMetrics 의
+        horizontalAdvance("a") 를 호출하면 Qt 가 폰트 파일을 메모리에 올린다.
+        """
+        try:
+            from PySide6.QtGui import QFont, QFontMetrics
+            seen: set[tuple] = set()
+            for eff in sidecar.effects:
+                if getattr(eff, "type", "") != "caption":
+                    continue
+                font_info = getattr(eff, "font", None)
+                if font_info is None:
+                    continue
+                key = (font_info.family, font_info.size, bool(font_info.bold))
+                if key in seen:
+                    continue
+                seen.add(key)
+                f = QFont(font_info.family, font_info.size)
+                f.setBold(bool(font_info.bold))
+                _ = QFontMetrics(f).horizontalAdvance("a")
+        except Exception:
+            pass
+
     def _on_player_duration_for_segment(self, ms: int) -> None:
         """player 가 실제 길이를 로드한 시점에 첫 segment 의 src_duration_ms 채움.
 
@@ -564,10 +594,17 @@ class VideoTab(QWidget):
         """현재 재생 위치에 preview=True 인 ZoomEffect 가 활성이면 화면에 zoom 적용.
 
         in_anim_ms / out_anim_ms 동안 scale 1.0 ↔ target 보간 (선형 ease 기본).
+
+        Phase 19.5 hotfix6: 고배속 (5×) 에서 이 핸들러가 매 position tick 마다 발화함.
+        zoom 효과가 없으면 즉시 종료해 import + 전체 effects 순회를 회피.
         """
+        effects = self.sidecar().effects
+        if not any(getattr(e, "type", "") == "zoom" for e in effects):
+            self.player.set_zoom_preview(None)
+            return
         from ..effects.types.zoom import ZoomEffect
         active = None
-        for eff in self.sidecar().effects:
+        for eff in effects:
             if not isinstance(eff, ZoomEffect):
                 continue
             if not bool(getattr(eff, "preview", False)):
@@ -620,9 +657,22 @@ class VideoTab(QWidget):
 
         v1: Qt 의 setPlaybackRate 가 자동으로 atempo 를 적용하므로 'atempo' / 'auto' 는
         구분 없이 같은 동작 (rate 만 설정). 'mute' 만 set_muted 로 별도 처리.
+
+        Phase 19.5 hotfix6: 고배속 (5×) 시 매 tick 호출되므로 SpeedEffect 자체가
+        없으면 즉시 종료 (현재 활성 구간 복원만 처리하고 loop 회피).
         """
+        effects = self.sidecar().effects
+        if not any(getattr(e, "type", "") == "speed" for e in effects):
+            if self._active_speed_id is not None:
+                self.player.set_playback_rate(1.0)
+                self.player.hide_speed_hud()
+                if self._speed_prev_muted is not None:
+                    self.player.set_muted(self._speed_prev_muted)
+                    self._speed_prev_muted = None
+                self._active_speed_id = None
+            return
         active_eff = None
-        for eff in self.sidecar().effects:
+        for eff in effects:
             if eff.type != "speed":
                 continue
             if eff.in_ms <= ms < eff.out_ms:
@@ -904,10 +954,12 @@ class VideoTab(QWidget):
         self.layout().removeWidget(self.controls)
         self.controls.setParent(holder)
         self.controls.show()
-        # 풀스크린 동안 timeline 도 같이 가린다 (시각적으로 어색하므로)
+        # timeline (재생 슬라이더) 도 풀스크린에서 보여줌 — 사용자가 위치/길이 확인
+        # 못해 답답하다는 보고 (이전엔 hide 처리). controls 와 함께 화면 하단에
+        # floating overlay 로 띄움.
         self.layout().removeWidget(self.timeline)
         self.timeline.setParent(holder)
-        self.timeline.hide()
+        self.timeline.show()
 
         # 자동 숨김 타이머
         hide_timer = QTimer(holder)
@@ -918,10 +970,16 @@ class VideoTab(QWidget):
 
         def _reposition_controls():
             ctrl_h = self.controls.sizeHint().height()
+            tl_h = self.timeline.sizeHint().height()
             self.controls.setGeometry(
                 0, holder.height() - ctrl_h, holder.width(), ctrl_h,
             )
             self.controls.raise_()
+            # timeline 은 controls 바로 위에.
+            self.timeline.setGeometry(
+                0, holder.height() - ctrl_h - tl_h, holder.width(), tl_h,
+            )
+            self.timeline.raise_()
 
         def _on_resize(ev):
             self.player.setGeometry(0, 0, holder.width(), holder.height())
@@ -1015,6 +1073,8 @@ class VideoTab(QWidget):
         if in_bottom_band:
             self.controls.show()
             self.controls.raise_()
+            self.timeline.show()
+            self.timeline.raise_()
             if self._fs_hide_timer is not None:
                 self._fs_hide_timer.stop()
         else:
@@ -1028,3 +1088,4 @@ class VideoTab(QWidget):
         if not self.player.is_playing():
             return  # 일시정지 중엔 숨기지 않음
         self.controls.hide()
+        self.timeline.hide()

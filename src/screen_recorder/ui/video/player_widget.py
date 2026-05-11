@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import os
 from PySide6.QtCore import Qt, QRect, QUrl, Signal, QTimer
 from PySide6.QtGui import (
     QColor, QFont, QFontMetrics, QImage, QMovie, QPainter, QPainterPath, QPen,
@@ -126,6 +127,13 @@ class _VideoSurface(QWidget):
 
     QVideoWidget 은 Windows D3D11 native HWND 를 생성해 QLabel HUD 가 가려지므로,
     모든 렌더링을 Qt raster pipeline 으로 통일해 오버레이를 가능하게 한다.
+
+    프레임 입력 방식 (Phase 19.5 hotfix7):
+    - **poll mode (기본)**: 30Hz QTimer 가 sink.videoFrame() 를 풀링.
+      videoFrameChanged 시그널 미사용 — 5배속 시 decoder 가 초당 150 emit 으로
+      메인 스레드 이벤트 큐를 폭주시켜 QTimer 가 55초까지 늦게 fire 되던 문제 해결.
+    - **signal mode (KSTUDIO_VIDEO_SIGNAL_MODE=1)**: 기존 videoFrameChanged 경로.
+      비교 / fallback 용.
     """
 
     def __init__(self) -> None:
@@ -134,9 +142,19 @@ class _VideoSurface(QWidget):
         self._frame: QImage = QImage()
         self._thumbnail: QImage = QImage()
         self._sink = QVideoSink(self)
-        self._sink.videoFrameChanged.connect(self._on_frame)
         # Stage 3: zoom 미리보기 transform — (cx, cy, scale) 정규화. None 이면 그대로.
         self._zoom_preview: "tuple[float, float, float] | None" = None
+
+        if os.environ.get("KSTUDIO_VIDEO_SIGNAL_MODE") == "1":
+            # 레거시 / 비교용 경로.
+            self._sink.videoFrameChanged.connect(self._on_frame)
+        else:
+            # 폴링 모드 — sink.videoFrame() 를 30Hz 로 읽어 paint. decoder 가 빠른
+            # 배속에서 emit 폭주해도 main thread 는 이 timer 만 보면 됨.
+            self._poll_timer = QTimer(self)
+            self._poll_timer.setInterval(33)
+            self._poll_timer.timeout.connect(self._poll_frame)
+            self._poll_timer.start()
 
     @property
     def video_sink(self) -> QVideoSink:
@@ -169,8 +187,28 @@ class _VideoSurface(QWidget):
         y = (self.height() - scaled.height()) // 2
         return QRect(x, y, scaled.width(), scaled.height())
 
+    def _poll_frame(self) -> None:
+        """30Hz 폴링 — sink 의 현재 프레임만 읽어 paint. videoFrameChanged
+        이벤트 큐 폭주 회피.
+        """
+        from ...core.perf_diag import inc as _perf_inc
+        frame = self._sink.videoFrame()
+        if not frame.isValid():
+            return
+        _perf_inc("frame_changed")
+        # .copy() — Qt 6 ffmpeg 백엔드에서 QVideoFrame.toImage() 는 frame 의 내부
+        # 버퍼를 공유하는 QImage 를 반환. detach 안 하면 frame 버퍼 누적 (41s 재생
+        # 시 RSS +19.8GB 관측). copy() 한 줄로 분리.
+        img = frame.toImage().copy()
+        if not img.isNull():
+            self._frame = img
+            self.update()
+
     def _on_frame(self, frame) -> None:
-        img = frame.toImage()
+        """레거시 signal-mode 진입점 (KSTUDIO_VIDEO_SIGNAL_MODE=1 일 때만)."""
+        from ...core.perf_diag import inc as _perf_inc
+        _perf_inc("frame_changed")
+        img = frame.toImage().copy()
         if not img.isNull():
             self._frame = img
             self.update()
@@ -191,7 +229,11 @@ class _VideoSurface(QWidget):
         p.fillRect(self.rect(), Qt.black)
         src = self._frame if not self._frame.isNull() else self._thumbnail
         if not src.isNull():
-            scaled = src.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # FastTransformation — 매 프레임 HD 영상 스케일링이 메인 스레드 핫패스.
+            # 5배속 시 frame_changed 가 100fps 도달, SmoothTransformation 으로는
+            # 점진적으로 메인 스레드가 막힘 (관측됨 — 진단 dump 가 5s → 33s → 119s
+            # 으로 점점 지연). 미리보기 화질 손실은 사용자 인지 불가능.
+            scaled = src.scaled(self.size(), Qt.KeepAspectRatio, Qt.FastTransformation)
             x = (self.width() - scaled.width()) // 2
             y = (self.height() - scaled.height()) // 2
             if self._zoom_preview is not None:

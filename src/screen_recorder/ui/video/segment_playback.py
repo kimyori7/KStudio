@@ -93,16 +93,20 @@ class SegmentPlaybackController(QObject):
 
     def on_main_position_changed(self, ms: int) -> None:
         """player 의 position 변화 — 결합 ms 로 변환 emit + segment 끝 검사."""
+        from ...core.perf_diag import inc as _perf_inc
+        _perf_inc("raw_pos")
         if self._in_gap:
             # 갭 동안엔 player 가 paused — position_changed 가 와도 무시.
             return
         if self._active_idx < 0 or not self._segments:
             self.combined_position_changed.emit(int(ms))
+            _perf_inc("combined_pos")
             return
         seg = self._segments[self._active_idx]
         local_ms = max(0, int(ms) - int(seg.src_in_ms))
         combined = seg.start_ms + local_ms
         self.combined_position_changed.emit(int(combined))
+        _perf_inc("combined_pos")
         seg_dur = seg.duration_ms
         if seg_dur > 0 and local_ms >= seg_dur:
             # 현재 segment 끝 — 그 시점의 다음 트랙 위치 (= seg.end_ms) 가 갭 인지
