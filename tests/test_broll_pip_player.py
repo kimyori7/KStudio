@@ -133,6 +133,30 @@ def test_position_inside_window_seeks_relative(qapp, tmp_path):
     p.deleteLater()
 
 
+def test_drift_within_threshold_no_reseek(qapp, tmp_path):
+    """combined 의 jump 가 300ms 미만이면 자연 재생 — 재시크 안 함."""
+    p = BrollPipPlayer()
+    dummy = tmp_path / "b.mp4"
+    dummy.write_bytes(b"")
+    p.set_sidecar(_sidecar_with_broll(2000, 4000, str(dummy)))
+    p.on_combined_position_changed(3000)   # 진입, seek_to(1000)
+    p.on_combined_position_changed(3100)   # 100ms 진행 — 자연 재생
+    assert p.last_seek_ms() == 1000
+    p.deleteLater()
+
+
+def test_drift_over_threshold_reseeks(qapp, tmp_path):
+    """combined 의 jump 가 300ms 초과면 재시크 (사용자 슬라이더 jump 등)."""
+    p = BrollPipPlayer()
+    dummy = tmp_path / "b.mp4"
+    dummy.write_bytes(b"")
+    p.set_sidecar(_sidecar_with_broll(2000, 4000, str(dummy)))
+    p.on_combined_position_changed(3000)   # 진입, seek_to(1000)
+    p.on_combined_position_changed(3500)   # 500ms 점프 — 재시크 필요
+    assert p.last_seek_ms() == 1500
+    p.deleteLater()
+
+
 def test_set_sidecar_clears_stale_active(qapp, tmp_path):
     """기존 활성 broll 이 새 사이드카에 없으면 deactivate."""
     p = BrollPipPlayer()

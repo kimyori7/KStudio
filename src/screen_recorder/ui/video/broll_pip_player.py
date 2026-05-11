@@ -15,6 +15,11 @@ from ...effects import Sidecar
 from ...effects.types.broll import BrollEffect
 
 
+_DRIFT_THRESHOLD_MS = 300
+"""연속된 on_combined_position_changed 사이의 jump 임계값 — 이보다 작으면
+자연 재생, 크면 사용자 시크 등으로 간주해 broll player 도 재시크."""
+
+
 class BrollPipPlayer(QObject):
     """broll PIP 미리보기용 별도 QMediaPlayer 래퍼.
 
@@ -118,6 +123,7 @@ class BrollPipPlayer(QObject):
         if self._sidecar is None:
             return
         ms = int(combined_ms)
+        prev_combined = self._last_combined_ms
         self._last_combined_ms = ms
         active = self._find_active_broll(ms)
         if active is None:
@@ -131,7 +137,10 @@ class BrollPipPlayer(QObject):
             if self._intended_playing:
                 self._player.play()
             return
-        # 같은 broll 안에서 자연 재생 — drift 보정은 후속 task.
+        # 같은 broll — combined 가 자연 재생 폭(±_DRIFT_THRESHOLD_MS)을 넘어
+        # jump 한 경우만 재시크. unit-test 가능 + 실제 사용자 슬라이더 jump 검출.
+        if prev_combined >= 0 and abs(ms - prev_combined) > _DRIFT_THRESHOLD_MS:
+            self.seek_to(ms - active.in_ms)
 
     def _find_active_broll(self, combined_ms: int) -> Optional[BrollEffect]:
         if self._sidecar is None:
