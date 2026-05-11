@@ -135,10 +135,7 @@ class ScreenshotPanel(QWidget):
         # 으로 떨어지면 사용자가 매번 KStudio 폴더로 이동해야 함. 폴더가 없으면 미리 생성.
         initial = self.img_dir_edit.text().strip() or str(default_image_dir())
         Path(initial).mkdir(parents=True, exist_ok=True)
-        path = self._pick_directory(
-            "이미지 저장 폴더", initial,
-            name_filter="이미지 (*.png *.jpg *.jpeg *.bmp *.kstudio);;모든 파일 (*)",
-        )
+        path = self._pick_directory_native("이미지 저장 폴더", initial)
         if path:
             self.img_dir_edit.setText(path)
             self._sync()
@@ -146,50 +143,30 @@ class ScreenshotPanel(QWidget):
     def _browse_video_dir(self) -> None:
         initial = self.vid_dir_edit.text().strip() or str(default_video_dir())
         Path(initial).mkdir(parents=True, exist_ok=True)
-        path = self._pick_directory(
-            "영상 저장 폴더", initial,
-            name_filter="영상 (*.mp4 *.gif *.mkv *.mov *.webm);;모든 파일 (*)",
-        )
+        path = self._pick_directory_native("영상 저장 폴더", initial)
         if path:
             self.vid_dir_edit.setText(path)
             self._sync()
 
     def _browse_sidecar_dir(self) -> None:
-        """편집본(.kstudio) 저장 폴더 picker — Windows native dialog 사용.
-
-        Phase 19.5 사용자 요청: 폴더 picker 의 주소 표시줄에 경로 직접 붙여넣기 가능
-        하도록. native dialog 가 그 UX (주소창에 paste + Enter) 를 기본 제공.
-        다른 폴더(이미지/영상) picker 는 폴더 안 파일 미리보기를 위해 Qt 다이얼로그
-        유지.
-        """
         initial = self.sidecar_dir_edit.text().strip() or str(default_sidecar_dir())
         Path(initial).mkdir(parents=True, exist_ok=True)
-        path = QFileDialog.getExistingDirectory(
-            self, "편집본(.kstudio) 저장 폴더", initial,
-            QFileDialog.ShowDirsOnly,
-        )
+        path = self._pick_directory_native("편집본(.kstudio) 저장 폴더", initial)
         if path:
             self.sidecar_dir_edit.setText(path)
             self._sync()
 
-    def _pick_directory(self, caption: str, initial: str, name_filter: str) -> str:
-        # Qt 자체 다이얼로그를 써서 ShowDirsOnly 를 끔 — 폴더 안의 파일도 미리보기처럼
-        # 보이도록(선택은 폴더 단위). Windows 네이티브 폴더 피커는 파일을 숨겨서
-        # 사용자가 빈 폴더처럼 느끼는 문제 해결.
-        dlg = QFileDialog(self, caption, initial)
-        dlg.setFileMode(QFileDialog.Directory)
-        dlg.setOption(QFileDialog.ShowDirsOnly, False)
-        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
-        dlg.setNameFilter(name_filter)
-        dlg.setAcceptMode(QFileDialog.AcceptOpen)
-        if dlg.exec() != QFileDialog.Accepted:
-            return ""
-        files = dlg.selectedFiles()
-        if not files:
-            return ""
-        # 사용자가 파일을 선택해도 그 파일이 들어있는 폴더로 해석.
-        chosen = Path(files[0])
-        return str(chosen if chosen.is_dir() else chosen.parent)
+    def _pick_directory_native(self, caption: str, initial: str) -> str:
+        """Windows 네이티브 폴더 picker. 윈도우 탐색기 UX 그대로:
+        - 주소 표시줄에 경로 직접 입력 / Ctrl+V 로 paste 가능
+        - 좌측 트리에서 폴더 선택, 상단 주소창에서 전체 경로 선택·복사 가능
+
+        이미지/영상/편집본 셋 다 동일 패턴. 폴더 안 파일 미리보기는 native 다이얼로그
+        도 좌측 트리 + 우측 폴더 내용 표시로 충분 (사용자 결정 2026-05-11).
+        """
+        return QFileDialog.getExistingDirectory(
+            self, caption, initial, QFileDialog.ShowDirsOnly,
+        )
 
     def _sync(self) -> None:
         self.settings.save_dir = self.img_dir_edit.text()
