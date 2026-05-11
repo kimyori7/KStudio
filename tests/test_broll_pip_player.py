@@ -7,7 +7,22 @@ from __future__ import annotations
 
 import pytest
 
+from screen_recorder.effects import Sidecar, Trim
+from screen_recorder.effects.types.broll import BrollEffect, PipConfig
 from screen_recorder.ui.video.broll_pip_player import BrollPipPlayer
+
+
+def _sidecar_with_broll(in_ms: int, out_ms: int, src: str) -> Sidecar:
+    eff = BrollEffect(
+        in_ms=in_ms, out_ms=out_ms, src=src,
+        placement="pip", pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+    )
+    return Sidecar(
+        source_path="x.mp4",
+        source_hash="h",
+        trim=Trim(in_ms=0, out_ms=10000),
+        effects=[eff],
+    )
 
 
 def test_pip_player_starts_idle(qapp):
@@ -81,4 +96,57 @@ def test_seek_to_records_last_ms(qapp, tmp_path):
     p.activate(str(dummy), "eff-1")
     p.seek_to(500)
     assert p.last_seek_ms() == 500
+    p.deleteLater()
+
+
+def test_position_inside_window_activates(qapp, tmp_path):
+    """combined position 이 in_ms ~ out_ms 안이면 activate 호출."""
+    p = BrollPipPlayer()
+    dummy = tmp_path / "b.mp4"
+    dummy.write_bytes(b"")
+    p.set_sidecar(_sidecar_with_broll(2000, 4000, str(dummy)))
+    p.on_combined_position_changed(3000)
+    assert p.active_effect_id() is not None
+    assert p.loaded_src() == str(dummy)
+    p.deleteLater()
+
+
+def test_position_outside_window_deactivates(qapp, tmp_path):
+    p = BrollPipPlayer()
+    dummy = tmp_path / "b.mp4"
+    dummy.write_bytes(b"")
+    p.set_sidecar(_sidecar_with_broll(2000, 4000, str(dummy)))
+    p.on_combined_position_changed(3000)
+    p.on_combined_position_changed(5000)   # out of window
+    assert p.active_effect_id() is None
+    p.deleteLater()
+
+
+def test_position_inside_window_seeks_relative(qapp, tmp_path):
+    """진입 직후 seek_to(combined - in_ms). combined 3000, in_ms 2000 → broll 1000ms."""
+    p = BrollPipPlayer()
+    dummy = tmp_path / "b.mp4"
+    dummy.write_bytes(b"")
+    p.set_sidecar(_sidecar_with_broll(2000, 4000, str(dummy)))
+    p.on_combined_position_changed(3000)
+    assert p.last_seek_ms() == 1000
+    p.deleteLater()
+
+
+def test_set_sidecar_clears_stale_active(qapp, tmp_path):
+    """기존 활성 broll 이 새 사이드카에 없으면 deactivate."""
+    p = BrollPipPlayer()
+    dummy = tmp_path / "b.mp4"
+    dummy.write_bytes(b"")
+    sc = _sidecar_with_broll(2000, 4000, str(dummy))
+    p.set_sidecar(sc)
+    p.on_combined_position_changed(3000)
+    assert p.active_effect_id() is not None
+    # 새 사이드카 — broll 자체 제거.
+    empty = Sidecar(
+        source_path="x.mp4", source_hash="h",
+        trim=Trim(in_ms=0, out_ms=10000), effects=[],
+    )
+    p.set_sidecar(empty)
+    assert p.active_effect_id() is None
     p.deleteLater()

@@ -11,6 +11,9 @@ from typing import Optional
 from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
 
+from ...effects import Sidecar
+from ...effects.types.broll import BrollEffect
+
 
 class BrollPipPlayer(QObject):
     """broll PIP 미리보기용 별도 QMediaPlayer 래퍼.
@@ -33,6 +36,8 @@ class BrollPipPlayer(QObject):
         self._intended_playing: bool = False   # main 의 play 상태 의도
         self._current_speed: float = 1.0
         self._last_seek_ms: int = -1
+        self._sidecar: Optional[Sidecar] = None
+        self._last_combined_ms: int = -1
 
     # ---------- 상태 조회 ----------
     def active_effect_id(self) -> Optional[str]:
@@ -90,6 +95,58 @@ class BrollPipPlayer(QObject):
 
     def last_seek_ms(self) -> int:
         return self._last_seek_ms
+
+    # ---------- 사이드카 + 시간창 매칭 ----------
+    def set_sidecar(self, sc: Sidecar) -> None:
+        """현재 영상의 사이드카 갱신. 기존 활성 broll 이 새 사이드카에 없으면 deactivate."""
+        self._sidecar = sc
+        if self._active_eff_id is not None:
+            found = any(
+                isinstance(e, BrollEffect) and e.id == self._active_eff_id
+                for e in sc.effects
+            )
+            if not found:
+                self.deactivate()
+
+    def on_combined_position_changed(self, combined_ms: int) -> None:
+        """결합 시간축 현재 위치 → 활성 broll 결정 + 시크.
+
+        - 시간창 진입: activate(src, id) + seek_to(combined - in_ms) + 의도가 play 면 play()
+        - 시간창 이탈: deactivate()
+        - 같은 broll 안에서 자연 재생: drift 보정은 Task 5.
+        """
+        if self._sidecar is None:
+            return
+        ms = int(combined_ms)
+        self._last_combined_ms = ms
+        active = self._find_active_broll(ms)
+        if active is None:
+            if self._active_eff_id is not None:
+                self.deactivate()
+            return
+        if self._active_eff_id != active.id:
+            # 새 진입.
+            self.activate(active.src, active.id)
+            self.seek_to(ms - active.in_ms)
+            if self._intended_playing:
+                self._player.play()
+            return
+        # 같은 broll 안에서 자연 재생 — drift 보정은 후속 task.
+
+    def _find_active_broll(self, combined_ms: int) -> Optional[BrollEffect]:
+        if self._sidecar is None:
+            return None
+        for eff in self._sidecar.effects:
+            if not isinstance(eff, BrollEffect):
+                continue
+            if eff.placement != "pip" or eff.pip is None:
+                continue
+            if not (eff.in_ms <= combined_ms < eff.out_ms):
+                continue
+            if not eff.src:
+                continue
+            return eff
+        return None
 
     # ---------- 내부 ----------
     def _on_frame(self, frame) -> None:
