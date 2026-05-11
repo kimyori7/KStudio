@@ -1,405 +1,420 @@
-"""앱 전체에 적용되는 다크 테마 QSS."""
+"""앱 전체에 적용되는 다크 테마 QSS — 모드별 팔레트.
+
+tokens.PALETTES 에서 "video" / "image" 팔레트를 골라 f-string 으로 QSS 빌드.
+폰트는 시스템 폰트(Segoe UI / 맑은 고딕 / Apple SD Gothic Neo) 유지 — 추가 폰트 번들 없음.
+
+mode_controller 의 mode_changed 시그널에 main_window 가 연결돼 있으며,
+모드 전환 시 apply_theme(app, "video"|"image") 가 재호출된다.
+"""
 from __future__ import annotations
 
 from PySide6.QtWidgets import QApplication
 
+from screen_recorder.ui.tokens import PALETTES, VIDEO_PALETTE
 
-_QSS = """
+
+def build_qss(p: dict[str, str]) -> str:
+    """팔레트 dict 에서 전체 QSS 문자열 생성."""
+    return f"""
 /* ----- 기본 ----- */
-QMainWindow, QWidget {
-    background-color: #1F2125;
-    color: #E8E8EA;
+QMainWindow, QWidget {{
+    background-color: {p["bg"]};
+    color: {p["text"]};
     font-family: "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
     font-size: 10pt;
-}
+}}
 
-QMessageBox {
-    background-color: #252830;
-}
+QMessageBox {{
+    background-color: {p["surface_msg"]};
+}}
 
 /* ----- 사이드바 (QListWidget) ----- */
-QListWidget {
-    background-color: #17191D;
+QListWidget {{
+    background-color: {p["surface"]};
     border: none;
     outline: 0;
     padding: 6px 0;
-}
-QListWidget::item {
+}}
+QListWidget::item {{
     padding: 10px 14px;
     border-left: 3px solid transparent;
-    color: #A0A4AB;
+    color: {p["text_sub"]};
     margin: 1px 0;
-}
-QListWidget::item:hover {
-    background-color: #23262D;
-    color: #E8E8EA;
-}
-QListWidget::item:selected {
-    background-color: #23262D;
-    color: #FFFFFF;
-    border-left: 3px solid #4FC3F7;
+}}
+QListWidget::item:hover {{
+    background-color: {p["surface_hover"]};
+    color: {p["text"]};
+}}
+QListWidget::item:selected {{
+    background-color: {p["surface_hover"]};
+    color: {p["text_pure"]};
+    border-left: 3px solid {p["primary"]};
     font-weight: 600;
-}
+}}
 
 /* ----- 패널 영역 ----- */
-QStackedWidget > QWidget {
-    background-color: #1F2125;
-}
+QStackedWidget > QWidget {{
+    background-color: {p["bg"]};
+}}
 
-/* ----- Dock 위젯 (라이브러리 / 레이어 / 녹화 상태) ----- */
-QDockWidget {
-    color: #E8E8EA;
+/* ----- Dock 위젯 ----- */
+QDockWidget {{
+    color: {p["text"]};
     font-weight: 600;
     titlebar-close-icon: none;
     titlebar-normal-icon: none;
-}
-QDockWidget::title {
-    /* 배경을 메인보다 진하게 — 패널 영역과 시각적으로 분리 */
-    background-color: #2C313B;
+}}
+QDockWidget::title {{
+    /* 메인보다 진하게 — 패널 영역과 시각적으로 분리 */
+    background-color: {p["surface_dock"]};
     padding: 6px 10px;
-    border-bottom: 1px solid #3C414B;
+    border-bottom: 1px solid {p["border"]};
     text-align: left;
-}
-QDockWidget::close-button, QDockWidget::float-button {
-    /* 버튼이 잘 보이도록 밝은 배경 + 둥근 모서리 */
-    background-color: #3C414B;
-    border: 1px solid #4A5060;
+}}
+QDockWidget::close-button, QDockWidget::float-button {{
+    background-color: {p["border"]};
+    border: 1px solid {p["border_strong"]};
     border-radius: 3px;
     padding: 2px;
     icon-size: 12px;
-}
-QDockWidget::close-button:hover, QDockWidget::float-button:hover {
-    background-color: #E53935;
-    border: 1px solid #FF5C58;
-}
-QDockWidget::float-button:hover {
-    background-color: #4FC3F7;
-    border: 1px solid #6FD7FF;
-}
+}}
+QDockWidget::close-button:hover {{
+    background-color: {p["danger"]};
+    border: 1px solid {p["danger_hover"]};
+}}
+QDockWidget::float-button:hover {{
+    background-color: {p["primary"]};
+    border: 1px solid {p["primary_hover"]};
+}}
 
 /* ----- 입력 위젯 ----- */
-QLineEdit, QSpinBox, QComboBox, QKeySequenceEdit {
-    background-color: #2A2E36;
-    border: 1px solid #3C414B;
+QLineEdit, QSpinBox, QComboBox, QKeySequenceEdit {{
+    background-color: {p["surface_input"]};
+    border: 1px solid {p["border"]};
     border-radius: 4px;
     padding: 5px 8px;
-    color: #E8E8EA;
-    selection-background-color: #4FC3F7;
-    selection-color: #1F2125;
+    color: {p["text"]};
+    selection-background-color: {p["primary"]};
+    selection-color: {p["bg"]};
     min-height: 20px;
-}
-QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QKeySequenceEdit:focus {
-    border: 1px solid #4FC3F7;
-}
-QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled, QKeySequenceEdit:disabled {
-    color: #6A6E78;
-    background-color: #23252B;
-}
-QComboBox::drop-down {
+}}
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QKeySequenceEdit:focus {{
+    border: 1px solid {p["primary"]};
+}}
+QLineEdit:disabled, QSpinBox:disabled, QComboBox:disabled, QKeySequenceEdit:disabled {{
+    color: {p["text_dim"]};
+    background-color: {p["disabled_bg"]};
+}}
+QComboBox::drop-down {{
     border: none;
     width: 22px;
     subcontrol-origin: padding;
     subcontrol-position: top right;
-}
-QComboBox::down-arrow {
+}}
+QComboBox::down-arrow {{
     image: none;
     width: 0;
     height: 0;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
-    border-top: 5px solid #A0A4AB;
-}
-QComboBox QAbstractItemView {
-    background-color: #2A2E36;
-    color: #E8E8EA;
-    selection-background-color: #2D5DA8;
-    border: 1px solid #3C414B;
+    border-top: 5px solid {p["text_sub"]};
+}}
+QComboBox QAbstractItemView {{
+    background-color: {p["surface_input"]};
+    color: {p["text"]};
+    selection-background-color: {p["selection_bg"]};
+    border: 1px solid {p["border"]};
     outline: 0;
-}
-QSpinBox::up-button, QSpinBox::down-button { width: 16px; }
+}}
+QSpinBox::up-button, QSpinBox::down-button {{ width: 16px; }}
 
 /* ----- 버튼 ----- */
-QPushButton {
-    background-color: #3A3F4B;
-    border: 1px solid #4A4F5B;
+QPushButton {{
+    background-color: {p["button_bg"]};
+    border: 1px solid {p["button_hover_bg"]};
     border-radius: 4px;
     padding: 6px 14px;
-    color: #E8E8EA;
+    color: {p["text"]};
     min-height: 22px;
-}
-QPushButton:hover {
-    background-color: #4A4F5B;
-    border: 1px solid #5A5F6B;
-}
-QPushButton:pressed {
-    background-color: #2A2D34;
-}
-QPushButton:checked {
-    background-color: #2D5DA8;
-    border: 1px solid #4FC3F7;
-    color: #FFFFFF;
+}}
+QPushButton:hover {{
+    background-color: {p["button_hover_bg"]};
+    border: 1px solid {p["button_hover_border"]};
+}}
+QPushButton:pressed {{
+    background-color: {p["button_pressed_bg"]};
+}}
+QPushButton:checked {{
+    background-color: {p["selection_bg"]};
+    border: 1px solid {p["primary"]};
+    color: {p["text_pure"]};
     font-weight: bold;
-}
-QPushButton:disabled {
-    background-color: #23252B;
-    color: #6A6E78;
-    border: 1px solid #2D3037;
-}
+}}
+QPushButton:disabled {{
+    background-color: {p["disabled_bg"]};
+    color: {p["text_dim"]};
+    border: 1px solid {p["disabled_border"]};
+}}
 
 /* ----- 라디오 / 체크박스 ----- */
-QRadioButton, QCheckBox {
-    color: #E8E8EA;
+QRadioButton, QCheckBox {{
+    color: {p["text"]};
     spacing: 8px;
-}
-QRadioButton:disabled, QCheckBox:disabled {
-    color: #6A6E78;
-}
+}}
+QRadioButton:disabled, QCheckBox:disabled {{
+    color: {p["text_dim"]};
+}}
 
-QRadioButton::indicator {
+QRadioButton::indicator {{
     width: 14px;
     height: 14px;
     border-radius: 9px;
-    border: 2px solid #6A6E78;
-    background-color: #2A2E36;
-}
-QRadioButton::indicator:hover {
-    border: 2px solid #A0A4AB;
-}
-QRadioButton::indicator:checked {
-    border: 2px solid #4FC3F7;
-    background-color: #4FC3F7;
-}
-QRadioButton::indicator:disabled {
-    border: 2px solid #3C414B;
-    background-color: #23252B;
-}
+    border: 2px solid {p["text_dim"]};
+    background-color: {p["surface_input"]};
+}}
+QRadioButton::indicator:hover {{
+    border: 2px solid {p["text_sub"]};
+}}
+QRadioButton::indicator:checked {{
+    border: 2px solid {p["primary"]};
+    background-color: {p["primary"]};
+}}
+QRadioButton::indicator:disabled {{
+    border: 2px solid {p["border"]};
+    background-color: {p["disabled_bg"]};
+}}
 
-QCheckBox::indicator {
+QCheckBox::indicator {{
     width: 14px;
     height: 14px;
     border-radius: 3px;
-    border: 1px solid #6A6E78;
-    background-color: #2A2E36;
-}
-QCheckBox::indicator:hover {
-    border: 1px solid #A0A4AB;
-}
-QCheckBox::indicator:checked {
-    border: 1px solid #4FC3F7;
-    background-color: #4FC3F7;
-}
-QCheckBox::indicator:disabled {
-    border: 1px solid #3C414B;
-    background-color: #23252B;
-}
+    border: 1px solid {p["text_dim"]};
+    background-color: {p["surface_input"]};
+}}
+QCheckBox::indicator:hover {{
+    border: 1px solid {p["text_sub"]};
+}}
+QCheckBox::indicator:checked {{
+    border: 1px solid {p["primary"]};
+    background-color: {p["primary"]};
+}}
+QCheckBox::indicator:disabled {{
+    border: 1px solid {p["border"]};
+    background-color: {p["disabled_bg"]};
+}}
 
 /* ----- 라벨 ----- */
-QLabel {
-    color: #E8E8EA;
+QLabel {{
+    color: {p["text"]};
     background: transparent;
-}
+}}
 
 /* ----- 슬라이더 ----- */
-QSlider::groove:horizontal {
+QSlider::groove:horizontal {{
     border: none;
     height: 4px;
-    background: #3C414B;
+    background: {p["border"]};
     border-radius: 2px;
-}
-QSlider::sub-page:horizontal {
-    background: #4FC3F7;
+}}
+QSlider::sub-page:horizontal {{
+    background: {p["primary"]};
     border-radius: 2px;
-}
-QSlider::handle:horizontal {
-    background: #FFFFFF;
-    border: 2px solid #4FC3F7;
+}}
+QSlider::handle:horizontal {{
+    background: {p["text_pure"]};
+    border: 2px solid {p["primary"]};
     width: 12px;
     height: 12px;
     margin: -6px 0;
     border-radius: 8px;
-}
+}}
 
 /* ----- 테이블 ----- */
-QTableWidget {
-    background-color: #17191D;
-    alternate-background-color: #1B1E23;
-    gridline-color: #2A2D34;
-    selection-background-color: #2D5DA8;
-    selection-color: #FFFFFF;
-    border: 1px solid #2A2D34;
+QTableWidget {{
+    background-color: {p["surface"]};
+    alternate-background-color: {p["bg_table_alt"]};
+    gridline-color: {p["border_dim"]};
+    selection-background-color: {p["selection_bg"]};
+    selection-color: {p["text_pure"]};
+    border: 1px solid {p["border_dim"]};
     border-radius: 4px;
-}
-QTableWidget::item {
+}}
+QTableWidget::item {{
     padding: 4px 6px;
-}
-QHeaderView::section {
-    background-color: #23262D;
-    color: #C8CCD3;
+}}
+QHeaderView::section {{
+    background-color: {p["surface_hover"]};
+    color: {p["text_header"]};
     padding: 6px 8px;
     border: none;
-    border-right: 1px solid #2A2D34;
-    border-bottom: 1px solid #2A2D34;
+    border-right: 1px solid {p["border_dim"]};
+    border-bottom: 1px solid {p["border_dim"]};
     font-weight: bold;
-}
+}}
 
 /* ----- 스크롤바 ----- */
-QScrollBar:vertical {
+QScrollBar:vertical {{
     background: transparent;
     width: 10px;
     margin: 2px;
-}
-QScrollBar::handle:vertical {
-    background: #3C414B;
+}}
+QScrollBar::handle:vertical {{
+    background: {p["border"]};
     min-height: 24px;
     border-radius: 5px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #4A4F5B;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {p["button_hover_bg"]};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
-}
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     background: transparent;
-}
-QScrollBar:horizontal {
+}}
+QScrollBar:horizontal {{
     background: transparent;
     height: 10px;
     margin: 2px;
-}
-QScrollBar::handle:horizontal {
-    background: #3C414B;
+}}
+QScrollBar::handle:horizontal {{
+    background: {p["border"]};
     min-width: 24px;
     border-radius: 5px;
-}
-QScrollBar::handle:horizontal:hover {
-    background: #4A4F5B;
-}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {p["button_hover_bg"]};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
-}
+}}
 
 /* ----- 툴팁 ----- */
-QToolTip {
-    background-color: #2A2E36;
-    color: #E8E8EA;
-    border: 1px solid #3C414B;
+QToolTip {{
+    background-color: {p["surface_input"]};
+    color: {p["text"]};
+    border: 1px solid {p["border"]};
     padding: 4px 6px;
     border-radius: 3px;
-}
+}}
 
-/* ----- 툴바 / 툴버튼 (저장/도구/Undo 등) ----- */
-QToolBar {
-    background-color: #1F2125;
+/* ----- 툴바 / 툴버튼 ----- */
+QToolBar {{
+    background-color: {p["bg"]};
     border: none;
     spacing: 2px;
     padding: 2px;
-}
-QToolButton {
+}}
+QToolButton {{
     background-color: transparent;
     border: 1px solid transparent;
     border-radius: 3px;
     padding: 4px 8px;
-    color: #E8E8EA;
-}
-QToolButton:hover {
-    background-color: #3A3F4B;
-    border: 1px solid #5A5F6B;
-}
-QToolButton:pressed {
-    background-color: #2A2D34;
-}
-QToolButton:checked {
-    background-color: #2D5DA8;
-    border: 1px solid #4FC3F7;
-    color: #FFFFFF;
+    color: {p["text"]};
+}}
+QToolButton:hover {{
+    background-color: {p["button_bg"]};
+    border: 1px solid {p["button_hover_border"]};
+}}
+QToolButton:pressed {{
+    background-color: {p["button_pressed_bg"]};
+}}
+QToolButton:checked {{
+    background-color: {p["selection_bg"]};
+    border: 1px solid {p["primary"]};
+    color: {p["text_pure"]};
     font-weight: bold;
-}
-QToolBar::separator {
-    background-color: #4A5060;
+}}
+QToolBar::separator {{
+    background-color: {p["border_strong"]};
     width: 2px;
     margin: 6px 6px;
     border-radius: 1px;
-}
+}}
 
-/* ----- 메뉴 바 (메인 창 상단) ----- */
-QMenuBar {
-    background-color: #1F2125;
-    color: #E8E8EA;
+/* ----- 메뉴 바 ----- */
+QMenuBar {{
+    background-color: {p["bg"]};
+    color: {p["text"]};
     padding: 2px 4px;
-    border-bottom: 1px solid #2A2D34;
-}
-QMenuBar::item {
+    border-bottom: 1px solid {p["border_dim"]};
+}}
+QMenuBar::item {{
     background-color: transparent;
     padding: 4px 10px;
-    color: #E8E8EA;
+    color: {p["text"]};
     border-radius: 3px;
-}
-QMenuBar::item:selected {
-    background-color: #2D5DA8;
-    color: #FFFFFF;
-}
-QMenuBar::item:pressed {
-    background-color: #2A4D8A;
-}
+}}
+QMenuBar::item:selected {{
+    background-color: {p["selection_bg"]};
+    color: {p["text_pure"]};
+}}
+QMenuBar::item:pressed {{
+    background-color: {p["selection_pressed"]};
+}}
 
-/* ----- 메뉴 (트레이/우클릭/메뉴바 펼침) ----- */
-QMenu {
-    background-color: #23262D;
-    border: 1px solid #3C414B;
-    color: #E8E8EA;
+/* ----- 메뉴 ----- */
+QMenu {{
+    background-color: {p["surface_hover"]};
+    border: 1px solid {p["border"]};
+    color: {p["text"]};
     padding: 4px 0;
-}
-QMenu::item {
+}}
+QMenu::item {{
     padding: 6px 18px;
-}
-QMenu::item:selected {
-    background-color: #2D5DA8;
-}
-QMenu::separator {
+}}
+QMenu::item:selected {{
+    background-color: {p["selection_bg"]};
+}}
+QMenu::separator {{
     height: 1px;
-    background-color: #3C414B;
+    background-color: {p["border"]};
     margin: 4px 6px;
-}
+}}
 
 /* ----- 탭 위젯 ----- */
-QTabWidget::pane {
-    border: 1px solid #2A2D34;
-    background: #1F2125;
-}
-QTabBar::tab {
-    background: #17191D;
-    color: #A0A4AB;
+QTabWidget::pane {{
+    border: 1px solid {p["border_dim"]};
+    background: {p["bg"]};
+}}
+QTabBar::tab {{
+    background: {p["surface"]};
+    color: {p["text_sub"]};
     padding: 6px 12px;
-    border: 1px solid #2A2D34;
+    border: 1px solid {p["border_dim"]};
     border-bottom: none;
-}
-QTabBar::tab:selected {
-    background: #1F2125;
-    color: #FFFFFF;
-    border-bottom: 2px solid #4FC3F7;
-}
-QTabBar::tab:hover {
-    background: #23262D;
-    color: #E8E8EA;
-}
-QTabBar::close-button {
+}}
+QTabBar::tab:selected {{
+    background: {p["bg"]};
+    color: {p["text_pure"]};
+    border-bottom: 2px solid {p["primary"]};
+}}
+QTabBar::tab:hover {{
+    background: {p["surface_hover"]};
+    color: {p["text"]};
+}}
+QTabBar::close-button {{
     subcontrol-position: right;
-}
+}}
 
 /* ----- 스플리터 핸들 ----- */
-QSplitter::handle {
-    background: #2A2D34;
-}
-QSplitter::handle:horizontal {
+QSplitter::handle {{
+    background: {p["border_dim"]};
+}}
+QSplitter::handle:horizontal {{
     width: 1px;
-}
-QSplitter::handle:vertical {
+}}
+QSplitter::handle:vertical {{
     height: 1px;
-}
+}}
 """
 
 
-def apply_theme(app: QApplication) -> None:
-    """QApplication 인스턴스에 다크 테마 적용."""
-    app.setStyleSheet(_QSS)
+def apply_theme(app: QApplication, palette_name: str = "video") -> None:
+    """QApplication 에 모드별 테마 적용.
+
+    palette_name 미지정 시 영상 모드(시안) 로 폴백 — 모드 시스템이 없는 컨텍스트
+    (예: 일부 다이얼로그 단독 테스트) 에서도 안전한 기본값.
+    """
+    palette = PALETTES.get(palette_name, VIDEO_PALETTE)
+    app.setStyleSheet(build_qss(palette))

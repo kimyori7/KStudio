@@ -1193,6 +1193,15 @@ class MainWindow(QMainWindow):
         if prev_mode is not None and prev_mode is not mode:
             self._save_dock_state_for_mode(prev_mode)
         self._last_mode = mode
+        # 모드별 테마 — 영상=현재 시안 / 이미지=mono+emerald.
+        # 실제 전환일 때만 재적용 — init(prev_mode is None) 에선 main.py 의
+        # 초기 apply_theme 호출이 이미 끝났으므로 중복 방지.
+        if prev_mode is not None and prev_mode is not mode:
+            from screen_recorder.ui.theme import apply_theme
+            apply_theme(
+                QApplication.instance(),
+                "video" if mode is AppMode.VIDEO else "image",
+            )
         self.global_toolbar.set_mode(mode)
         is_image = (mode is AppMode.IMAGE)
         # ToolPalette: 이미지 모드 + 창 메뉴 체크 둘 다일 때만

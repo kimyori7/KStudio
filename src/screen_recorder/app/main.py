@@ -66,7 +66,9 @@ def main() -> int:
     from screen_recorder.ui.app_icon import app_icon
     from screen_recorder.ui.theme import apply_theme
     app.setWindowIcon(app_icon())
-    apply_theme(app)
+    # 초기 테마는 이미지 모드 — ModeController 의 기본값이 IMAGE 라
+    # MainWindow 가 _on_mode_changed 를 발화시키기 전에도 동일 팔레트로 보이게.
+    apply_theme(app, "image")
 
     # Windows 작업표시줄에서 어플 아이콘이 별도로 잡히도록 AppUserModelID 설정
     if sys.platform == "win32":
