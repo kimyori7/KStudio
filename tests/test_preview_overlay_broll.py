@@ -14,8 +14,9 @@ from screen_recorder.ui.video.preview_overlay import PreviewOverlay
 def _render_to_image(overlay: PreviewOverlay, w=640, h=360) -> QImage:
     """오버레이의 _draw_broll_guide 를 QImage 에 직접 렌더링.
 
-    test_preview_overlay_zoom 와 같은 패턴 — paintEvent 를 직접 부르면 self 에
-    QPainter 를 만들어야 해 실패. overlay 의 활성 BrollEffect 만 골라 직접 호출.
+    paintEvent 를 직접 부르면 self 에 QPainter 를 만들어야 해 실패. helper 는
+    production paintEvent 의 broll 필터 (placement='pip' + in_ms ~ out_ms 시간창) 를
+    동일하게 적용한 뒤 _draw_broll_guide 호출. Phase 19.4 변경 — 시간창 필터 추가.
     """
     img = QImage(w, h, QImage.Format_ARGB32)
     img.fill(Qt.transparent)
@@ -27,9 +28,10 @@ def _render_to_image(overlay: PreviewOverlay, w=640, h=360) -> QImage:
         for eff in overlay._sidecar.effects:
             if not isinstance(eff, BrollEffect):
                 continue
-            if not (eff.in_ms <= overlay._position_ms < eff.out_ms):
-                continue
             if eff.placement != "pip" or eff.pip is None:
+                continue
+            # Phase 19.4: 시간창 안에서만 그림.
+            if not (eff.in_ms <= overlay._position_ms < eff.out_ms):
                 continue
             overlay._draw_broll_guide(p, eff)
     p.end()
@@ -94,8 +96,12 @@ def test_pip_guide_top_left_corner(qtbot):
     assert _has_orange_pixel(img, region=region)
 
 
-def test_pip_guide_outside_window_not_drawn(qtbot):
-    """BrollEffect 의 시간 범위 밖 — 사각형 미표시 (거의 전부 투명)."""
+def test_pip_guide_hidden_outside_window(qtbot):
+    """Phase 19.4: broll PIP 는 in_ms ~ out_ms 시간창 밖에서는 가이드 미표시 (Stage 4 결정 반전).
+
+    사용자 보고: "타임라인상 곁들임 영상이 없는데도 테두리가 계속 떠 있는 문제" →
+    시간창 안에서만 박스 보여야 함.
+    """
     ov = PreviewOverlay()
     qtbot.addWidget(ov)
     eff = BrollEffect(
@@ -104,12 +110,11 @@ def test_pip_guide_outside_window_not_drawn(qtbot):
         pip=PipConfig(corner="bottom-right", size_ratio=0.3),
     )
     ov.set_sidecar(_broll_sidecar(eff))
-    ov.set_position_ms(5000)   # 범위 밖
+    ov.set_position_ms(5000)   # 시간창 밖
     img = _render_to_image(ov, w=640, h=360)
-    # 거의 전부 투명.
-    pixels = [QColor.fromRgba(img.pixel(x, y)).alpha()
-              for x in range(0, img.width(), 40) for y in range(0, img.height(), 40)]
-    assert max(pixels) <= 5
+    # 우하단 영역에 주황 가이드가 그려져서는 안 됨.
+    has_orange = _has_orange_pixel(img, region=(440, 244, 632, 352))
+    assert has_orange is False
 
 
 def test_fullscreen_placement_no_guide_drawn(qtbot):
@@ -126,6 +131,45 @@ def test_fullscreen_placement_no_guide_drawn(qtbot):
     pixels = [QColor.fromRgba(img.pixel(x, y)).alpha()
               for x in range(0, img.width(), 40) for y in range(0, img.height(), 40)]
     assert max(pixels) <= 5
+
+
+def test_pip_guide_uses_cached_thumbnail_when_set(qtbot):
+    """set_broll_thumbnail 로 캐시된 이미지가 있으면 PIP 박스 안을 그 이미지로 채움.
+
+    Phase 19.3 broll preview thumbnail — VideoTab 이 ThumbnailService 결과를
+    PreviewOverlay 로 전달한다. 캐시 없으면 기존 주황 fill (회귀: 위 test 참조).
+    """
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    eff = BrollEffect(
+        in_ms=0, out_ms=10_000, src="myclip.mp4",
+        placement="pip",
+        pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+    )
+    # 청록 일색 더미 썸네일 — 가이드 영역 안에서 cyan 픽셀이 나와야 함.
+    thumb = QImage(96, 54, QImage.Format_ARGB32)
+    thumb.fill(QColor(0, 200, 200, 255))
+    ov.set_broll_thumbnail("myclip.mp4", thumb)
+    ov.set_sidecar(_broll_sidecar(eff))
+    ov.set_position_ms(3000)
+    img = _render_to_image(ov, w=640, h=360)
+    # 우하단 PIP 박스 중앙 = (~536, ~298) — cyan(R<100, G>150, B>150).
+    c = QColor.fromRgba(img.pixel(536, 298))
+    assert c.green() > 150 and c.blue() > 150 and c.red() < 100
+
+
+def test_set_broll_thumbnail_no_op_on_empty_src(qtbot):
+    """빈 src 나 null QImage 면 캐시 미저장 — paint 시 fallback 채움."""
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    # 빈 src
+    thumb = QImage(96, 54, QImage.Format_ARGB32)
+    thumb.fill(QColor(0, 200, 200, 255))
+    ov.set_broll_thumbnail("", thumb)
+    assert ov._broll_thumbs == {}
+    # null QImage
+    ov.set_broll_thumbnail("x.mp4", QImage())
+    assert ov._broll_thumbs == {}
 
 
 def test_no_broll_no_drawing(qtbot):

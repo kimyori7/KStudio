@@ -125,11 +125,11 @@ def test_zoom_partial_overlap_raises():
 
 # ---- _zoom_crop_scale_filter unit tests ----
 def test_crop_scale_centered_2x():
-    """cx=0.5, cy=0.5, scale=2.0, 1920×1080 → crop=960:540:480:270,scale=1920:1080."""
+    """cx=0.5, cy=0.5, scale=2.0, 1920×1080 → crop=960:540:480:270,scale=...flags=lanczos."""
     pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
     eff = ZoomEffect(in_ms=0, out_ms=1000, start=pt, end=pt)
     f = _zoom_crop_scale_filter(eff, 1920, 1080)
-    assert f == "crop=960:540:480:270,scale=1920:1080"
+    assert f == "crop=960:540:480:270,scale=1920:1080:flags=lanczos"
 
 
 def test_crop_scale_3x():
@@ -146,4 +146,4 @@ def test_crop_scale_no_zoom_at_1x():
     pt = ZoomPoint(cx=0.5, cy=0.5, scale=1.0)
     eff = ZoomEffect(in_ms=0, out_ms=1000, start=pt, end=pt)
     f = _zoom_crop_scale_filter(eff, 1920, 1080)
-    assert f == "crop=1920:1080:0:0,scale=1920:1080"
+    assert f == "crop=1920:1080:0:0,scale=1920:1080:flags=lanczos"

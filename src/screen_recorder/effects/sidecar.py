@@ -2,6 +2,9 @@
 
 Schema v2 (2026-05-08): video_track 기반 NLE 모델. 기존 v1 의 trim / effects (전역)
 는 폐기 — 사용자 결정 (마이그레이션 없음).
+
+Schema v3 (2026-05-08): segment 갭(gap) 지원 — VideoSegment 에 start_ms 추가.
+v2 (packed list) → v3 마이그레이션은 list 순서 누적합으로 자동 채움.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field, fields, is_dataclass, asdict
@@ -15,7 +18,7 @@ from .segment import VideoSegment
 from .types import effect_class_for
 
 
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 
 
 @dataclass
@@ -42,6 +45,11 @@ class Sidecar:
             "source_path": self.source_path,
             "source_hash": self.source_hash,
             "video_track": [_segment_to_dict(s) for s in self.video_track],
+            # Phase 19.5 hotfix5 — trim 과 effects 도 직렬화. 이전엔 누락되어 영상
+            # 자체에 추가한 효과(caption/zoom/broll/speed) 가 디스크에 저장되지 않아
+            # "재시작 후 편집 사라짐" 회귀의 진짜 원인.
+            "trim": _to_plain(self.trim),
+            "effects": [_effect_to_dict(e) for e in self.effects],
         }
 
     @classmethod
@@ -56,11 +64,34 @@ class Sidecar:
                 video_track=[],
             )
         track_raw = d.get("video_track") or []
+        if version < 3:
+            # v2 → v3: start_ms 가 없던 packed 모델 → 누적합으로 채움.
+            track: list[VideoSegment] = []
+            cursor = 0
+            for s_raw in track_raw:
+                seg = _segment_from_dict({**s_raw, "start_ms": cursor})
+                track.append(seg)
+                cursor += seg.duration_ms
+        else:
+            track = [_segment_from_dict(s) for s in track_raw]
+        # trim 과 effects 복원 (Phase 19.5 hotfix5).
+        trim_raw = d.get("trim")
+        if isinstance(trim_raw, dict):
+            trim = Trim(
+                in_ms=int(trim_raw.get("in_ms", 0)),
+                out_ms=int(trim_raw.get("out_ms", 0)),
+            )
+        else:
+            trim = Trim(in_ms=0, out_ms=0)
+        eff_raw = d.get("effects") or []
+        effects = [_effect_from_dict(e) for e in eff_raw if isinstance(e, dict)]
         return cls(
             version=CURRENT_VERSION,
             source_path=str(d.get("source_path", "")),
             source_hash=str(d.get("source_hash", "")),
-            video_track=[_segment_from_dict(s) for s in track_raw],
+            video_track=track,
+            trim=trim,
+            effects=effects,
         )
 
 
@@ -74,6 +105,7 @@ def _segment_to_dict(seg: VideoSegment) -> dict[str, Any]:
         "src_duration_ms": seg.src_duration_ms,
         "media_kind": seg.media_kind,
         "image_duration_ms": seg.image_duration_ms,
+        "start_ms": seg.start_ms,
         "effects": [_effect_to_dict(e) for e in seg.effects],
     }
 
@@ -88,6 +120,7 @@ def _segment_from_dict(d: dict[str, Any]) -> VideoSegment:
         "src_duration_ms": int(d.get("src_duration_ms", 0)),
         "media_kind": str(d.get("media_kind", "video")),
         "image_duration_ms": int(d.get("image_duration_ms", 3000)),
+        "start_ms": int(d.get("start_ms", 0)),
         "effects": [_effect_from_dict(e) for e in eff_raw],
     }
     sid = d.get("id")

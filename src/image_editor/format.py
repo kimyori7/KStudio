@@ -223,6 +223,19 @@ def read_kstudio(path: Path) -> "LayerStack":
     from .layers.image_layer import ImageLayer
 
     path = Path(path)
+    # 영상 사이드카(JSON)가 잘못 .kstudio 확장자로 저장된 구 파일을 열려는 경우 명확한
+    # 에러로 안내 — BadZipFile 가 아닌 사용자 가독성 있는 메시지.
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+        if head[:2] != b"PK":
+            raise ValueError(
+                f"{path.name} 은 KStudio 이미지 형식(zip)이 아닙니다. "
+                "영상 편집본 사이드카(JSON) 일 수 있습니다 — 파일 → 열기 메뉴로 열면 "
+                "그 영상이 자동으로 떠 편집 상태가 복원됩니다."
+            )
+    except OSError as e:
+        raise ValueError(f"파일을 열 수 없음: {e}") from e
     with zipfile.ZipFile(path, "r") as z:
         manifest = json.loads(z.read("manifest.json").decode("utf-8"))
         version = manifest.get("format_version", 1)

@@ -6,9 +6,10 @@ from screen_recorder.effects.segment import VideoSegment
 from screen_recorder.ui.video.video_track_lane import VideoTrackLane
 
 
-def _seg(src: str, dur: int, sid: str) -> VideoSegment:
+def _seg(src: str, dur: int, sid: str, start: int = 0) -> VideoSegment:
     return VideoSegment(
         id=sid, src=src, src_in_ms=0, src_out_ms=dur, src_duration_ms=dur,
+        start_ms=start,
     )
 
 
@@ -17,7 +18,10 @@ def test_context_menu_on_segment_emits_split_or_delete(qtbot):
     lane = VideoTrackLane()
     qtbot.addWidget(lane)
     lane.resize(400, 60)
-    lane.set_segments([_seg("a.mp4", 4000, "a"), _seg("b.mp4", 6000, "b")])
+    lane.set_segments([
+        _seg("a.mp4", 4000, "a", start=0),
+        _seg("b.mp4", 6000, "b", start=4000),
+    ])
     lane.show()
     qtbot.waitExposed(lane)
 
@@ -122,4 +126,5 @@ def test_insert_action_emits_request_insert_at_end(qtbot):
 
     with qtbot.waitSignal(lane.request_insert_at, timeout=500) as blocker:
         insert.trigger()
-    assert blocker.args == [1]   # 끝에 추가.
+    # 새 contract: at_combined_ms (트랙상 시작 위치) — segment 끝(4000ms) 보다 큼.
+    assert blocker.args[0] > 4000

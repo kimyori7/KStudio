@@ -8,17 +8,17 @@ from screen_recorder.effects.types.speed import SpeedEffect
 from screen_recorder.ui.video.effect_lanes_widget import EffectLanesWidget
 
 
-def test_empty_sidecar_shows_all_5_lanes(qtbot):
-    """효과 0 개라도 _LANE_ORDER 의 5 종 (caption/speed/zoom/broll/cut) lane 모두 표시.
+def test_empty_sidecar_shows_all_4_lanes(qtbot):
+    """효과 0 개라도 _LANE_ORDER 의 4 종 (caption/speed/zoom/broll) lane 모두 표시.
 
-    편집 모드 진입 시 사용자가 즉시 lane 영역을 볼 수 있도록 항상 5 종 표시 정책.
+    Stage D (2026-05-08): cut lane 은 segment 트랙으로 흡수되어 제거.
     """
     w = EffectLanesWidget()
     qtbot.addWidget(w)
     sc = Sidecar(source_path="x", source_hash="h", trim=Trim(in_ms=0, out_ms=10_000))
     w.set_sidecar(sc)
-    assert w.lane_count() == 5
-    for t in ("caption", "speed", "zoom", "broll", "cut"):
+    assert w.lane_count() == 4
+    for t in ("caption", "speed", "zoom", "broll"):
         assert w.has_lane_for_type(t) is True
 
 
@@ -32,7 +32,7 @@ def test_one_caption_keeps_5_lanes_with_caption_effect_routed(qtbot):
         effects=[CaptionEffect(in_ms=1000, out_ms=4000, text="hi")],
     )
     w.set_sidecar(sc)
-    assert w.lane_count() == 5
+    assert w.lane_count() == 4
     assert len(w.lane_for_type("caption").effects()) == 1
     assert len(w.lane_for_type("speed").effects()) == 0
 
@@ -51,7 +51,7 @@ def test_mixed_types_routes_to_each_lane(qtbot):
         ],
     )
     w.set_sidecar(sc)
-    assert w.lane_count() == 5
+    assert w.lane_count() == 4
     assert len(w.lane_for_type("caption").effects()) == 2
     assert len(w.lane_for_type("speed").effects()) == 1
     assert len(w.lane_for_type("zoom").effects()) == 0

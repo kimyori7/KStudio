@@ -46,6 +46,13 @@ def main() -> int:
     setup_logging()
     import logging
     logging.info("KStudio started")
+    # 미처리 예외도 로그에 남도록 — 다음 크래시 시 traceback 가 app.log 에 기록되어
+    # 같은 자리에서 디버깅 가능 (Qt event loop 안의 슬롯 예외도 default excepthook 경유).
+    def _log_uncaught(exc_type, exc_value, exc_tb):
+        logging.error("UNCAUGHT EXCEPTION",
+                      exc_info=(exc_type, exc_value, exc_tb))
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+    sys.excepthook = _log_uncaught
 
     app = QApplication(sys.argv)
     app.setApplicationName("KStudio")

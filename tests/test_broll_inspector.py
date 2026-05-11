@@ -141,3 +141,49 @@ def test_change_to_fullscreen_emits_with_pip_none(inspector):
     inspector.effect_changed.connect(received.append)
     inspector._placement_combo.setCurrentText("전체 화면 (자르기 끼워넣기 권장)")
     assert any(e.placement == "fullscreen" and e.pip is None for e in received)
+
+
+def test_drop_video_url_updates_src_and_emits(inspector, tmp_path):
+    """탐색기에서 mp4 를 BrollInspector 위에 떨어뜨리면 src 가 갱신되고 effect_changed 발화."""
+    from PySide6.QtCore import QMimeData, QUrl, QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    eff = _make_broll(src="old.mp4")
+    inspector.set_effect(eff)
+
+    dropped = tmp_path / "new.mp4"
+    dropped.write_bytes(b"x")
+    md = QMimeData()
+    md.setUrls([QUrl.fromLocalFile(str(dropped))])
+
+    received: list = []
+    inspector.effect_changed.connect(received.append)
+    evt = QDropEvent(
+        QPointF(10, 10), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier,
+    )
+    inspector.dropEvent(evt)
+    assert any(getattr(e, "src", "").endswith("new.mp4") for e in received)
+    assert "new.mp4" in inspector._src_label.text()
+
+
+def test_drop_unsupported_suffix_ignored(inspector, tmp_path):
+    """txt 같은 비지원 확장자는 ignore — effect_changed 미발화."""
+    from PySide6.QtCore import QMimeData, QUrl, QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+
+    eff = _make_broll(src="old.mp4")
+    inspector.set_effect(eff)
+
+    dropped = tmp_path / "notes.txt"
+    dropped.write_bytes(b"x")
+    md = QMimeData()
+    md.setUrls([QUrl.fromLocalFile(str(dropped))])
+
+    received: list = []
+    inspector.effect_changed.connect(received.append)
+    evt = QDropEvent(
+        QPointF(10, 10), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier,
+    )
+    inspector.dropEvent(evt)
+    assert received == []
+    assert "old.mp4" in inspector._src_label.text()

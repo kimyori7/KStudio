@@ -1,7 +1,7 @@
 """ThumbnailService — Lane 의 썸네일 요청을 QThreadPool 로 비동기 실행 + 시그널.
 
-요청은 (segment_id, src, ms) — 캐시 히트면 즉시 동기 시그널, 미스면 QRunnable
-디스패치 후 추출 완료 시 signal emit.
+필름스트립용 다중 슬롯 — 같은 segment_id 안에서 ms 가 다른 여러 요청을 동시에 처리.
+Dedup 키도 (segment_id, ms) — 한 segment 의 같은 시점은 1개만 dispatch.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -28,37 +28,37 @@ class _Runnable(QRunnable):
 
     def run(self) -> None:   # type: ignore[override]
         img = self._svc._extractor.extract_sync(self._req.src, self._req.ms)
-        # 시그널 발화는 service 가 (QObject 라 thread-safe).
         if img is not None:
-            self._svc.thumbnail_ready.emit(self._req.segment_id, img)
-        # pending 클리어 — 추출 성공/실패 무관.
-        self._svc._on_done(self._req.segment_id)
+            self._svc.thumbnail_ready.emit(
+                self._req.segment_id, int(self._req.ms), img,
+            )
+        self._svc._on_done(self._req.segment_id, self._req.ms)
 
 
 class ThumbnailService(QObject):
     """ThumbnailExtractor 를 Qt 비동기 인터페이스로 감싼다.
 
-    같은 segment_id 가 동시에 여러 번 요청되면 첫 번째만 디스패치 (dedupe).
-    추출 실패 시 시그널 발화 안 함 (lane 이 그냥 placeholder 유지).
+    Dedup 키 = (segment_id, ms) — 같은 시점 여러 번 요청해도 1개만 dispatch.
     """
-    thumbnail_ready = Signal(str, object)   # segment_id, QImage
+    thumbnail_ready = Signal(str, int, object)   # (segment_id, ms, QImage)
 
     def __init__(self, extractor: ThumbnailExtractor) -> None:
         super().__init__()
         self._extractor = extractor
-        self._pending: set[str] = set()
+        self._pending: set[tuple[str, int]] = set()
 
     def request(self, req: ThumbnailRequest) -> None:
         """캐시 히트면 즉시 시그널 emit, 미스면 worker 디스패치."""
         cached, was = self._extractor.get_or_none(req.src, req.ms)
         if was and cached is not None:
-            self.thumbnail_ready.emit(req.segment_id, cached)
+            self.thumbnail_ready.emit(req.segment_id, int(req.ms), cached)
             return
-        if req.segment_id in self._pending:
+        key = (req.segment_id, int(req.ms))
+        if key in self._pending:
             return
-        self._pending.add(req.segment_id)
+        self._pending.add(key)
         runnable = _Runnable(self, req)
         QThreadPool.globalInstance().start(runnable)
 
-    def _on_done(self, segment_id: str) -> None:
-        self._pending.discard(segment_id)
+    def _on_done(self, segment_id: str, ms: int) -> None:
+        self._pending.discard((segment_id, int(ms)))

@@ -16,7 +16,10 @@ from dataclasses import replace
 from typing import Callable, Optional
 
 from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import (
+    QColor, QDragEnterEvent, QDropEvent, QFont, QImage, QMouseEvent,
+    QPainter, QPaintEvent, QPen,
+)
 from PySide6.QtWidgets import QWidget
 
 from ...effects import Sidecar
@@ -39,6 +42,46 @@ _BROLL_FILL_COLOR = QColor(0, 0, 0, 110)
 _BROLL_LABEL_FG = QColor(255, 255, 255, 240)
 _BROLL_MARGIN = 8   # px — 화면 가장자리에서 사각형까지 여백
 
+# Stage 2 (2026-05-08) — 공통 모서리 리사이즈 핸들 (zoom/broll 공유).
+_HANDLE_SIZE = 10        # 시각 그리기용 (작게)
+_HANDLE_HIT_SIZE = 24    # hit-test 용 (사용자가 모서리 근처 클릭 시도 흡수). Phase 19.5
+                         # 사용자 보고 — 시각 10x10 만 hit 으로 두면 정확히 안 누르면
+                         # 박스 본체 drag 로 처리되어 위치가 같이 움직임.
+_HANDLE_FILL = QColor(255, 255, 255, 240)
+_HANDLE_BORDER = QColor(20, 20, 20, 220)
+_CORNERS = ("tl", "tr", "bl", "br")
+
+
+def _corner_rects(box: QRect, size: int = _HANDLE_HIT_SIZE) -> dict[str, QRect]:
+    """box 의 네 모서리에 핸들 사각형. 기본 size 는 hit-test 용 (24x24).
+
+    시각 그리기 시엔 _draw_corner_handles 가 size=_HANDLE_SIZE 명시.
+    """
+    half = size // 2
+    return {
+        "tl": QRect(box.left() - half, box.top() - half, size, size),
+        "tr": QRect(box.right() - half, box.top() - half, size, size),
+        "bl": QRect(box.left() - half, box.bottom() - half, size, size),
+        "br": QRect(box.right() - half, box.bottom() - half, size, size),
+    }
+
+
+def _cursor_for_corner(c: str) -> Qt.CursorShape:
+    """tl/br = ↘ (FDiag), tr/bl = ↙ (BDiag)."""
+    return {
+        "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
+        "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
+    }.get(c, Qt.ArrowCursor)
+
+
+def _draw_corner_handles(p: QPainter, box: QRect) -> None:
+    """box 네 모서리에 흰 사각 핸들 그림 (시각 — 작은 10x10)."""
+    for r in _corner_rects(box, size=_HANDLE_SIZE).values():
+        p.fillRect(r, _HANDLE_FILL)
+        p.setPen(QPen(_HANDLE_BORDER, 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(r)
+
 
 class PreviewOverlay(QWidget):
     """투명 위젯 — paintEvent 에서 캡션을 그린다.
@@ -49,6 +92,11 @@ class PreviewOverlay(QWidget):
 
     caption_position_changed = Signal(object)   # CaptionEffect — 드래그 후 새 position
     effect_drag_changed = Signal(object)        # ZoomEffect / BrollEffect — 드래그 후 갱신
+    # Phase 19.4: 영상 위 박스를 클릭하면 그 effect 가 활성 선택이 되어 Del 키로 삭제 가능.
+    # None = 빈 영역 클릭(선택 해제). 핸들·박스·캡션 hit 모두 emit.
+    overlay_effect_clicked = Signal(object)     # Effect | None
+    # Phase 19.5: broll PIP 박스 위에 외부 파일을 드롭하면 그 box 의 src 가 갱신됨.
+    overlay_broll_file_dropped = Signal(str, str)   # (effect_id, path)
 
     def __init__(self) -> None:
         super().__init__()
@@ -58,6 +106,8 @@ class PreviewOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         # 호버 커서 변경 위해 mouseTracking ON.
         self.setMouseTracking(True)
+        # broll PIP 박스 위에 외부 파일 드롭 가능 (Phase 19.5).
+        self.setAcceptDrops(True)
         self._sidecar: Optional[Sidecar] = None
         self._position_ms: int = 0
         # paintEvent 마다 모든 캡션의 bounding box 저장 — mousePress/Move hit-test 용.
@@ -75,6 +125,17 @@ class PreviewOverlay(QWidget):
         self._drag_eff_id: Optional[str] = None
         self._drag_start_norm: tuple[float, float] = (0.5, 0.5)
         self._drag_override_norm: Optional[tuple[float, float]] = None
+        # Stage 2: 모서리 리사이즈 모드 — drag_kind 와 동시 활성 안 함.
+        # resize_corner in _CORNERS, resize_kind in {"zoom","broll"}.
+        self._resize_corner: Optional[str] = None
+        self._resize_kind: Optional[str] = None
+        self._resize_eff_id: Optional[str] = None
+        self._resize_start_pos = None        # QPoint (영상 좌표)
+        # 리사이즈 시작 시점의 box 원본 (화면 widget 좌표 기준).
+        self._resize_orig_box: Optional[QRect] = None
+        # 리사이즈 중인 새 (cx_norm, cy_norm, scale_or_ratio) 임시 override.
+        # zoom 일 땐 (cx, cy, scale), broll 일 땐 (pos_x, pos_y, size_ratio).
+        self._resize_override: Optional[tuple[float, float, float]] = None
         # 드래그 정규화 좌표의 허용 범위 (xmin, xmax, ymin, ymax) — 사각형의 모서리가
         # 영상 frame 안에 머물도록 효과별 크기를 고려해 mousePress 시 계산.
         # 줌(scale=2) → cx/cy 가능 범위 = [0.25, 0.75], 곁들임(size_ratio=0.3) → pos_x/y = [0, 0.7].
@@ -82,6 +143,8 @@ class PreviewOverlay(QWidget):
         # 영상 프레임 rect provider — letterbox 시 검은 띠를 제외한 실제 영상 영역.
         # None 이면 self.rect() (위젯 전체) 사용. 이 rect 안에서만 그리고 드래그한다.
         self._frame_rect_provider: Optional[Callable[[], QRect]] = None
+        # broll PIP 가이드 안에 표시할 대표 썸네일 (src path 별). VideoTab 이 채워줌.
+        self._broll_thumbs: dict[str, "QImage"] = {}
 
     # ---------- public ----------
     def set_sidecar(self, sc: Optional[Sidecar]) -> None:
@@ -90,6 +153,16 @@ class PreviewOverlay(QWidget):
 
     def set_position_ms(self, ms: int) -> None:
         self._position_ms = max(0, int(ms))
+        self.update()
+
+    def set_broll_thumbnail(self, src: str, img: Optional[QImage]) -> None:
+        """broll PIP 가이드 안에 그릴 대표 썸네일을 src 단위로 저장. 빈 src 면 no-op.
+
+        VideoTab 이 ThumbnailService 결과를 받아 호출. 같은 src 면 덮어쓰기.
+        """
+        if not src or img is None or img.isNull():
+            return
+        self._broll_thumbs[str(src)] = img
         self.update()
 
     def set_video_frame_rect_provider(self, fn: Optional[Callable[[], QRect]]) -> None:
@@ -125,22 +198,27 @@ class PreviewOverlay(QWidget):
 
         # Stage 6 — 활성 ZoomEffect 가 있으면 가이드 사각형 그리기.
         # v1: 실제 픽셀 줌은 export 에서만 적용. 미리보기는 사각형으로 영역 표시.
+        # Phase 19.4: preview=True (실제 화면 줌인 적용) 이면 가이드 박스 자체는 숨김 —
+        # 화면이 이미 줌인되어 있어 외곽선이 보이면 시각적 혼동.
         for eff in self._sidecar.effects:
             if not isinstance(eff, ZoomEffect):
                 continue
             if not (eff.in_ms <= self._position_ms < eff.out_ms):
                 continue
+            if getattr(eff, "preview", False):
+                continue
             self._draw_zoom_guide(p, eff)
 
-        # Stage 7 — 활성 BrollEffect (PiP) 가 있으면 가이드 사각형 그리기.
-        # v1: 실제 영상 PiP 는 export 에서만 적용. 미리보기는 사각형 + 라벨.
-        # placement='fullscreen' 은 v1 미지원 — 가이드 미표시.
+        # Phase 19.4 (2026-05-11): BrollEffect 가이드는 in_ms ~ out_ms 시간창 안에서만 표시.
+        # 이전 Stage 4 (항상 미리보기) 결정은 뒤집힘 — 사용자가 "곁들임 영상이 없는 구간에서도
+        # 테두리가 떠 있다" 며 반전 요구. 시간 범위 안에 들어가면 가이드 외곽선이 더 진한
+        # 강조 색으로 바뀌어 "지금 재생 중" 임을 시각화 (강조 처리는 _draw_broll_guide 내부).
         for eff in self._sidecar.effects:
             if not isinstance(eff, BrollEffect):
                 continue
-            if not (eff.in_ms <= self._position_ms < eff.out_ms):
-                continue
             if eff.placement != "pip" or eff.pip is None:
+                continue
+            if not (eff.in_ms <= self._position_ms < eff.out_ms):
                 continue
             self._draw_broll_guide(p, eff)
 
@@ -199,18 +277,20 @@ class PreviewOverlay(QWidget):
         frame = self._frame_rect()
         w = max(1, frame.width())
         h = max(1, frame.height())
-        # 드래그 중인 줌이면 override (cx, cy) 사용 — 즉시 사각형이 따라 움직임.
+        # 드래그/리사이즈 override 적용 우선순위: resize > drag > effect 원본.
         cx_n = float(eff.start.cx)
         cy_n = float(eff.start.cy)
-        if (self._drag_kind == "zoom"
-                and self._drag_eff_id == eff.id
+        scale = max(0.1, float(eff.start.scale))
+        if (self._resize_kind == "zoom" and self._resize_eff_id == eff.id
+                and self._resize_override is not None):
+            cx_n, cy_n, scale = self._resize_override
+        elif (self._drag_kind == "zoom" and self._drag_eff_id == eff.id
                 and self._drag_override_norm is not None):
             cx_n, cy_n = self._drag_override_norm
-        scale = max(0.1, float(eff.start.scale))
         cx_px = cx_n * w
         cy_px = cy_n * h
-        rect_w = w / scale
-        rect_h = h / scale
+        rect_w = w / max(0.1, scale)
+        rect_h = h / max(0.1, scale)
         rx = int(round(cx_px - rect_w / 2.0)) + frame.x()
         ry = int(round(cy_px - rect_h / 2.0)) + frame.y()
         rw = int(round(rect_w))
@@ -222,10 +302,12 @@ class PreviewOverlay(QWidget):
         pen.setWidth(2)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        # 펜이 사각형 가장자리에 걸쳐 그려져 절반(1px)이 사각형 밖으로 나가는 걸 막기 위해
-        # 시각적 사각형을 1px 안쪽으로 inset (clamp 가 모서리 정렬되었을 때 frame 밖으로
-        # 살짝 새는 현상 방지).
         p.drawRect(rx + 1, ry + 1, max(1, rw - 2), max(1, rh - 2))
+        # Stage 2: 네 모서리에 리사이즈 핸들.
+        # 자유 이동 중(드래그로 박스 위치 변경) 에는 핸들이 따라다니면 어색하므로 숨김.
+        is_moving = (self._drag_kind == "zoom" and self._drag_eff_id == eff.id)
+        if not is_moving:
+            _draw_corner_handles(p, QRect(rx, ry, rw, rh))
         # 라벨 — 사각형 좌상단 안쪽에 작은 박스 + 텍스트.
         label = f"⊕ {eff.start.scale:g}×"
         f = QFont()
@@ -258,10 +340,13 @@ class PreviewOverlay(QWidget):
         w = max(1, frame.width())
         h = max(1, frame.height())
         ratio = max(0.05, min(0.9, float(eff.pip.size_ratio)))
-        rect_w = int(round(w * ratio))
-        rect_h = int(round(h * ratio))
-        # 드래그 override > pos_x/pos_y > corner.
-        if (self._drag_kind == "broll"
+        # 리사이즈 override 가 있으면 임시 ratio 적용.
+        if (self._resize_kind == "broll" and self._resize_eff_id == eff.id
+                and self._resize_override is not None):
+            nx, ny, ratio = self._resize_override
+            rx = int(round(nx * w))
+            ry = int(round(ny * h))
+        elif (self._drag_kind == "broll"
                 and self._drag_eff_id == eff.id
                 and self._drag_override_norm is not None):
             nx, ny = self._drag_override_norm
@@ -276,25 +361,35 @@ class PreviewOverlay(QWidget):
             if corner == "top-left":
                 rx, ry = m, m
             elif corner == "top-right":
-                rx, ry = w - rect_w - m, m
+                rx, ry = w - int(round(w * ratio)) - m, m
             elif corner == "bottom-left":
-                rx, ry = m, h - rect_h - m
+                rx, ry = m, h - int(round(h * ratio)) - m
             else:   # bottom-right (기본)
-                rx, ry = w - rect_w - m, h - rect_h - m
+                rx, ry = w - int(round(w * ratio)) - m, h - int(round(h * ratio)) - m
+        rect_w = int(round(w * ratio))
+        rect_h = int(round(h * ratio))
         # frame 좌표 → widget 좌표.
         rx += frame.x()
         ry += frame.y()
         # hit-test bbox 등록.
         self._overlay_hits.append((QRect(rx, ry, rect_w, rect_h), "broll", eff.id))
 
-        # 채움 + 외곽선. 펜 폭(2)이 사각형 가장자리 밖으로 1px 새는 걸 막기 위해
-        # 시각적 사각형을 1px 안쪽으로 inset.
-        p.fillRect(rx, ry, rect_w, rect_h, _BROLL_FILL_COLOR)
+        # 캐시된 broll 썸네일이 있으면 PIP 사각형 안을 그 이미지로 채움.
+        # 없으면 기존 주황 채움색으로 fallback — 라벨만 보이는 placeholder.
+        thumb = self._broll_thumbs.get(eff.src) if eff.src else None
+        if thumb is not None and not thumb.isNull():
+            p.drawImage(QRect(rx, ry, rect_w, rect_h), thumb)
+        else:
+            p.fillRect(rx, ry, rect_w, rect_h, _BROLL_FILL_COLOR)
         pen = QPen(_BROLL_GUIDE_COLOR)
         pen.setWidth(2)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
         p.drawRect(rx + 1, ry + 1, max(1, rect_w - 2), max(1, rect_h - 2))
+        # Stage 2: 모서리 리사이즈 핸들. 자유 이동 중에는 숨김.
+        is_moving = (self._drag_kind == "broll" and self._drag_eff_id == eff.id)
+        if not is_moving:
+            _draw_corner_handles(p, QRect(rx, ry, rect_w, rect_h))
 
         # 중앙 라벨 — 🎞 + 파일명 basename.
         basename = Path(eff.src).name if eff.src else ""
@@ -307,7 +402,7 @@ class PreviewOverlay(QWidget):
         p.drawText(rx, ry, rect_w, rect_h,
                    Qt.AlignCenter, label)
 
-    # ---------- mouse (캡션·줌·곁들임 드래그) ----------
+    # ---------- mouse (캡션·줌·곁들임 드래그/리사이즈) ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.LeftButton or self._sidecar is None:
             event.ignore()
@@ -316,7 +411,21 @@ class PreviewOverlay(QWidget):
         frame = self._frame_rect()
         fw = max(1, frame.width())
         fh = max(1, frame.height())
-        # 캡션 hit-test 우선 — 캡션 텍스트는 보통 가이드 위에 그려진다고 가정.
+        # 1. 가이드 모서리 핸들 hit-test (zoom/broll) — 박스 안 hit 보다 우선.
+        for bbox, kind, eff_id in reversed(self._overlay_hits):
+            for c, hr in _corner_rects(bbox).items():
+                if hr.contains(pos):
+                    self._resize_corner = c
+                    self._resize_kind = kind
+                    self._resize_eff_id = eff_id
+                    self._resize_start_pos = pos
+                    self._resize_orig_box = QRect(bbox)
+                    self._resize_override = self._initial_resize_override(kind, eff_id)
+                    self.setCursor(_cursor_for_corner(c))
+                    self._emit_effect_clicked(eff_id)
+                    event.accept()
+                    return
+        # 2. 캡션 hit-test.
         for cid, bbox in reversed(list(self._caption_bboxes.items())):
             if bbox.contains(pos):
                 self._drag_caption_id = cid
@@ -326,9 +435,10 @@ class PreviewOverlay(QWidget):
                 self._drag_start_offset_norm = (cx / fw, cy / fh)
                 self._drag_override_offset = self._drag_start_offset_norm
                 self.setCursor(Qt.ClosedHandCursor)
+                self._emit_effect_clicked(cid)
                 event.accept()
                 return
-        # 줌·곁들임 가이드 hit-test — 그려진 역순 (위에 있는 것 먼저).
+        # 3. 줌·곁들임 박스 본체 (이동) hit-test.
         for bbox, kind, eff_id in reversed(self._overlay_hits):
             if not bbox.contains(pos):
                 continue
@@ -336,12 +446,10 @@ class PreviewOverlay(QWidget):
             self._drag_eff_id = eff_id
             self._drag_start_pos = pos
             if kind == "zoom":
-                # 줌은 사각형 중심 = (cx_norm * w + frame.x, ...).
                 cx = (bbox.left() + bbox.right()) / 2.0 - frame.x()
                 cy = (bbox.top() + bbox.bottom()) / 2.0 - frame.y()
                 self._drag_start_norm = (cx / fw, cy / fh)
             else:
-                # 곁들임은 좌상단 = (pos_x * w + frame.x, ...).
                 self._drag_start_norm = (
                     (bbox.left() - frame.x()) / fw,
                     (bbox.top() - frame.y()) / fh,
@@ -349,15 +457,100 @@ class PreviewOverlay(QWidget):
             self._drag_clamp = self._compute_drag_clamp(kind, eff_id)
             self._drag_override_norm = self._clamp_norm(self._drag_start_norm)
             self.setCursor(Qt.ClosedHandCursor)
+            self._emit_effect_clicked(eff_id)
             event.accept()
             return
-        # hit 없음 → 하부 영상 surface 로 통과.
+        # hit 없음 → 활성 선택 해제 후 하부 영상 surface 로 통과.
+        self.overlay_effect_clicked.emit(None)
         event.ignore()
+
+    def _emit_effect_clicked(self, eff_id: str) -> None:
+        """id 로 effect 찾아 overlay_effect_clicked 발화. 없으면 no-op."""
+        if self._sidecar is None:
+            return
+        eff = next((e for e in self._sidecar.effects if e.id == eff_id), None)
+        if eff is not None:
+            self.overlay_effect_clicked.emit(eff)
+
+    # ---------- drag-and-drop (broll PIP 박스 위 파일 드롭) ----------
+    @staticmethod
+    def _first_supported_path(urls) -> Optional[str]:
+        # BrollInspector 와 같은 확장자 화이트리스트.
+        accepted = {".mp4", ".mov", ".avi", ".gif", ".png", ".jpg",
+                    ".jpeg", ".mkv", ".webm"}
+        from pathlib import Path
+        for u in urls:
+            if not u.isLocalFile():
+                continue
+            p = u.toLocalFile()
+            if Path(p).suffix.lower() in accepted:
+                return p
+        return None
+
+    def _broll_hit_at(self, pos) -> Optional[str]:
+        """pos 좌표에서 broll 박스 hit — effect id 반환, 없으면 None."""
+        for bbox, kind, eff_id in reversed(self._overlay_hits):
+            if kind == "broll" and bbox.contains(pos):
+                return eff_id
+        return None
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        md = event.mimeData()
+        if not md.hasUrls() or self._first_supported_path(md.urls()) is None:
+            event.ignore()
+            return
+        if self._broll_hit_at(event.position().toPoint()) is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        # 박스 위를 벗어나면 거절 (커서가 stop 모양으로).
+        if self._broll_hit_at(event.position().toPoint()) is None:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        pos = event.position().toPoint()
+        eff_id = self._broll_hit_at(pos)
+        if eff_id is None:
+            event.ignore()
+            return
+        path = self._first_supported_path(event.mimeData().urls())
+        if path is None:
+            event.ignore()
+            return
+        self.overlay_broll_file_dropped.emit(eff_id, path)
+        event.acceptProposedAction()
+
+    def _initial_resize_override(self, kind: str, eff_id: str) -> "tuple[float, float, float]":
+        """리사이즈 시작 시점의 효과 기존값 → resize_override 초기화."""
+        if self._sidecar is None:
+            return (0.5, 0.5, 1.0)
+        eff = next((e for e in self._sidecar.effects if e.id == eff_id), None)
+        if eff is None:
+            return (0.5, 0.5, 1.0)
+        if kind == "zoom" and isinstance(eff, ZoomEffect):
+            return (float(eff.start.cx), float(eff.start.cy), float(eff.start.scale))
+        if kind == "broll" and isinstance(eff, BrollEffect) and eff.pip is not None:
+            px = float(eff.pip.pos_x) if eff.pip.pos_x is not None else 0.0
+            py = float(eff.pip.pos_y) if eff.pip.pos_y is not None else 0.0
+            return (px, py, float(eff.pip.size_ratio))
+        return (0.5, 0.5, 1.0)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
-        if self._drag_caption_id is None and self._drag_kind is None:
-            # 드래그 중 아니면 호버 커서 갱신: 캡션 / 가이드 위면 OpenHand.
+        if (self._drag_caption_id is None and self._drag_kind is None
+                and self._resize_corner is None):
+            # 드래그/리사이즈 안 함 — 호버 커서.
+            # 코너 핸들 위 호버 → 사이즈 커서 (가장 위 hit 우선).
+            for bbox, _kind, _id in reversed(self._overlay_hits):
+                for c, hr in _corner_rects(bbox).items():
+                    if hr.contains(pos):
+                        self.setCursor(_cursor_for_corner(c))
+                        event.accept()
+                        return
             for bbox in self._caption_bboxes.values():
                 if bbox.contains(pos):
                     self.setCursor(Qt.OpenHandCursor)
@@ -370,6 +563,12 @@ class PreviewOverlay(QWidget):
                     return
             self.unsetCursor()
             event.ignore()
+            return
+        # 리사이즈 중 우선 처리.
+        if self._resize_corner is not None:
+            self._update_resize_override(pos)
+            self.update()
+            event.accept()
             return
         frame = self._frame_rect()
         fw = max(1, frame.width())
@@ -386,6 +585,115 @@ class PreviewOverlay(QWidget):
             self._drag_override_norm = self._clamp_norm(raw)
         self.update()
         event.accept()
+
+    def _update_resize_override(self, pos) -> None:
+        """모서리 드래그 → 새 (cx/cy/scale) 또는 (pos_x/y/size_ratio) 계산.
+
+        zoom·broll 둘 다 **대각 반대편 anchor** — 잡은 모서리의 대각 끝점이 고정,
+        잡은 쪽 모서리가 마우스를 따라옴. 사용자 결정 (2026-05-11 Phase 19.5):
+        일반적인 리사이즈 동작과 일치 (Photoshop / 도형 핸들 등). 박스가 같이 옮겨지는
+        것은 의도된 동작 — 모서리를 잡고 끌면 그 모서리만 움직이는 게 자연스러움.
+
+        zoom 은 cx,cy = 박스 중심이므로 새 중심을 다시 계산. broll 은 pos_x,pos_y =
+        좌상단이라 그대로 사용.
+        """
+        if self._resize_orig_box is None or self._resize_kind is None:
+            return
+        frame = self._frame_rect()
+        fw = max(1, frame.width())
+        fh = max(1, frame.height())
+        orig = self._resize_orig_box
+        if self._resize_kind == "zoom":
+            # zoom 은 scale 하나로 표현 → paint 시 박스 종횡비가 frame 의 것으로 강제됨.
+            # 따라서 corner anchor + 종횡비 매칭 둘 다 필요. mouse 가 임의 비율로 가도
+            # 박스는 frame 종횡비 유지하면서 잡은 corner 의 대각 anchor 점을 고정.
+            aspect = fw / max(1.0, fh)
+            if self._resize_corner == "br":
+                anchor = (orig.left(), orig.top())
+                raw_w = max(8.0, pos.x() - anchor[0])
+                raw_h = max(8.0, pos.y() - anchor[1])
+            elif self._resize_corner == "tr":
+                anchor = (orig.left(), orig.bottom())
+                raw_w = max(8.0, pos.x() - anchor[0])
+                raw_h = max(8.0, anchor[1] - pos.y())
+            elif self._resize_corner == "bl":
+                anchor = (orig.right(), orig.top())
+                raw_w = max(8.0, anchor[0] - pos.x())
+                raw_h = max(8.0, pos.y() - anchor[1])
+            else:   # tl
+                anchor = (orig.right(), orig.bottom())
+                raw_w = max(8.0, anchor[0] - pos.x())
+                raw_h = max(8.0, anchor[1] - pos.y())
+            # 종횡비 강제 — outer max (박스가 mouse 위치를 포함하도록 확장).
+            if raw_w / aspect >= raw_h:
+                new_w = raw_w
+                new_h = raw_w / aspect
+            else:
+                new_h = raw_h
+                new_w = raw_h * aspect
+            # corner 별 box 좌상단 계산 — anchor 가 고정 끝점.
+            if self._resize_corner == "br":
+                new_left, new_top = anchor[0], anchor[1]
+            elif self._resize_corner == "tr":
+                new_left, new_top = anchor[0], anchor[1] - new_h
+            elif self._resize_corner == "bl":
+                new_left, new_top = anchor[0] - new_w, anchor[1]
+            else:   # tl
+                new_left, new_top = anchor[0] - new_w, anchor[1] - new_h
+            # frame 안 clamp — 한쪽 벗어나면 그쪽 크기 줄임. 종횡비 재강제.
+            if new_left < frame.left():
+                new_w -= (frame.left() - new_left)
+                new_left = frame.left()
+            if new_top < frame.top():
+                new_h -= (frame.top() - new_top)
+                new_top = frame.top()
+            if new_left + new_w > frame.right():
+                new_w = frame.right() - new_left
+            if new_top + new_h > frame.bottom():
+                new_h = frame.bottom() - new_top
+            new_w = max(8.0, new_w)
+            new_h = max(8.0, new_h)
+            if new_w / aspect < new_h:
+                new_h = new_w / aspect
+            else:
+                new_w = new_h * aspect
+            # 새 중심 + scale.
+            new_cx_px = new_left + new_w / 2.0
+            new_cy_px = new_top + new_h / 2.0
+            cx_n = (new_cx_px - frame.x()) / fw
+            cy_n = (new_cy_px - frame.y()) / fh
+            scale = max(0.1, fw / max(1.0, new_w))
+            cx_n = max(0.0, min(1.0, cx_n))
+            cy_n = max(0.0, min(1.0, cy_n))
+            self._resize_override = (cx_n, cy_n, scale)
+            return
+        # broll — 자유 종횡비. corner 별 대각 anchor.
+        if self._resize_corner == "br":
+            anchor = (orig.left(), orig.top())
+            new = (max(orig.left() + 8, pos.x()), max(orig.top() + 8, pos.y()))
+        elif self._resize_corner == "tr":
+            anchor = (orig.left(), orig.bottom())
+            new = (max(orig.left() + 8, pos.x()), min(orig.bottom() - 8, pos.y()))
+        elif self._resize_corner == "bl":
+            anchor = (orig.right(), orig.top())
+            new = (min(orig.right() - 8, pos.x()), max(orig.top() + 8, pos.y()))
+        else:   # tl
+            anchor = (orig.right(), orig.bottom())
+            new = (min(orig.right() - 8, pos.x()), min(orig.bottom() - 8, pos.y()))
+        new_left = min(anchor[0], new[0])
+        new_top = min(anchor[1], new[1])
+        new_w = abs(anchor[0] - new[0])
+        new_h = abs(anchor[1] - new[1])
+        new_left = max(frame.left(), min(frame.right(), new_left))
+        new_top = max(frame.top(), min(frame.bottom(), new_top))
+        new_w = max(8, min(frame.right() - new_left, new_w))
+        new_h = max(8, min(frame.bottom() - new_top, new_h))
+        px_n = (new_left - frame.x()) / fw
+        py_n = (new_top - frame.y()) / fh
+        ratio = max(0.05, min(0.9, new_w / fw))
+        px_n = max(0.0, min(1.0 - ratio, px_n))
+        py_n = max(0.0, min(1.0 - ratio, py_n))
+        self._resize_override = (px_n, py_n, ratio)
 
     def _compute_drag_clamp(self, kind: str, eff_id: str) -> tuple[float, float, float, float]:
         """드래그 정규화 좌표 (사각형 표현 점) 의 허용 범위 계산.
@@ -424,6 +732,28 @@ class PreviewOverlay(QWidget):
         return (nx, ny)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        # Stage 2: 리사이즈 종료 우선 처리.
+        if self._resize_corner is not None and self._sidecar is not None:
+            kind = self._resize_kind
+            eff_id = self._resize_eff_id
+            override = self._resize_override
+            self._resize_corner = None
+            self._resize_kind = None
+            self._resize_eff_id = None
+            self._resize_start_pos = None
+            self._resize_orig_box = None
+            self._resize_override = None
+            self.unsetCursor()
+            if override is not None and kind and eff_id:
+                for eff in self._sidecar.effects:
+                    if eff.id != eff_id:
+                        continue
+                    new_eff = self._apply_resize_to_effect(kind, eff, override)
+                    if new_eff is not None:
+                        self.effect_drag_changed.emit(new_eff)
+                    break
+            event.accept()
+            return
         # 캡션 드래그 종료
         if self._drag_caption_id is not None:
             if self._sidecar is not None and self._drag_override_offset is not None:
@@ -472,6 +802,18 @@ class PreviewOverlay(QWidget):
             return replace(eff, start=new_start, end=new_end)
         if kind == "broll" and isinstance(eff, BrollEffect) and eff.pip is not None:
             new_pip = replace(eff.pip, pos_x=nx, pos_y=ny)
+            return replace(eff, pip=new_pip)
+        return None
+
+    def _apply_resize_to_effect(self, kind: str, eff, override: tuple[float, float, float]):
+        """리사이즈 override (cx/cy/scale 또는 pos_x/y/size_ratio) 를 effect 에 반영."""
+        a, b, c = override
+        if kind == "zoom" and isinstance(eff, ZoomEffect):
+            new_start = replace(eff.start, cx=a, cy=b, scale=c)
+            new_end = replace(eff.end, cx=a, cy=b, scale=c)
+            return replace(eff, start=new_start, end=new_end)
+        if kind == "broll" and isinstance(eff, BrollEffect) and eff.pip is not None:
+            new_pip = replace(eff.pip, pos_x=a, pos_y=b, size_ratio=c)
             return replace(eff, pip=new_pip)
         return None
 

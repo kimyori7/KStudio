@@ -48,7 +48,9 @@ class PreferencesDialog(QDialog):
         self.stack = QStackedWidget()
         body.addWidget(self.stack, stretch=1)
 
-        self.screenshot_panel = ScreenshotPanel(settings.screenshot, settings.general)
+        self.screenshot_panel = ScreenshotPanel(
+            settings.screenshot, settings.general, settings.preferences,
+        )
         self.video_panel = VideoPanel(settings.video, settings.gif, settings.sound)
         self.player_panel = PlayerPanel(settings.player)
         self.shortcuts_panel = ShortcutsPanel(settings.hotkey, settings.editor_shortcuts, settings)

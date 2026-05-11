@@ -35,6 +35,7 @@ class PlayerControls(QWidget):
     snapshot_request = Signal()
     fullscreen_toggled = Signal()
     edit_mode_change_requested = Signal(bool)   # 사용자가 편집 토글 클릭
+    export_requested = Signal()                 # 편집 모드일 때 ⬆ 출력 버튼 클릭
 
     def __init__(self) -> None:
         super().__init__()
@@ -118,6 +119,14 @@ class PlayerControls(QWidget):
         self.edit_toggle.toggled_changed.connect(self.edit_mode_change_requested.emit)
         layout.addWidget(self.edit_toggle)
 
+        # 출력(export) 버튼 — 편집 모드일 때만 보임. 클릭 시 export 다이얼로그.
+        self.export_btn = QPushButton(tr("📤 출력"))
+        self.export_btn.setToolTip(tr("편집 결과를 새 mp4 로 저장 (Ctrl+Shift+E / Ctrl+S)"))
+        self.export_btn.setFixedHeight(32)
+        self.export_btn.clicked.connect(self.export_requested.emit)
+        self.export_btn.setVisible(False)   # 편집 모드 ON 일 때만 표시.
+        layout.addWidget(self.export_btn)
+
         self._duration_ms = 0
         self._position_ms = 0
         self._refresh_time_label()
@@ -160,6 +169,8 @@ class PlayerControls(QWidget):
 
     def set_edit_mode_button(self, on: bool) -> None:
         self.edit_toggle.set_on(on)
+        # Export 버튼은 편집 모드 ON 일 때만 노출.
+        self.export_btn.setVisible(bool(on))
 
     # ---------- 내부 ----------
     def _on_speed_changed(self, label: str) -> None:

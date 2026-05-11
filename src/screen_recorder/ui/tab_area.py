@@ -27,11 +27,15 @@ class TabArea(QTabWidget):
     video_duration_resolved = Signal(int, int)   # (entry_id, duration_ms) — player 로드 후
 
     def __init__(self, mode_controller: ModeController, player_settings: PlayerSettings,
-                 player_hotkeys: PlayerHotkeys | None = None) -> None:
+                 player_hotkeys: PlayerHotkeys | None = None,
+                 sidecar_dir_provider=None) -> None:
         super().__init__()
         self._mode = mode_controller
         self._player_settings = player_settings
         self._player_hotkeys = player_hotkeys or PlayerHotkeys()
+        # 사용자 설정의 사이드카 폴더를 동적으로 읽기 위한 콜백 — settings 변경 시 다음
+        # 새 영상 탭부터 즉시 반영. None 이면 VideoTab 이 default_sidecar_dir 사용.
+        self._sidecar_dir_provider = sidecar_dir_provider
         self._tabs: list[tuple[QWidget, AppMode, int]] = []  # (widget, mode, entry_id)
         # 모든 탭의 baseline 라벨 (파일명 등). 이미지 탭은 저장 상태 ● 마커가 동적으로
         # 붙고, 영상 탭은 duration 접미사가 붙어, 라벨 재계산이 필요해 베이스만 보관.
@@ -117,10 +121,21 @@ class TabArea(QTabWidget):
 
     def add_video(self, *, path: Path, source_label: str, duration_ms: int, entry_id: int,
                    display_name: str | None = None,
-                   thumbnail: Optional[QImage] = None) -> int:
+                   thumbnail: Optional[QImage] = None,
+                   sidecar_dir: "Path | None" = None,
+                   sidecar_path: "Path | None" = None) -> int:
+        # 명시 인자가 있으면 그것 우선 (사용자가 사이드카 파일 직접 열기), 없으면
+        # provider 콜백 (환경설정 폴더).
+        sc_dir = sidecar_dir
+        if sc_dir is None and self._sidecar_dir_provider is not None:
+            try:
+                sc_dir = self._sidecar_dir_provider()
+            except (RuntimeError, OSError):
+                sc_dir = None
         tab = VideoTab(path=path, source_label=source_label,
                        duration_ms=duration_ms, player_settings=self._player_settings,
-                       thumbnail=thumbnail, player_hotkeys=self._player_hotkeys)
+                       thumbnail=thumbnail, player_hotkeys=self._player_hotkeys,
+                       sidecar_dir=sc_dir, sidecar_path=sidecar_path)
         tab.snapshot_requested.connect(self.snapshot_requested.emit)
         # 탭 라벨 — 실제 파일명(display_name)이 있으면 그걸로, 없으면 source_label.
         base = display_name if display_name else source_label
@@ -283,6 +298,13 @@ class TabArea(QTabWidget):
         # 으로 파일을 계속 잠가둠 → 사용자가 라이브러리에서 곧장 Del 하면 send2trash
         # 실패. 여기서 명시 해제하면 X 로 닫고 나서 휴지통 이동도 깔끔히 성공.
         if isinstance(widget, VideoTab):
+            try:
+                # 닫기 전에 미반영 autosave 가 있으면 즉시 디스크에 flush — debounce
+                # 타이머가 아직 안 fire 했을 때 데이터 손실 방지 (사용자 보고: "자르고
+                # 닫았더니 자른건 그대로인데 나머지는 없어졌어").
+                widget.edit_controller().flush_autosave()
+            except (RuntimeError, AttributeError):
+                pass
             try:
                 widget.player.stop()
                 widget.player.release_file_handles()

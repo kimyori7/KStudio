@@ -9,7 +9,9 @@ from screen_recorder.services.thumbnail_extractor import ThumbnailExtractor
 
 @pytest.fixture
 def extractor():
-    return ThumbnailExtractor(cache_size=4)
+    # 테스트 환경엔 ffmpeg.exe 가 없을 수 있으므로 더미 경로 명시.
+    # extract_sync 는 subprocess.run 를 patch 한 곳에서만 실제 호출되니 OK.
+    return ThumbnailExtractor(cache_size=4, ffmpeg_path=Path("ffmpeg"))
 
 
 def test_cache_hit_returns_cached_image(extractor):
@@ -43,7 +45,7 @@ def test_lru_eviction(extractor):
 
 def test_extract_calls_ffmpeg(tmp_path):
     """동기 추출 — ffmpeg 호출 + QImage 반환."""
-    extractor = ThumbnailExtractor(cache_size=4)
+    extractor = ThumbnailExtractor(cache_size=4, ffmpeg_path=Path("ffmpeg"))
     fake_png = tmp_path / "shot.png"
     img = QImage(96, 54, QImage.Format_ARGB32)
     img.fill(0xFF223344)
@@ -70,19 +72,19 @@ def test_extract_calls_ffmpeg(tmp_path):
 
 
 def test_extract_returns_none_for_missing_src(tmp_path):
-    extractor = ThumbnailExtractor()
+    extractor = ThumbnailExtractor(ffmpeg_path=Path("ffmpeg"))
     out = extractor.extract_sync(str(tmp_path / "nope.mp4"), 1000)
     assert out is None
 
 
 def test_extract_returns_none_for_empty_src():
-    extractor = ThumbnailExtractor()
+    extractor = ThumbnailExtractor(ffmpeg_path=Path("ffmpeg"))
     out = extractor.extract_sync("", 0)
     assert out is None
 
 
 def test_extract_returns_none_when_ffmpeg_fails(tmp_path):
-    extractor = ThumbnailExtractor()
+    extractor = ThumbnailExtractor(ffmpeg_path=Path("ffmpeg"))
     fake_input = tmp_path / "input.mp4"
     fake_input.write_bytes(b"fake")
     with patch("screen_recorder.services.thumbnail_extractor.subprocess.run") as mock_run:

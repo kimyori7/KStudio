@@ -25,6 +25,9 @@ class VideoSegment:
     - src_out_ms == 0 → source 끝까지 (영상 전체 사용)
     - media_kind == "image" → image_duration_ms 가 segment 길이
     - effects: segment-local 효과 리스트 (0 = segment 시작)
+    - start_ms: 트랙(combined timeline) 상의 시작 위치. 자르기 + 자유 이동 + 갭(gap)
+      지원을 위해 v3 부터 명시적으로 저장. 두 segment 가 같은 start_ms 를 가지면 안 되고
+      서로 겹쳐서도 안 된다 (UI 가 clamp 책임).
     """
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     src: str
@@ -34,6 +37,7 @@ class VideoSegment:
     media_kind: Literal["video", "image", "gif"] = "video"
     image_duration_ms: int = 3000
     effects: list = field(default_factory=list)
+    start_ms: int = 0
 
     def __post_init__(self) -> None:
         if self.media_kind not in _VALID_MEDIA:
@@ -54,6 +58,13 @@ class VideoSegment:
                 f"image segment requires image_duration_ms > 0, "
                 f"got {self.image_duration_ms}"
             )
+        if self.start_ms < 0:
+            raise ValueError(f"start_ms must be >= 0, got {self.start_ms}")
+
+    @property
+    def end_ms(self) -> int:
+        """트랙상 종료 위치 (배타적). start_ms + duration_ms."""
+        return self.start_ms + self.duration_ms
 
     @property
     def duration_ms(self) -> int:

@@ -412,6 +412,648 @@ def get_request_status(window, params: dict) -> dict:
     return req.to_dict()
 
 
+# ===================== 그리기 도구 =====================
+
+
+def _parse_color(color_str: str | None) -> "QColor | None":
+    """hex 색상 문자열 파싱. 실패하면 None."""
+    if not color_str:
+        return None
+    from PySide6.QtGui import QColor
+    s = color_str.lstrip("#")
+    if len(s) == 6:
+        try:
+            return QColor(int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+        except ValueError:
+            return None
+    return None
+
+
+def draw_rect(window, params: dict) -> dict:
+    """현재 이미지 탭에 사각형 주석 추가.
+
+    파라미터:
+    - `x1`, `y1`, `x2`, `y2` (number, required): 사각형 두 꼭짓점 좌표 (픽셀).
+    - `color` (str, optional): hex 색상 "#RRGGBB". 기본 빨강 #FF0000.
+    - `thickness` (int, optional): 두께 step (0~4). 기본 1.
+
+    응답: success, index (주석 인덱스), error.
+    """
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor
+    from image_editor.items.rect import RectAnnotationItem
+    from image_editor.commands import AddAnnotationCommand
+    from screen_recorder.ui.main_window import MainWindow
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    try:
+        x1 = float(params.get("x1"))
+        y1 = float(params.get("y1"))
+        x2 = float(params.get("x2"))
+        y2 = float(params.get("y2"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "x1, y1, x2, y2 좌표 필요"}
+
+    color = _parse_color(params.get("color")) or QColor(255, 0, 0)
+    thickness = int(params.get("thickness") or 1)
+    thickness = max(0, min(4, thickness))
+
+    layer = MainWindow._ensure_annotation_layer(tab)
+    scene = layer.scene
+    rect = QRectF(x1, y1, x2 - x1, y2 - y1).normalized()
+    item = RectAnnotationItem(rect, color, thickness)
+
+    cmd = AddAnnotationCommand(scene, item)
+    tab.undo_stack.push(cmd)
+
+    return {"success": True, "index": len(scene.annotations()) - 1, "error": None}
+
+
+def draw_arrow(window, params: dict) -> dict:
+    """현재 이미지 탭에 화살표 주석 추가.
+
+    파라미터:
+    - `x1`, `y1` (number, required): 시작점 좌표.
+    - `x2`, `y2` (number, required): 끝점 (화살표 머리) 좌표.
+    - `color` (str, optional): hex 색상. 기본 빨강.
+    - `thickness` (int, optional): 두께 step (0~4). 기본 1.
+
+    응답: success, index, error.
+    """
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor
+    from image_editor.items.arrow import ArrowAnnotationItem
+    from image_editor.commands import AddAnnotationCommand
+    from screen_recorder.ui.main_window import MainWindow
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    try:
+        x1 = float(params.get("x1"))
+        y1 = float(params.get("y1"))
+        x2 = float(params.get("x2"))
+        y2 = float(params.get("y2"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "x1, y1, x2, y2 좌표 필요"}
+
+    color = _parse_color(params.get("color")) or QColor(255, 0, 0)
+    thickness = int(params.get("thickness") or 1)
+    thickness = max(0, min(4, thickness))
+
+    layer = MainWindow._ensure_annotation_layer(tab)
+    scene = layer.scene
+    item = ArrowAnnotationItem(QPointF(x1, y1), QPointF(x2, y2), color, thickness)
+
+    cmd = AddAnnotationCommand(scene, item)
+    tab.undo_stack.push(cmd)
+
+    return {"success": True, "index": len(scene.annotations()) - 1, "error": None}
+
+
+def add_text(window, params: dict) -> dict:
+    """현재 이미지 탭에 텍스트 주석 추가.
+
+    파라미터:
+    - `x`, `y` (number, required): 텍스트 위치 좌표.
+    - `text` (str, required): 표시할 텍스트.
+    - `color` (str, optional): hex 색상. 기본 빨강.
+
+    응답: success, index, error.
+    """
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor
+    from image_editor.items.text import TextAnnotationItem
+    from image_editor.commands import AddAnnotationCommand
+    from screen_recorder.ui.main_window import MainWindow
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    try:
+        x = float(params.get("x"))
+        y = float(params.get("y"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "x, y 좌표 필요"}
+
+    text = params.get("text") or ""
+    if not text:
+        return {"success": False, "error": "text 파라미터 필요"}
+
+    color = _parse_color(params.get("color")) or QColor(255, 0, 0)
+
+    layer = MainWindow._ensure_annotation_layer(tab)
+    scene = layer.scene
+    item = TextAnnotationItem(text, color)
+    item.setPos(QPointF(x, y))
+
+    cmd = AddAnnotationCommand(scene, item)
+    tab.undo_stack.push(cmd)
+
+    return {"success": True, "index": len(scene.annotations()) - 1, "error": None}
+
+
+def list_annotations(window, params: dict) -> dict:
+    """현재 이미지 탭의 주석 목록 조회.
+
+    응답:
+    - `annotations` (list): 각 주석 dict — index, type("rect"|"arrow"|"text"),
+      bounds(x, y, width, height), color(hex).
+    - `total` (int): 주석 개수.
+    """
+    from image_editor.layers.annotation_layer import AnnotationLayer
+    from image_editor.items.rect import RectAnnotationItem
+    from image_editor.items.arrow import ArrowAnnotationItem
+    from image_editor.items.text import TextAnnotationItem
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"annotations": [], "total": 0}
+
+    # AnnotationLayer 찾기
+    ann_layer = None
+    for layer in tab.stack.layers:
+        if isinstance(layer, AnnotationLayer):
+            ann_layer = layer
+            break
+    if ann_layer is None:
+        return {"annotations": [], "total": 0}
+
+    out = []
+    for i, item in enumerate(ann_layer.scene.annotations()):
+        bounds = item.sceneBoundingRect()
+        color_hex = None
+        item_type = "unknown"
+
+        if isinstance(item, RectAnnotationItem):
+            item_type = "rect"
+            color_hex = item.color().name()
+        elif isinstance(item, ArrowAnnotationItem):
+            item_type = "arrow"
+            color_hex = item.color().name()
+        elif isinstance(item, TextAnnotationItem):
+            item_type = "text"
+            color_hex = item.color().name()
+
+        out.append({
+            "index": i,
+            "type": item_type,
+            "bounds": {
+                "x": bounds.x(),
+                "y": bounds.y(),
+                "width": bounds.width(),
+                "height": bounds.height(),
+            },
+            "color": color_hex,
+        })
+    return {"annotations": out, "total": len(out)}
+
+
+def delete_annotation(window, params: dict) -> dict:
+    """주석 삭제.
+
+    파라미터:
+    - `index` (int, required): 삭제할 주석 인덱스 (list_annotations 결과 기준).
+
+    응답: success, error.
+    """
+    from image_editor.layers.annotation_layer import AnnotationLayer
+    from image_editor.commands import RemoveAnnotationCommand
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    try:
+        index = int(params.get("index"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "index 정수 필요"}
+
+    ann_layer = None
+    for layer in tab.stack.layers:
+        if isinstance(layer, AnnotationLayer):
+            ann_layer = layer
+            break
+    if ann_layer is None:
+        return {"success": False, "error": "주석 레이어 없음"}
+
+    items = ann_layer.scene.annotations()
+    if index < 0 or index >= len(items):
+        return {"success": False, "error": f"잘못된 인덱스: {index} (범위: 0~{len(items)-1})"}
+
+    item = items[index]
+    cmd = RemoveAnnotationCommand(ann_layer.scene, item)
+    tab.undo_stack.push(cmd)
+
+    return {"success": True, "error": None}
+
+
+def undo(window, params: dict) -> dict:
+    """현재 이미지 탭에서 실행 취소.
+
+    응답: success, can_undo (취소 후 추가 취소 가능 여부), error.
+    """
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "can_undo": False, "error": "활성 이미지 탭 없음"}
+    if not tab.undo_stack.canUndo():
+        return {"success": False, "can_undo": False, "error": "취소할 작업 없음"}
+    tab.undo_stack.undo()
+    return {"success": True, "can_undo": tab.undo_stack.canUndo(), "error": None}
+
+
+def redo(window, params: dict) -> dict:
+    """현재 이미지 탭에서 다시 실행.
+
+    응답: success, can_redo (다시 실행 후 추가 다시 실행 가능 여부), error.
+    """
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "can_redo": False, "error": "활성 이미지 탭 없음"}
+    if not tab.undo_stack.canRedo():
+        return {"success": False, "can_redo": False, "error": "다시 실행할 작업 없음"}
+    tab.undo_stack.redo()
+    return {"success": True, "can_redo": tab.undo_stack.canRedo(), "error": None}
+
+
+def get_tool_state(window, params: dict) -> dict:
+    """현재 선택된 도구와 설정 조회.
+
+    응답: tool_id, color(hex), thickness, brush_size, can_undo, can_redo.
+    """
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {
+            "tool_id": None,
+            "color": None,
+            "thickness": None,
+            "brush_size": None,
+            "can_undo": False,
+            "can_redo": False,
+        }
+
+    tool_id = window.tool_palette.current_tool() if hasattr(window, "tool_palette") else None
+    color = window.annotation_toolbar.current_color().name() if hasattr(window, "annotation_toolbar") else None
+    thickness = window.annotation_toolbar.current_thickness_step() if hasattr(window, "annotation_toolbar") else None
+    brush_size = getattr(window, "_raster_brush_size", 20)
+
+    return {
+        "tool_id": tool_id,
+        "color": color,
+        "thickness": thickness,
+        "brush_size": brush_size,
+        "can_undo": tab.undo_stack.canUndo(),
+        "can_redo": tab.undo_stack.canRedo(),
+    }
+
+
+# ===================== 선택/자르기 도구 =====================
+
+
+def select_rect(window, params: dict) -> dict:
+    """사각형 영역 선택 (marching ants).
+
+    파라미터:
+    - `x1`, `y1`, `x2`, `y2` (number, required): 선택 영역 좌표.
+
+    응답: success, selection(x, y, width, height), error.
+    """
+    from PySide6.QtCore import QRect
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    try:
+        x1 = int(params.get("x1"))
+        y1 = int(params.get("y1"))
+        x2 = int(params.get("x2"))
+        y2 = int(params.get("y2"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "x1, y1, x2, y2 좌표 필요"}
+
+    rect = QRect(x1, y1, x2 - x1, y2 - y1).normalized()
+    if rect.width() <= 0 or rect.height() <= 0:
+        return {"success": False, "error": "유효한 영역이 아님 (크기 0)"}
+
+    tab.selection.set_rect(rect)
+    return {
+        "success": True,
+        "selection": {
+            "x": rect.x(), "y": rect.y(),
+            "width": rect.width(), "height": rect.height(),
+        },
+        "error": None,
+    }
+
+
+def clear_selection(window, params: dict) -> dict:
+    """선택 영역 해제.
+
+    응답: success, error.
+    """
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    tab.selection.clear()
+    return {"success": True, "error": None}
+
+
+def get_selection(window, params: dict) -> dict:
+    """현재 선택 영역 조회.
+
+    응답: has_selection(bool), selection(x, y, width, height) or null.
+    """
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"has_selection": False, "selection": None}
+
+    rect = tab.selection.rect()
+    if rect is None or rect.width() <= 0 or rect.height() <= 0:
+        return {"has_selection": False, "selection": None}
+
+    return {
+        "has_selection": True,
+        "selection": {
+            "x": rect.x(), "y": rect.y(),
+            "width": rect.width(), "height": rect.height(),
+        },
+    }
+
+
+def crop_image(window, params: dict) -> dict:
+    """이미지 자르기. 선택 영역이 있으면 그 영역으로, 없으면 파라미터 좌표로 자름.
+
+    파라미터:
+    - `x1`, `y1`, `x2`, `y2` (number, optional): 자를 영역. 생략 시 현재 선택 영역 사용.
+
+    응답: success, new_size(width, height), error.
+    """
+    from PySide6.QtCore import QRect
+    from image_editor.operations.crop import CropCommand
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    # 좌표 파라미터가 있으면 사용, 없으면 선택 영역 사용
+    if params.get("x1") is not None:
+        try:
+            x1 = int(params.get("x1"))
+            y1 = int(params.get("y1"))
+            x2 = int(params.get("x2"))
+            y2 = int(params.get("y2"))
+        except (TypeError, ValueError):
+            return {"success": False, "error": "좌표가 유효하지 않음"}
+        rect = QRect(x1, y1, x2 - x1, y2 - y1).normalized()
+    else:
+        rect = tab.selection.rect()
+        if rect is None or rect.width() <= 0 or rect.height() <= 0:
+            return {"success": False, "error": "선택 영역 없음 (좌표 파라미터 필요)"}
+
+    if rect.width() <= 0 or rect.height() <= 0:
+        return {"success": False, "error": "자르기 영역 크기가 0"}
+
+    # 캔버스 범위 체크
+    canvas = tab.stack.canvas_size
+    rect = rect.intersected(QRect(0, 0, canvas.width(), canvas.height()))
+    if rect.width() <= 0 or rect.height() <= 0:
+        return {"success": False, "error": "자르기 영역이 캔버스 밖"}
+
+    cmd = CropCommand(tab.stack, rect)
+    tab.undo_stack.push(cmd)
+    tab.selection.clear()
+
+    return {
+        "success": True,
+        "new_size": {"width": rect.width(), "height": rect.height()},
+        "error": None,
+    }
+
+
+# ===================== 브러시/마스크 도구 =====================
+
+
+def paint_stroke(window, params: dict) -> dict:
+    """이미지 레이어에 브러시 스트로크 적용.
+
+    파라미터:
+    - `points` (list, required): 포인트 배열 [[x1, y1], [x2, y2], ...]. 최소 2개.
+    - `color` (str, optional): hex 색상. 기본 검정 #000000.
+    - `size` (int, optional): 브러시 크기 (픽셀). 기본 20.
+    - `mode` (str, optional): "paint" 또는 "erase". 기본 "paint".
+
+    응답: success, error.
+    """
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QPainter, QPen
+    from image_editor.layers.image_layer import ImageLayer
+    from image_editor.operations.raster_paint import RasterPaintCommand
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    points = params.get("points") or []
+    if len(points) < 2:
+        return {"success": False, "error": "최소 2개 포인트 필요"}
+
+    color = _parse_color(params.get("color")) or QColor(0, 0, 0)
+    size = int(params.get("size") or 20)
+    size = max(1, min(200, size))
+    mode = params.get("mode") or "paint"
+    if mode not in ("paint", "erase"):
+        return {"success": False, "error": "mode는 'paint' 또는 'erase'"}
+
+    # 활성 이미지 레이어 확보
+    window._ensure_active_image_layer(tab)
+    layer = tab.stack.active_layer()
+    if not isinstance(layer, ImageLayer):
+        return {"success": False, "error": "이미지 레이어가 없음"}
+
+    prev_pixmap = layer.pixmap.copy()
+    offs = layer.offset
+
+    # QPainter로 스트로크 그리기
+    painter = QPainter(layer.pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    if mode == "erase":
+        painter.setCompositionMode(QPainter.CompositionMode_Clear)
+        pen_color = QColor(0, 0, 0, 0)
+    else:
+        pen_color = color
+    pen = QPen(pen_color)
+    pen.setWidth(size)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+
+    # 포인트 연결
+    for i in range(len(points) - 1):
+        try:
+            x1, y1 = float(points[i][0]), float(points[i][1])
+            x2, y2 = float(points[i+1][0]), float(points[i+1][1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        p1 = QPointF(x1 - offs.x(), y1 - offs.y())
+        p2 = QPointF(x2 - offs.x(), y2 - offs.y())
+        painter.drawLine(p1, p2)
+    painter.end()
+
+    # Undo 명령 등록
+    new_pixmap = layer.pixmap.copy()
+    cmd = RasterPaintCommand(tab.stack, layer.id, prev_pixmap, new_pixmap, "MCP 브러시")
+    tab.undo_stack.push(cmd)
+    tab.stack.notify_pixmap_changed(layer.id)
+
+    return {"success": True, "error": None}
+
+
+def paint_mask(window, params: dict) -> dict:
+    """이미지 레이어의 마스크에 브러시 스트로크 적용.
+
+    파라미터:
+    - `points` (list, required): 포인트 배열 [[x1, y1], [x2, y2], ...]. 최소 2개.
+    - `size` (int, optional): 브러시 크기 (픽셀). 기본 30.
+    - `mode` (str, optional): "add" (불투명) 또는 "erase" (투명). 기본 "erase".
+
+    응답: success, error.
+    """
+    from PySide6.QtCore import QPointF, QSize, Qt
+    from PySide6.QtGui import QColor, QImage, QPainter, QPen
+    from image_editor.layers.image_layer import ImageLayer
+    from image_editor.operations.mask_paint import MaskPaintCommand
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    points = params.get("points") or []
+    if len(points) < 2:
+        return {"success": False, "error": "최소 2개 포인트 필요"}
+
+    size = int(params.get("size") or 30)
+    size = max(1, min(200, size))
+    mode = params.get("mode") or "erase"
+    if mode not in ("add", "erase"):
+        return {"success": False, "error": "mode는 'add' 또는 'erase'"}
+
+    # 활성 이미지 레이어 확보
+    window._ensure_active_image_layer(tab)
+    layer = tab.stack.active_layer()
+    if not isinstance(layer, ImageLayer):
+        return {"success": False, "error": "이미지 레이어가 없음"}
+
+    # 마스크 준비 (없으면 생성)
+    pm_size = QSize(layer.pixmap.width(), layer.pixmap.height())
+    if layer.mask is None or layer.mask.isNull():
+        mask = QImage(pm_size, QImage.Format_Grayscale8)
+        mask.fill(255)  # 전체 불투명
+        layer.mask = mask
+    prev_mask = layer.mask.copy()
+
+    offs = layer.offset
+
+    # QPainter로 마스크에 그리기
+    painter = QPainter(layer.mask)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    if mode == "erase":
+        pen_color = QColor(0, 0, 0)  # 투명으로
+    else:
+        pen_color = QColor(255, 255, 255)  # 불투명으로
+    pen = QPen(pen_color)
+    pen.setWidth(size)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+
+    for i in range(len(points) - 1):
+        try:
+            x1, y1 = float(points[i][0]), float(points[i][1])
+            x2, y2 = float(points[i+1][0]), float(points[i+1][1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        p1 = QPointF(x1 - offs.x(), y1 - offs.y())
+        p2 = QPointF(x2 - offs.x(), y2 - offs.y())
+        painter.drawLine(p1, p2)
+    painter.end()
+
+    # Undo 명령 등록
+    new_mask = layer.mask.copy()
+    cmd = MaskPaintCommand(tab.stack, layer.id, prev_mask, new_mask)
+    tab.undo_stack.push(cmd)
+    tab.stack.layers_changed.emit()
+
+    return {"success": True, "error": None}
+
+
+def apply_magic_wand(window, params: dict) -> dict:
+    """마술봉으로 클릭 위치의 유사 색 영역 배경 제거.
+
+    파라미터:
+    - `x`, `y` (number, required): 클릭 좌표.
+    - `tolerance` (int, optional): 색상 허용 범위 (0~255). 기본 32.
+
+    응답: success, affected_rect (영향 영역), error.
+    """
+    from PySide6.QtCore import QRect
+    from image_editor.layers.image_layer import ImageLayer
+    from image_editor.operations.magic_wand import MagicWandCommand
+
+    tab = window._current_screenshot_tab()
+    if tab is None:
+        return {"success": False, "error": "활성 이미지 탭 없음"}
+
+    try:
+        x = int(params.get("x"))
+        y = int(params.get("y"))
+    except (TypeError, ValueError):
+        return {"success": False, "error": "x, y 좌표 필요"}
+
+    tolerance = int(params.get("tolerance") or 32)
+    tolerance = max(0, min(255, tolerance))
+
+    # 활성 이미지 레이어 확보
+    window._ensure_active_image_layer(tab)
+    layer = tab.stack.active_layer()
+    if not isinstance(layer, ImageLayer):
+        return {"success": False, "error": "이미지 레이어가 없음"}
+
+    # layer-local 좌표로 변환
+    local_x = x - layer.offset.x()
+    local_y = y - layer.offset.y()
+
+    cmd = MagicWandCommand(tab.stack, layer.id, local_x, local_y, tolerance)
+    tab.undo_stack.push(cmd)
+
+    # 영향 영역 반환 (marching ants용)
+    affected = cmd.affected_layer_rect()
+    if affected is not None:
+        # scene 좌표로 변환
+        scene_rect = QRect(
+            affected.x() + layer.offset.x(),
+            affected.y() + layer.offset.y(),
+            affected.width(),
+            affected.height(),
+        )
+        tab.selection.set_rect(scene_rect)
+        return {
+            "success": True,
+            "affected_rect": {
+                "x": scene_rect.x(), "y": scene_rect.y(),
+                "width": scene_rect.width(), "height": scene_rect.height(),
+            },
+            "error": None,
+        }
+    return {"success": True, "affected_rect": None, "error": None}
+
+
 def get_settings_summary(window, params: dict) -> dict:
     """KStudio 핵심 설정 스냅샷 — LLM 이 사용자 환경을 이해하기 위한 메타.
 
@@ -460,6 +1102,24 @@ TOOLS: dict[str, Callable[[Any, dict], dict]] = {
     "ai_upscale": ai_upscale,
     "remove_background": remove_background,
     "get_request_status": get_request_status,
+    # 그리기 도구
+    "draw_rect": draw_rect,
+    "draw_arrow": draw_arrow,
+    "add_text": add_text,
+    "list_annotations": list_annotations,
+    "delete_annotation": delete_annotation,
+    "undo": undo,
+    "redo": redo,
+    "get_tool_state": get_tool_state,
+    # 선택/자르기 도구
+    "select_rect": select_rect,
+    "clear_selection": clear_selection,
+    "get_selection": get_selection,
+    "crop_image": crop_image,
+    # 브러시/마스크 도구
+    "paint_stroke": paint_stroke,
+    "paint_mask": paint_mask,
+    "apply_magic_wand": apply_magic_wand,
 }
 
 
@@ -559,6 +1219,128 @@ def list_tools() -> list[dict]:
             "description": "비동기 도구가 발급한 request_id 의 현재 상태/결과 조회.",
             "params": {
                 "request_id": {"type": "string", "required": True},
+            },
+        },
+        # 그리기 도구
+        {
+            "name": "draw_rect",
+            "description": "현재 이미지 탭에 사각형 주석 추가.",
+            "params": {
+                "x1": {"type": "number", "required": True, "description": "좌상단 x"},
+                "y1": {"type": "number", "required": True, "description": "좌상단 y"},
+                "x2": {"type": "number", "required": True, "description": "우하단 x"},
+                "y2": {"type": "number", "required": True, "description": "우하단 y"},
+                "color": {"type": "string", "required": False, "description": "hex 색상 (#RRGGBB). 기본 빨강"},
+                "thickness": {"type": "integer", "required": False, "description": "두께 step (0~4). 기본 1"},
+            },
+        },
+        {
+            "name": "draw_arrow",
+            "description": "현재 이미지 탭에 화살표 주석 추가.",
+            "params": {
+                "x1": {"type": "number", "required": True, "description": "시작점 x"},
+                "y1": {"type": "number", "required": True, "description": "시작점 y"},
+                "x2": {"type": "number", "required": True, "description": "끝점 x (화살표 머리)"},
+                "y2": {"type": "number", "required": True, "description": "끝점 y (화살표 머리)"},
+                "color": {"type": "string", "required": False, "description": "hex 색상. 기본 빨강"},
+                "thickness": {"type": "integer", "required": False, "description": "두께 step (0~4). 기본 1"},
+            },
+        },
+        {
+            "name": "add_text",
+            "description": "현재 이미지 탭에 텍스트 주석 추가.",
+            "params": {
+                "x": {"type": "number", "required": True, "description": "텍스트 x 좌표"},
+                "y": {"type": "number", "required": True, "description": "텍스트 y 좌표"},
+                "text": {"type": "string", "required": True, "description": "표시할 텍스트"},
+                "color": {"type": "string", "required": False, "description": "hex 색상. 기본 빨강"},
+            },
+        },
+        {
+            "name": "list_annotations",
+            "description": "현재 이미지 탭의 주석 목록 조회.",
+            "params": {},
+        },
+        {
+            "name": "delete_annotation",
+            "description": "주석 삭제.",
+            "params": {
+                "index": {"type": "integer", "required": True, "description": "삭제할 주석 인덱스"},
+            },
+        },
+        {
+            "name": "undo",
+            "description": "현재 이미지 탭에서 실행 취소.",
+            "params": {},
+        },
+        {
+            "name": "redo",
+            "description": "현재 이미지 탭에서 다시 실행.",
+            "params": {},
+        },
+        {
+            "name": "get_tool_state",
+            "description": "현재 선택된 도구와 설정 조회.",
+            "params": {},
+        },
+        # 선택/자르기 도구
+        {
+            "name": "select_rect",
+            "description": "사각형 영역 선택 (marching ants).",
+            "params": {
+                "x1": {"type": "number", "required": True, "description": "좌상단 x"},
+                "y1": {"type": "number", "required": True, "description": "좌상단 y"},
+                "x2": {"type": "number", "required": True, "description": "우하단 x"},
+                "y2": {"type": "number", "required": True, "description": "우하단 y"},
+            },
+        },
+        {
+            "name": "clear_selection",
+            "description": "선택 영역 해제.",
+            "params": {},
+        },
+        {
+            "name": "get_selection",
+            "description": "현재 선택 영역 조회.",
+            "params": {},
+        },
+        {
+            "name": "crop_image",
+            "description": "이미지 자르기. 좌표 생략 시 현재 선택 영역 사용.",
+            "params": {
+                "x1": {"type": "number", "required": False, "description": "좌상단 x"},
+                "y1": {"type": "number", "required": False, "description": "좌상단 y"},
+                "x2": {"type": "number", "required": False, "description": "우하단 x"},
+                "y2": {"type": "number", "required": False, "description": "우하단 y"},
+            },
+        },
+        # 브러시/마스크 도구
+        {
+            "name": "paint_stroke",
+            "description": "이미지 레이어에 브러시 스트로크 적용.",
+            "params": {
+                "points": {"type": "array", "required": True, "description": "[[x1,y1],[x2,y2],...] 최소 2개"},
+                "color": {"type": "string", "required": False, "description": "hex 색상. 기본 검정"},
+                "size": {"type": "integer", "required": False, "description": "브러시 크기 (1~200). 기본 20"},
+                "mode": {"type": "string", "required": False, "description": "'paint' 또는 'erase'. 기본 paint"},
+            },
+        },
+        {
+            "name": "paint_mask",
+            "description": "이미지 레이어의 마스크에 브러시 스트로크 적용.",
+            "params": {
+                "points": {"type": "array", "required": True, "description": "[[x1,y1],[x2,y2],...] 최소 2개"},
+                "size": {"type": "integer", "required": False, "description": "브러시 크기 (1~200). 기본 30"},
+                "mode": {"type": "string", "required": False, "description": "'add'(불투명) 또는 'erase'(투명). 기본 erase"},
+            },
+        },
+        {
+            "name": "apply_magic_wand",
+            "description": "마술봉으로 클릭 위치의 유사 색 영역 배경 제거.",
+            "params": {
+                "x": {"type": "number", "required": True, "description": "클릭 x 좌표"},
+                "y": {"type": "number", "required": True, "description": "클릭 y 좌표"},
+                "tolerance": {"type": "integer", "required": False, "description": "색상 허용 범위 (0~255). 기본 32"},
             },
         },
     ]

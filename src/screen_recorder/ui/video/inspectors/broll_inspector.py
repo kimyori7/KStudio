@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QPushButton, QRadioButton, QSpinBox, QWidget,
@@ -27,6 +28,7 @@ from .base import InspectorBase
 
 
 _VIDEO_FILTER = "Videos and images (*.mp4 *.mov *.avi *.gif *.png *.jpg *.jpeg)"
+_ACCEPTED_SUFFIXES = {".mp4", ".mov", ".avi", ".gif", ".png", ".jpg", ".jpeg", ".mkv", ".webm"}
 
 
 # ---- combo 매핑 ----
@@ -83,6 +85,8 @@ class BrollInspector(InspectorBase):
         self._effect: Optional[BrollEffect] = None
         self._build_ui()
         self._set_form_enabled(False)
+        # 외부(탐색기·라이브러리) 에서 mp4 를 드롭하면 src 설정.
+        self.setAcceptDrops(True)
 
     # ---------- UI build ----------
     def _build_ui(self) -> None:
@@ -99,6 +103,11 @@ class BrollInspector(InspectorBase):
         src_row.addWidget(self._src_label, stretch=1)
         src_row.addWidget(self._pick_btn)
         form.addRow("파일", src_row)
+
+        # 드래그 앤 드롭 안내 — 외부 탐색기/라이브러리에서 mp4 를 끌어 놓으면 자동으로 src 설정.
+        self._dnd_hint_label = QLabel("💡 파일을 여기로 끌어 놓아도 됩니다")
+        self._dnd_hint_label.setStyleSheet("color: #9ca3af; font-size: 10px;")
+        form.addRow("", self._dnd_hint_label)
 
         # ---- placement 콤보 ----
         self._placement_combo = QComboBox()
@@ -315,3 +324,42 @@ class BrollInspector(InspectorBase):
         if self._effect is None:
             return
         self.effect_deleted.emit(self._effect.id)
+
+    # ---------- drag-and-drop ----------
+    @staticmethod
+    def _first_supported_path(urls) -> Optional[str]:
+        for u in urls:
+            if not u.isLocalFile():
+                continue
+            p = u.toLocalFile()
+            if Path(p).suffix.lower() in _ACCEPTED_SUFFIXES:
+                return p
+        return None
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._effect is None:
+            event.ignore()
+            return
+        md = event.mimeData()
+        if md.hasUrls() and self._first_supported_path(md.urls()) is not None:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if self._effect is None:
+            event.ignore()
+            return
+        path = self._first_supported_path(event.mimeData().urls())
+        if path is None:
+            event.ignore()
+            return
+        try:
+            new_eff = replace(self._effect, src=path)
+        except ValueError:
+            event.ignore()
+            return
+        self._effect = new_eff
+        self._src_label.setText(Path(path).name)
+        self.effect_changed.emit(new_eff)
+        event.acceptProposedAction()

@@ -131,9 +131,11 @@ def _zoom_crop_scale_filter(z: ZoomEffect, surface_w: int, surface_h: int) -> st
     crop_h = surface_h / scale
     crop_x = cx * surface_w - crop_w / 2.0
     crop_y = cy * surface_h - crop_h / 2.0
+    # flags=lanczos — 줌 후 upscale 시 기본 bicubic 보다 sharp. Phase 19.5 사용자
+    # 요청 ("줌 화질 떨어짐") 대응.
     return (
         f"crop={crop_w:.0f}:{crop_h:.0f}:{crop_x:.0f}:{crop_y:.0f},"
-        f"scale={surface_w}:{surface_h}"
+        f"scale={surface_w}:{surface_h}:flags=lanczos"
     )
 
 

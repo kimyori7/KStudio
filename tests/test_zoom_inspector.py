@@ -54,17 +54,47 @@ def test_scale_change_emits_effect_changed_with_both_start_end(inspector):
 
 
 def test_cx_cy_change_emits_with_both_start_end(inspector):
-    """cx/cy 변경도 마찬가지 — start 와 end 양쪽 동시 반영."""
-    eff = _make_zoom(cx=0.5, cy=0.5)
+    """cx/cy 변경도 마찬가지 — start 와 end 양쪽 동시 반영.
+
+    Phase 19.5: scale=2 에서 cx 의 valid range 는 [0.25, 0.75] — 0.3 으로 변경 시
+    그 범위 안이라 그대로 emit.
+    """
+    eff = _make_zoom(cx=0.5, cy=0.5)   # scale=2 기본
     inspector.set_effect(eff)
 
     received: list = []
     inspector.effect_changed.connect(received.append)
 
-    inspector._cx_spin.setValue(0.2)
+    inspector._cx_spin.setValue(0.3)
 
-    assert any(abs(e.start.cx - 0.2) < 1e-6 and abs(e.end.cx - 0.2) < 1e-6
+    assert any(abs(e.start.cx - 0.3) < 1e-6 and abs(e.end.cx - 0.3) < 1e-6
                for e in received)
+
+
+def test_cx_clamped_to_valid_range_for_scale(inspector):
+    """Phase 19.5: scale=2 일 때 cx 의 spin range 가 [0.25, 0.75] 로 잠겨, 그 밖 값 입력 시 clamp.
+
+    사용자 보고: "가장자리에서 더 가는 느낌" — clamp 가 인스펙터에서도 같이 작동해야 함.
+    """
+    eff = _make_zoom(cx=0.5, cy=0.5, scale=2.0)
+    inspector.set_effect(eff)
+    # scale=2 → half=0.25, valid cx ∈ [0.25, 0.75]
+    assert abs(inspector._cx_spin.minimum() - 0.25) < 0.01
+    assert abs(inspector._cx_spin.maximum() - 0.75) < 0.01
+
+
+def test_cx_range_widens_when_scale_lowered(inspector):
+    """scale 을 낮추면 cx range 도 같이 넓어진다 (4× → 2×).
+
+    tolerance 는 QDoubleSpinBox decimals=2 표현 정밀도(0.01) 만큼 — 0.125 가 0.13 으로
+    rounding 될 수 있음.
+    """
+    inspector.set_effect(_make_zoom(cx=0.5, cy=0.5, scale=4.0))
+    # 4× → half=0.125 → spin minimum ≈ 0.13 (decimals=2 round).
+    assert abs(inspector._cx_spin.minimum() - 0.125) < 0.02
+    inspector._scale_spin.setValue(2.0)
+    # 2× → range=[0.25, 0.75]
+    assert abs(inspector._cx_spin.minimum() - 0.25) < 0.02
 
 
 def test_ease_combo_change_emits(inspector):

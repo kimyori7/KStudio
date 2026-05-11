@@ -108,6 +108,12 @@ class PreferencesSettings:
     # use_mini_control 무시 + WDA_EXCLUDEFROMCAPTURE 해제 → 메인 창이 결과에 정상 포함.
     # 글로벌 툴바 ("내 화면에 보이기" 체크박스) 에서 토글.
     keep_visible_during_capture: bool = False
+    # 편집 모드 — 영상 모드의 모든 탭에 전역 적용. 세션 간 영속 (사용자 결정 2026-05-11).
+    edit_mode_on: bool = False
+    # 사이드카(.kvedit) 저장 폴더. 빈 문자열 = OS 기본 (%APPDATA%\KStudio\sidecars).
+    sidecar_dir: str = ""
+    # 파일 → 열기 다이얼로그의 마지막 사용 폴더. 빈 문자열 = 사용자 홈.
+    last_open_dir: str = ""
 
 
 @dataclass

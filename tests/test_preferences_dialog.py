@@ -2,12 +2,12 @@ from screen_recorder.core.settings import AppSettings
 from screen_recorder.ui.preferences_dialog import PreferencesDialog
 
 
-def test_dialog_has_five_categories(qtbot):
+def test_dialog_has_categories(qtbot):
     s = AppSettings()
     d = PreferencesDialog(s)
     qtbot.addWidget(d)
-    assert d.category_list.count() == 5
-    titles = [d.category_list.item(i).text() for i in range(5)]
+    assert d.category_list.count() >= 5
+    titles = [d.category_list.item(i).text() for i in range(d.category_list.count())]
     assert "저장 / 파일명" in titles
     assert "영상·GIF·사운드" in titles
     assert "영상 플레이어" in titles

@@ -6,7 +6,7 @@ from screen_recorder.effects.types.caption import CaptionEffect
 
 def test_sidecar_default_has_empty_track_and_v2():
     sc = Sidecar(source_path="x.mp4", source_hash="h")
-    assert sc.version == 2
+    assert sc.version == 3
     assert sc.video_track == []
 
 
@@ -20,7 +20,7 @@ def test_sidecar_to_dict_with_segment():
         source_path="x.mp4", source_hash="h", video_track=[seg],
     )
     d = sc.to_dict()
-    assert d["version"] == 2
+    assert d["version"] == 3
     assert len(d["video_track"]) == 1
     seg_raw = d["video_track"][0]
     assert seg_raw["src"] == "src.mp4"
@@ -43,7 +43,7 @@ def test_sidecar_from_dict_v2_round_trip():
     )
     d = sc.to_dict()
     sc2 = Sidecar.from_dict(d)
-    assert sc2.version == 2
+    assert sc2.version == 3
     assert len(sc2.video_track) == 1
     assert sc2.video_track[0].src == "src.mp4"
     assert sc2.video_track[0].id == seg.id
@@ -66,8 +66,28 @@ def test_sidecar_v1_legacy_load_drops_old_data():
         ],
     }
     sc = Sidecar.from_dict(plain_v1)
-    assert sc.version == 2
+    assert sc.version == 3
     assert sc.video_track == []
+
+
+def test_sidecar_v2_packed_migrates_to_v3_with_cumulative_start_ms():
+    """v2 packed 데이터(start_ms 없음) → v3 누적합으로 자동 채움."""
+    plain_v2 = {
+        "version": 2,
+        "source_path": "x.mp4",
+        "source_hash": "h",
+        "video_track": [
+            {"src": "a.mp4", "src_in_ms": 0, "src_out_ms": 3000,
+             "src_duration_ms": 3000, "media_kind": "video"},
+            {"src": "b.mp4", "src_in_ms": 0, "src_out_ms": 2000,
+             "src_duration_ms": 2000, "media_kind": "video"},
+        ],
+    }
+    sc = Sidecar.from_dict(plain_v2)
+    assert sc.version == 3
+    assert len(sc.video_track) == 2
+    assert sc.video_track[0].start_ms == 0
+    assert sc.video_track[1].start_ms == 3000
 
 
 def test_sidecar_image_segment_round_trip():

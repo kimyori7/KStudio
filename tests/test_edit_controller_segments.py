@@ -155,3 +155,41 @@ def test_undo_after_insert_restores_track(qtbot, ec_with_track):
     assert len(ec_with_track.sidecar().video_track) == 2
     ec_with_track.undo()
     assert len(ec_with_track.sidecar().video_track) == 1
+
+
+def test_set_segment_start_shifts_effects_within(qtbot, ec_with_track):
+    """segment 안에 들어 있는 effect 가 segment 와 같이 이동."""
+    from screen_recorder.effects.types.caption import CaptionEffect
+    # segment a (start=0, dur=10000) 안에 caption 1000~3000.
+    sc = ec_with_track.sidecar()
+    cap = CaptionEffect(in_ms=1000, out_ms=3000, text="hi")
+    sc.effects.append(cap)
+    sid = sc.video_track[0].id
+    # 두 번째 segment 추가해 첫째를 옮길 자리 만들기. 둘째 start=15000.
+    other = VideoSegment(src="b.mp4", src_duration_ms=2000, start_ms=15000)
+    ec_with_track.insert_segment(at_idx=1, segment=other)
+    # 첫 segment 를 start_ms=20000 으로 이동 (15000~17000 와 안 겹치게 그 뒤로).
+    # _clamp_to_free_slot 가 17000~ (둘째 끝) 로 clamp 할 가능성 있어 명시 시도.
+    ec_with_track.set_segment_start(sid, 17000)
+    moved_cap = ec_with_track.sidecar().effects[0]
+    # 이동량 = 17000 - 0 = 17000.
+    assert moved_cap.in_ms == 1000 + 17000
+    assert moved_cap.out_ms == 3000 + 17000
+
+
+def test_delete_segment_removes_effects_within(qtbot, ec_with_track):
+    """segment 삭제 시 그 안에 들어 있는 effect 도 같이 제거."""
+    from screen_recorder.effects.types.caption import CaptionEffect
+    sc = ec_with_track.sidecar()
+    cap_inside = CaptionEffect(in_ms=2000, out_ms=4000, text="inside")
+    cap_outside = CaptionEffect(in_ms=12000, out_ms=14000, text="outside")
+    sc.effects.append(cap_inside)
+    sc.effects.append(cap_outside)
+    # 다른 segment (밖의 caption 보호용).
+    other = VideoSegment(src="b.mp4", src_duration_ms=5000, start_ms=10000)
+    ec_with_track.insert_segment(at_idx=1, segment=other)
+    sid = sc.video_track[0].id
+    ec_with_track.delete_segment(sid)
+    remaining = [e.text for e in ec_with_track.sidecar().effects]
+    assert "inside" not in remaining
+    assert "outside" in remaining

@@ -196,7 +196,8 @@ class MainWindow(QMainWindow):
         self.tool_palette = ToolPalette()
         center_row.addWidget(self.tool_palette)
         self.tab_area = TabArea(self.mode_controller, self.app_settings.player,
-                                  self.app_settings.player_hotkeys)
+                                  self.app_settings.player_hotkeys,
+                                  sidecar_dir_provider=self._resolve_sidecar_dir)
         center_row.addWidget(self.tab_area, stretch=1)
         outer.addLayout(center_row, stretch=1)
 
@@ -378,6 +379,11 @@ class MainWindow(QMainWindow):
         self.global_toolbar.export_video_requested.connect(self._on_export_video)
         from PySide6.QtGui import QShortcut, QKeySequence
         QShortcut(QKeySequence("Ctrl+Shift+E"), self).activated.connect(self._on_export_video)
+        # 영상 모드 전역 Space — 라이브러리 / 도크에 포커스 있어도 현재 영상 탭 재생 토글.
+        # (사용자 보고: 라이브러리 클릭 후 Space 안 먹힘. 영상 모드면 항상 작동해야 함.)
+        sp = QShortcut(QKeySequence(Qt.Key_Space), self)
+        sp.setContext(Qt.ApplicationShortcut)
+        sp.activated.connect(self._on_global_space)
         # "내 화면에 보이기" 토글 — 캡쳐 affinity + minimize 둘 다 즉시 동기화.
         self.global_toolbar.keep_visible_during_capture_changed.connect(
             self._on_keep_visible_during_capture_changed
@@ -1154,6 +1160,18 @@ class MainWindow(QMainWindow):
         """
         tab.edit_mode_toggled.connect(self.inspector_dock.setVisible)
         tab.effect_selected.connect(self.inspector_panel.set_effect)
+        # 외부 드래그/리사이즈로 효과가 바뀌면 인스펙터 spin 도 최신값으로 동기화.
+        # (이거 없으면 사용자가 인스펙터 다른 필드 토글할 때 stale 한 spin 값이 다시
+        # 효과에 덮어쓰이는 회귀 발생 — 줌 미리보기 체크 시 cx/cy/scale 초기화 보고)
+        tab.edit_controller().sidecar_replaced.connect(
+            self.inspector_panel.refresh_from_sidecar
+        )
+        # 전역 편집 모드 — 사용자가 어느 탭에서 토글해도 모든 영상 탭이 동시 적용.
+        tab.edit_mode_change_requested.connect(self._on_global_edit_mode_change)
+        # 새 탭 생성 시 현재 전역 모드를 반영.
+        tab.set_edit_mode(self.app_settings.preferences.edit_mode_on)
+        # 편집 모드 컨트롤바의 출력 버튼 → 기존 export 핸들러로 라우팅.
+        tab.export_requested.connect(self._on_export_video)
 
     def _on_inspector_effect_changed(self, new_effect) -> None:
         """인스펙터에서 효과가 수정됐을 때 현재 활성 VideoTab 에만 적용.
@@ -1717,11 +1735,24 @@ class MainWindow(QMainWindow):
             if self._undelete_stack:
                 self._on_library_undelete()
             return
+        # 영상 탭이면 EditController 의 자체 History 로 라우팅.
+        # menu_bar.undo_action (WindowShortcut) 이 VideoTab.keyPressEvent 보다 먼저
+        # 잡아버려, 분기를 안 두면 영상 자르기/삭제가 Ctrl+Z 로 복구되지 않는다.
+        cur = self.tab_area.currentWidget()
+        if isinstance(cur, VideoTab):
+            if cur._edit_controller.undo():
+                cur.player.flash_action("↶ 되돌리기")
+            return
         tab = self._current_screenshot_tab()
         if tab:
             tab.undo_stack.undo()
 
     def _on_redo(self) -> None:
+        cur = self.tab_area.currentWidget()
+        if isinstance(cur, VideoTab):
+            if cur._edit_controller.redo():
+                cur.player.flash_action("↷ 다시 실행")
+            return
         tab = self._current_screenshot_tab()
         if tab:
             tab.undo_stack.redo()
@@ -1831,19 +1862,36 @@ class MainWindow(QMainWindow):
         self._restore_window_for_capture()
 
     def _on_file_open(self) -> None:
-        """파일 → 열기. .kstudio / 일반 raster / 영상 모두 지원."""
+        """파일 → 열기. .kstudio (이미지 zip 또는 영상 사이드카 JSON, magic 으로 분기) /
+        일반 raster / 영상 모두 지원."""
+        # 최근 열기 폴더 기억 — settings.preferences.last_open_dir.
+        initial = (self.app_settings.preferences.last_open_dir or "").strip()
         path, _ = QFileDialog.getOpenFileName(
-            self, "파일 열기", "",
+            self, "파일 열기", initial,
             "지원 파일 (*.kstudio *.png *.jpg *.jpeg *.webp *.bmp "
             "*.mp4 *.gif *.webm *.mov *.avi *.mkv);;모든 파일 (*.*)",
         )
         if not path:
             return
-        self._open_path(Path(path))
+        p = Path(path)
+        # 선택 후 그 폴더를 다음 열기의 시작점으로.
+        self.app_settings.preferences.last_open_dir = str(p.parent)
+        try:
+            self._persist_settings()
+        except (RuntimeError, OSError):
+            pass
+        self._open_path(p)
 
     def _open_path(self, p: Path) -> None:
-        """확장자 기준으로 이미지/영상 분기."""
+        """확장자 기준 분기 + .kstudio 는 magic 으로 zip(이미지)/JSON(영상 사이드카) 구분."""
         ext = p.suffix.lower()
+        if ext == ".kstudio":
+            # 이미지 편집기 zip 또는 영상 사이드카 JSON — magic 으로 분기.
+            if self._is_video_sidecar_json(p):
+                self._open_sidecar_path(p)
+                return
+            self._open_image_path(p)
+            return
         if ext in self.IMAGE_EXTS:
             self._open_image_path(p)
         elif ext in self.VIDEO_EXTS:
@@ -1853,6 +1901,57 @@ class MainWindow(QMainWindow):
                 self, "지원하지 않는 파일",
                 f"지원하지 않는 형식입니다: {p.suffix}",
             )
+
+    @staticmethod
+    def _is_video_sidecar_json(p: Path) -> bool:
+        """파일 첫 바이트로 영상 사이드카 JSON 인지 판정 (zip 'PK' 시그니처 아님)."""
+        try:
+            with open(p, "rb") as f:
+                head = f.read(4).lstrip()
+            return bool(head) and head[:1] == b"{"
+        except OSError:
+            return False
+
+    def _open_sidecar_path(self, p: Path) -> None:
+        """사이드카(.kstudio JSON) 파일을 열어 source_path 의 영상을 영상 탭으로.
+
+        사이드카 파일 자체를 EditController 에 명시 전달 — hash 매칭 우회. 라이브러리에
+        같은 영상이 이미 있으면 entry 중복 추가 없이 그 entry 재사용.
+        """
+        from ..effects.sidecar import load as load_sidecar
+        try:
+            sc = load_sidecar(p)
+        except Exception as e:
+            QMessageBox.warning(self, "편집본 열기 실패",
+                                  f"사이드카 파일을 읽을 수 없습니다:\n{e}")
+            return
+        src = Path(sc.source_path or "")
+        if not sc.source_path or not src.exists():
+            QMessageBox.warning(
+                self, "원본 영상 없음",
+                "사이드카가 가리키는 원본 영상 파일을 찾을 수 없습니다:\n"
+                f"{sc.source_path or '(경로 없음)'}\n\n"
+                "영상을 원래 경로로 옮긴 후 다시 시도하거나, 영상을 직접 열어주세요.",
+            )
+            return
+        self._open_video_path(src, sidecar_dir_override=p.parent, sidecar_path=p)
+
+    def _find_library_entry_for_path(self, path: Path):
+        """라이브러리에서 같은 file path 의 entry 찾기. 없으면 None."""
+        try:
+            target = path.resolve()
+        except OSError:
+            target = path
+        for entry in self.library_model.entries():
+            ep = getattr(entry, "path", None)
+            if ep is None:
+                continue
+            try:
+                if Path(ep).resolve() == target:
+                    return entry
+            except OSError:
+                continue
+        return None
 
     def _open_image_path(self, p: Path) -> None:
         """이미지 또는 .kstudio 파일을 새 EditTab 으로 연다."""
@@ -1909,32 +2008,79 @@ class MainWindow(QMainWindow):
         else:
             super().dropEvent(e)
 
-    def _open_video_path(self, p: Path) -> None:
-        """영상 파일을 새 VideoTab 으로 연다."""
-        entry = self.library_model.add(
-            EntryKind.VIDEO,
-            thumbnail=QImage(),
-            source_label="opened",
-            display_name=p.name,
-            path=p,
-            duration_ms=0,
-            origin="opened",
-        )
+    def _open_video_path(self, p: Path, sidecar_dir_override: "Path | None" = None,
+                          sidecar_path: "Path | None" = None) -> None:
+        """영상 파일을 새 VideoTab 으로 연다.
+
+        sidecar_dir_override / sidecar_path 가 주어지면 EditController 에 명시 전달.
+        라이브러리에 같은 path 의 entry 가 이미 있으면 중복 추가 없이 재사용 (Phase 19.5
+        사용자 보고: 사이드카 열 때마다 같은 영상이 라이브러리에 또 추가되는 회귀).
+        """
+        existing = self._find_library_entry_for_path(p)
+        if existing is not None:
+            entry_id = existing.id
+        else:
+            entry = self.library_model.add(
+                EntryKind.VIDEO,
+                thumbnail=QImage(),
+                source_label="opened",
+                display_name=p.name,
+                path=p,
+                duration_ms=0,
+                origin="opened",
+            )
+            entry_id = entry.id
         self.tab_area.add_video(
             path=p, source_label="opened",
-            duration_ms=0, entry_id=entry.id,
+            duration_ms=0, entry_id=entry_id,
+            sidecar_dir=sidecar_dir_override,
+            sidecar_path=sidecar_path,
         )
         self.mode_controller.set_mode(AppMode.VIDEO)
         self._restore_window_for_capture()
 
+    def _resolve_sidecar_dir(self) -> "Path":
+        """사용자 설정의 사이드카 폴더를 결정. 비어있으면 default_sidecar_dir().
+
+        Phase 19.5 — 환경설정 → preferences.sidecar_dir 가 빈 문자열이면 OS 기본
+        (Windows: %APPDATA%\\KStudio\\sidecars). 비어 있지 않으면 그 경로 사용 +
+        없으면 생성 시도.
+        """
+        from ..effects import default_sidecar_dir
+        custom = (self.app_settings.preferences.sidecar_dir or "").strip()
+        if not custom:
+            return default_sidecar_dir()
+        p = Path(custom)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return default_sidecar_dir()
+        return p
+
     def _on_file_save(self) -> None:
         """현재 편집 탭을 저장.
 
-        - 저장 경로가 있으면 그 포맷으로 그대로 덮어쓰기.
-        - 없으면(첫 저장) 다이얼로그 없이 기본 폴더 + 파일명 패턴 + 기본 포맷으로
-          즉시 저장. 사용자가 매 캡처마다 파일명 다이얼로그를 거쳐야 하는 부담 제거.
-          다른 이름/위치로 저장하고 싶으면 Ctrl+Shift+S (다른 이름으로 저장) 사용.
+        - 영상 탭이면 사이드카(.kstudio) 즉시 저장 — 사용자 멘탈모델 "Ctrl+S = 작업 저장"
+          에 맞춰 mp4 export 가 아닌 사이드카 flush. mp4 출력은 Ctrl+Shift+E /
+          편집 모드의 📤 출력 버튼 / 메뉴로만 (Phase 19.5 hotfix).
+        - 이미지(스크린샷) 탭이면 기존 자동 저장 흐름.
         """
+        # 영상 탭 — 사이드카 즉시 저장. 변경 없어도 무조건 디스크 write (사용자
+        # 멘탈모델 "Ctrl+S = 저장" — autosave 디바운스 종료 후에도 동일 메시지).
+        cur = self.tab_area.current_video_tab()
+        if cur is not None:
+            try:
+                ok = cur._edit_controller.save_now()
+            except (RuntimeError, AttributeError):
+                ok = False
+            try:
+                if ok:
+                    cur.player.flash_action("💾 사이드카 저장됨")
+                else:
+                    cur.player.flash_action("⚠ 저장 실패")
+            except (RuntimeError, AttributeError):
+                pass
+            return
         tab = self._current_screenshot_tab()
         if tab is None:
             return
@@ -1980,7 +2126,13 @@ class MainWindow(QMainWindow):
         return resolve_collision(save_dir / base)
 
     def _on_file_save_as(self) -> None:
-        """현재 편집 탭을 다른 이름으로 저장. PNG 가 기본, .kstudio/JPG/WebP/BMP 도 선택 가능."""
+        """현재 편집 탭을 다른 이름으로 저장. PNG 가 기본, .kstudio/JPG/WebP/BMP 도 선택 가능.
+
+        영상 탭은 export 다이얼로그로 (편집 결과를 새 mp4 로 저장).
+        """
+        if self.tab_area.current_video_tab() is not None:
+            self._on_export_video()
+            return
         tab = self._current_screenshot_tab()
         if tab is None:
             return
@@ -2082,6 +2234,33 @@ class MainWindow(QMainWindow):
             ok = img.save(str(p), fmt.upper())
         if not ok:
             QMessageBox.warning(self, "내보내기 실패", f"{p}")
+
+    def _on_global_space(self) -> None:
+        """영상 모드 전역 Space — 라이브러리/도크에 포커스 있어도 영상 탭 재생 토글.
+
+        텍스트 입력 위젯에 포커스가 있으면 (캡션 인스펙터 등) 무시해 텍스트 입력 보호.
+        """
+        from PySide6.QtWidgets import QApplication, QLineEdit, QTextEdit, QPlainTextEdit
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtGui import QKeyEvent
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            # 입력 위젯 포커스 — Space 가 텍스트로 들어가야 함. 여기서 가로채면 안 됨.
+            # 직접 KeyEvent 를 forward.
+            ev = QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, " ")
+            QCoreApplication.sendEvent(focus, ev)
+            return
+        if self.mode_controller.mode() != AppMode.VIDEO:
+            return
+        tab = self.tab_area.current_video_tab() if hasattr(
+            self.tab_area, "current_video_tab"
+        ) else None
+        if tab is None:
+            return
+        try:
+            tab.player.toggle_play()
+        except (RuntimeError, AttributeError):
+            pass
 
     def _on_export_video(self) -> None:
         """현재 활성 영상 탭의 사이드카를 적용한 새 mp4 생성."""
@@ -2564,10 +2743,29 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(save_dir))
 
     def _toggle_edit_mode_via_menu(self) -> None:
-        """Edit → 편집 모드 토글. 현재 탭이 VideoTab 이면 편집 모드 토글."""
-        tab = self.tab_area.currentWidget()
-        if isinstance(tab, VideoTab):
-            tab.set_edit_mode(not tab.is_edit_mode_on())
+        """Edit → 편집 모드 토글 (전역).
+
+        영상 모드에서 메뉴 Ctrl+E 또는 메뉴 토글 → 모든 영상 탭에 동시 적용.
+        """
+        new_on = not self.app_settings.preferences.edit_mode_on
+        self._on_global_edit_mode_change(new_on)
+
+    def _on_global_edit_mode_change(self, on: bool) -> None:
+        """전역 편집 모드 변경 — 모든 영상 탭에 동시 적용 + AppSettings 영속.
+
+        사용자 결정 (2026-05-11): 편집 모드는 파일별 X, 전역 토글. 세션 간 유지.
+        """
+        on = bool(on)
+        # 영속.
+        self.app_settings.preferences.edit_mode_on = on
+        # 모든 영상 탭에 적용 — 시그널 재발화로 인한 루프는 set_edit_mode 가 same value
+        # no-op 처리하므로 안전.
+        for w, _, _ in self.tab_area._tabs:
+            if isinstance(w, VideoTab):
+                try:
+                    w.set_edit_mode(on)
+                except (RuntimeError, AttributeError):
+                    pass
 
     def _open_sidecar_dir(self) -> None:
         """Edit → 사이드카 폴더 열기. 사이드카 디렉토리를 탐색기로 연다."""
@@ -2648,8 +2846,28 @@ class MainWindow(QMainWindow):
         self._reregister_hotkey()
         self._persist_settings()
 
+    def _refresh_video_tabs_sidecar_dir(self) -> None:
+        """환경설정에서 사이드카 폴더가 변경된 경우 모든 영상 탭의 EditController 에 반영.
+
+        Phase 19.5 — 새 영상 탭은 _resolve_sidecar_dir 로 자동 결정되지만, 이미 열린
+        영상 탭의 EditController.SidecarStore 는 init 시 고정. 사용자가 환경설정에서
+        폴더 바꿔도 기존 탭은 이전 폴더에 계속 저장하는 회귀 → 모든 탭에 즉시 반영.
+        """
+        new_dir = self._resolve_sidecar_dir()
+        for w, _, _ in self.tab_area._tabs:
+            if isinstance(w, VideoTab):
+                try:
+                    w._edit_controller.set_sidecar_dir(new_dir)
+                except (RuntimeError, AttributeError):
+                    pass
+
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)
+        # 환경설정의 사이드카 폴더 변경 → 모든 영상 탭에 즉시 반영.
+        scp = getattr(dialog, "screenshot_panel", None)
+        if scp is not None:
+            scp.settings_changed.connect(self._refresh_video_tabs_sidecar_dir)
+            scp.settings_changed.connect(self._persist_settings)
         # 환경설정 안 단축키 패널에서 capture 중에도 글로벌 핫키 해제.
         sp = getattr(dialog, "shortcuts_panel", None)
         if sp is not None:
@@ -3328,6 +3546,13 @@ class MainWindow(QMainWindow):
         # 놓침).
         if self.controller.is_finalizing():
             self._wait_for_recording_finalize()
+        # 모든 영상 탭의 autosave 디바운스를 즉시 flush — 사용자 보고 데이터 손실 fix.
+        for w, _, _ in self.tab_area._tabs:
+            try:
+                if hasattr(w, "edit_controller"):
+                    w.edit_controller().flush_autosave()
+            except (RuntimeError, AttributeError):
+                pass
         # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출)
         g = self.geometry()
         self.app_settings.screenshot.viewer_x = g.x()

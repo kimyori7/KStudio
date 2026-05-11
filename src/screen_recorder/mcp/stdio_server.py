@@ -223,6 +223,247 @@ def get_request_status(request_id: str) -> dict:
     return _http_call("get_request_status", {"request_id": request_id})
 
 
+# ---------- 그리기 도구 ----------
+
+
+@mcp.tool()
+def draw_rect(
+    x1: float, y1: float, x2: float, y2: float,
+    color: Optional[str] = None,
+    thickness: Optional[int] = None,
+) -> dict:
+    """현재 이미지 탭에 사각형 주석 추가.
+
+    Args:
+        x1: 좌상단 x 좌표 (픽셀).
+        y1: 좌상단 y 좌표.
+        x2: 우하단 x 좌표.
+        y2: 우하단 y 좌표.
+        color: hex 색상 (#RRGGBB). 생략 시 빨강.
+        thickness: 두께 step (0~4). 생략 시 1.
+    """
+    params = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+    if color:
+        params["color"] = color
+    if thickness is not None:
+        params["thickness"] = thickness
+    return _http_call("draw_rect", params)
+
+
+@mcp.tool()
+def draw_arrow(
+    x1: float, y1: float, x2: float, y2: float,
+    color: Optional[str] = None,
+    thickness: Optional[int] = None,
+) -> dict:
+    """현재 이미지 탭에 화살표 주석 추가.
+
+    Args:
+        x1: 시작점 x 좌표.
+        y1: 시작점 y 좌표.
+        x2: 끝점 x 좌표 (화살표 머리).
+        y2: 끝점 y 좌표.
+        color: hex 색상. 생략 시 빨강.
+        thickness: 두께 step (0~4). 생략 시 1.
+    """
+    params = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+    if color:
+        params["color"] = color
+    if thickness is not None:
+        params["thickness"] = thickness
+    return _http_call("draw_arrow", params)
+
+
+@mcp.tool()
+def add_text(
+    x: float, y: float, text: str,
+    color: Optional[str] = None,
+) -> dict:
+    """현재 이미지 탭에 텍스트 주석 추가.
+
+    Args:
+        x: 텍스트 x 좌표.
+        y: 텍스트 y 좌표.
+        text: 표시할 텍스트.
+        color: hex 색상. 생략 시 빨강.
+    """
+    params = {"x": x, "y": y, "text": text}
+    if color:
+        params["color"] = color
+    return _http_call("add_text", params)
+
+
+@mcp.tool()
+def list_annotations() -> dict:
+    """현재 이미지 탭의 주석 목록 조회.
+
+    응답: annotations (list), total (int).
+    """
+    return _http_call("list_annotations", {})
+
+
+@mcp.tool()
+def delete_annotation(index: int) -> dict:
+    """주석 삭제.
+
+    Args:
+        index: 삭제할 주석 인덱스 (list_annotations 결과 기준).
+    """
+    return _http_call("delete_annotation", {"index": index})
+
+
+@mcp.tool()
+def undo() -> dict:
+    """현재 이미지 탭에서 실행 취소.
+
+    응답: success, can_undo (추가 취소 가능 여부), error.
+    """
+    return _http_call("undo", {})
+
+
+@mcp.tool()
+def redo() -> dict:
+    """현재 이미지 탭에서 다시 실행.
+
+    응답: success, can_redo (추가 다시 실행 가능 여부), error.
+    """
+    return _http_call("redo", {})
+
+
+@mcp.tool()
+def get_tool_state() -> dict:
+    """현재 선택된 도구와 설정 조회.
+
+    응답: tool_id, color (hex), thickness, brush_size, can_undo, can_redo.
+    """
+    return _http_call("get_tool_state", {})
+
+
+# ---------- 선택/자르기 도구 ----------
+
+
+@mcp.tool()
+def select_rect(x1: float, y1: float, x2: float, y2: float) -> dict:
+    """사각형 영역 선택 (marching ants).
+
+    Args:
+        x1: 좌상단 x 좌표.
+        y1: 좌상단 y 좌표.
+        x2: 우하단 x 좌표.
+        y2: 우하단 y 좌표.
+    """
+    return _http_call("select_rect", {"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+
+
+@mcp.tool()
+def clear_selection() -> dict:
+    """선택 영역 해제."""
+    return _http_call("clear_selection", {})
+
+
+@mcp.tool()
+def get_selection() -> dict:
+    """현재 선택 영역 조회.
+
+    응답: has_selection (bool), selection (x, y, width, height) or null.
+    """
+    return _http_call("get_selection", {})
+
+
+@mcp.tool()
+def crop_image(
+    x1: Optional[float] = None,
+    y1: Optional[float] = None,
+    x2: Optional[float] = None,
+    y2: Optional[float] = None,
+) -> dict:
+    """이미지 자르기. 좌표 생략 시 현재 선택 영역 사용.
+
+    Args:
+        x1: 좌상단 x (선택).
+        y1: 좌상단 y (선택).
+        x2: 우하단 x (선택).
+        y2: 우하단 y (선택).
+    """
+    params = {}
+    if x1 is not None:
+        params["x1"] = x1
+    if y1 is not None:
+        params["y1"] = y1
+    if x2 is not None:
+        params["x2"] = x2
+    if y2 is not None:
+        params["y2"] = y2
+    return _http_call("crop_image", params)
+
+
+# ---------- 브러시/마스크 도구 ----------
+
+
+@mcp.tool()
+def paint_stroke(
+    points: list,
+    color: Optional[str] = None,
+    size: Optional[int] = None,
+    mode: Optional[str] = None,
+) -> dict:
+    """이미지 레이어에 브러시 스트로크 적용.
+
+    Args:
+        points: [[x1,y1],[x2,y2],...] 형태의 좌표 배열. 최소 2개.
+        color: hex 색상. 생략 시 검정.
+        size: 브러시 크기 (1~200). 생략 시 20.
+        mode: "paint" 또는 "erase". 생략 시 paint.
+    """
+    params: dict = {"points": points}
+    if color:
+        params["color"] = color
+    if size is not None:
+        params["size"] = size
+    if mode:
+        params["mode"] = mode
+    return _http_call("paint_stroke", params)
+
+
+@mcp.tool()
+def paint_mask(
+    points: list,
+    size: Optional[int] = None,
+    mode: Optional[str] = None,
+) -> dict:
+    """이미지 레이어의 마스크에 브러시 스트로크 적용.
+
+    Args:
+        points: [[x1,y1],[x2,y2],...] 형태의 좌표 배열. 최소 2개.
+        size: 브러시 크기 (1~200). 생략 시 30.
+        mode: "add" (불투명) 또는 "erase" (투명). 생략 시 erase.
+    """
+    params: dict = {"points": points}
+    if size is not None:
+        params["size"] = size
+    if mode:
+        params["mode"] = mode
+    return _http_call("paint_mask", params)
+
+
+@mcp.tool()
+def apply_magic_wand(
+    x: float, y: float,
+    tolerance: Optional[int] = None,
+) -> dict:
+    """마술봉으로 클릭 위치의 유사 색 영역 배경 제거.
+
+    Args:
+        x: 클릭 x 좌표.
+        y: 클릭 y 좌표.
+        tolerance: 색상 허용 범위 (0~255). 생략 시 32.
+    """
+    params = {"x": x, "y": y}
+    if tolerance is not None:
+        params["tolerance"] = tolerance
+    return _http_call("apply_magic_wand", params)
+
+
 def main() -> None:
     """`python -m screen_recorder.mcp.stdio_server` 진입점."""
     mcp.run()

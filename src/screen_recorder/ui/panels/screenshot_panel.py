@@ -13,10 +13,12 @@ from PySide6.QtWidgets import (
 
 from ...core.settings import (
     GeneralSettings,
+    PreferencesSettings,
     ScreenshotSettings,
     default_image_dir,
     default_video_dir,
 )
+from ...effects import default_sidecar_dir
 
 
 _FORMAT_LABELS = [("png", "PNG")]
@@ -26,10 +28,12 @@ class ScreenshotPanel(QWidget):
     settings_changed = Signal()
 
     def __init__(self, screenshot: ScreenshotSettings,
-                 general: GeneralSettings | None = None):
+                 general: GeneralSettings | None = None,
+                 preferences: PreferencesSettings | None = None):
         super().__init__()
         self.settings = screenshot          # 이미지 (스크린샷)
         self._general = general             # 영상 — 없으면 영상 섹션 숨김
+        self._preferences = preferences     # 사이드카 폴더 (편집본 .kstudio)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -86,6 +90,20 @@ class ScreenshotPanel(QWidget):
             )
             vid_form.addRow("파일명:", self.vid_pattern_edit)
 
+            # 편집본(.kstudio 사이드카) 저장 폴더 — preferences.sidecar_dir.
+            if self._preferences is not None:
+                self.sidecar_dir_edit, sc_dir_row = self._make_dir_row(
+                    self._preferences.sidecar_dir, "_browse_sidecar_dir"
+                )
+                self.sidecar_dir_edit.setPlaceholderText(
+                    f"기본값: {default_sidecar_dir()}"
+                )
+                self.sidecar_dir_edit.setToolTip(
+                    "영상 편집본(.kstudio) 사이드카 저장 폴더. 비워두면 OS 기본 위치 사용."
+                )
+                vid_form.addRow("편집본 폴더:", sc_dir_row)
+                self.sidecar_dir_edit.editingFinished.connect(self._sync)
+
             root.addWidget(vid_box)
 
             self.vid_dir_edit.editingFinished.connect(self._sync)
@@ -136,6 +154,24 @@ class ScreenshotPanel(QWidget):
             self.vid_dir_edit.setText(path)
             self._sync()
 
+    def _browse_sidecar_dir(self) -> None:
+        """편집본(.kstudio) 저장 폴더 picker — Windows native dialog 사용.
+
+        Phase 19.5 사용자 요청: 폴더 picker 의 주소 표시줄에 경로 직접 붙여넣기 가능
+        하도록. native dialog 가 그 UX (주소창에 paste + Enter) 를 기본 제공.
+        다른 폴더(이미지/영상) picker 는 폴더 안 파일 미리보기를 위해 Qt 다이얼로그
+        유지.
+        """
+        initial = self.sidecar_dir_edit.text().strip() or str(default_sidecar_dir())
+        Path(initial).mkdir(parents=True, exist_ok=True)
+        path = QFileDialog.getExistingDirectory(
+            self, "편집본(.kstudio) 저장 폴더", initial,
+            QFileDialog.ShowDirsOnly,
+        )
+        if path:
+            self.sidecar_dir_edit.setText(path)
+            self._sync()
+
     def _pick_directory(self, caption: str, initial: str, name_filter: str) -> str:
         # Qt 자체 다이얼로그를 써서 ShowDirsOnly 를 끔 — 폴더 안의 파일도 미리보기처럼
         # 보이도록(선택은 폴더 단위). Windows 네이티브 폴더 피커는 파일을 숨겨서
@@ -165,5 +201,8 @@ class ScreenshotPanel(QWidget):
         if self._general is not None:
             self._general.output_dir = self.vid_dir_edit.text()
             self._general.filename_pattern = self.vid_pattern_edit.text()
+
+        if self._preferences is not None and hasattr(self, "sidecar_dir_edit"):
+            self._preferences.sidecar_dir = self.sidecar_dir_edit.text()
 
         self.settings_changed.emit()

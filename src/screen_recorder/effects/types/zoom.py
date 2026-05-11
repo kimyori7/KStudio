@@ -33,6 +33,10 @@ class ZoomEffect(Effect):
     ease: str = "in-out"
     in_anim_ms: int = 300
     out_anim_ms: int = 300
+    # 인스펙터의 "미리보기" 체크박스 — True 이면 이 zoom 구간 재생 시 화면이 실제로
+    # 줌인 (export 결과와 동일한 효과). False 이면 화면은 그대로, 미리보기 가이드 박스만
+    # PreviewOverlay 가 그림. 사이드카에 저장되며 새로 만든 ZoomEffect 의 기본값은 False.
+    preview: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()

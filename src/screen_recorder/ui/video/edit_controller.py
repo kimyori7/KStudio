@@ -1,6 +1,7 @@
 """영상 탭의 편집 상태 보유자 — Sidecar + History + autosave + 편집 모드."""
 from __future__ import annotations
 import copy
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +12,7 @@ from ...effects import (
 )
 
 
+_log = logging.getLogger(__name__)
 _AUTOSAVE_DEBOUNCE_MS = 500
 
 
@@ -29,19 +31,55 @@ class EditController(QObject):
     edit_mode_toggled = Signal(bool)         # ON/OFF
     autosave_failed = Signal(str)            # 에러 메시지
 
-    def __init__(self, video_path: Path, sidecar_dir: Path) -> None:
+    def __init__(self, video_path: Path, sidecar_dir: Path,
+                 sidecar_path: Optional[Path] = None) -> None:
+        """sidecar_path 가 명시되면 그 파일 직접 load (hash 매칭 우회) — 사용자가
+        편집본 파일을 파일 열기로 직접 열었을 때. None 이면 hash 매칭으로 자동 검색.
+        """
         super().__init__()
+        from ...effects.sidecar import load as _load_sidecar
         self._video_path = Path(video_path)
         self._store = SidecarStore(sidecar_dir)
         self._edit_mode_on = False
 
-        loaded = self._store.load_for(self._video_path)
-        if loaded is None:
-            loaded = Sidecar(
-                source_path=str(self._video_path),
-                source_hash=compute_video_hash(self._video_path),
-                trim=Trim(in_ms=0, out_ms=0),
+        # 진단 로그 — 사이드카 자동 로드 흐름 가시화 (Phase 19.5).
+        try:
+            h = compute_video_hash(self._video_path)
+            _log.info(
+                "sidecar load video=%s hash=%s dir=%s explicit=%s",
+                self._video_path.name, h[:12] + "...", sidecar_dir,
+                sidecar_path.name if sidecar_path else "(none)",
             )
+        except OSError:
+            h = ""
+        loaded: Optional[Sidecar] = None
+        # 1) 명시 사이드카 path 가 있으면 hash 매칭 우회.
+        if sidecar_path is not None:
+            try:
+                loaded = _load_sidecar(Path(sidecar_path))
+                _log.info("sidecar load explicit HIT — file=%s effects=%d segments=%d",
+                          sidecar_path.name, len(loaded.effects), len(loaded.video_track))
+            except Exception as e:
+                _log.warning("sidecar load explicit FAIL — file=%s err=%s",
+                             sidecar_path, e)
+        # 2) 명시 없거나 실패 시 hash 매칭.
+        if loaded is None:
+            loaded = self._store.load_for(self._video_path)
+            if loaded is None:
+                _log.info(
+                    "sidecar load_for: MISS (새 사이드카로 시작) — dir 안 후보들=%s",
+                    [p.name for p in self._store._candidates_for_hash(h)] if h else "(hash 계산 실패)",
+                )
+                loaded = Sidecar(
+                    source_path=str(self._video_path),
+                    source_hash=h or compute_video_hash(self._video_path),
+                    trim=Trim(in_ms=0, out_ms=0),
+                )
+            else:
+                _log.info(
+                    "sidecar load_for: HIT — effects=%d, segments=%d",
+                    len(loaded.effects), len(loaded.video_track),
+                )
         self._sidecar: Sidecar = loaded
         self._history = History(initial=loaded)
 
@@ -142,7 +180,8 @@ class EditController(QObject):
     def split_segment(self, segment_id: str, at_local_ms: int) -> bool:
         """segment 를 at_local_ms (segment-local) 에서 둘로 쪼갠다.
 
-        쪼개진 두 segment 모두 최소 100ms 폭 보장. 거부 시 False.
+        쪼개진 두 segment 모두 최소 100ms 폭 보장. 자르기는 갭 없이 인접 — 둘째의
+        start_ms = 첫째의 end_ms.
         """
         from dataclasses import replace
         from ...effects.segment import VideoSegment
@@ -156,12 +195,13 @@ class EditController(QObject):
             return False
         if at_local_ms < self._MIN_SPLIT_MS or (dur - at_local_ms) < self._MIN_SPLIT_MS:
             return False
-        # 첫째: 원본 in ~ in+at, 둘째: in+at ~ 원본 out (or duration).
         split_at_src = seg.src_in_ms + at_local_ms
         first_out = split_at_src
         second_in = split_at_src
         second_out = seg.src_out_ms if seg.src_out_ms > 0 else seg.src_duration_ms
-        first = replace(seg, src_out_ms=first_out)
+        first = replace(seg, src_out_ms=first_out, effects=list(seg.effects))
+        # 둘째의 트랙 시작 = 첫째의 끝 (자르기는 갭 없이 인접).
+        second_start = seg.start_ms + at_local_ms
         second = VideoSegment(
             src=seg.src,
             src_in_ms=second_in,
@@ -170,9 +210,8 @@ class EditController(QObject):
             media_kind=seg.media_kind,
             image_duration_ms=seg.image_duration_ms,
             effects=[],   # 쪼갤 때 효과는 첫째에만 보존 (간단화 — Stage C 에서 정교화).
+            start_ms=second_start,
         )
-        # 첫째에는 원본 effects 유지.
-        first = replace(first, effects=list(seg.effects))
         new_sc = copy.deepcopy(self._sidecar)
         new_sc.video_track[idx] = first
         new_sc.video_track.insert(idx + 1, second)
@@ -180,26 +219,58 @@ class EditController(QObject):
         return True
 
     def insert_segment(self, at_idx: int, segment) -> bool:
-        """segment 를 at_idx 위치에 삽입. idx 는 [0, len(track)] 으로 clamp."""
-        track_len = len(self._sidecar.video_track)
-        idx = max(0, min(track_len, int(at_idx)))
+        """segment 를 at_idx 위치(track list 의 인덱스) 에 삽입.
+
+        Gap 모델 변경: 트랙은 list 순서가 아니라 start_ms 가 위치를 결정한다.
+        삽입 시 segment.start_ms 가 0 이면 "마지막 segment 끝에 이어 붙임" — 이전
+        UI 의 packed 동작과 호환. 명시 start_ms 가 있으면 그 값 그대로 사용.
+
+        다른 segment 와 겹치면 자유 위치를 찾을 수 없으므로 가장 가까운 빈 slot 으로
+        clamp.
+        """
+        from dataclasses import replace
         new_sc = copy.deepcopy(self._sidecar)
-        new_sc.video_track.insert(idx, segment)
+        track = new_sc.video_track
+        # start_ms 결정.
+        if segment.start_ms <= 0:
+            target_start = self._track_end_ms(track)
+        else:
+            target_start = self._clamp_to_free_slot(
+                track, segment.start_ms, segment.duration_ms,
+                ignore_id=segment.id,
+            )
+        seg_to_insert = replace(segment, start_ms=int(target_start))
+        idx = max(0, min(len(track), int(at_idx)))
+        track.insert(idx, seg_to_insert)
         self.update_sidecar(new_sc)
         return True
 
     def delete_segment(self, segment_id: str) -> bool:
-        """id 로 segment 제거. 못 찾으면 False."""
+        """id 로 segment 제거. 다른 segment 의 start_ms 는 변하지 않음 — 갭 그대로 유지.
+
+        삭제된 segment 의 시간 범위에 완전히 포함된 effects 도 같이 제거 (고아 효과 방지).
+        """
         track = self._sidecar.video_track
-        if not any(s.id == segment_id for s in track):
+        target_seg = next((s for s in track if s.id == segment_id), None)
+        if target_seg is None:
             return False
+        old_start = target_seg.start_ms
+        old_end = target_seg.start_ms + target_seg.duration_ms
         new_sc = copy.deepcopy(self._sidecar)
         new_sc.video_track = [s for s in new_sc.video_track if s.id != segment_id]
+        new_sc.effects = [
+            e for e in new_sc.effects
+            if not (old_start <= e.in_ms and e.out_ms <= old_end)
+        ]
         self.update_sidecar(new_sc)
         return True
 
     def move_segment(self, from_idx: int, to_idx: int) -> bool:
-        """from_idx 의 segment 를 to_idx 위치로 이동. 인덱스 범위 외면 False."""
+        """레거시 API — 사용처 없음 (Stage 1 갭 모델로 대체).
+
+        호출되면 list 순서만 바꾼다 (start_ms 는 그대로). 시각 효과는 없지만 시그널
+        호환 위해 남겨둔다.
+        """
         track = self._sidecar.video_track
         n = len(track)
         if not (0 <= from_idx < n) or not (0 <= to_idx < n):
@@ -209,6 +280,42 @@ class EditController(QObject):
         new_sc = copy.deepcopy(self._sidecar)
         seg = new_sc.video_track.pop(from_idx)
         new_sc.video_track.insert(to_idx, seg)
+        self.update_sidecar(new_sc)
+        return True
+
+    def set_segment_start(self, segment_id: str, new_start_ms: int) -> bool:
+        """segment 를 트랙상 새 위치로 이동. 다른 segment 와 겹치면 가장 가까운 빈 slot 으로 clamp.
+
+        Stage 1 의 핵심 — 박스 드래그 후 호출. 갭은 자동 생성/유지.
+        같이 이동: segment 의 시간 범위에 완전히 포함되는 effects (caption/speed/zoom/broll)
+        도 같은 delta 만큼 in_ms/out_ms shift — "자른 후 옮겨도 효과 따라감" (사용자 결정).
+        """
+        from dataclasses import replace
+        track = self._sidecar.video_track
+        idx = next((i for i, s in enumerate(track) if s.id == segment_id), -1)
+        if idx < 0:
+            return False
+        seg = track[idx]
+        target = max(0, int(new_start_ms))
+        clamped = self._clamp_to_free_slot(
+            track, target, seg.duration_ms, ignore_id=segment_id,
+        )
+        if clamped == seg.start_ms:
+            return False
+        delta = clamped - seg.start_ms
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.video_track[idx] = replace(seg, start_ms=int(clamped))
+        # 효과 동반 이동 — segment 의 옛 시간 범위 안에 완전히 포함된 effect 만 shift.
+        # (걸쳐 있는 효과는 의도가 모호 → 그대로 둠)
+        old_start = seg.start_ms
+        old_end = seg.start_ms + seg.duration_ms
+        for i, eff in enumerate(new_sc.effects):
+            if old_start <= eff.in_ms and eff.out_ms <= old_end:
+                new_sc.effects[i] = replace(
+                    eff,
+                    in_ms=int(eff.in_ms + delta),
+                    out_ms=int(eff.out_ms + delta),
+                )
         self.update_sidecar(new_sc)
         return True
 
@@ -222,6 +329,49 @@ class EditController(QObject):
         new_sc.video_track[idx] = segment
         self.update_sidecar(new_sc)
         return True
+
+    # ---------- gap helpers ----------
+    @staticmethod
+    def _track_end_ms(track: list) -> int:
+        """트랙의 마지막 점 — 모든 segment 의 end_ms 의 최대값. 빈 트랙이면 0."""
+        return max((s.end_ms for s in track), default=0)
+
+    @staticmethod
+    def _clamp_to_free_slot(
+        track: list, target_start: int, dur: int, *, ignore_id: str
+    ) -> int:
+        """target_start ~ target_start+dur 가 다른 segment 와 겹치면 가장 가까운 빈
+        구간으로 밀어준다. 충돌 segment 의 좌측·우측 끝 중 가까운 쪽을 시도하고,
+        그래도 안 들어가면 트랙 끝에 붙인다.
+        """
+        target = max(0, int(target_start))
+        others = [s for s in track if s.id != ignore_id]
+        if not others:
+            return target
+        # 충돌하지 않으면 그대로.
+        def overlaps_any(start: int) -> "VideoSegment | None":
+            end = start + dur
+            for s in others:
+                if start < s.end_ms and end > s.start_ms:
+                    return s
+            return None
+        hit = overlaps_any(target)
+        if hit is None:
+            return target
+        # target 위치에 충돌 — 그 segment 의 좌측 끝 (target_start = hit.start_ms - dur)
+        # 또는 우측 끝 (target_start = hit.end_ms) 중 target 에 가까운 쪽으로 밀어 넣고
+        # 거기도 충돌하면 그 다음 빈 slot 으로 재귀.
+        candidates = sorted(
+            [max(0, hit.start_ms - dur), hit.end_ms],
+            key=lambda x: abs(x - target),
+        )
+        for cand in candidates:
+            if cand < 0:
+                continue
+            if overlaps_any(cand) is None:
+                return cand
+        # 어디도 못 들어가면 트랙 끝.
+        return EditController._track_end_ms(track)
 
     def undo(self) -> bool:
         if not self._history.can_undo():
@@ -238,6 +388,45 @@ class EditController(QObject):
         self.sidecar_replaced.emit(self._sidecar)
         self._autosave_timer.start()
         return True
+
+    def flush_autosave(self) -> bool:
+        """디바운스 타이머가 pending 이면 즉시 저장 (탭 닫힘 / 앱 종료 시 호출).
+
+        타이머가 활성 상태(=변경 후 500ms 안에 호출됨)이면 stop 하고 즉시 디스크 flush.
+        그렇지 않으면 no-op (이미 저장된 상태).
+
+        반환: 실제 디스크 저장이 일어났으면 True, 변경 없어 no-op 면 False.
+        """
+        if self._autosave_timer.isActive():
+            self._autosave_timer.stop()
+            self._do_autosave()
+            return True
+        return False
+
+    def set_sidecar_dir(self, new_dir: Path) -> None:
+        """사이드카 폴더 변경 — 다음 save_for / load_for 부터 새 경로 사용.
+
+        Phase 19.5: 환경설정에서 사이드카 폴더 변경 시 기존 영상 탭들에도 즉시 반영.
+        이전 폴더의 .kstudio 는 그대로 두고, 다음 save 부터 새 폴더에 저장.
+        """
+        self._store = SidecarStore(Path(new_dir))
+
+    def save_now(self) -> bool:
+        """사용자 Ctrl+S — 항상 즉시 디스크 저장. 변경 없어도 사이드카 다시 씀.
+
+        Phase 19.5 사용자 보고: autosave 디바운스(500ms)가 끝나면 flush_autosave 가
+        no-op 으로 떨어져 "이미 최신 상태" 만 뜨는 회귀. 사용자 멘탈모델은
+        "Ctrl+S = 무조건 저장" — 변경 없는 경우에도 디스크 write 한 번 더 해도
+        idempotent + 부담 없음. 반환: 저장 성공이면 True, OSError 면 False.
+        """
+        if self._autosave_timer.isActive():
+            self._autosave_timer.stop()
+        try:
+            self._store.save_for(self._video_path, self._sidecar)
+            return True
+        except OSError as e:
+            self.autosave_failed.emit(str(e))
+            return False
 
     # ---------- internal ----------
     def _do_autosave(self) -> None:

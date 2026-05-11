@@ -34,6 +34,8 @@ class InspectorPanel(QWidget):
         self._stack.addWidget(self._empty)
         self._stack.setCurrentWidget(self._empty)
         self._current_inspector: QWidget = self._empty
+        # 현재 인스펙터에 표시 중인 효과의 id — sidecar 변경 시 동기화 위함.
+        self._current_effect_id: Optional[str] = None
 
     # ---------- public ----------
     def register_inspector(self, effect_type: str, cls: type) -> None:
@@ -43,15 +45,18 @@ class InspectorPanel(QWidget):
     def set_effect(self, effect: Optional[Effect]) -> None:
         """선택된 효과를 표시. None 이면 EmptyInspector."""
         if effect is None:
+            self._current_effect_id = None
             self._show_empty()
             return
         cls = self._inspector_classes.get(effect.type)
         if cls is None:
+            self._current_effect_id = None
             self._show_empty()
             return
         # 새 인스펙터 인스턴스 — 매번 새로 만들어 상태 누수 방지
         inspector = cls()
         if not isinstance(inspector, InspectorBase):
+            self._current_effect_id = None
             self._show_empty()
             return
         inspector.set_effect(effect)
@@ -60,7 +65,28 @@ class InspectorPanel(QWidget):
         # hasattr 로 안전하게 연결.
         if hasattr(inspector, "effect_deleted"):
             inspector.effect_deleted.connect(self.effect_deleted.emit)
+        self._current_effect_id = effect.id
         self._swap_current(inspector)
+
+    def refresh_from_sidecar(self, sidecar) -> None:
+        """sidecar 변경 후 호출 — 현재 인스펙터에 표시 중인 효과의 최신값으로 spin 동기화.
+
+        드래그/리사이즈로 외부에서 effect 가 바뀌어도 인스펙터의 spin 값이 stale 하지 않게.
+        같은 인스펙터 인스턴스에 set_effect 만 다시 호출 — _emitting_guard 가 재귀 발화 막음.
+        """
+        if self._current_effect_id is None or self._current_inspector is self._empty:
+            return
+        eff = next(
+            (e for e in sidecar.effects if e.id == self._current_effect_id),
+            None,
+        )
+        if eff is None:
+            # 외부에서 삭제됨 → empty 로.
+            self._current_effect_id = None
+            self._show_empty()
+            return
+        if hasattr(self._current_inspector, "set_effect"):
+            self._current_inspector.set_effect(eff)
 
     def current_inspector(self) -> QWidget:
         return self._current_inspector

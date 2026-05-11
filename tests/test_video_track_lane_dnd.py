@@ -10,9 +10,10 @@ from screen_recorder.effects.segment import VideoSegment
 from screen_recorder.ui.video.video_track_lane import VideoTrackLane
 
 
-def _seg(src: str, dur: int, sid: str) -> VideoSegment:
+def _seg(src: str, dur: int, sid: str, start: int = 0) -> VideoSegment:
     return VideoSegment(
         id=sid, src=src, src_in_ms=0, src_out_ms=dur, src_duration_ms=dur,
+        start_ms=start,
     )
 
 
@@ -46,25 +47,29 @@ def test_drop_event_emits_request_insert_files_at_end(qtbot, tmp_path):
 
     with qtbot.waitSignal(lane.request_insert_files, timeout=500) as blocker:
         lane.dropEvent(_drop_event(end_x, cy, urls))
-    paths, idx = blocker.args
+    paths, at_ms = blocker.args
     import os
     assert [os.path.normpath(p) for p in paths] == [os.path.normpath(str(f))]
-    assert idx == 1   # 끝에
+    # 끝(end_x = box.right + 50) 위치는 segment 끝(4000ms) 보다 큼.
+    assert at_ms > 4000
 
 
-def test_drop_event_emits_between_segments(qtbot, tmp_path):
-    """두 segment 사이에 drop → 가운데 idx (=1) 로 emit."""
+def test_drop_event_emits_between_segments_with_gap(qtbot, tmp_path):
+    """두 segment 사이 갭에 drop → 결합 ms 가 갭 안 위치로 emit."""
     lane = VideoTrackLane()
     qtbot.addWidget(lane)
     lane.resize(400, 60)
-    lane.set_segments([_seg("a.mp4", 4000, "a"), _seg("b.mp4", 4000, "b")])
+    # 4000~5000 갭 만들기.
+    lane.set_segments([
+        _seg("a.mp4", 4000, "a", start=0),
+        _seg("b.mp4", 4000, "b", start=5000),
+    ])
     lane.show()
     qtbot.waitExposed(lane)
 
     boxes = lane._segment_rects()
-    # box[0] 의 right + 1 ~ box[1].left 사이의 점은 보통 _BOX_GAP=2 짧지만
-    # _x_to_insert_index 가 box[1].left 직전이면 1 반환.
-    pt_x = boxes[1]["rect"].left() - 1   # box[1] 직전.
+    # 갭 가운데로 drop.
+    pt_x = (boxes[0]["rect"].right() + boxes[1]["rect"].left()) // 2
     pt_y = boxes[0]["rect"].center().y()
 
     f = tmp_path / "x.mp4"
@@ -73,8 +78,9 @@ def test_drop_event_emits_between_segments(qtbot, tmp_path):
 
     with qtbot.waitSignal(lane.request_insert_files, timeout=500) as blocker:
         lane.dropEvent(_drop_event(pt_x, pt_y, urls))
-    paths, idx = blocker.args
-    assert idx == 1
+    paths, at_ms = blocker.args
+    # 갭 안 (4000~5000) 어딘가.
+    assert 3500 < at_ms < 5500
 
 
 def test_drop_event_with_multiple_urls(qtbot, tmp_path):
