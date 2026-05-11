@@ -161,27 +161,63 @@ def test_position_inside_window_seeks_relative(qapp, tmp_path):
     p.deleteLater()
 
 
-def test_drift_within_threshold_no_reseek(qapp, tmp_path):
-    """combined 의 jump 가 300ms 미만이면 자연 재생 — 재시크 안 함."""
+def test_drift_within_threshold_no_reseek(qapp, tmp_path, monkeypatch):
+    """PIP position 이 expected (combined - in_ms) 근처면 재시크 안 함.
+
+    expected=1100ms, fake position=1080ms → drift 20ms < 300ms → 진입 시점의
+    seek (1000) 가 마지막 그대로.
+    """
     p = BrollPipPlayer()
     dummy = tmp_path / "b.mp4"
     dummy.write_bytes(b"")
     p.set_sidecar(_sidecar_with_broll(2000, 4000, str(dummy)))
     p.on_combined_position_changed(3000)   # 진입, seek_to(1000)
-    p.on_combined_position_changed(3100)   # 100ms 진행 — 자연 재생
+    monkeypatch.setattr(p._player, "position", lambda: 1080)
+    p.on_combined_position_changed(3100)
     assert p.last_seek_ms() == 1000
     p.deleteLater()
 
 
-def test_drift_over_threshold_reseeks(qapp, tmp_path):
-    """combined 의 jump 가 300ms 초과면 재시크 (사용자 슬라이더 jump 등)."""
+def test_drift_over_threshold_reseeks_on_user_jump(qapp, tmp_path, monkeypatch):
+    """사용자 슬라이더 jump — combined 가 갑자기 크게 변하면 PIP position 과
+    expected 차이가 커져 재시크.
+    """
     p = BrollPipPlayer()
     dummy = tmp_path / "b.mp4"
     dummy.write_bytes(b"")
     p.set_sidecar(_sidecar_with_broll(2000, 4000, str(dummy)))
     p.on_combined_position_changed(3000)   # 진입, seek_to(1000)
-    p.on_combined_position_changed(3500)   # 500ms 점프 — 재시크 필요
+    monkeypatch.setattr(p._player, "position", lambda: 1000)
+    p.on_combined_position_changed(3500)   # expected 1500 vs actual 1000 → drift 500
     assert p.last_seek_ms() == 1500
+    p.deleteLater()
+
+
+def test_drift_over_threshold_reseeks_on_decoder_lag(qapp, tmp_path, monkeypatch):
+    """자연 재생 중 PIP 디코더가 뒤처져 누적 drift — 재시크로 재동기.
+
+    spec 의 핵심 시나리오: 30초 broll 동안 PIP 가 500ms 뒤처지면 보정 필요.
+    """
+    p = BrollPipPlayer()
+    dummy = tmp_path / "b.mp4"
+    dummy.write_bytes(b"")
+    p.set_sidecar(_sidecar_with_broll(2000, 32_000, str(dummy)))
+    p.on_combined_position_changed(3000)   # 진입, seek_to(1000)
+    # 30초 후 자연 재생 진행. combined 도 30초 흘렀지만 PIP position 은 lag.
+    monkeypatch.setattr(p._player, "position", lambda: 28_500)   # 500ms 뒤처짐
+    p.on_combined_position_changed(31_000)   # expected 29_000 vs actual 28_500
+    assert p.last_seek_ms() == 29_000
+    p.deleteLater()
+
+
+def test_image_src_broll_not_activated(qapp, tmp_path):
+    """src 가 이미지 (.png/.jpg) 면 BrollPipPlayer 가 활성화 안 함 — thumbnail fallback."""
+    p = BrollPipPlayer()
+    img = tmp_path / "still.png"
+    img.write_bytes(b"")
+    p.set_sidecar(_sidecar_with_broll(2000, 4000, str(img)))
+    p.on_combined_position_changed(3000)
+    assert p.active_effect_id() is None
     p.deleteLater()
 
 

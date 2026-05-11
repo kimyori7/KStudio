@@ -16,8 +16,14 @@ from ...effects.types.broll import BrollEffect
 
 
 _DRIFT_THRESHOLD_MS = 300
-"""연속된 on_combined_position_changed 사이의 jump 임계값 — 이보다 작으면
-자연 재생, 크면 사용자 시크 등으로 간주해 broll player 도 재시크."""
+"""PIP player 의 실제 position 과 main 의 expected position(broll 시간창 안
+상대 ms) 차이 임계값. 사용자 시크는 물론, 자연 재생 중 디코더 lag 등으로
+누적되는 drift 도 잡아 setPosition 재동기."""
+
+# v1 broll 미리보기 대상 확장자. 이외 (.jpg, .png, .gif 등) 는 정지 이미지
+# fallback (PreviewOverlay 의 thumbnail) 만 — QMediaPlayer 의 이미지 직접
+# 재생 path 는 v2 보류.
+_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv"}
 
 
 class BrollPipPlayer(QObject):
@@ -132,7 +138,6 @@ class BrollPipPlayer(QObject):
         if self._sidecar is None:
             return
         ms = int(combined_ms)
-        prev_combined = self._last_combined_ms
         self._last_combined_ms = ms
         active = self._find_active_broll(ms)
         if active is None:
@@ -146,10 +151,14 @@ class BrollPipPlayer(QObject):
             if self._intended_playing:
                 self._player.play()
             return
-        # 같은 broll — combined 가 자연 재생 폭(±_DRIFT_THRESHOLD_MS)을 넘어
-        # jump 한 경우만 재시크. unit-test 가능 + 실제 사용자 슬라이더 jump 검출.
-        if prev_combined >= 0 and abs(ms - prev_combined) > _DRIFT_THRESHOLD_MS:
-            self.seek_to(ms - active.in_ms)
+        # 같은 broll. PIP 의 실제 position 과 expected (combined - in_ms) 의 차이가
+        # 임계값을 넘으면 재시크. 사용자 슬라이더 jump 와 자연 재생 중 디코더 lag
+        # (긴 broll 에서 누적되는 drift) 둘 다 잡힘. _player.position() 은 비동기
+        # 디코딩 안 되면 0 — unit test 는 monkeypatch 로 inject.
+        expected = ms - active.in_ms
+        actual = self._player.position()
+        if abs(expected - actual) > _DRIFT_THRESHOLD_MS:
+            self.seek_to(expected)
 
     def _find_active_broll(self, combined_ms: int) -> Optional[BrollEffect]:
         if self._sidecar is None:
@@ -162,6 +171,12 @@ class BrollPipPlayer(QObject):
             if not (eff.in_ms <= combined_ms < eff.out_ms):
                 continue
             if not eff.src:
+                continue
+            # v1: 영상 확장자만 PIP player 가 처리. 이미지는 PreviewOverlay 의
+            # thumbnail 로 fallback (BrollPipPlayer 가 활성화 안 되면 frame_ready
+            # 도 안 옴 → live frame cache 비어 thumbnail 그려짐).
+            from pathlib import Path
+            if Path(eff.src).suffix.lower() not in _VIDEO_SUFFIXES:
                 continue
             return eff
         return None
