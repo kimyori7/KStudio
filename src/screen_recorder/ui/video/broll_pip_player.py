@@ -30,6 +30,9 @@ class BrollPipPlayer(QObject):
         # 오디오 출력 미설정 = 무음 (preview 무음 정책).
         self._active_eff_id: Optional[str] = None
         self._loaded_src: Optional[str] = None
+        self._intended_playing: bool = False   # main 의 play 상태 의도
+        self._current_speed: float = 1.0
+        self._last_seek_ms: int = -1
 
     # ---------- 상태 조회 ----------
     def active_effect_id(self) -> Optional[str]:
@@ -55,6 +58,38 @@ class BrollPipPlayer(QObject):
         self._active_eff_id = None
         self._player.pause()
         self._player.setPosition(0)
+
+    # ---------- main 미러 ----------
+    def set_playing(self, on: bool) -> None:
+        """main player 의 playing 상태 mirror. 활성 broll 없으면 pause 유지."""
+        self._intended_playing = bool(on)
+        if self._active_eff_id is None:
+            self._player.pause()
+            return
+        if on:
+            self._player.play()
+        else:
+            self._player.pause()
+
+    def is_playing(self) -> bool:
+        return self._intended_playing
+
+    def set_speed(self, rate: float) -> None:
+        """main 의 speed_changed mirror."""
+        self._current_speed = max(0.1, float(rate))
+        self._player.setPlaybackRate(self._current_speed)
+
+    def current_speed(self) -> float:
+        return self._current_speed
+
+    def seek_to(self, broll_local_ms: int) -> None:
+        """broll 영상 안 절대 위치(ms) 로 시크. broll.in_ms 변환은 호출자 책임."""
+        ms = max(0, int(broll_local_ms))
+        self._last_seek_ms = ms
+        self._player.setPosition(ms)
+
+    def last_seek_ms(self) -> int:
+        return self._last_seek_ms
 
     # ---------- 내부 ----------
     def _on_frame(self, frame) -> None:

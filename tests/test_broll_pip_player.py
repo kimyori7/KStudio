@@ -48,3 +48,37 @@ def test_activate_same_src_no_reload(qapp, tmp_path):
     assert p.loaded_src() == src1
     assert p.active_effect_id() == "eff-2"
     p.deleteLater()
+
+
+def test_set_playing_mirrors_intent(qapp, tmp_path):
+    """set_playing(True/False) 가 wrapper 의 is_playing() 의도와 매칭."""
+    p = BrollPipPlayer()
+    dummy = tmp_path / "a.mp4"
+    dummy.write_bytes(b"")
+    p.activate(str(dummy), "eff-1")
+    p.set_playing(True)
+    assert p.is_playing() is True
+    p.set_playing(False)
+    assert p.is_playing() is False
+    p.deleteLater()
+
+
+def test_set_speed_records_rate(qapp, tmp_path):
+    p = BrollPipPlayer()
+    dummy = tmp_path / "a.mp4"
+    dummy.write_bytes(b"")
+    p.activate(str(dummy), "eff-1")
+    p.set_speed(2.0)
+    assert abs(p.current_speed() - 2.0) < 1e-3
+    p.deleteLater()
+
+
+def test_seek_to_records_last_ms(qapp, tmp_path):
+    """seek_to(broll_local_ms) 가 player.setPosition 호출 + 기록."""
+    p = BrollPipPlayer()
+    dummy = tmp_path / "a.mp4"
+    dummy.write_bytes(b"")
+    p.activate(str(dummy), "eff-1")
+    p.seek_to(500)
+    assert p.last_seek_ms() == 500
+    p.deleteLater()
