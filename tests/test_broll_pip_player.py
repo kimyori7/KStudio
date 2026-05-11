@@ -2,14 +2,42 @@
 
 BrollPipPlayer 는 QObject (QWidget 아님) — qtbot.addWidget 불가.
 qapp fixture 로 QApplication 만 보장하고 인스턴스는 로컬 scope 로 cleanup.
+
+ffmpeg 가 PATH 에 있을 때만 실제 mp4 fixture 로 frame_ready 통합 검증.
 """
 from __future__ import annotations
+
+import shutil
+import subprocess
 
 import pytest
 
 from screen_recorder.effects import Sidecar, Trim
 from screen_recorder.effects.types.broll import BrollEffect, PipConfig
 from screen_recorder.ui.video.broll_pip_player import BrollPipPlayer
+
+
+@pytest.fixture
+def ffmpeg_or_skip():
+    """ffmpeg 가 PATH 에 없으면 skip — 통합 테스트만 영향."""
+    p = shutil.which("ffmpeg")
+    if p is None:
+        pytest.skip("ffmpeg not on PATH")
+    return p
+
+
+@pytest.fixture
+def black_mp4(tmp_path, ffmpeg_or_skip):
+    """1 초 검은 화면 fixture (160x120, libx264, faststart)."""
+    out = tmp_path / "black.mp4"
+    subprocess.run(
+        [ffmpeg_or_skip, "-y", "-loglevel", "error",
+         "-f", "lavfi", "-i", "color=c=black:s=160x120:d=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", "-t", "1", str(out)],
+        check=True,
+    )
+    return out
 
 
 def _sidecar_with_broll(in_ms: int, out_ms: int, src: str) -> Sidecar:
@@ -154,6 +182,24 @@ def test_drift_over_threshold_reseeks(qapp, tmp_path):
     p.on_combined_position_changed(3000)   # 진입, seek_to(1000)
     p.on_combined_position_changed(3500)   # 500ms 점프 — 재시크 필요
     assert p.last_seek_ms() == 1500
+    p.deleteLater()
+
+
+def test_frame_ready_emits_after_activate_and_play(qtbot, black_mp4):
+    """실제 mp4 로 activate + play → frame_ready 가 도착해야 한다.
+
+    ffmpeg fixture 가 있을 때만 동작 (없으면 skip). 통합 회귀 게이트.
+    """
+    p = BrollPipPlayer()
+    received: list = []
+    p.frame_ready.connect(lambda eff_id, img: received.append((eff_id, img)))
+    p.activate(str(black_mp4), "eff-1")
+    p.set_playing(True)
+    qtbot.waitUntil(lambda: len(received) > 0, timeout=5000)
+    eff_id, img = received[0]
+    assert eff_id == "eff-1"
+    assert not img.isNull()
+    p.deactivate()
     p.deleteLater()
 
 
