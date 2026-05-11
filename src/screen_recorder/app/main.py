@@ -66,9 +66,13 @@ def main() -> int:
     from screen_recorder.ui.app_icon import app_icon
     from screen_recorder.ui.theme import apply_theme
     app.setWindowIcon(app_icon())
-    # 초기 테마는 이미지 모드 — ModeController 의 기본값이 IMAGE 라
-    # MainWindow 가 _on_mode_changed 를 발화시키기 전에도 동일 팔레트로 보이게.
-    apply_theme(app, "image")
+    # 마지막 사용 모드를 settings 에서 읽어 초기 테마 적용 — 재시작 시 깜빡임 방지.
+    # 잘못된 값(파일 손상/구버전)은 "image" 로 폴백.
+    settings = load(SETTINGS_PATH)
+    initial_palette = settings.preferences.last_mode
+    if initial_palette not in ("video", "image"):
+        initial_palette = "image"
+    apply_theme(app, initial_palette)
 
     # Windows 작업표시줄에서 어플 아이콘이 별도로 잡히도록 AppUserModelID 설정
     if sys.platform == "win32":
@@ -89,8 +93,6 @@ def main() -> int:
             "본 앱과 같은 폴더의 bin/ 아래 두세요."
         )
         return 1
-
-    settings = load(SETTINGS_PATH)
 
     # i18n — settings.preferences.language 에 따라 한국어/영어 결정.
     # i18n_en import 시점에 영문 번역 사전이 자동 등록 (모듈 부팅 사이드이펙트).

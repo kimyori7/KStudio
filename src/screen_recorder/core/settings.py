@@ -114,6 +114,8 @@ class PreferencesSettings:
     sidecar_dir: str = ""
     # 파일 → 열기 다이얼로그의 마지막 사용 폴더. 빈 문자열 = 사용자 홈.
     last_open_dir: str = ""
+    # 앱 재시작 시 복원할 마지막 모드. "video" | "image" — 잘못된 값이면 "image" 폴백.
+    last_mode: str = "image"
 
 
 @dataclass

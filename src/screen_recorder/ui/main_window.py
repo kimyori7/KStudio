@@ -156,7 +156,12 @@ class MainWindow(QMainWindow):
 
         # ---------- 모델 / 컨트롤러 멤버 ----------
         self.library_model = LibraryModel()
-        self.mode_controller = ModeController()
+        # settings 에 저장된 마지막 모드로 시작 — 잘못된 값이면 IMAGE 폴백.
+        try:
+            saved_mode = AppMode(self.app_settings.preferences.last_mode)
+        except ValueError:
+            saved_mode = AppMode.IMAGE
+        self.mode_controller = ModeController(saved_mode)
         # 마술봉 / 마스크 브러시 / 래스터 브러시 라이브 파라미터 (옵션 툴바 슬라이더와 동기화)
         self._magic_wand_tolerance = 32
         self._mask_brush_size = 30
@@ -332,6 +337,18 @@ class MainWindow(QMainWindow):
         # 외부에서 파일이 삭제/이동되면 라이브러리에서도 자동 제거.
         self._setup_library_disk_watcher()
 
+        # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
+        # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
+        # 매번 재등록 안 해도 됨). 회귀 fix: 이전엔 이 블록이 _enable_perf_diag 안에
+        # 잘못 들어가 있어 KSTUDIO_PERF_DIAG=1 일 때만 _mcp_bridge 가 만들어졌고,
+        # 일반 사용자는 closeEvent → _stop_mcp_bridge 에서 AttributeError 로 죽었음.
+        from screen_recorder.mcp.pending_requests import PendingRequestStore
+        self._mcp_bridge = None
+        self._mcp_dispatcher = None
+        self._mcp_request_store = PendingRequestStore()   # async 도구 결과 보관
+        if self.app_settings.mcp.enabled:
+            self._start_mcp_bridge()
+
         # 초기화 끝 — 이제부터 사용자 액션에 의한 persist 허용.
         self._initializing = False
 
@@ -479,16 +496,6 @@ class MainWindow(QMainWindow):
         self._diag_timer.timeout.connect(_dump)
         self._diag_timer.start()
         logging.warning("PERF_DIAG enabled — 5초 주기 로깅 시작 (RSS 기반)")
-
-        # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
-        # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
-        # 매번 재등록 안 해도 됨).
-        from screen_recorder.mcp.pending_requests import PendingRequestStore
-        self._mcp_bridge = None
-        self._mcp_dispatcher = None
-        self._mcp_request_store = PendingRequestStore()   # async 도구 결과 보관
-        if self.app_settings.mcp.enabled:
-            self._start_mcp_bridge()
 
     # ---------- 시그널 와이어링 ----------
 
@@ -1193,6 +1200,10 @@ class MainWindow(QMainWindow):
         if prev_mode is not None and prev_mode is not mode:
             self._save_dock_state_for_mode(prev_mode)
         self._last_mode = mode
+        # 마지막 사용 모드 영속화 — 다음 실행 시 같은 모드로 복원.
+        # _persist_settings 가 _initializing 플래그를 자체적으로 체크하므로 init 중엔 no-op.
+        self.app_settings.preferences.last_mode = mode.value
+        self._persist_settings()
         # 모드별 테마 — 영상=현재 시안 / 이미지=mono+emerald.
         # 실제 전환일 때만 재적용 — init(prev_mode is None) 에선 main.py 의
         # 초기 apply_theme 호출이 이미 끝났으므로 중복 방지.
@@ -3798,9 +3809,12 @@ class MainWindow(QMainWindow):
             )
 
     def _stop_mcp_bridge(self) -> None:
-        if self._mcp_bridge is not None:
+        # __init__ 이 487 라인(`_mcp_bridge = None`) 도달 전에 예외로 중단되면
+        # closeEvent 가 부분 초기화 self 로 호출돼 AttributeError 가 났던 회귀.
+        bridge = getattr(self, "_mcp_bridge", None)
+        if bridge is not None:
             try:
-                self._mcp_bridge.stop()
+                bridge.stop()
             except Exception:   # noqa: BLE001
                 pass
             self._mcp_bridge = None

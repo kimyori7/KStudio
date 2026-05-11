@@ -13,9 +13,9 @@ class AppMode(Enum):
 class ModeController(QObject):
     mode_changed = Signal(object)   # AppMode
 
-    def __init__(self) -> None:
+    def __init__(self, initial_mode: AppMode = AppMode.IMAGE) -> None:
         super().__init__()
-        self._mode = AppMode.IMAGE
+        self._mode = initial_mode
 
     def mode(self) -> AppMode:
         return self._mode
