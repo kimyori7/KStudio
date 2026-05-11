@@ -27,7 +27,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QToolBar,
     QDockWidget, QFileDialog, QMessageBox, QApplication, QSystemTrayIcon,
-    QInputDialog, QProgressDialog, QDialog,
+    QInputDialog, QProgressDialog, QDialog, QScrollArea, QFrame,
 )
 
 from screen_recorder.core.controller import RecorderController
@@ -185,7 +185,18 @@ class MainWindow(QMainWindow):
         # 키. 없으면 매 실행마다 "objectName not set" 경고 + 위치 복원 불가능.
         self._global_tb_host.setObjectName("GlobalToolBarHost")
         self._global_tb_host.setMovable(False)
-        self._global_tb_host.addWidget(self.global_toolbar)
+        # 창 폭이 좁아지면 글로벌 툴바의 모든 버튼이 다 안 들어가 서로 겹치던 회귀 fix —
+        # QScrollArea 로 감싸 폭 부족 시 가로 스크롤로 모든 버튼 접근 가능하게.
+        # 세로 스크롤은 절대 금지 (툴바 높이는 항상 고정), frame 도 제거해 시각적 동일.
+        self._global_tb_scroll = QScrollArea()
+        self._global_tb_scroll.setWidget(self.global_toolbar)
+        self._global_tb_scroll.setWidgetResizable(True)
+        self._global_tb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._global_tb_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._global_tb_scroll.setFrameShape(QFrame.NoFrame)
+        # global_toolbar 의 sizeHint 높이 + 스크롤바 여유로 host 높이 고정.
+        self._global_tb_scroll.setFixedHeight(self.global_toolbar.sizeHint().height() + 12)
+        self._global_tb_host.addWidget(self._global_tb_scroll)
         self.addToolBar(self._global_tb_host)
 
         # ---------- 옵션바 (annotation toolbar) ----------

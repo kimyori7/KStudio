@@ -152,6 +152,14 @@ _PATHS: dict[str, str] = {
         '<path d="M6 17.5V6"/>'
         '<rect width="20" height="12" x="2" y="6" rx="2"/>'
     ),
+    # 폴더 — 환경설정 폴더 picker 버튼용. 다른 아이콘과 달리 fill 색상 (노란/베이지)
+    # 을 path 에 직접 명시 — _wrap 의 root-level fill="none" 보다 path attribute 가
+    # 우선. stroke 는 wrapper 의 currentColor 가 그대로 적용돼 outline 도 테마 따라감.
+    "folder": (
+        '<path fill="#FFC976" '
+        'd="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2'
+        'A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'
+    ),
     # 드래그-저장 — 이미지 카드 + 우상단으로 빠져나가는 export 화살표 ("들어
     # 올려서 끄집어 내기" 메타포). lucide 의 image 아이콘에 export 화살표를 합성.
     "drag-save": (

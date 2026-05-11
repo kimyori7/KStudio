@@ -5,7 +5,7 @@
 from __future__ import annotations
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QFormLayout, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout,
     QFileDialog, QGroupBox, QComboBox,
@@ -19,6 +19,7 @@ from ...core.settings import (
     default_video_dir,
 )
 from ...effects import default_sidecar_dir
+from ..icons import load_icon
 
 
 _FORMAT_LABELS = [("png", "PNG")]
@@ -123,7 +124,10 @@ class ScreenshotPanel(QWidget):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        browse = QPushButton("📁")
+        browse = QPushButton()
+        browse.setIcon(load_icon("folder", size=18))
+        browse.setIconSize(QSize(18, 18))
+        browse.setToolTip("폴더 선택…")
         browse.setFixedWidth(36)
         browse.clicked.connect(getattr(self, browse_method))
         layout.addWidget(edit, stretch=1)
