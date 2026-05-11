@@ -145,6 +145,9 @@ class PreviewOverlay(QWidget):
         self._frame_rect_provider: Optional[Callable[[], QRect]] = None
         # broll PIP 가이드 안에 표시할 대표 썸네일 (src path 별). VideoTab 이 채워줌.
         self._broll_thumbs: dict[str, "QImage"] = {}
+        # broll PIP 실시간 frame (effect_id 별). BrollPipPlayer.frame_ready 가 채움.
+        # thumbnail 보다 우선 — 없으면 thumbnail, 둘 다 없으면 주황 fill (3단 fallback).
+        self._broll_live_frames: dict[str, "QImage"] = {}
         # paintEvent 의 마지막 호출 시각 — 5× 같은 고배속에서 매 position tick 마다
         # update() 호출하면 paint 가 30Hz 이상으로 폭주해 누적 부하 발생. wall-clock
         # 33ms 이내의 연속 호출은 합쳐 paint 1 회로 (사용자가 인지하는 부드러움은 유지).
@@ -182,6 +185,21 @@ class PreviewOverlay(QWidget):
         if not src or img is None or img.isNull():
             return
         self._broll_thumbs[str(src)] = img
+        self.update()
+
+    def set_broll_live_frame(self, effect_id: str, img: Optional[QImage]) -> None:
+        """BrollPipPlayer.frame_ready 의 최신 frame 을 effect_id 단위로 저장.
+
+        thumbnail 보다 우선 표시. 빈 id 또는 null QImage 는 no-op (방어).
+        """
+        if not effect_id or img is None or img.isNull():
+            return
+        self._broll_live_frames[str(effect_id)] = img
+        self._request_paint()
+
+    def clear_broll_live_frame(self, effect_id: str) -> None:
+        """시간창 이탈 시 호출. cache 비움 → thumbnail fallback 으로 복귀."""
+        self._broll_live_frames.pop(str(effect_id), None)
         self.update()
 
     def set_video_frame_rect_provider(self, fn: Optional[Callable[[], QRect]]) -> None:
@@ -393,13 +411,16 @@ class PreviewOverlay(QWidget):
         # hit-test bbox 등록.
         self._overlay_hits.append((QRect(rx, ry, rect_w, rect_h), "broll", eff.id))
 
-        # 캐시된 broll 썸네일이 있으면 PIP 사각형 안을 그 이미지로 채움.
-        # 없으면 기존 주황 채움색으로 fallback — 라벨만 보이는 placeholder.
-        thumb = self._broll_thumbs.get(eff.src) if eff.src else None
-        if thumb is not None and not thumb.isNull():
-            p.drawImage(QRect(rx, ry, rect_w, rect_h), thumb)
+        # 우선순위: live frame (실시간 재생) > thumbnail (정지 프레임) > 주황 fill.
+        live = self._broll_live_frames.get(eff.id)
+        if live is not None and not live.isNull():
+            p.drawImage(QRect(rx, ry, rect_w, rect_h), live)
         else:
-            p.fillRect(rx, ry, rect_w, rect_h, _BROLL_FILL_COLOR)
+            thumb = self._broll_thumbs.get(eff.src) if eff.src else None
+            if thumb is not None and not thumb.isNull():
+                p.drawImage(QRect(rx, ry, rect_w, rect_h), thumb)
+            else:
+                p.fillRect(rx, ry, rect_w, rect_h, _BROLL_FILL_COLOR)
         pen = QPen(_BROLL_GUIDE_COLOR)
         pen.setWidth(2)
         p.setPen(pen)

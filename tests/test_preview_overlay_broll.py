@@ -158,6 +158,67 @@ def test_pip_guide_uses_cached_thumbnail_when_set(qtbot):
     assert c.green() > 150 and c.blue() > 150 and c.red() < 100
 
 
+def test_pip_guide_uses_live_frame_over_thumbnail(qtbot):
+    """live frame 이 있으면 thumbnail 보다 우선 (BrollPipPlayer.frame_ready 경로)."""
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    eff = BrollEffect(
+        in_ms=0, out_ms=10_000, src="myclip.mp4",
+        placement="pip",
+        pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+    )
+    # 빨강 thumbnail.
+    thumb = QImage(96, 54, QImage.Format_ARGB32)
+    thumb.fill(QColor(255, 0, 0, 255))
+    ov.set_broll_thumbnail("myclip.mp4", thumb)
+    # 청록 live frame.
+    live = QImage(96, 54, QImage.Format_ARGB32)
+    live.fill(QColor(0, 200, 200, 255))
+    ov.set_broll_live_frame(eff.id, live)
+    ov.set_sidecar(_broll_sidecar(eff))
+    ov.set_position_ms(3000)
+    img = _render_to_image(ov, w=640, h=360)
+    # 우하단 PIP 박스 중앙 — live frame (청록) 이 thumbnail (빨강) 보다 우선.
+    c = QColor.fromRgba(img.pixel(536, 298))
+    assert c.green() > 150 and c.blue() > 150 and c.red() < 100
+
+
+def test_clear_broll_live_frame_falls_back_to_thumbnail(qtbot):
+    """live frame clear 후 thumbnail 로 fallback."""
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    eff = BrollEffect(
+        in_ms=0, out_ms=10_000, src="myclip.mp4",
+        placement="pip",
+        pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+    )
+    thumb = QImage(96, 54, QImage.Format_ARGB32)
+    thumb.fill(QColor(255, 0, 0, 255))   # 빨강 thumbnail
+    ov.set_broll_thumbnail("myclip.mp4", thumb)
+    live = QImage(96, 54, QImage.Format_ARGB32)
+    live.fill(QColor(0, 200, 200, 255))   # 청록 live
+    ov.set_broll_live_frame(eff.id, live)
+    ov.clear_broll_live_frame(eff.id)
+    ov.set_sidecar(_broll_sidecar(eff))
+    ov.set_position_ms(3000)
+    img = _render_to_image(ov, w=640, h=360)
+    # clear 했으니 thumbnail (빨강) 로 돌아옴.
+    c = QColor.fromRgba(img.pixel(536, 298))
+    assert c.red() > 200 and c.green() < 60 and c.blue() < 60
+
+
+def test_set_broll_live_frame_no_op_on_empty_inputs(qtbot):
+    """빈 eff_id 또는 null QImage 는 cache 미저장."""
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    live = QImage(96, 54, QImage.Format_ARGB32)
+    live.fill(QColor(0, 200, 200, 255))
+    ov.set_broll_live_frame("", live)
+    assert ov._broll_live_frames == {}
+    ov.set_broll_live_frame("eff-1", QImage())
+    assert ov._broll_live_frames == {}
+
+
 def test_set_broll_thumbnail_no_op_on_empty_src(qtbot):
     """빈 src 나 null QImage 면 캐시 미저장 — paint 시 fallback 채움."""
     ov = PreviewOverlay()
