@@ -407,8 +407,11 @@ class PlayerWidget(QStackedWidget):
         # ▶▶ = 더블 트라이앵글 (배속 의미). 텍스트로 SVG-feel.
         self._speed_hud.setText(f"▶▶  {rate_label}× 배속")
         self._speed_hud.adjustSize()
-        self._reposition_huds()
+        # show() 를 먼저 호출해야 _reposition_huds 의 isVisible 가드 통과. 안 그러면
+        # 이전 텍스트("2× 배속") 위치 그대로 두고 길어진 텍스트("10× 배속") 가
+        # 그 자리에 그려져 화면 밖으로 삐져나감. 사용자 보고 회귀.
         self._speed_hud.show()
+        self._reposition_huds()
         self._speed_hud.raise_()
 
     def hide_speed_hud(self) -> None:
