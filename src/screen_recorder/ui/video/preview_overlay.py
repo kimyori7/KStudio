@@ -298,13 +298,11 @@ class PreviewOverlay(QWidget):
             scale_x = 1.0
             scale_y = 1.0
 
-        # 텍스트 width 계산 — caption_renderer 와 동일한 font 로.
-        f = QFont(c.font.family, c.font.size)
-        f.setBold(c.font.bold)
-        from PySide6.QtGui import QFontMetrics
-        fm = QFontMetrics(f)
-        text_w = fm.horizontalAdvance(c.text) if c.text else 0
-        text_h = fm.height()
+        # 텍스트 측정 — caption_renderer.measure_text 와 동일 (multi-line 의 max line
+        # width × total height). 이전엔 single-line `fm.horizontalAdvance(c.text)` /
+        # `fm.height()` 를 써서 multi-line 캡션의 bbox 가 첫 줄만 잡혀 drag 시 정확하지
+        # 않던 회귀.
+        text_w, text_h = caption_renderer.measure_text(c)
         pad = 8
 
         # anchor_xy 는 surface (source 또는 frame) 좌표계의 (x, y) 반환.
@@ -504,9 +502,23 @@ class PreviewOverlay(QWidget):
             if bbox.contains(pos):
                 self._drag_caption_id = cid
                 self._drag_start_pos = pos
-                cx = (bbox.left() + bbox.right()) / 2.0 - frame.x()
-                cy = (bbox.top() + bbox.bottom()) / 2.0 - frame.y()
-                self._drag_start_offset_norm = (cx / fw, cy / fh)
+                # drag start 의 normalized 중심점. free 캡션이면 사이드카의 offset
+                # 을 그대로 사용 — bbox 중심 round-trip (int 트런케이션, 9-zone↔free
+                # 변환 시 text_h/pad 차이) 으로 인한 위치 점프 회피.
+                cap_eff = next(
+                    (e for e in self._sidecar.effects if e.id == cid),
+                    None,
+                )
+                if (cap_eff is not None and cap_eff.type == "caption"
+                        and cap_eff.position.anchor == "free"):
+                    self._drag_start_offset_norm = (
+                        float(cap_eff.position.offset_x),
+                        float(cap_eff.position.offset_y),
+                    )
+                else:
+                    cx = (bbox.left() + bbox.right()) / 2.0 - frame.x()
+                    cy = (bbox.top() + bbox.bottom()) / 2.0 - frame.y()
+                    self._drag_start_offset_norm = (cx / fw, cy / fh)
                 self._drag_override_offset = self._drag_start_offset_norm
                 self.setCursor(Qt.ClosedHandCursor)
                 self._emit_effect_clicked(cid)
