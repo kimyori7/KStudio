@@ -30,6 +30,36 @@ def _find_ffprobe() -> str:
     return "ffprobe"   # 최후의 폴백 (실패하면 0 반환)
 
 
+def has_audio_stream(src: str) -> bool:
+    """ffprobe 로 src 에 audio stream 이 있는지 확인.
+
+    실패 시 (파일 없거나 ffprobe 미설치) True 로 낙관 반환 — 실제 ffmpeg 실행
+    이 더 정확하게 판단. 진짜 audio 없는 영상은 ffprobe 가 정확히 False 로
+    응답 → export_pipeline 이 audio chain 우회.
+
+    화면 녹화 (마이크 입력 없음) 등은 audio stream 자체가 없어 ffmpeg filter
+    의 `[idx:a]` 가 "matches no streams" 로 export 실패 → 이 검사로 사전 회피.
+    """
+    if not src or not Path(src).exists():
+        return True   # 파일 없으면 ffprobe 못 함 — 낙관 (테스트 가짜 경로 호환).
+    try:
+        result = subprocess.run(
+            [
+                _find_ffprobe(), "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "json", src,
+            ],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return True   # ffprobe 실패 — 낙관.
+        data = json.loads(result.stdout.decode("utf-8", "replace"))
+        return bool(data.get("streams"))
+    except Exception:
+        return True
+
+
 def probe_duration_ms(src: str) -> int:
     """영상 파일의 길이 (ms). 실패 시 0 반환.
 

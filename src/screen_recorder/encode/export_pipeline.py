@@ -337,6 +337,13 @@ def build_export_args(
         track_src_index[src] = next_input
         next_input += 1
 
+    # 각 input 의 audio stream 유무 확인. 하나라도 없으면 audio chain 전체 우회
+    # (filter 의 [idx:a] 가 "matches no streams" 로 export 실패하던 회귀).
+    # 화면 녹화에 마이크 입력 없거나 drag-drop 한 영상에 audio 없을 때 발생.
+    from ..services.media_probe import has_audio_stream
+    _audio_srcs = [str(src_path)] + [c.src for c in cuts if c.has_insert] + list(track_extra_srcs)
+    audio_available = all(has_audio_stream(s) for s in _audio_srcs)
+
     png_input_index: dict[int, int] = {}   # png_paths idx → ffmpeg input index
     for i, png in enumerate(png_paths):
         argv.extend(["-i", str(png)])
@@ -392,9 +399,10 @@ def build_export_args(
                 f"[0:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
                 f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
-            fc_parts.append(
-                f"[0:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
-            )
+            if audio_available:
+                fc_parts.append(
+                    f"[0:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
+                )
         else:
             # source_id 가 cut.id 면 cut 의 insert, src 경로면 track 다중 src.
             in_s = seg.source_start_ms / 1000.0
@@ -410,24 +418,33 @@ def build_export_args(
                 f"[{idx}:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
                 f"{_scale_filter(scale_mode, surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
-            fc_parts.append(
-                f"[{idx}:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
-            )
+            if audio_available:
+                fc_parts.append(
+                    f"[{idx}:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
+                )
         seg_labels.append((v_label, a_label))
 
-    # concat
+    # concat — audio_available 따라 a=1 or a=0.
     n = len(seg_labels)
     if n == 0:
         # cut 0 개 + main_duration 0 → 빈 효과. fallback: 전체 영상 사용.
         fc_parts.append(
             f"[0:v]{_scale_filter('stretch', surface_w, surface_h)}[outv0]"
         )
-        fc_parts.append(f"[0:a]anull[outa0]")
-        cur_v, cur_a = "outv0", "outa0"
+        if audio_available:
+            fc_parts.append(f"[0:a]anull[outa0]")
+            cur_v, cur_a = "outv0", "outa0"
+        else:
+            cur_v, cur_a = "outv0", None
     else:
-        concat_inputs = "".join(f"[{v}][{a}]" for v, a in seg_labels)
-        fc_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=1[concv][conca]")
-        cur_v, cur_a = "concv", "conca"
+        if audio_available:
+            concat_inputs = "".join(f"[{v}][{a}]" for v, a in seg_labels)
+            fc_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=1[concv][conca]")
+            cur_v, cur_a = "concv", "conca"
+        else:
+            concat_inputs = "".join(f"[{v}]" for v, _a in seg_labels)
+            fc_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[concv]")
+            cur_v, cur_a = "concv", None
 
     # 캡션 overlay (alpha fade 포함)
     for i, cap in enumerate(captions):
@@ -478,10 +495,15 @@ def build_export_args(
 
     fc = ";".join(fc_parts)
     argv.extend(["-filter_complex", fc])
-    argv.extend(["-map", f"[{cur_v}]", "-map", f"[{cur_a}]"])
+    argv.extend(["-map", f"[{cur_v}]"])
+    if cur_a is not None:
+        argv.extend(["-map", f"[{cur_a}]"])
     argv.extend([
         "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-        "-c:a", "aac", "-b:a", "128k",
+    ])
+    if cur_a is not None:
+        argv.extend(["-c:a", "aac", "-b:a", "128k"])
+    argv.extend([
         "-movflags", "+faststart",
         str(dst_path),
     ])
