@@ -9,6 +9,24 @@ from screen_recorder.encode.export_pipeline import (
 )
 
 
+def test_odd_surface_dimensions_floored_to_even():
+    """libx264 + yuv420p 는 width/height 짝수 요구. 홀수면 짝수로 floor.
+
+    회귀: 사용자 화면 녹화 1903×1005 (둘 다 홀수) → 인코딩 실패 -22 EINVAL.
+    fix 후 1902×1004 로 floor 되어 filter chain 의 scale= 가 짝수 출력.
+    """
+    sc = Sidecar(source_path="A.mp4", source_hash="h")
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1903, surface_h=1005,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    assert "scale=1902:1004" in fc, f"odd dims should be floored to 1902x1004: {fc}"
+    # 홀수 scale 은 나타나면 안 됨.
+    assert "scale=1903:" not in fc and ":1005:" not in fc
+
+
 def test_build_args_no_effects_just_copy_main():
     """효과 0 개 — A 만 그대로 (libx264 재인코딩, trim 없음)."""
     sc = Sidecar(source_path="A.mp4", source_hash="h")

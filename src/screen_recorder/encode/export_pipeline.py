@@ -201,7 +201,13 @@ def build_export_args(
     """Sidecar → (ffmpeg argv, 임시 PNG 경로 리스트). 호출 측이 PNG 정리 책임.
 
     png_dir 가 None 이면 tempfile.mkdtemp().
+
+    libx264 + yuv420p 는 width/height 가 짝수여야 함. 홀수면 -22 EINVAL 로 인코딩
+    실패 ("width not divisible by 2"). 사용자 화면 녹화 (예: 1903×1005) 가 둘 다
+    홀수인 경우가 흔해서 입구에서 짝수로 floor 한다.
     """
+    surface_w = int(surface_w) & ~1   # 짝수로 floor (1903 → 1902)
+    surface_h = int(surface_h) & ~1
     # 다중 segment 트랙 export. 같은 src 든 다른 src 든 자동 처리.
     # image segment 만 v2 보류 — 정지 이미지를 영상 stream 으로 합성하는 별도 그래프 필요.
     if len(sidecar.video_track) > 1:
