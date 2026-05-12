@@ -398,7 +398,12 @@ class PlayerWidget(QStackedWidget):
         if abs(float(rate) - 1.0) < 1e-3:
             self._speed_hud.hide()
             return
-        rate_label = f"{float(rate):g}".rstrip("0").rstrip(".")
+        # 1.5 → "1.5", 2.0 → "2", 10.0 → "10". rstrip("0") 은 소수점이 있을 때만
+        # 안전 — 정수 "10" 에 적용하면 trailing 0 까지 깎여 "1" 이 되던 회귀.
+        formatted = f"{float(rate):g}"
+        if "." in formatted:
+            formatted = formatted.rstrip("0").rstrip(".")
+        rate_label = formatted
         # ▶▶ = 더블 트라이앵글 (배속 의미). 텍스트로 SVG-feel.
         self._speed_hud.setText(f"▶▶  {rate_label}× 배속")
         self._speed_hud.adjustSize()
