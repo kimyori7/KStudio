@@ -997,6 +997,7 @@ class MainWindow(QMainWindow):
             self._mini = MiniControl()
             self._mini.stop_clicked.connect(self._on_stop_clicked)
             self._mini.pause_clicked.connect(self._on_pause_clicked)
+            self._mini.close_requested.connect(self._on_mini_close_requested)
             self._mini.show_at_bottom_right()
             exclude_from_capture(self._mini)
 
@@ -1014,6 +1015,19 @@ class MainWindow(QMainWindow):
 
         if self._should_minimize_main():
             self.showNormal()
+
+    def _on_mini_close_requested(self):
+        """MiniControl 의 X 버튼 — 사용자가 다시는 안 보고 싶음.
+
+        녹화 자체는 계속됨 (stop 과 구분). preferences.use_mini_control = False
+        로 영속화 + 디스크 저장. 다음 녹화부터 미생성. 사용자가 환경설정에서
+        다시 켤 수 있음.
+        """
+        if self._mini is not None:
+            self._mini.close()
+            self._mini = None
+        self.app_settings.preferences.use_mini_control = False
+        self._persist_settings()
 
     def _on_pause_clicked(self):
         if self.controller.state == RecorderState.RECORDING:

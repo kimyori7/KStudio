@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLabel
 class MiniControl(QWidget):
     stop_clicked = Signal()
     pause_clicked = Signal()
+    close_requested = Signal()   # X 버튼 — 사용자가 이 창을 다시 안 보고 싶음
 
     def __init__(self):
         super().__init__()
@@ -30,6 +31,13 @@ class MiniControl(QWidget):
         self.stop_btn.setFixedWidth(32)
         self.stop_btn.clicked.connect(self.stop_clicked.emit)
         layout.addWidget(self.stop_btn)
+
+        # X — 이 mini 창을 영구히 끄기. 녹화 자체는 계속됨 (stop 과 구분).
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setFixedWidth(24)
+        self.close_btn.setToolTip("이 창 다시 안 보기 (환경설정 → 작은 컨트롤로 재활성화)")
+        self.close_btn.clicked.connect(self.close_requested.emit)
+        layout.addWidget(self.close_btn)
 
         self._secs = 0
         self._timer = QTimer(self)
