@@ -707,30 +707,75 @@ class PreviewOverlay(QWidget):
             cy_n = max(0.0, min(1.0, cy_n))
             self._resize_override = (cx_n, cy_n, scale)
             return
-        # broll — 자유 종횡비. corner 별 대각 anchor.
+        # broll — frame 종횡비 강제. _draw_broll_guide 가 rect_h = h × ratio,
+        # rect_w = w × ratio 로 그려서 시각상 항상 frame 비율이므로 resize 수학도
+        # 그에 맞춰야 대각 anchor 가 정확히 고정된다. (이전: new_w / new_h 따로
+        # 계산 후 ratio = new_w / fw 만 저장 → 화면상 height 가 따라 변하면서
+        # 대각 모서리의 y 좌표가 함께 이동하던 회귀.)
+        aspect = fw / max(1.0, fh)
         if self._resize_corner == "br":
             anchor = (orig.left(), orig.top())
-            new = (max(orig.left() + 8, pos.x()), max(orig.top() + 8, pos.y()))
+            raw_w = max(8.0, pos.x() - anchor[0])
+            raw_h = max(8.0, pos.y() - anchor[1])
         elif self._resize_corner == "tr":
             anchor = (orig.left(), orig.bottom())
-            new = (max(orig.left() + 8, pos.x()), min(orig.bottom() - 8, pos.y()))
+            raw_w = max(8.0, pos.x() - anchor[0])
+            raw_h = max(8.0, anchor[1] - pos.y())
         elif self._resize_corner == "bl":
             anchor = (orig.right(), orig.top())
-            new = (min(orig.right() - 8, pos.x()), max(orig.top() + 8, pos.y()))
+            raw_w = max(8.0, anchor[0] - pos.x())
+            raw_h = max(8.0, pos.y() - anchor[1])
         else:   # tl
             anchor = (orig.right(), orig.bottom())
-            new = (min(orig.right() - 8, pos.x()), min(orig.bottom() - 8, pos.y()))
-        new_left = min(anchor[0], new[0])
-        new_top = min(anchor[1], new[1])
-        new_w = abs(anchor[0] - new[0])
-        new_h = abs(anchor[1] - new[1])
-        new_left = max(frame.left(), min(frame.right(), new_left))
-        new_top = max(frame.top(), min(frame.bottom(), new_top))
-        new_w = max(8, min(frame.right() - new_left, new_w))
-        new_h = max(8, min(frame.bottom() - new_top, new_h))
+            raw_w = max(8.0, anchor[0] - pos.x())
+            raw_h = max(8.0, anchor[1] - pos.y())
+        # 종횡비 강제 — 마우스 위치 포함하도록 outer max (zoom 과 동일 패턴).
+        if raw_w / aspect >= raw_h:
+            new_w = raw_w
+            new_h = raw_w / aspect
+        else:
+            new_h = raw_h
+            new_w = raw_h * aspect
+        # corner 별 new_left/new_top 계산 — anchor 가 고정 끝점.
+        if self._resize_corner == "br":
+            new_left, new_top = anchor[0], anchor[1]
+        elif self._resize_corner == "tr":
+            new_left, new_top = anchor[0], anchor[1] - new_h
+        elif self._resize_corner == "bl":
+            new_left, new_top = anchor[0] - new_w, anchor[1]
+        else:   # tl
+            new_left, new_top = anchor[0] - new_w, anchor[1] - new_h
+        # frame 안 clamp — 한쪽 벗어나면 그쪽 크기 줄임. 종횡비 재강제.
+        if new_left < frame.left():
+            new_w -= (frame.left() - new_left)
+            new_left = frame.left()
+        if new_top < frame.top():
+            new_h -= (frame.top() - new_top)
+            new_top = frame.top()
+        if new_left + new_w > frame.right():
+            new_w = frame.right() - new_left
+        if new_top + new_h > frame.bottom():
+            new_h = frame.bottom() - new_top
+        new_w = max(8.0, new_w)
+        new_h = max(8.0, new_h)
+        if new_w / aspect < new_h:
+            new_h = new_w / aspect
+        else:
+            new_w = new_h * aspect
+        ratio = max(0.05, min(0.9, new_w / fw))
+        # ratio 가 clamp 된 경우 new_w/new_h 재계산 — anchor 우선 유지.
+        clamped_w = ratio * fw
+        clamped_h = ratio * fh
+        if self._resize_corner == "br":
+            new_left, new_top = anchor[0], anchor[1]
+        elif self._resize_corner == "tr":
+            new_left, new_top = anchor[0], anchor[1] - clamped_h
+        elif self._resize_corner == "bl":
+            new_left, new_top = anchor[0] - clamped_w, anchor[1]
+        else:   # tl
+            new_left, new_top = anchor[0] - clamped_w, anchor[1] - clamped_h
         px_n = (new_left - frame.x()) / fw
         py_n = (new_top - frame.y()) / fh
-        ratio = max(0.05, min(0.9, new_w / fw))
         px_n = max(0.0, min(1.0 - ratio, px_n))
         py_n = max(0.0, min(1.0 - ratio, py_n))
         self._resize_override = (px_n, py_n, ratio)

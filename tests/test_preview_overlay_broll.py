@@ -265,6 +265,108 @@ def test_pip_pos_x_y_overrides_corner(qtbot):
     assert _has_orange_pixel(img, region=region)
 
 
+def _make_resize_overlay(qtbot, corner: str, size_ratio: float = 0.3):
+    """size_ratio=0.3, corner placement 의 broll overlay 띄우고 first paint 까지."""
+    ov = PreviewOverlay()
+    qtbot.addWidget(ov)
+    ov.resize(640, 360)
+    ov.show()
+    qtbot.waitExposed(ov)
+    eff = BrollEffect(
+        in_ms=0, out_ms=10_000, src="x.mp4",
+        placement="pip",
+        pip=PipConfig(corner=corner, size_ratio=size_ratio),
+    )
+    ov.set_sidecar(_broll_sidecar(eff))
+    ov.set_position_ms(3000)
+    _render_to_image(ov, w=640, h=360)
+    return ov, eff
+
+
+def _resize_via_corner(ov, qtbot, corner: str, end_pos):
+    """corner 핸들 시작점 hit-test 시뮬레이션 후 마우스를 end_pos 로 이동, release."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QMouseEvent
+    # corner 핸들 정확한 위치는 _overlay_hits 의 bbox 에서 추출.
+    assert ov._overlay_hits, "broll bbox not registered yet"
+    bbox = ov._overlay_hits[0][0]
+    from screen_recorder.ui.video.preview_overlay import _corner_rects
+    handle = _corner_rects(bbox)[corner].center()
+    end = QPoint(*end_pos) if not isinstance(end_pos, QPoint) else end_pos
+    press = QMouseEvent(QMouseEvent.MouseButtonPress, handle,
+                        ov.mapToGlobal(handle), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    move = QMouseEvent(QMouseEvent.MouseMove, end,
+                       ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    release = QMouseEvent(QMouseEvent.MouseButtonRelease, end,
+                          ov.mapToGlobal(end), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    with qtbot.waitSignal(ov.effect_drag_changed, timeout=500) as blocker:
+        ov.mousePressEvent(press)
+        ov.mouseMoveEvent(move)
+        ov.mouseReleaseEvent(release)
+    return blocker.args[0]
+
+
+def test_broll_corner_resize_br_keeps_top_left_anchor(qtbot):
+    """우하단 (br) 모서리로 리사이즈 — 좌상단 anchor (pos_x, pos_y) 가 그대로."""
+    ov, eff = _make_resize_overlay(qtbot, "bottom-right")
+    bbox_before = ov._overlay_hits[0][0]
+    new_eff = _resize_via_corner(ov, qtbot, "br", (620, 340))   # 우하단 쪽으로 확장
+    assert new_eff.pip is not None
+    # frame 640x360 에서 좌상단의 normalized 가 그대로여야.
+    tol = 0.01
+    assert abs(new_eff.pip.pos_x - bbox_before.left() / 640) < tol
+    assert abs(new_eff.pip.pos_y - bbox_before.top() / 360) < tol
+
+
+def test_broll_corner_resize_tl_keeps_bottom_right_anchor(qtbot):
+    """좌상단 (tl) 모서리로 리사이즈 — 우하단 anchor 정규 위치가 그대로."""
+    ov, eff = _make_resize_overlay(qtbot, "top-left")   # 좌상단 배치라 box 가 좌상단 근처
+    bbox_before = ov._overlay_hits[0][0]
+    # box 안쪽 (왼쪽 위 → 박스 안 = 박스 키우는 방향)
+    # top-left 배치이므로 tl 잡으면 박스 자체가 frame 좌상단으로 무한히 못 가니
+    # mouse 를 (0,0) 으로 끌어 박스를 frame 좌상단 까지 확장.
+    new_eff = _resize_via_corner(ov, qtbot, "tl", (0, 0))
+    assert new_eff.pip is not None
+    # 우하단 anchor 정규 = (pos_x + ratio, pos_y + ratio) 가 보존.
+    old_br_x = bbox_before.right() / 640
+    old_br_y = bbox_before.bottom() / 360
+    new_br_x = new_eff.pip.pos_x + new_eff.pip.size_ratio
+    new_br_y = new_eff.pip.pos_y + new_eff.pip.size_ratio
+    tol = 0.02
+    assert abs(new_br_x - old_br_x) < tol, f"BR x drift: {new_br_x} vs {old_br_x}"
+    assert abs(new_br_y - old_br_y) < tol, f"BR y drift: {new_br_y} vs {old_br_y}"
+
+
+def test_broll_corner_resize_tr_keeps_bottom_left_anchor(qtbot):
+    """우상단 (tr) 모서리로 리사이즈 — 좌하단 anchor (pos_x, pos_y+ratio) 가 그대로."""
+    ov, eff = _make_resize_overlay(qtbot, "top-right")
+    bbox_before = ov._overlay_hits[0][0]
+    new_eff = _resize_via_corner(ov, qtbot, "tr", (635, 5))   # 우상단으로 확장
+    assert new_eff.pip is not None
+    old_bl_x = bbox_before.left() / 640
+    old_bl_y = bbox_before.bottom() / 360
+    new_bl_x = new_eff.pip.pos_x
+    new_bl_y = new_eff.pip.pos_y + new_eff.pip.size_ratio
+    tol = 0.02
+    assert abs(new_bl_x - old_bl_x) < tol, f"BL x drift: {new_bl_x} vs {old_bl_x}"
+    assert abs(new_bl_y - old_bl_y) < tol, f"BL y drift: {new_bl_y} vs {old_bl_y}"
+
+
+def test_broll_corner_resize_bl_keeps_top_right_anchor(qtbot):
+    """좌하단 (bl) 모서리로 리사이즈 — 우상단 anchor (pos_x+ratio, pos_y) 가 그대로."""
+    ov, eff = _make_resize_overlay(qtbot, "bottom-left")
+    bbox_before = ov._overlay_hits[0][0]
+    new_eff = _resize_via_corner(ov, qtbot, "bl", (5, 355))
+    assert new_eff.pip is not None
+    old_tr_x = bbox_before.right() / 640
+    old_tr_y = bbox_before.top() / 360
+    new_tr_x = new_eff.pip.pos_x + new_eff.pip.size_ratio
+    new_tr_y = new_eff.pip.pos_y
+    tol = 0.02
+    assert abs(new_tr_x - old_tr_x) < tol, f"TR x drift: {new_tr_x} vs {old_tr_x}"
+    assert abs(new_tr_y - old_tr_y) < tol, f"TR y drift: {new_tr_y} vs {old_tr_y}"
+
+
 def test_pip_drag_clamps_so_pip_corners_stay_in_frame(qtbot):
     """드래그 후 PiP 사각형의 모서리가 frame 밖으로 나가지 않는다.
 
