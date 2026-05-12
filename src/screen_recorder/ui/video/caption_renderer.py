@@ -6,12 +6,56 @@ API:
 - fade_alpha(caption, position_ms) -> float  : 페이드 인/아웃 알파 (0..1)
 - anchor_xy(position, text_w, text_h, pad, surface_w, surface_h) -> (x, y)
 - draw_caption(painter, caption, position_ms, surface_w, surface_h) : 모든 효과 한 번에 그림
+- clamp_free_offset(text_w, text_h, surface_w, surface_h, offset_x, offset_y) -> (x, y)
+    : free anchor 의 정규화 (0~1) 중심점을 텍스트 bbox 가 surface 안에 머물도록 잘라낸다.
 """
 from __future__ import annotations
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 
 from ...effects.types.caption import CaptionEffect, Position
+
+
+def measure_text(c: CaptionEffect) -> tuple[int, int]:
+    """캡션 텍스트의 (width, height) 픽셀. multi-line 고려."""
+    f = QFont(c.font.family, c.font.size)
+    f.setBold(c.font.bold)
+    fm = QFontMetrics(f)
+    text = c.text or ""
+    lines = text.split("\n") if text else [""]
+    line_h = fm.height()
+    widths = [fm.horizontalAdvance(line) for line in lines]
+    return (max(widths) if widths else 0, line_h * len(lines))
+
+
+def clamp_free_offset(
+    text_w: int, text_h: int,
+    surface_w: int, surface_h: int,
+    offset_x: float, offset_y: float,
+    pad: int = 8,
+) -> tuple[float, float]:
+    """free anchor 의 (offset_x, offset_y) 정규화 중심점을 surface 안에 머물게 클램프.
+
+    drag 가 anchor 좌표만 [0, 1] 클램프하면 텍스트 절반이 화면 밖으로 빠짐 — free 는
+    anchor 가 텍스트 *중심* 이라서. (text_w/(2*surface_w), 1 - text_w/(2*surface_w)) 로
+    half-width margin 만큼 더 안쪽으로 잘라낸다. pad 도 함께 고려.
+
+    텍스트가 surface 보다 큰 (드물지만) 경우엔 0.5 로 고정 — 어느 방향으로 잡아도
+    bbox 가 안 들어맞으므로 가운데에 두는 게 사용자 의도에 가장 가까움.
+    """
+    sw = max(1, surface_w)
+    sh = max(1, surface_h)
+    half_w_n = (text_w / 2.0 + pad) / sw
+    half_h_n = (text_h / 2.0 + pad) / sh
+    if half_w_n >= 0.5:
+        ox = 0.5
+    else:
+        ox = max(half_w_n, min(1.0 - half_w_n, float(offset_x)))
+    if half_h_n >= 0.5:
+        oy = 0.5
+    else:
+        oy = max(half_h_n, min(1.0 - half_h_n, float(offset_y)))
+    return (ox, oy)
 
 
 def fade_alpha(c: CaptionEffect, position_ms: int) -> float:
@@ -30,25 +74,47 @@ def fade_alpha(c: CaptionEffect, position_ms: int) -> float:
 
 def anchor_xy(position: Position, *, text_w: int, text_h: int, pad: int,
               surface_w: int, surface_h: int) -> tuple[int, int]:
-    """anchor → text 베이스라인 좌표. free 면 정규화 (0~1) 좌표 사용."""
+    """anchor → text 베이스라인 좌표. free 면 정규화 (0~1) 좌표 사용.
+
+    반환 좌표 (x, y) 는 첫 줄 baseline 의 (왼쪽, 아래) — text bbox 가 surface 안에
+    머물도록 안전 클램프. 9-zone / free 모두 동일 적용:
+    - x ∈ [pad, surface_w - text_w - pad]
+    - y ∈ [pad + text_h, surface_h - pad]
+    텍스트가 surface 보다 크면 (pad, pad + text_h) 로 좌상단 정렬 (덜 어색).
+    """
     if position.anchor == "free":
         cx = position.offset_x * surface_w
         cy = position.offset_y * surface_h
-        return (int(cx - text_w / 2), int(cy + text_h / 2))
-    rows = position.anchor.split("-")[0]
-    cols = position.anchor.split("-")[1]
-    if cols == "left":
+        x = int(cx - text_w / 2)
+        y = int(cy + text_h / 2)
+    else:
+        rows = position.anchor.split("-")[0]
+        cols = position.anchor.split("-")[1]
+        if cols == "left":
+            x = pad
+        elif cols == "center":
+            x = (surface_w - text_w) // 2
+        else:
+            x = surface_w - text_w - pad
+        if rows == "top":
+            y = pad + text_h
+        elif rows == "middle":
+            y = (surface_h + text_h) // 2
+        else:
+            y = surface_h - pad
+    # bbox 안전 클램프 — 사용자가 어떤 경로로 (드래그 / 인스펙터 / 옛 사이드카) 값을
+    # 넣어도 캡션이 화면 밖으로 빠지지 않도록.
+    max_x = surface_w - text_w - pad
+    min_y = pad + text_h
+    max_y = surface_h - pad
+    if max_x < pad:
         x = pad
-    elif cols == "center":
-        x = (surface_w - text_w) // 2
     else:
-        x = surface_w - text_w - pad
-    if rows == "top":
-        y = pad + text_h
-    elif rows == "middle":
-        y = (surface_h + text_h) // 2
+        x = max(pad, min(max_x, x))
+    if max_y < min_y:
+        y = min_y
     else:
-        y = surface_h - pad
+        y = max(min_y, min(max_y, y))
     return (x, y)
 
 

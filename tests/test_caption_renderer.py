@@ -3,7 +3,7 @@ from screen_recorder.effects.types.caption import (
     CaptionEffect, Fade, Position,
 )
 from screen_recorder.ui.video.caption_renderer import (
-    fade_alpha, anchor_xy, draw_caption,
+    fade_alpha, anchor_xy, draw_caption, clamp_free_offset,
 )
 
 
@@ -38,10 +38,10 @@ def test_text_align_left_vs_center_short_line_shifts_left(qtbot):
             position=Position(anchor="middle-center"),
             text_align=align,
         )
-        img = QImage(600, 200, QImage.Format_ARGB32)
+        img = QImage(1200, 200, QImage.Format_ARGB32)
         img.fill(Qt.transparent)
         p = QPainter(img)
-        draw_caption(p, cap, position_ms=1000, surface_w=600, surface_h=200)
+        draw_caption(p, cap, position_ms=1000, surface_w=1200, surface_h=200)
         p.end()
         return img
 
@@ -60,7 +60,12 @@ def test_text_align_left_vs_center_short_line_shifts_left(qtbot):
 
 
 def test_text_align_right_vs_center_short_line_shifts_right(qtbot):
-    """동일 캡션을 align=right 와 align=center → 짧은 줄의 leftmost x 가 right 가 center 보다 큼."""
+    """동일 캡션을 align=right 와 align=center → 짧은 줄의 leftmost x 가 right 가 center 보다 큼.
+
+    surface 를 1200×200 으로 키워 긴 줄도 안에 들어옴 — bbox 안전 클램프(text > surface
+    시 pad 로 좌상 정렬) 가 발동하면 align-right 짧은 줄이 surface 밖으로 빠져 못 보이는
+    회귀로 이어짐. 정상 사용 케이스 (text 가 surface 안에 들어가는 경우) 로 검증.
+    """
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPainter
 
@@ -71,10 +76,10 @@ def test_text_align_right_vs_center_short_line_shifts_right(qtbot):
             position=Position(anchor="middle-center"),
             text_align=align,
         )
-        img = QImage(600, 200, QImage.Format_ARGB32)
+        img = QImage(1200, 200, QImage.Format_ARGB32)
         img.fill(Qt.transparent)
         p = QPainter(img)
-        draw_caption(p, cap, position_ms=1000, surface_w=600, surface_h=200)
+        draw_caption(p, cap, position_ms=1000, surface_w=1200, surface_h=200)
         p.end()
         return img
 
@@ -84,8 +89,8 @@ def test_text_align_right_vs_center_short_line_shifts_right(qtbot):
     lmx_center = _leftmost_red_x_per_y(img_center, 200)
     short_right = max(lmx_right.values())   # 짧은 줄 = leftmost 가 가장 큰 y 의 x
     short_center = max(lmx_center.values())
-    assert short_right >= short_center, (
-        f"right-aligned short line x={short_right} should be ≥ center-aligned x={short_center}"
+    assert short_right > short_center, (
+        f"right-aligned short line x={short_right} should be > center-aligned x={short_center}"
     )
 
 
@@ -169,3 +174,54 @@ def test_draw_caption_returns_early_outside_window(qtbot):
                      surface_w=100, surface_h=100)
     finally:
         p.end()
+
+
+def test_clamp_free_offset_keeps_text_bbox_inside_surface():
+    """free anchor 의 정규화 중심을 [half_w_norm, 1 - half_w_norm] 으로 잘라낸다.
+
+    text 200×40, surface 1000×500 → half_w_n = (100+8)/1000 = 0.108,
+    half_h_n = (20+8)/500 = 0.056. 1.0 입력 → 1 - 0.108 = 0.892 로 clamp.
+    0.0 입력 → 0.108 로 clamp.
+    """
+    ox, oy = clamp_free_offset(200, 40, 1000, 500, 1.0, 1.0)
+    assert abs(ox - 0.892) < 1e-6
+    assert abs(oy - 0.944) < 1e-6
+    ox, oy = clamp_free_offset(200, 40, 1000, 500, 0.0, 0.0)
+    assert abs(ox - 0.108) < 1e-6
+    assert abs(oy - 0.056) < 1e-6
+    # 범위 안 입력은 그대로 통과.
+    ox, oy = clamp_free_offset(200, 40, 1000, 500, 0.5, 0.5)
+    assert ox == 0.5
+    assert oy == 0.5
+
+
+def test_clamp_free_offset_huge_text_locks_to_center():
+    """text 가 surface 보다 크면 어느 쪽으로 잡아도 bbox 가 안 맞아 0.5 로 고정."""
+    ox, oy = clamp_free_offset(2000, 1000, 500, 400, 0.1, 0.9)
+    assert ox == 0.5
+    assert oy == 0.5
+
+
+def test_anchor_xy_clamps_off_surface_request():
+    """9-zone 'bottom-right' + 텍스트가 surface 보다 큰 경우 — 좌상 (pad, pad+th) 정렬.
+
+    bbox 안전 클램프 회귀 보호: 사용자가 surface 보다 큰 캡션을 만들어도 첫 줄
+    baseline 이 보이는 영역 안에 들어옴.
+    """
+    pos = Position(anchor="bottom-right")
+    # surface 100×80, text 200×60 — 둘 다 surface 보다 큼.
+    # max_x = 100-200-8 = -108 < pad → x = pad = 8
+    # max_y = 80-8 = 72, min_y = pad+text_h = 68, original y = 72 → clamp 안에 머묾.
+    x, y = anchor_xy(pos, text_w=200, text_h=60, pad=8, surface_w=100, surface_h=80)
+    assert x == 8
+    assert 68 <= y <= 72   # 처음 baseline 이 보이는 영역 안.
+
+
+def test_anchor_xy_free_off_surface_offset_clamped_to_edge():
+    """free anchor 로 offset_x=1.0 (오른쪽 끝) 줘도 텍스트가 잘리지 않는 위치로 clamp."""
+    pos = Position(anchor="free", offset_x=1.0, offset_y=1.0)
+    # surface 1000×500, text 200×40 — 안쪽 클램프 가능 (텍스트가 작음).
+    x, y = anchor_xy(pos, text_w=200, text_h=40, pad=8, surface_w=1000, surface_h=500)
+    # max_x = 1000 - 200 - 8 = 792, max_y = 500 - 8 = 492 — 둘 다 안쪽으로 끌려감.
+    assert x == 792
+    assert y == 492

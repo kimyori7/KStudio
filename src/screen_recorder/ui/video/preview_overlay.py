@@ -616,8 +616,22 @@ class PreviewOverlay(QWidget):
         delta_x = pos.x() - self._drag_start_pos.x()
         delta_y = pos.y() - self._drag_start_pos.y()
         if self._drag_caption_id is not None:
-            new_x = max(0.0, min(1.0, self._drag_start_offset_norm[0] + delta_x / fw))
-            new_y = max(0.0, min(1.0, self._drag_start_offset_norm[1] + delta_y / fh))
+            raw_x = self._drag_start_offset_norm[0] + delta_x / fw
+            raw_y = self._drag_start_offset_norm[1] + delta_y / fh
+            # anchor 좌표만 [0, 1] 클램프하면 free 의 텍스트 *중심* 가정 때문에 절반이
+            # 화면 밖으로 나감. 텍스트 bbox 가 frame 안에 머물도록 measure 후 clamp.
+            cap_eff = next(
+                (e for e in self._sidecar.effects if e.id == self._drag_caption_id),
+                None,
+            ) if self._sidecar is not None else None
+            if cap_eff is not None and cap_eff.type == "caption":
+                tw, th = caption_renderer.measure_text(cap_eff)
+                new_x, new_y = caption_renderer.clamp_free_offset(
+                    tw, th, fw, fh, raw_x, raw_y,
+                )
+            else:
+                new_x = max(0.0, min(1.0, raw_x))
+                new_y = max(0.0, min(1.0, raw_y))
             self._drag_override_offset = (new_x, new_y)
         else:
             raw = (self._drag_start_norm[0] + delta_x / fw,
