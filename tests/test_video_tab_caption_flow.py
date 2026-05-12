@@ -40,6 +40,42 @@ def test_lane_request_add_creates_caption_at_ms(qtbot, sample_mp4, tmp_path):
     assert e.out_ms == 5000 + 3000
 
 
+def test_video_tab_accepts_external_file_drop(qtbot, sample_mp4, tmp_path):
+    """VideoTab 에 드래그-드롭 활성화 + dragEnterEvent 가 영상 url 수락.
+
+    실제 segment 생성은 ffmpeg 가 영상 길이를 읽어야 하므로 단위 테스트에서는
+    수락 여부만 검증. _on_track_insert_files 의 위임 경로는 별도 통합 테스트.
+    """
+    from PySide6.QtCore import QMimeData, QPoint, QUrl, Qt
+    from PySide6.QtGui import QDragEnterEvent
+
+    tab = _make_tab(qtbot, sample_mp4, tmp_path)
+    assert tab.acceptDrops() is True
+
+    extra = tmp_path / "extra.mp4"
+    extra.write_bytes(b"")
+    md = QMimeData()
+    md.setUrls([QUrl.fromLocalFile(str(extra))])
+    enter = QDragEnterEvent(QPoint(100, 100), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier)
+    tab.dragEnterEvent(enter)
+    assert enter.isAccepted()
+
+
+def test_video_tab_ignores_unsupported_file_drop(qtbot, sample_mp4, tmp_path):
+    """영상/이미지 확장자 외 파일은 거부."""
+    from PySide6.QtCore import QMimeData, QPoint, QUrl, Qt
+    from PySide6.QtGui import QDragEnterEvent
+
+    tab = _make_tab(qtbot, sample_mp4, tmp_path)
+    other = tmp_path / "doc.pdf"
+    other.write_bytes(b"")
+    md = QMimeData()
+    md.setUrls([QUrl.fromLocalFile(str(other))])
+    enter = QDragEnterEvent(QPoint(100, 100), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier)
+    tab.dragEnterEvent(enter)
+    assert not enter.isAccepted()
+
+
 def test_new_caption_inherits_last_used_font(qtbot, sample_mp4, tmp_path):
     """첫 캡션 → 폰트 수정 후 두 번째 캡션 추가 → 두 번째도 같은 폰트/크기/굵기."""
     from dataclasses import replace

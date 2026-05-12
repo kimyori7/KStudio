@@ -59,6 +59,10 @@ class VideoTab(QWidget):
         # 한글 IME ON 상태에서 알파벳 키(T/C/D/F 등) 가 IME 에 가로채여 단축키가
         # 안 먹히는 문제를 방지. 자식 위젯(인스펙터의 QTextEdit 등) 은 영향 없음.
         self.setAttribute(Qt.WA_InputMethodEnabled, False)
+        # 외부 파일 드래그-드롭 — 트랙 lane 위가 아닌 영역 (재생 화면 등) 에
+        # 드롭하면 timeline 끝에 append. 트랙 lane 위의 정확한 위치 드롭은
+        # VideoTrackLane.dropEvent 가 먼저 catch (Qt 의 자식 우선 전파 규칙).
+        self.setAcceptDrops(True)
         self._source_label = source_label
         self._source_path = Path(path)
         self._settings = player_settings
@@ -567,6 +571,53 @@ class VideoTab(QWidget):
                 lane.update()
             except (RuntimeError, AttributeError):
                 pass
+
+    _ACCEPTED_VIDEO_DROP_SUFFIXES = {
+        ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv", ".gif",
+        ".png", ".jpg", ".jpeg",
+    }
+
+    def dragEnterEvent(self, event) -> None:
+        """외부 파일 드래그 진입 — 영상/이미지 확장자만 수락."""
+        md = event.mimeData()
+        if not md.hasUrls():
+            event.ignore()
+            return
+        paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+        if not any(
+            Path(p).suffix.lower() in self._ACCEPTED_VIDEO_DROP_SUFFIXES
+            for p in paths
+        ):
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        """재생 화면 / timeline 빈 영역에 영상·이미지 드롭 → timeline 끝에 append.
+
+        트랙 lane 위 정확한 위치 드롭은 VideoTrackLane.dropEvent 가 먼저 catch
+        (Qt 자식 우선 전파). 여기로 도달하는 건 lane 외 영역 드롭.
+        """
+        md = event.mimeData()
+        if not md.hasUrls():
+            event.ignore()
+            return
+        paths = [
+            u.toLocalFile() for u in md.urls()
+            if u.isLocalFile()
+            and Path(u.toLocalFile()).suffix.lower() in self._ACCEPTED_VIDEO_DROP_SUFFIXES
+        ]
+        if not paths:
+            event.ignore()
+            return
+        # timeline 끝 = 가장 큰 (start_ms + duration_ms) — 빈 트랙이면 0.
+        track = self.sidecar().video_track
+        end_ms = max((seg.start_ms + seg.duration_ms for seg in track), default=0)
+        self._on_track_insert_files(paths, end_ms)
+        event.acceptProposedAction()
 
     def _on_track_insert_files(self, paths: list, at_combined_ms: int) -> None:
         """드래그-드롭 / 라이브러리 드롭 → 여러 파일을 at_combined_ms 부터 순서대로 삽입.
