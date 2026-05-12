@@ -76,13 +76,19 @@ def draw_caption(p: QPainter, c: CaptionEffect, *, position_ms: int,
         x += int(c.position.offset_x)
         y += int(c.position.offset_y)
 
-    # 배경 박스
+    # 배경 박스 — 텍스트 ascent/descent 기준 수직 균등 padding.
+    # 이전: top 은 y-text_h (텍스트 꼭대기 = 정확히 0 pad), bottom 은 y+pad
+    # (descent 포함 + pad) → 위는 padding 없고 아래만 있어 텍스트가 bg 의
+    # 위쪽으로 치우쳐 "텍스트가 bg 살짝 아래에" 보이던 회귀.
     if c.background is not None:
         bg = QColor(c.background.color)
         bg.setAlphaF(c.background.opacity * alpha)
         p.setPen(Qt.NoPen)
         p.setBrush(bg)
-        p.drawRoundedRect(x - pad, y - text_h, text_w + 2 * pad, text_h + pad, 4, 4)
+        v_pad = pad // 2
+        bg_top = y - fm.ascent() - v_pad
+        bg_h = fm.ascent() + fm.descent() + 2 * v_pad
+        p.drawRoundedRect(x - pad, bg_top, text_w + 2 * pad, bg_h, 4, 4)
 
     # 외곽선
     if c.stroke is not None and c.stroke.width > 0:
