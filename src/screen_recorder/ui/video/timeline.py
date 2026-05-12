@@ -6,8 +6,8 @@ TrimMarkerLane 은 Task 2, VideoTimeline 컨테이너는 Task 3 에서 정의.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen, QWheelEvent
+from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
 
 from ...effects import Sidecar
 from .effect_lane import _HEADER_WIDTH
@@ -199,11 +199,22 @@ class VideoTimeline(QWidget):
     effect_changed = Signal(object)         # Effect
     effect_deleted = Signal(str)            # effect_id
 
+    # 가로 줌 — 1.0 = fit-to-window, > 1 = 확대 (가로 스크롤 발생). Ctrl+휠 로 조정.
+    _ZOOM_MIN = 1.0
+    _ZOOM_MAX = 20.0
+    _ZOOM_STEP = 1.25   # 휠 한 칸당 배수
+
     def __init__(self) -> None:
         super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ---- inner 컨테이너 (실제 lane 들) — QScrollArea 안에 담아 가로 스크롤 가능. ----
+        self._inner = QWidget()
+        inner_layout = QVBoxLayout(self._inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.setSpacing(0)
 
         self.slider_lane = TimelineSliderLane()
         # TrimMarkerLane 은 새 segment 모델에서 양 끝 자르기를 첫/끝 segment 의
@@ -215,14 +226,28 @@ class VideoTimeline(QWidget):
         self.video_track_lane = VideoTrackLane()
         self.effect_lanes = EffectLanesWidget()
 
-        layout.addWidget(self.slider_lane)
-        layout.addWidget(self.video_track_lane)
-        layout.addWidget(self.effect_lanes)
+        inner_layout.addWidget(self.slider_lane)
+        inner_layout.addWidget(self.video_track_lane)
+        inner_layout.addWidget(self.effect_lanes)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.NoFrame)
+        # 가로 스크롤바 — 줌 시에만 등장. 세로는 lanes 가 모두 fixed-height 라 필요 없음.
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._inner)
+        outer.addWidget(self._scroll)
+
+        self._zoom_factor: float = 1.0
 
         # ---- Playhead 수직 가이드 (전체 lane 관통) ----
         # transparent overlay 라 자식 lane 들 위에 한 줄 그림. 편집 시 시각 기준점.
-        self.playhead_overlay = _PlayheadOverlay(self)
+        # inner 의 자식이라 가로 스크롤 시 함께 이동.
+        self.playhead_overlay = _PlayheadOverlay(self._inner)
         self.playhead_overlay.raise_()
+        # inner resize 시 overlay 도 따라가도록.
+        self._inner.installEventFilter(self)
 
         # ---- 시그널 fan-in ----
         self.slider_lane.seek_request.connect(self.seek_request.emit)
@@ -255,14 +280,79 @@ class VideoTimeline(QWidget):
         self.effect_lanes.set_position_ms(ms)
         self.playhead_overlay.set_position_ms(ms)
 
+    def eventFilter(self, watched, event):
+        from PySide6.QtCore import QEvent
+        if watched is self._inner and event.type() == QEvent.Resize:
+            self.playhead_overlay.setGeometry(self._inner.rect())
+            self.playhead_overlay.raise_()
+        return super().eventFilter(watched, event)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self.playhead_overlay.setGeometry(self.rect())
+        self._apply_zoom_width()
+        self.playhead_overlay.setGeometry(self._inner.rect())
         self.playhead_overlay.raise_()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self.playhead_overlay.setGeometry(self.rect())
+        self._apply_zoom_width()
+        self.playhead_overlay.setGeometry(self._inner.rect())
+        self.playhead_overlay.raise_()
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Ctrl + 휠 = 가로 줌 in/out. Ctrl 없으면 부모로 전달 (스크롤 등)."""
+        if event.modifiers() & Qt.ControlModifier:
+            steps = event.angleDelta().y() / 120.0   # 한 칸 = 120
+            if steps == 0:
+                event.ignore()
+                return
+            # 줌 중심 — 마우스 커서의 콘텐츠 비례 위치 보존.
+            viewport = self._scroll.viewport()
+            mouse_x_in_viewport = event.position().x()
+            scroll_x = self._scroll.horizontalScrollBar().value()
+            content_x = scroll_x + int(mouse_x_in_viewport)
+            old_inner_w = max(1, self._inner.width())
+            ratio = content_x / old_inner_w
+            # 새 줌.
+            factor = self._zoom_factor * (self._ZOOM_STEP ** steps)
+            factor = max(self._ZOOM_MIN, min(self._ZOOM_MAX, factor))
+            if abs(factor - self._zoom_factor) < 1e-3:
+                event.accept()
+                return
+            self._zoom_factor = factor
+            self._apply_zoom_width()
+            # 줌 후 콘텐츠 너비 재계산 → 마우스 위치가 같은 비율을 가리키도록 스크롤.
+            new_inner_w = max(1, self._inner.width())
+            new_content_x = ratio * new_inner_w
+            new_scroll = int(new_content_x - mouse_x_in_viewport)
+            self._scroll.horizontalScrollBar().setValue(new_scroll)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def set_zoom_factor(self, factor: float) -> None:
+        """API — 외부에서 줌 배율 지정. Ctrl+휠 와 동일."""
+        self._zoom_factor = max(self._ZOOM_MIN, min(self._ZOOM_MAX, float(factor)))
+        self._apply_zoom_width()
+
+    def zoom_factor(self) -> float:
+        return self._zoom_factor
+
+    def _apply_zoom_width(self) -> None:
+        """inner 의 minimum width 를 viewport_w × zoom_factor 로 — viewport 보다 크면 가로 스크롤."""
+        if not hasattr(self, "_scroll"):
+            return
+        vp_w = self._scroll.viewport().width()
+        target = int(vp_w * self._zoom_factor)
+        if target <= 0:
+            return
+        if self._zoom_factor <= 1.0 + 1e-3:
+            # fit-to-window: 최소 너비 0 → viewport 너비로 자동 stretch.
+            self._inner.setMinimumWidth(0)
+        else:
+            self._inner.setMinimumWidth(target)
+        # playhead overlay 도 inner 전체 너비를 덮도록.
+        self.playhead_overlay.setGeometry(self._inner.rect())
         self.playhead_overlay.raise_()
 
     def set_sidecar(self, sidecar: Sidecar) -> None:

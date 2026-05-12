@@ -123,3 +123,70 @@ def test_trim_in_drag_with_no_out_emits_zero_for_out(timeline, qtbot):
     with qtbot.waitSignal(timeline.trim_changed, timeout=300) as blocker:
         timeline.trim_marker_lane.in_changed.emit(3_000)
     assert blocker.args == [3_000, 0]
+
+
+def test_zoom_factor_default_one(timeline):
+    """초기 zoom = 1.0 (fit-to-window)."""
+    assert timeline.zoom_factor() == 1.0
+
+
+def test_set_zoom_factor_expands_inner_width(timeline, qtbot):
+    """zoom 2x → inner widget 의 minimum width 가 viewport × 2."""
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    vp_w = timeline._scroll.viewport().width()
+    timeline.set_zoom_factor(2.0)
+    assert timeline._inner.minimumWidth() == vp_w * 2
+
+
+def test_set_zoom_factor_clamped(timeline):
+    """zoom 범위 [1.0, 20.0] 밖이면 clamp."""
+    timeline.set_zoom_factor(0.5)
+    assert timeline.zoom_factor() == 1.0
+    timeline.set_zoom_factor(100.0)
+    assert timeline.zoom_factor() == 20.0
+
+
+def test_ctrl_wheel_zooms(timeline, qtbot):
+    """Ctrl+휠 위 = 확대, 아래 = 축소."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    # 줌 인 — angleDelta=+120 (한 칸).
+    ev_in = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50),
+        QPoint(0, 0), QPoint(0, 120),
+        Qt.NoButton, Qt.ControlModifier,
+        Qt.NoScrollPhase, False,
+    )
+    timeline.wheelEvent(ev_in)
+    assert timeline.zoom_factor() > 1.0
+    # 줌 아웃 — angleDelta=-120.
+    ev_out = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50),
+        QPoint(0, 0), QPoint(0, -120),
+        Qt.NoButton, Qt.ControlModifier,
+        Qt.NoScrollPhase, False,
+    )
+    timeline.wheelEvent(ev_out)
+    assert timeline.zoom_factor() == 1.0
+
+
+def test_wheel_without_ctrl_ignored(timeline, qtbot):
+    """Ctrl 없는 휠은 zoom 변경 안 함 (부모로 전달)."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    ev = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50),
+        QPoint(0, 0), QPoint(0, 120),
+        Qt.NoButton, Qt.NoModifier,
+        Qt.NoScrollPhase, False,
+    )
+    timeline.wheelEvent(ev)
+    assert timeline.zoom_factor() == 1.0
