@@ -153,8 +153,11 @@ class VideoTab(QWidget):
 
         # 모델 → 컨트롤
         self.player.duration_changed.connect(self.duration_resolved.emit)
-        self.player.duration_changed.connect(self.timeline.set_duration_ms)
-        self.player.duration_changed.connect(self.controls.set_duration_ms)
+        # 회귀 fix: player.duration_changed 는 segment 전환마다 그 segment 의 source
+        # 영상 길이로 발화 → timeline 의 set_duration_ms 를 덮어쓰면 효과 lane 들의
+        # 시간축이 활성 segment 의 길이로 좁아져 캡션·배속·줌 의 절대 in_ms 위치가
+        # 어긋남. 권위 있는 source 는 _segment_ctrl.combined_duration_changed (트랙
+        # 전체 길이) — 그 단일 source 만 timeline/controls 에 연결.
         # 첫 segment 의 src_duration_ms 가 비어 있으면 (init 시 duration_ms=0 로 들어온 경우)
         # player 가 실제 길이 로드한 시점에 채워주고 segment_ctrl·track lane 갱신.
         self.player.duration_changed.connect(self._on_player_duration_for_segment)
