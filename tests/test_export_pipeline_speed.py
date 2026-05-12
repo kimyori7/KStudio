@@ -112,6 +112,40 @@ def test_speed_plus_insert_cut_raises():
         )
 
 
+def test_speed_spanning_multiple_video_track_segments_applies_to_all():
+    """배속이 drag-drop 으로 이어붙인 영상 경계를 넘어가면 뒤 segment 에도 적용돼야.
+
+    회귀: _remap_effects_to_gap_collapsed 가 eff.in_ms 가 속한 첫 segment 만 찾고
+    거기서 clip — 경계를 넘어가는 배속 효과가 두 번째 이후 segment 에서 무시됨.
+    fix: 모든 겹치는 segment 마다 sub-effect 를 생성.
+    """
+    from screen_recorder.effects.segment import VideoSegment
+    # A.mp4 0~5s + B.mp4 0~5s 이어붙임 (사용자 타임라인에서 붙어 있음).
+    seg1 = VideoSegment(
+        src="A.mp4", src_in_ms=0, src_out_ms=5000, src_duration_ms=5000,
+        media_kind="video", start_ms=0,
+    )
+    seg2 = VideoSegment(
+        src="B.mp4", src_in_ms=0, src_out_ms=5000, src_duration_ms=5000,
+        media_kind="video", start_ms=5000,
+    )
+    # 배속 효과가 두 segment 경계(5000ms) 를 넘어 전체 10초에 걸쳐 있음.
+    speed = SpeedEffect(in_ms=0, out_ms=10000, rate=2.0)
+    sc = Sidecar(source_path="A.mp4", source_hash="h",
+                 video_track=[seg1, seg2], effects=[speed])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 두 segment 모두 setpts=PTS/2 + atempo 가 붙어야.
+    assert fc.count("setpts=PTS/2") == 2, (
+        f"both segments should get speed=2x, got fc: {fc}"
+    )
+    assert fc.count("atempo=2") >= 2, f"both segments should get atempo=2.0, got fc: {fc}"
+
+
 def test_speed_with_trimmed_segment_does_not_misfire_partial_overlap():
     """video_track 의 segment 가 src_in 으로 잘려 source ms ≠ combined ms 인 케이스.
 
