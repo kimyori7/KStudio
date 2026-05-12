@@ -19,11 +19,16 @@ class Effect:
 
     kw_only=True — 인스턴스 생성은 항상 키워드 인자로. 자식 dataclass 가
     type 을 default 로 override 할 때의 "non-default after default" 함정 회피.
+
+    track_idx (Phase 21) — 같은 type 의 효과가 동시에 여러 개 있을 때 시각적으로
+    구분하기 위한 sub-lane 인덱스. 0 = 기본 lane (위), 1+ = 추가 lane (아래로 쌓임).
+    겹침 검사는 같은 track_idx 안에서만 — 다른 track_idx 면 동시 가능.
     """
     type: str
     in_ms: int
     out_ms: int
     id: str = field(default_factory=_new_id)
+    track_idx: int = 0
 
     def __post_init__(self) -> None:
         if self.in_ms < 0:

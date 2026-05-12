@@ -59,15 +59,24 @@ def test_remove_effect_unknown_id_no_op(video, tmp_path):
     assert ec.sidecar().effects == []
 
 
-def test_add_effect_rejects_overlap_same_type(video, tmp_path):
-    """같은 type 의 시간 겹치는 효과 추가 시도 → 거부 (False 반환)."""
+def test_add_effect_overlap_auto_shifts_to_next_track(video, tmp_path):
+    """Phase 21: 같은 type 시간 겹침 시 자동으로 다음 track_idx (sub-lane) 로 이동.
+
+    이전엔 거부 (False) 반환했으나, 동시에 여러 캡션 가능하도록 변경.
+    """
     ec = EditController(video, tmp_path / "sidecars")
     a = CaptionEffect(in_ms=0, out_ms=2000, text="a")
     ec.add_effect(a)
     b = CaptionEffect(in_ms=1000, out_ms=3000, text="b")  # overlaps a
     ok = ec.add_effect(b)
-    assert ok is False
-    assert len(ec.sidecar().effects) == 1
+    assert ok is True
+    effs = ec.sidecar().effects
+    assert len(effs) == 2
+    # a 는 track 0, b 는 track 1 으로 자동 이동.
+    a2 = next(e for e in effs if e.text == "a")
+    b2 = next(e for e in effs if e.text == "b")
+    assert a2.track_idx == 0
+    assert b2.track_idx == 1
 
 
 def test_undo_after_add_effect_restores_empty(qtbot, video, tmp_path):
@@ -75,6 +84,27 @@ def test_undo_after_add_effect_restores_empty(qtbot, video, tmp_path):
     ec.add_effect(CaptionEffect(in_ms=0, out_ms=1000, text="x"))
     ec.undo()
     assert ec.sidecar().effects == []
+
+
+def test_add_effect_three_overlapping_use_tracks_0_1_2(video, tmp_path):
+    """Phase 21: 세 캡션이 시간상 모두 겹치면 track 0, 1, 2 로 자동 분리."""
+    ec = EditController(video, tmp_path / "sidecars")
+    ec.add_effect(CaptionEffect(in_ms=0, out_ms=5000, text="a"))
+    ec.add_effect(CaptionEffect(in_ms=1000, out_ms=6000, text="b"))
+    ec.add_effect(CaptionEffect(in_ms=2000, out_ms=7000, text="c"))
+    effs = sorted(ec.sidecar().effects, key=lambda e: e.text)
+    assert [e.track_idx for e in effs] == [0, 1, 2]
+
+
+def test_different_track_idx_no_overlap_check(video, tmp_path):
+    """track_idx 다르면 같은 type 이라도 시간 겹쳐도 OK — overlaps_existing 가
+    같은 track 안에서만 검사."""
+    from screen_recorder.effects.overlap import overlaps_existing
+    a = CaptionEffect(in_ms=0, out_ms=2000, text="a", track_idx=0)
+    b = CaptionEffect(in_ms=1000, out_ms=3000, text="b", track_idx=1)
+    assert overlaps_existing([a], b) is False
+    c = CaptionEffect(in_ms=1000, out_ms=3000, text="c", track_idx=0)
+    assert overlaps_existing([a], c) is True
 
 
 def test_update_effect_rejects_overlap_with_sibling(video, tmp_path):

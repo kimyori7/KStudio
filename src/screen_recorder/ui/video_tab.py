@@ -655,15 +655,19 @@ class VideoTab(QWidget):
             self.player.flash_action("⚠ 붙여넣기 실패 — 빈 자리가 없음")
 
     def _find_free_slot_for_paste(self, eff, target_ms: int, duration: int) -> int:
-        """같은 type 의 효과들과 [target_ms, target_ms+duration) 가 겹치면 그 이후
-        첫 빈 자리로 이동. 영상 끝을 넘으면 target_ms 그대로 (add_effect 가 거부).
+        """같은 type + 같은 track_idx 의 효과들과 [target_ms, target_ms+duration) 가
+        겹치면 그 이후 첫 빈 자리로 이동. 영상 끝을 넘으면 target_ms 그대로.
 
-        EditController.add_effect 가 같은 type 겹침을 차단하므로 사전에 회피.
+        Phase 21: track_idx 가 다르면 같은 type 이라도 동시 가능 — auto_shift 도 같은
+        track_idx 안에서만.
         """
         timeline_end = self._get_duration_ms() or (target_ms + duration)
         target_type = getattr(eff, "type", "")
+        target_ti = getattr(eff, "track_idx", 0)
         same_type = sorted(
-            (e for e in self.sidecar().effects if getattr(e, "type", "") == target_type),
+            (e for e in self.sidecar().effects
+             if getattr(e, "type", "") == target_type
+             and getattr(e, "track_idx", 0) == target_ti),
             key=lambda e: e.in_ms,
         )
         cursor = target_ms

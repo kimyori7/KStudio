@@ -134,12 +134,21 @@ class EditController(QObject):
             self._history = History(initial=self._sidecar)
 
     def add_effect(self, effect) -> bool:
-        """효과 추가 — 같은 type 의 시간 겹침 검사 후 push.
+        """효과 추가. 시간 겹침 시 다음 빈 track_idx (sub-lane) 자동 할당 (Phase 21).
 
-        반환값: 추가 성공이면 True, 겹쳐서 거부면 False.
+        반환값: 항상 True — track_idx 끝까지 다 차도 0..N 마지막 + 1 로 새 lane.
+        같은 type 의 시간 겹침을 거부하지 않음 — 동시에 여러 caption/arrow 등 허용.
         """
         if overlaps_existing(self._sidecar.effects, effect):
-            return False
+            from dataclasses import replace
+            # 같은 type 의 track_idx 중 candidate.in_ms~out_ms 겹치지 않는 가장 작은 값.
+            ti = 0
+            while True:
+                ti += 1
+                trial = replace(effect, track_idx=ti)
+                if not overlaps_existing(self._sidecar.effects, trial):
+                    effect = trial
+                    break
         new_sc = copy.deepcopy(self._sidecar)
         new_sc.effects.append(effect)
         self.update_sidecar(new_sc)
