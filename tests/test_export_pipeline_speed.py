@@ -92,6 +92,39 @@ def test_speed_plus_insert_cut_raises():
         )
 
 
+def test_speed_with_trimmed_segment_does_not_misfire_partial_overlap():
+    """video_track 의 segment 가 src_in 으로 잘려 source ms ≠ combined ms 인 케이스.
+
+    회귀: _speed_overlapping_segment 가 seg.source_start_ms (원본 영상 ms) 와
+    effect.in_ms (combined ms) 를 비교해 false partial overlap 발생.
+    예: src 30s ~ 177s (combined 0~147s), speed 5.2s ~ 180s (combined) →
+    effect.in_ms=5216 < seg.source_start=30000 으로 잘못 분류돼 export 차단.
+    fix: combined_*_ms 기준 비교.
+    """
+    from screen_recorder.effects.segment import VideoSegment
+    seg = VideoSegment(
+        src="A.mp4", src_in_ms=30000, src_out_ms=177333, src_duration_ms=200000,
+        media_kind="video", start_ms=0,
+    )
+    # 단일 segment 도 src_in>0 이라 같은 경로. video_track 1 개라도 활용.
+    seg2 = VideoSegment(
+        src="A.mp4", src_in_ms=0, src_out_ms=10000, src_duration_ms=200000,
+        media_kind="video", start_ms=147333,
+    )
+    speed = SpeedEffect(in_ms=5216, out_ms=180015, rate=2.0)
+    sc = Sidecar(source_path="A.mp4", source_hash="h",
+                 video_track=[seg, seg2], effects=[speed])
+    # 통과 — partial overlap raise 안 함.
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=200000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # speed sub-segment 가 정상 생성됐는지 — setpts=PTS/2 등장.
+    assert "setpts=PTS/2" in fc
+
+
 def test_speed_partial_overlap_auto_splits_segment():
     """SpeedEffect 가 segment 를 부분만 덮으면 segment 를 효과 경계에서 자동 split.
 

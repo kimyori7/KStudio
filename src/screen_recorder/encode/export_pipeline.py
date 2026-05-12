@@ -65,17 +65,18 @@ def _atempo_chain(rate: float) -> str:
 def _speed_overlapping_segment(speeds: list[SpeedEffect], seg: TimelineSegment) -> Optional[SpeedEffect]:
     """seg 와 시간상 겹치는 SpeedEffect 를 반환 (없으면 None).
 
-    seg 의 시간축은 main 영상의 source ms 기준 (cuts 가 없는 경우 seg 의
-    source_start_ms / source_end_ms 가 main 영상의 위치와 일치). v1 에서는 cut+speed
-    조합을 차단하므로 seg.source 는 항상 'main' 이고 source_*_ms == combined_*_ms.
+    effect.in_ms/out_ms 는 combined timeline ms 기준. 따라서 segment 도
+    combined_start_ms/combined_end_ms 로 비교해야 정확. 다중 segment 트랙에서
+    src_in/out 으로 자르기를 한 경우 source ms ≠ combined ms 가 되는데, 이전엔
+    source_start_ms 와 비교해 partial overlap 오분류 회귀가 있었음.
 
-    겹침 분류:
-    - 완전 포함: speed.in_ms <= seg.start AND speed.out_ms >= seg.end → 매칭
-    - 완전 밖: speed.out_ms <= seg.start OR speed.in_ms >= seg.end → 미매칭
-    - 부분 겹침: NotImplementedError (v1 에서 명시적으로 차단)
+    겹침 분류 (combined ms 기준):
+    - 완전 포함: sp.in_ms <= combined_start AND sp.out_ms >= combined_end → 매칭
+    - 완전 밖: sp.out_ms <= combined_start OR sp.in_ms >= combined_end → 미매칭
+    - 부분 겹침: NotImplementedError (호출 측이 사전에 _split_main_segments_at_effect_boundaries 로 해결)
     """
-    seg_start = seg.source_start_ms
-    seg_end = seg.source_end_ms
+    seg_start = seg.combined_start_ms
+    seg_end = seg.combined_end_ms
     for sp in speeds:
         if sp.out_ms <= seg_start or sp.in_ms >= seg_end:
             continue   # 완전 밖
@@ -84,24 +85,17 @@ def _speed_overlapping_segment(speeds: list[SpeedEffect], seg: TimelineSegment) 
         # 부분 겹침
         raise NotImplementedError(
             f"SpeedEffect partial overlap with segment "
-            f"(speed: {sp.in_ms}-{sp.out_ms}, segment: {seg_start}-{seg_end}); "
+            f"(speed: {sp.in_ms}-{sp.out_ms}, combined segment: {seg_start}-{seg_end}); "
             f"v1 requires speed regions to fully contain or sit outside each segment"
         )
     return None
 
 
 def _zoom_overlapping_segment(zooms: list[ZoomEffect], seg: TimelineSegment) -> Optional[ZoomEffect]:
-    """seg 와 시간상 겹치는 ZoomEffect 를 반환 (없으면 None).
-
-    겹침 분류 — _speed_overlapping_segment 와 동일 규칙:
-    - 완전 포함: zoom.in_ms <= seg.start AND zoom.out_ms >= seg.end → 매칭
-    - 완전 밖: zoom.out_ms <= seg.start OR zoom.in_ms >= seg.end → 미매칭
-    - 부분 겹침: NotImplementedError (v1 에서 명시적으로 차단)
-
-    v1 에서는 zoom + cut/speed 조합을 차단하므로 seg.source 는 항상 'main' 이다.
-    """
-    seg_start = seg.source_start_ms
-    seg_end = seg.source_end_ms
+    """seg 와 시간상 겹치는 ZoomEffect 를 반환 (없으면 None). _speed_overlapping_segment
+    와 동일 규칙, combined ms 기준."""
+    seg_start = seg.combined_start_ms
+    seg_end = seg.combined_end_ms
     for z in zooms:
         if z.out_ms <= seg_start or z.in_ms >= seg_end:
             continue   # 완전 밖
@@ -110,7 +104,7 @@ def _zoom_overlapping_segment(zooms: list[ZoomEffect], seg: TimelineSegment) -> 
         # 부분 겹침
         raise NotImplementedError(
             f"ZoomEffect partial overlap with segment "
-            f"(zoom: {z.in_ms}-{z.out_ms}, segment: {seg_start}-{seg_end}); "
+            f"(zoom: {z.in_ms}-{z.out_ms}, combined segment: {seg_start}-{seg_end}); "
             f"v1 requires zoom regions to fully contain or sit outside each segment"
         )
     return None
@@ -535,22 +529,21 @@ def _build_timeline_from_video_track(
     return out, extra_srcs
 
 
-def _split_main_segments_at_effect_boundaries(
+def _split_segments_at_effect_boundaries(
     segments: list[TimelineSegment],
     speeds: list[SpeedEffect],
     zooms: list[ZoomEffect],
 ) -> list[TimelineSegment]:
-    """speed/zoom 효과의 in_ms / out_ms 경계점에서 main segment 들을 잘라
-    각 segment 가 효과에 완전 포함되거나 완전 밖에 있도록 만든다.
+    """speed/zoom 효과의 in_ms / out_ms (combined ms 기준) 경계점에서 segment 들을
+    잘라 각 segment 가 효과에 완전 포함되거나 완전 밖에 있도록 만든다.
 
-    이전엔 partial overlap 이면 _speed/zoom_overlapping_segment 가
-    NotImplementedError. 사용자가 segment 보다 짧은 구간에 효과를 걸면 export
-    자체가 막혔다. 이 함수가 그 케이스를 자동 split 으로 해결.
+    effect 는 combined ms, segment 의 combined_*_ms 와 비교. 자른 sub-segment 의
+    source_*_ms 는 원본 segment 의 src 시간축에서 비례 매핑 — segment 안에서
+    source 진행 속도가 일정하다는 (자르기/배속 없음) 가정.
 
-    insert segment 는 영향 없음 — v1 에서 speed/zoom + cut/insert 결합은 별도로
-    이미 차단됨. main segment 안에서 source_start_ms ~ source_end_ms 사이에
-    떨어지는 boundary 들만 split 점으로 사용. main segment 안에서 source 와
-    combined 는 1:1 매핑 (build_combined_timeline 보장) 이므로 offset 만 보존.
+    cut.insert (source_id 가 cut.id) 도 그 시간창에 효과가 걸리면 같이 split —
+    이전엔 main 만 split 했는데 다중 src 트랙의 insert segment 도 timeline 시간
+    축에 정상 위치하므로 일관 처리.
     """
     boundary_points: set[int] = set()
     for sp in speeds:
@@ -562,38 +555,46 @@ def _split_main_segments_at_effect_boundaries(
 
     out: list[TimelineSegment] = []
     for seg in segments:
-        if seg.source != "main":
-            out.append(seg)
-            continue
-        s_start = seg.source_start_ms
-        s_end = seg.source_end_ms
-        inside = sorted(b for b in boundary_points if s_start < b < s_end)
+        c_start = seg.combined_start_ms
+        c_end = seg.combined_end_ms
+        inside = sorted(b for b in boundary_points if c_start < b < c_end)
         if not inside:
             out.append(seg)
             continue
-        # main segment 안 source-to-combined offset (build_combined_timeline 보장).
-        offset = seg.combined_start_ms - s_start
-        prev_src = s_start
+        # source 길이 / combined 길이 비율 (보통 1, 단 매우 짧은 segment 안에서
+        # 부동소수점 round 영향 회피 위해 ratio 사용).
+        c_len = max(1, c_end - c_start)
+        s_len = seg.source_end_ms - seg.source_start_ms
+        ratio = s_len / c_len
+        prev_c = c_start
         for b in inside:
+            sub_c_start = prev_c
+            sub_c_end = b
+            sub_s_start = seg.source_start_ms + int(round((prev_c - c_start) * ratio))
+            sub_s_end = seg.source_start_ms + int(round((b - c_start) * ratio))
             out.append(TimelineSegment(
-                combined_start_ms=prev_src + offset,
-                combined_end_ms=b + offset,
-                source="main",
-                source_id=None,
-                source_start_ms=prev_src,
-                source_end_ms=b,
+                combined_start_ms=sub_c_start,
+                combined_end_ms=sub_c_end,
+                source=seg.source,
+                source_id=seg.source_id,
+                source_start_ms=sub_s_start,
+                source_end_ms=sub_s_end,
             ))
-            prev_src = b
-        # 마지막 잔여 부분.
+            prev_c = b
+        # 마지막 잔여.
         out.append(TimelineSegment(
-            combined_start_ms=prev_src + offset,
-            combined_end_ms=seg.combined_end_ms,
-            source="main",
-            source_id=None,
-            source_start_ms=prev_src,
-            source_end_ms=s_end,
+            combined_start_ms=prev_c,
+            combined_end_ms=c_end,
+            source=seg.source,
+            source_id=seg.source_id,
+            source_start_ms=seg.source_start_ms + int(round((prev_c - c_start) * ratio)),
+            source_end_ms=seg.source_end_ms,
         ))
     return out
+
+
+# 하위 호환 alias — 이전 이름으로 부르는 곳이 있을 수 있어 보존.
+_split_main_segments_at_effect_boundaries = _split_segments_at_effect_boundaries
 
 
 def _apply_trim_to_main_segments(
