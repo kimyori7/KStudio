@@ -372,15 +372,21 @@ def build_export_args(
         if zoom_match is not None:
             zoom_filter = "," + _zoom_crop_scale_filter(zoom_match, surface_w, surface_h)
 
+        # concat 필터는 모든 segment 의 stream 속성 (픽셀 포맷·SAR·오디오 sample
+        # rate·채널 layout) 이 일치해야 함. 다중 segment / 다중 src 시 원본 파일
+        # 별로 다를 수 있어 libx264 가 -22 (Invalid argument) 로 실패하던 회귀.
+        # video: format=yuv420p,setsar=1 / audio: aformat=stereo,44100 강제.
+        v_norm = ",format=yuv420p,setsar=1"
+        a_norm = ",aformat=channel_layouts=stereo:sample_rates=44100"
         if seg.source == "main":
             in_s = seg.source_start_ms / 1000.0
             out_s = seg.source_end_ms / 1000.0
             fc_parts.append(
                 f"[0:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
-                f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}[{v_label}]"
+                f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
             fc_parts.append(
-                f"[0:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}[{a_label}]"
+                f"[0:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
             )
         else:
             # source_id 가 cut.id 면 cut 의 insert, src 경로면 track 다중 src.
@@ -395,10 +401,10 @@ def build_export_args(
                 scale_mode = cut.scale_mode
             fc_parts.append(
                 f"[{idx}:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
-                f"{_scale_filter(scale_mode, surface_w, surface_h)}{zoom_filter}[{v_label}]"
+                f"{_scale_filter(scale_mode, surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
             fc_parts.append(
-                f"[{idx}:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}[{a_label}]"
+                f"[{idx}:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
             )
         seg_labels.append((v_label, a_label))
 
