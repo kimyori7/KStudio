@@ -579,15 +579,19 @@ class VideoTab(QWidget):
         """clipboard 의 효과를 deep copy → 마우스 위치 ms 를 in_ms 로, duration 보존.
 
         마우스가 timeline 영역 밖이면 현재 재생 위치 (playhead) 로 폴백.
-        새 효과는 EditController 의 overlap 차단을 거치므로 같은 type 이 시간
-        겹치면 추가 실패 — 그때는 사용자가 빈 위치에서 다시 붙여넣기.
+        같은 type 시간 겹침 시 EditController 가 차단 — fallback 으로 가장 가까운
+        빈 슬롯 (target_ms 이상의 첫 비어 있는 자리) 으로 자동 이동 후 1회 재시도.
         """
         from dataclasses import replace
         from PySide6.QtGui import QCursor
+        import copy
         import uuid
-        eff = self._effect_clipboard
-        if eff is None:
+        if self._effect_clipboard is None:
             return
+        # advisor 지적: replace 는 top-level 만 복사. nested dataclass (Font / Stroke /
+        # Position / Fade / PipConfig 등) 가 두 효과 인스턴스간 공유돼 잠재 corruption.
+        # deepcopy 로 명시적 분리.
+        eff = copy.deepcopy(self._effect_clipboard)
         # 마우스 글로벌 → slider_lane 로컬 x → ms.
         slider = self.timeline.slider_lane
         local = slider.mapFromGlobal(QCursor.pos())
@@ -600,13 +604,40 @@ class VideoTab(QWidget):
         timeline_end = self._get_duration_ms()
         if timeline_end > 0:
             target_ms = max(0, min(target_ms, max(0, timeline_end - duration)))
+        # 같은 type 의 효과들과 겹치지 않는 빈 슬롯으로 자동 이동.
+        target_ms = self._find_free_slot_for_paste(eff, target_ms, duration)
         new_eff = replace(eff, id=str(uuid.uuid4()),
                           in_ms=int(target_ms), out_ms=int(target_ms + duration))
         ok = self._edit_controller.add_effect(new_eff)
         if ok:
             self.player.flash_action("📋 효과 붙여넣기")
         else:
-            self.player.flash_action("⚠ 같은 type 겹침 — 빈 위치에서 시도")
+            self.player.flash_action("⚠ 붙여넣기 실패 — 빈 자리가 없음")
+
+    def _find_free_slot_for_paste(self, eff, target_ms: int, duration: int) -> int:
+        """같은 type 의 효과들과 [target_ms, target_ms+duration) 가 겹치면 그 이후
+        첫 빈 자리로 이동. 영상 끝을 넘으면 target_ms 그대로 (add_effect 가 거부).
+
+        EditController.add_effect 가 같은 type 겹침을 차단하므로 사전에 회피.
+        """
+        timeline_end = self._get_duration_ms() or (target_ms + duration)
+        target_type = getattr(eff, "type", "")
+        same_type = sorted(
+            (e for e in self.sidecar().effects if getattr(e, "type", "") == target_type),
+            key=lambda e: e.in_ms,
+        )
+        cursor = target_ms
+        for existing in same_type:
+            if cursor + duration <= existing.in_ms:
+                # 이 구간 비어 있음.
+                return cursor
+            if cursor < existing.out_ms:
+                # 겹침 — 이 효과 끝으로 이동.
+                cursor = existing.out_ms
+        # 마지막까지 — timeline 끝을 넘지 않는 한 그대로.
+        if cursor + duration <= timeline_end:
+            return cursor
+        return target_ms   # 빈 자리 없음 — add_effect 가 거부, 호출자가 flash 안내
 
     _ACCEPTED_VIDEO_DROP_SUFFIXES = {
         ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv", ".gif",
@@ -632,7 +663,11 @@ class VideoTab(QWidget):
         event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
-        """재생 화면 / timeline 빈 영역에 영상·이미지 드롭 → timeline 끝에 append.
+        """재생 화면 / timeline 빈 영역에 영상·이미지 드롭.
+
+        사용자 의도 "뒤나 앞에 붙어야 되는데" — 드롭 위치 x 가 widget 의 왼쪽
+        절반이면 timeline 0 위치에 prepend (기존 segment 들 뒤로 shift),
+        오른쪽 절반이면 끝에 append.
 
         트랙 lane 위 정확한 위치 드롭은 VideoTrackLane.dropEvent 가 먼저 catch
         (Qt 자식 우선 전파). 여기로 도달하는 건 lane 외 영역 드롭.
@@ -649,11 +684,44 @@ class VideoTab(QWidget):
         if not paths:
             event.ignore()
             return
-        # timeline 끝 = 가장 큰 (start_ms + duration_ms) — 빈 트랙이면 0.
-        track = self.sidecar().video_track
-        end_ms = max((seg.start_ms + seg.duration_ms for seg in track), default=0)
-        self._on_track_insert_files(paths, end_ms)
+        # 드롭 x 위치 — widget 의 왼쪽 절반이면 prepend, 오른쪽이면 append.
+        drop_x = int(event.position().x())
+        is_left_half = drop_x < self.width() // 2
+        if is_left_half:
+            self._prepend_files_to_track(paths)
+        else:
+            track = self.sidecar().video_track
+            end_ms = max((seg.start_ms + seg.duration_ms for seg in track), default=0)
+            self._on_track_insert_files(paths, end_ms)
         event.acceptProposedAction()
+
+    def _prepend_files_to_track(self, paths: list) -> None:
+        """파일 들을 timeline 0 위치에 prepend — 기존 segment 들을 새 segment 들의
+        총 길이만큼 뒤로 밀고 새 segment 를 0 부터 순서대로 배치.
+        """
+        from dataclasses import replace
+        # 1) 새 segment 들 빌드 + 총 길이.
+        new_segs = []
+        cursor = 0
+        for p in paths:
+            seg = self._build_segment_for_path(str(p))
+            if seg is None:
+                continue
+            new_segs.append(replace(seg, start_ms=cursor))
+            cursor += seg.duration_ms
+        if not new_segs:
+            return
+        total_new = cursor
+        # 2) 기존 segment 들을 total_new 만큼 뒤로 shift.
+        existing = list(self.sidecar().video_track)
+        for seg in existing:
+            self._edit_controller.set_segment_start(seg.id, seg.start_ms + total_new)
+        # 3) 새 segment 들을 trakk 끝(어차피 free-slot clamp 가 0 쪽 빈 곳 찾음) 에 추가.
+        #    set_segment_start 가 free-slot 보장 안 하므로 그냥 append idx, start_ms 명시.
+        for seg in new_segs:
+            self._edit_controller.insert_segment(
+                at_idx=len(self.sidecar().video_track), segment=seg,
+            )
 
     def _on_track_insert_files(self, paths: list, at_combined_ms: int) -> None:
         """드래그-드롭 / 라이브러리 드롭 → 여러 파일을 at_combined_ms 부터 순서대로 삽입.
