@@ -127,10 +127,13 @@ class SpeedLane(EffectLane):
         if self._drag_kind == "move":
             new_in = self._drag_orig_in + delta_ms
             new_out = self._drag_orig_out + delta_ms
+            new_in, new_out = self._snap_pair_to_playhead(new_in, new_out)
         elif self._drag_kind == "left":
             new_in = max(0, min(self._drag_orig_out - 100, self._drag_orig_in + delta_ms))
+            new_in = self._snap_ms_to_playhead(new_in)
         elif self._drag_kind == "right":
             new_out = max(self._drag_orig_in + 100, self._drag_orig_out + delta_ms)
+            new_out = self._snap_ms_to_playhead(new_out)
         new_in = max(0, min(self._duration_ms, new_in))
         new_out = max(0, min(self._duration_ms, new_out))
         if new_out <= new_in:

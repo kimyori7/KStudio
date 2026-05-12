@@ -86,6 +86,39 @@ class EffectLane(QWidget):
         rel = max(0, min(body_width, x - _HEADER_WIDTH))
         return int(round(rel * self._duration_ms / body_width))
 
+    _SNAP_PX = 8
+    """효과 박스 edge 가 playhead 와 이 거리(px) 안에 들어오면 정확히 playhead
+    위치로 스냅. 사용자 의도 "줌, 배속 등 편집하는게 여기 가까이 가면 달라붙는
+    기능" — 빠른 정렬용 magnetism."""
+
+    def _snap_ms_to_playhead(self, ms: int) -> int:
+        """ms 가 playhead position 의 ±_SNAP_PX 안에 들어오면 playhead 로 스냅.
+        그렇지 않으면 그대로 반환. duration 0 이면 스냅 비활성.
+        """
+        if self._duration_ms <= 0:
+            return ms
+        body_width = max(1, self.width() - _HEADER_WIDTH)
+        ms_per_px = self._duration_ms / body_width
+        threshold_ms = int(round(self._SNAP_PX * ms_per_px))
+        if abs(ms - self._position_ms) <= threshold_ms:
+            return self._position_ms
+        return ms
+
+    def _snap_pair_to_playhead(self, in_ms: int, out_ms: int) -> tuple[int, int]:
+        """이동(move) 드래그용 — playhead 에 가까운 쪽 edge 를 스냅하고 반대편은
+        같은 만큼 평행 이동. 둘 다 거리가 같으면 in_ms 우선.
+        """
+        snap_in = self._snap_ms_to_playhead(in_ms)
+        snap_out = self._snap_ms_to_playhead(out_ms)
+        if snap_in != in_ms and (snap_out == out_ms or
+                                   abs(in_ms - self._position_ms) <= abs(out_ms - self._position_ms)):
+            shift = snap_in - in_ms
+            return in_ms + shift, out_ms + shift
+        if snap_out != out_ms:
+            shift = snap_out - out_ms
+            return in_ms + shift, out_ms + shift
+        return in_ms, out_ms
+
     def _ms_to_x(self, ms: int) -> int:
         if self._duration_ms <= 0:
             return _HEADER_WIDTH
