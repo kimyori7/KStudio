@@ -76,6 +76,48 @@ def test_video_tab_ignores_unsupported_file_drop(qtbot, sample_mp4, tmp_path):
     assert not enter.isAccepted()
 
 
+def test_ctrl_c_copies_active_effect_to_clipboard(qtbot, sample_mp4, tmp_path):
+    """효과 선택 후 Ctrl+C → _effect_clipboard 에 deep copy 저장."""
+    from PySide6.QtCore import Qt
+    tab = _make_tab(qtbot, sample_mp4, tmp_path)
+    tab.lanes_widget().request_add.emit("caption", 1000)
+    sc = tab.sidecar()
+    cap = sc.effects[0]
+    tab._active_kind = "effect"
+    tab._active_id = cap.id
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.setFocus()
+    qtbot.keyClick(tab, Qt.Key_C, Qt.ControlModifier)
+    assert tab._effect_clipboard is not None
+    assert tab._effect_clipboard.id == cap.id
+
+
+def test_ctrl_v_pastes_effect_with_new_id(qtbot, sample_mp4, tmp_path):
+    """Ctrl+V → clipboard 의 효과를 새 id 로 사이드카에 추가."""
+    from PySide6.QtCore import Qt
+    tab = _make_tab(qtbot, sample_mp4, tmp_path)
+    tab.lanes_widget().request_add.emit("caption", 1000)
+    sc = tab.sidecar()
+    cap = sc.effects[0]
+    tab._active_kind = "effect"
+    tab._active_id = cap.id
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.setFocus()
+    # 복사 → 빈 위치로 playhead 이동 → 붙여넣기.
+    qtbot.keyClick(tab, Qt.Key_C, Qt.ControlModifier)
+    tab.timeline.set_position_ms(6000)   # 캡션 (1000~4000) 과 겹치지 않는 위치
+    qtbot.keyClick(tab, Qt.Key_V, Qt.ControlModifier)
+    after = tab.sidecar().effects
+    # 두 개의 caption — 원본 + 복사본.
+    captions = [e for e in after if e.type == "caption"]
+    assert len(captions) == 2
+    new_caption = next(c for c in captions if c.id != cap.id)
+    # duration 보존.
+    assert new_caption.out_ms - new_caption.in_ms == cap.out_ms - cap.in_ms
+
+
 def test_new_caption_inherits_last_used_font(qtbot, sample_mp4, tmp_path):
     """첫 캡션 → 폰트 수정 후 두 번째 캡션 추가 → 두 번째도 같은 폰트/크기/굵기."""
     from dataclasses import replace

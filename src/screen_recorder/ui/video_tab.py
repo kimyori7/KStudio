@@ -81,6 +81,9 @@ class VideoTab(QWidget):
         # kind ∈ {"segment", "effect", None}. id 는 해당 객체의 id.
         self._active_kind: Optional[str] = None
         self._active_id: Optional[str] = None
+        # 효과 복사붙여넣기 (Ctrl+C / Ctrl+V). 선택된 효과의 deep copy + id 비움.
+        # 붙여넣기 시 마우스 위치를 ms 로 환산해 in_ms 로 설정, duration 보존.
+        self._effect_clipboard: object | None = None
 
         # 프레임 스킵 누적 — D/F 키와 ◀/▶ 버튼으로 프레임 단위 이동할 때마다 누적,
         # 다른 종류의 시크(슬라이더 드래그, 화살표 초단위 이동, Home/End) 가 일어나면 0 으로 리셋.
@@ -572,6 +575,39 @@ class VideoTab(QWidget):
             except (RuntimeError, AttributeError):
                 pass
 
+    def _paste_effect_at_cursor(self) -> None:
+        """clipboard 의 효과를 deep copy → 마우스 위치 ms 를 in_ms 로, duration 보존.
+
+        마우스가 timeline 영역 밖이면 현재 재생 위치 (playhead) 로 폴백.
+        새 효과는 EditController 의 overlap 차단을 거치므로 같은 type 이 시간
+        겹치면 추가 실패 — 그때는 사용자가 빈 위치에서 다시 붙여넣기.
+        """
+        from dataclasses import replace
+        from PySide6.QtGui import QCursor
+        import uuid
+        eff = self._effect_clipboard
+        if eff is None:
+            return
+        # 마우스 글로벌 → slider_lane 로컬 x → ms.
+        slider = self.timeline.slider_lane
+        local = slider.mapFromGlobal(QCursor.pos())
+        target_ms: int
+        if 0 <= local.x() < slider.width() and 0 <= local.y() < slider.height():
+            target_ms = slider._ms_for_pixel(int(local.x()))
+        else:
+            target_ms = self._get_position_ms()
+        duration = max(100, int(eff.out_ms - eff.in_ms))
+        timeline_end = self._get_duration_ms()
+        if timeline_end > 0:
+            target_ms = max(0, min(target_ms, max(0, timeline_end - duration)))
+        new_eff = replace(eff, id=str(uuid.uuid4()),
+                          in_ms=int(target_ms), out_ms=int(target_ms + duration))
+        ok = self._edit_controller.add_effect(new_eff)
+        if ok:
+            self.player.flash_action("📋 효과 붙여넣기")
+        else:
+            self.player.flash_action("⚠ 같은 type 겹침 — 빈 위치에서 시도")
+
     _ACCEPTED_VIDEO_DROP_SUFFIXES = {
         ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv", ".gif",
         ".png", ".jpg", ".jpeg",
@@ -818,6 +854,22 @@ class VideoTab(QWidget):
                 or (k == Qt.Key_Y and (m & Qt.ControlModifier)):
             if self._edit_controller.redo():
                 self.player.flash_action("↷ 다시 실행")
+            event.accept(); return
+        # Ctrl+C — 활성 효과 복사. Ctrl+V — 마우스 위치에 붙여넣기.
+        # 캡션·배속·줌·곁들임 박스 선택 후 Ctrl+C, 다음 위치에서 Ctrl+V.
+        if k == Qt.Key_C and (m & Qt.ControlModifier) and not (m & Qt.ShiftModifier):
+            if self._active_kind == "effect" and self._active_id:
+                eff = next(
+                    (e for e in self.sidecar().effects if getattr(e, "id", None) == self._active_id),
+                    None,
+                )
+                if eff is not None:
+                    self._effect_clipboard = eff
+                    self.player.flash_action("📋 효과 복사")
+            event.accept(); return
+        if k == Qt.Key_V and (m & Qt.ControlModifier):
+            if self._effect_clipboard is not None and self.is_edit_mode_on():
+                self._paste_effect_at_cursor()
             event.accept(); return
         # T — 편집 모드 ON 일 때만 캡션 추가 (현재 위치 + 기본 길이)
         if self.is_edit_mode_on() and k == Qt.Key_T and m == Qt.NoModifier:
