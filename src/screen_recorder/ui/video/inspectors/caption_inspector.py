@@ -90,6 +90,20 @@ class CaptionInspector(InspectorBase):
         self.shadow_check.toggled.connect(self._on_any_change)
         form.addRow("", self.shadow_check)
 
+        # ---- 텍스트 정렬 (multi-line 내부 정렬, anchor 와 직교) ----
+        self.align_group = QButtonGroup(self)
+        align_row = QHBoxLayout()
+        self.align_left_btn = QRadioButton(tr("← 좌"))
+        self.align_center_btn = QRadioButton(tr("≡ 중앙"))
+        self.align_right_btn = QRadioButton(tr("우 →"))
+        self.align_center_btn.setChecked(True)
+        for btn in (self.align_left_btn, self.align_center_btn, self.align_right_btn):
+            self.align_group.addButton(btn)
+            btn.toggled.connect(lambda on, b=btn: on and self._on_any_change())
+            align_row.addWidget(btn)
+        align_row.addStretch(1)
+        form.addRow(tr("텍스트 정렬"), align_row)
+
         # ---- 배경 박스 ----
         bg_row = QHBoxLayout()
         self.bg_check = QCheckBox(tr("배경"))
@@ -215,6 +229,13 @@ class CaptionInspector(InspectorBase):
                 self.free_y_spin.setValue(effect.position.offset_y)
             self.fade_in_spin.setValue(effect.fade.in_ms)
             self.fade_out_spin.setValue(effect.fade.out_ms)
+            align = getattr(effect, "text_align", "center")
+            if align == "left":
+                self.align_left_btn.setChecked(True)
+            elif align == "right":
+                self.align_right_btn.setChecked(True)
+            else:
+                self.align_center_btn.setChecked(True)
         finally:
             self._emitting_guard = False
         self._set_form_enabled(True)
@@ -299,6 +320,12 @@ class CaptionInspector(InspectorBase):
         else:
             offset_x = self._effect.position.offset_x
             offset_y = self._effect.position.offset_y
+        if self.align_left_btn.isChecked():
+            text_align = "left"
+        elif self.align_right_btn.isChecked():
+            text_align = "right"
+        else:
+            text_align = "center"
         new_eff = replace(
             self._effect,
             text=self.text_edit.toPlainText(),
@@ -317,6 +344,7 @@ class CaptionInspector(InspectorBase):
                               offset_y=offset_y),
             fade=Fade(in_ms=self.fade_in_spin.value(),
                       out_ms=self.fade_out_spin.value()),
+            text_align=text_align,
         )
         self._effect = new_eff
         self.effect_changed.emit(new_eff)

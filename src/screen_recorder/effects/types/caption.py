@@ -75,3 +75,6 @@ class CaptionEffect(Effect):
     background: Background | None = None
     position: Position = field(default_factory=Position)
     fade: Fade = field(default_factory=Fade)
+    # multi-line 시 텍스트 가로 정렬. anchor 가 캡션의 *위치* 라면 text_align 은
+    # 캡션 *내부* 의 줄별 정렬. 기존 단일 라인 캡션엔 시각 영향 없음 (default center).
+    text_align: Literal["left", "center", "right"] = "center"

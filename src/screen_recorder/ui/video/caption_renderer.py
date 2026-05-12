@@ -100,14 +100,19 @@ def draw_caption(p: QPainter, c: CaptionEffect, *, position_ms: int,
         p.drawRoundedRect(x - pad, bg_top, text_w + 2 * pad, bg_h, 4, 4)
 
     def _draw_line(line_idx: int, line: str, dx: int = 0, dy: int = 0) -> None:
-        """line 별 baseline 위치 계산 + 현 줄 너비에 맞춘 가로 정렬 (center anchor 면 중앙)."""
+        """line 별 baseline 위치 + 가로 정렬. text_align 이 우선, 없으면 anchor 따라.
+
+        text_align 은 캡션 박스 *내부* 의 줄 정렬. position.anchor 는 캡션
+        박스 *전체* 위치. 둘은 직교 — 예: 캡션 박스를 화면 우측 하단에 배치
+        (anchor=bottom-right) 하면서 박스 안 텍스트는 왼쪽 정렬 (text_align=left).
+        """
         ly = first_baseline_y + line_idx * line_h + dy
-        # 가로 정렬 — anchor 가 center 계열이면 line 마다 중앙 정렬 (text_w 기준).
-        if c.position.anchor.endswith("-center") or c.position.anchor == "free":
+        align = getattr(c, "text_align", "center")
+        if align == "center":
             line_x = x + (text_w - line_widths[line_idx]) // 2 + dx
-        elif c.position.anchor.endswith("-right"):
+        elif align == "right":
             line_x = x + (text_w - line_widths[line_idx]) + dx
-        else:
+        else:   # left
             line_x = x + dx
         p.drawText(line_x, ly, line)
 
