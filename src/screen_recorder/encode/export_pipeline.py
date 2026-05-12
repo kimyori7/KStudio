@@ -345,8 +345,17 @@ def build_export_args(
     audio_available = all(has_audio_stream(s) for s in _audio_srcs)
 
     png_input_index: dict[int, int] = {}   # png_paths idx → ffmpeg input index
-    for i, png in enumerate(png_paths):
-        argv.extend(["-i", str(png)])
+    # PNG 는 single frame demuxer — 그대로 두면 frame 한 번 나오고 EOF 라
+    # overlay enable 시간창에 도달 전 stream 이 끝남 → 캡션이 결과 mp4 에 안
+    # 합성되던 회귀. 각 caption 에 대응하는 PNG 입력을 -loop 1 -framerate 30 -t
+    # <cap.out_ms> 로 bound — PNG 가 그 시간까지 반복되고 자동 EOF. ffmpeg 가
+    # 명확히 종료 (loop filter 의 hang 회피).
+    for i, (png, cap) in enumerate(zip(png_paths, captions)):
+        cap_dur_s = max(0.1, cap.out_ms / 1000.0)
+        argv.extend([
+            "-loop", "1", "-framerate", "30", "-t", f"{cap_dur_s:.3f}",
+            "-i", str(png),
+        ])
         png_input_index[i] = next_input
         next_input += 1
 
@@ -397,7 +406,7 @@ def build_export_args(
             out_s = seg.source_end_ms / 1000.0
             fc_parts.append(
                 f"[0:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
-                f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
+                f"{_scale_filter('fit', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
             if audio_available:
                 fc_parts.append(
@@ -429,7 +438,7 @@ def build_export_args(
     if n == 0:
         # cut 0 개 + main_duration 0 → 빈 효과. fallback: 전체 영상 사용.
         fc_parts.append(
-            f"[0:v]{_scale_filter('stretch', surface_w, surface_h)}[outv0]"
+            f"[0:v]{_scale_filter('fit', surface_w, surface_h)}[outv0]"
         )
         if audio_available:
             fc_parts.append(f"[0:a]anull[outa0]")
@@ -453,6 +462,7 @@ def build_export_args(
         out_s = cap.out_ms / 1000.0
         fade_in = cap.fade.in_ms / 1000.0
         fade_out = cap.fade.out_ms / 1000.0
+        # PNG input 이 -loop 1 -t <cap.out_ms> 로 bound 됐으므로 filter 안 loop 불필요.
         # alpha fade 채널 — 페이드 인 0~fade_in_ms, 페이드 아웃 (out_ms - fade_out_ms)~out_ms
         alpha_chain = (
             f"[{png_idx}:v]format=rgba,"
@@ -503,6 +513,8 @@ def build_export_args(
     ])
     if cur_a is not None:
         argv.extend(["-c:a", "aac", "-b:a", "128k"])
+    # PNG 는 filter chain 의 loop filter 로 처리 — main video 가 끝나면 overlay
+    # 가 자연 종료. -shortest 명시 불필요.
     argv.extend([
         "-movflags", "+faststart",
         str(dst_path),
