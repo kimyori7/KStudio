@@ -345,15 +345,18 @@ def build_export_args(
     audio_available = all(has_audio_stream(s) for s in _audio_srcs)
 
     png_input_index: dict[int, int] = {}   # png_paths idx → ffmpeg input index
-    # PNG 는 single frame demuxer — 그대로 두면 frame 한 번 나오고 EOF 라
-    # overlay enable 시간창에 도달 전 stream 이 끝남 → 캡션이 결과 mp4 에 안
-    # 합성되던 회귀. 각 caption 에 대응하는 PNG 입력을 -loop 1 -framerate 30 -t
-    # <cap.out_ms> 로 bound — PNG 가 그 시간까지 반복되고 자동 EOF. ffmpeg 가
-    # 명확히 종료 (loop filter 의 hang 회피).
+    # PNG 는 single frame demuxer — overlay enable 시간창에 도달 전 stream EOF 회피용
+    # bound. -t 는 *caption duration* (out-in), -itsoffset 으로 main timebase 의
+    # cap.in_ms 시점에 PTS 시작. 이전엔 -t 가 cap.out_ms (절대 시간) 라 11 개 caption
+    # 이 영상 전체 길이만큼 매 frame 생산 → CPU 폭주 + 10분 영상에 export 수 분.
+    # 이제 (out-in) 만큼만 생산해 가벼움.
     for i, (png, cap) in enumerate(zip(png_paths, captions)):
-        cap_dur_s = max(0.1, cap.out_ms / 1000.0)
+        in_s = cap.in_ms / 1000.0
+        cap_dur_s = max(0.1, (cap.out_ms - cap.in_ms) / 1000.0)
         argv.extend([
-            "-loop", "1", "-framerate", "30", "-t", f"{cap_dur_s:.3f}",
+            "-loop", "1", "-framerate", "30",
+            "-t", f"{cap_dur_s:.3f}",
+            "-itsoffset", f"{in_s:.3f}",
             "-i", str(png),
         ])
         png_input_index[i] = next_input
@@ -406,7 +409,7 @@ def build_export_args(
             out_s = seg.source_end_ms / 1000.0
             fc_parts.append(
                 f"[0:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
-                f"{_scale_filter('fit', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
+                f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
             if audio_available:
                 fc_parts.append(
@@ -438,7 +441,7 @@ def build_export_args(
     if n == 0:
         # cut 0 개 + main_duration 0 → 빈 효과. fallback: 전체 영상 사용.
         fc_parts.append(
-            f"[0:v]{_scale_filter('fit', surface_w, surface_h)}[outv0]"
+            f"[0:v]{_scale_filter('stretch', surface_w, surface_h)}[outv0]"
         )
         if audio_available:
             fc_parts.append(f"[0:a]anull[outa0]")
