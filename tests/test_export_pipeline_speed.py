@@ -203,3 +203,81 @@ def test_atempo_chain_above_2x():
 def test_atempo_chain_below_05x():
     """0.25 → atempo=0.5,atempo=0.5."""
     assert _atempo_chain(0.25) == "atempo=0.5,atempo=0.5"
+
+
+def _stub_caption_png(monkeypatch):
+    """render_caption_png 가 Qt 렌더링을 시도하지 않도록 빈 파일 생성으로 stub.
+
+    실 테스트에서 PNG 픽셀은 검사하지 않고 argv 의 -filter_complex 만 검증.
+    """
+    from screen_recorder.encode import export_pipeline as ep
+    def stub(c, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    monkeypatch.setattr(ep, "render_caption_png", stub)
+
+
+def test_caption_enable_uses_output_time_under_speed(tmp_path, monkeypatch):
+    """배속 2.0 안의 캡션 — overlay enable 의 in/out 이 output 시간 (user/rate) 이어야.
+
+    회귀: 이전엔 cap.in_ms/1000 그대로 enable 에 들어가 배속 segment 안 캡션이 잘못된
+    위치에 표시되거나 안 보였음.
+
+    user time: 0~10000ms 전체에 speed=2.0 → output time: 0~5000ms.
+    caption user 2000~4000 → output 1000~2000.
+    """
+    _stub_caption_png(monkeypatch)
+    from screen_recorder.effects.types.caption import CaptionEffect, Position
+    sp = SpeedEffect(in_ms=0, out_ms=10000, rate=2.0)
+    cap = CaptionEffect(in_ms=2000, out_ms=4000, text="hello",
+                         position=Position(anchor="bottom-center"))
+    sc = Sidecar(effects=[sp, cap])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path=str(tmp_path / "out.mp4"),
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg", png_dir=tmp_path,
+    )
+    fc = _fc_of(argv)
+    # overlay enable 의 in/out 은 1.0, 2.0 (= 2000/2000, 4000/2000) 이어야 함.
+    assert "between(t\\,1.0\\,2.0)" in fc, (
+        f"caption overlay enable should be output time (1.0~2.0 for user 2~4s under speed=2), got fc: {fc}"
+    )
+
+
+def test_caption_enable_unchanged_without_speed(tmp_path, monkeypatch):
+    """speed 없으면 user time 이 그대로 output time — caption enable 이 cap.in/out 그대로."""
+    _stub_caption_png(monkeypatch)
+    from screen_recorder.effects.types.caption import CaptionEffect, Position
+    cap = CaptionEffect(in_ms=2000, out_ms=4000, text="hello",
+                         position=Position(anchor="bottom-center"))
+    sc = Sidecar(effects=[cap])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path=str(tmp_path / "out.mp4"),
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg", png_dir=tmp_path,
+    )
+    fc = _fc_of(argv)
+    assert "between(t\\,2.0\\,4.0)" in fc, f"caption enable should be 2.0~4.0, got: {fc}"
+
+
+def test_caption_after_speed_segment_shifts_earlier(tmp_path, monkeypatch):
+    """배속 segment 뒤에 있는 캡션 — output 시간으로 앞당겨져야.
+
+    user time 0~5000 normal, 5000~10000 speed=2.0 → output 0~5000 + 2500 = 0~7500.
+    caption user 8000~9000 (배속 안) → output 5000 + (8000-5000)/2 ~ 5000 + (9000-5000)/2
+                                       = 6500 ~ 7000.
+    """
+    _stub_caption_png(monkeypatch)
+    from screen_recorder.effects.types.caption import CaptionEffect, Position
+    sp = SpeedEffect(in_ms=5000, out_ms=10000, rate=2.0)
+    cap = CaptionEffect(in_ms=8000, out_ms=9000, text="hi",
+                         position=Position(anchor="bottom-center"))
+    sc = Sidecar(effects=[sp, cap])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path=str(tmp_path / "out.mp4"),
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg", png_dir=tmp_path,
+    )
+    fc = _fc_of(argv)
+    assert "between(t\\,6.5\\,7.0)" in fc, f"caption after speed window should map to 6.5~7.0 in output time, got: {fc}"

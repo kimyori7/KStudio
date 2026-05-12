@@ -344,19 +344,24 @@ def build_export_args(
     _audio_srcs = [str(src_path)] + [c.src for c in cuts if c.has_insert] + list(track_extra_srcs)
     audio_available = all(has_audio_stream(s) for s in _audio_srcs)
 
+    # 캡션 / broll 의 in_ms/out_ms 는 user gap-collapsed ms. setpts 로 압축된 output
+    # 스트림의 t 와 일치하려면 segment 별 rate 로 변환해야 함. 이 매핑은 segments +
+    # speeds 가 확정된 후에만 가능 — 이 함수 끝까지 둘 다 결정돼 있음.
+    user_to_output = _build_user_to_output_time_map(segments, speeds)
+
     png_input_index: dict[int, int] = {}   # png_paths idx → ffmpeg input index
     # PNG 는 single frame demuxer — overlay enable 시간창에 도달 전 stream EOF 회피용
-    # bound. -t 는 *caption duration* (out-in), -itsoffset 으로 main timebase 의
-    # cap.in_ms 시점에 PTS 시작. 이전엔 -t 가 cap.out_ms (절대 시간) 라 11 개 caption
-    # 이 영상 전체 길이만큼 매 frame 생산 → CPU 폭주 + 10분 영상에 export 수 분.
-    # 이제 (out-in) 만큼만 생산해 가벼움.
+    # bound. -t 는 *output duration*, -itsoffset 으로 output timebase 의 변환된 in 시점에
+    # PTS 시작. 이전엔 user time 을 그대로 써서 배속 segment 의 캡션이 잘못된 시간에 또는
+    # 아예 안 나타나던 회귀.
     for i, (png, cap) in enumerate(zip(png_paths, captions)):
-        in_s = cap.in_ms / 1000.0
-        cap_dur_s = max(0.1, (cap.out_ms - cap.in_ms) / 1000.0)
+        out_in_s = user_to_output(cap.in_ms) / 1000.0
+        out_out_s = user_to_output(cap.out_ms) / 1000.0
+        cap_dur_s = max(0.1, out_out_s - out_in_s)
         argv.extend([
             "-loop", "1", "-framerate", "30",
             "-t", f"{cap_dur_s:.3f}",
-            "-itsoffset", f"{in_s:.3f}",
+            "-itsoffset", f"{out_in_s:.3f}",
             "-i", str(png),
         ])
         png_input_index[i] = next_input
@@ -458,15 +463,18 @@ def build_export_args(
             fc_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[concv]")
             cur_v, cur_a = "concv", None
 
-    # 캡션 overlay (alpha fade 포함)
+    # 캡션 overlay (alpha fade 포함). enable 의 t 는 output 스트림 시간 — speed
+    # 압축 후의 시간이므로 user_to_output 변환 필수.
     for i, cap in enumerate(captions):
         png_idx = png_input_index[i]
-        in_s = cap.in_ms / 1000.0
-        out_s = cap.out_ms / 1000.0
+        in_s = user_to_output(cap.in_ms) / 1000.0
+        out_s = user_to_output(cap.out_ms) / 1000.0
+        # 페이드 길이는 사용자 의도 그대로 (output 시간 척도). 배속 안 캡션 페이드도
+        # output 시간에서 fade_in_ms 동안 페이드.
         fade_in = cap.fade.in_ms / 1000.0
         fade_out = cap.fade.out_ms / 1000.0
-        # PNG input 이 -loop 1 -t <cap.out_ms> 로 bound 됐으므로 filter 안 loop 불필요.
-        # alpha fade 채널 — 페이드 인 0~fade_in_ms, 페이드 아웃 (out_ms - fade_out_ms)~out_ms
+        # PNG input 이 -loop 1 -t <output duration> 로 bound 됐으므로 filter 안 loop 불필요.
+        # alpha fade 채널 — 페이드 인 in~in+fade_in, 페이드 아웃 (out-fade_out)~out (output 시간).
         alpha_chain = (
             f"[{png_idx}:v]format=rgba,"
             f"fade=t=in:st={in_s}:d={fade_in}:alpha=1,"
@@ -492,8 +500,9 @@ def build_export_args(
             broll.pip.corner, surface_w, surface_h, pip_w, pip_h,
             pos_x=broll.pip.pos_x, pos_y=broll.pip.pos_y,
         )
-        in_s = broll.in_ms / 1000.0
-        out_s = broll.out_ms / 1000.0
+        # broll 도 output 시간 척도로 변환 (배속 segment 안에 들어 있다면 압축됨).
+        in_s = user_to_output(broll.in_ms) / 1000.0
+        out_s = user_to_output(broll.out_ms) / 1000.0
         # broll 입력을 scale 후 PTS 를 in_s 만큼 시프트 — 그러면 broll 의 0초가 in_s 에 정렬.
         fc_parts.append(
             f"[{broll_idx}:v]scale={pip_w}:{pip_h},"
@@ -524,6 +533,48 @@ def build_export_args(
     ])
 
     return argv, png_paths
+
+
+def _build_user_to_output_time_map(segments, speeds):
+    """gap-collapsed user_ms → output stream ms 변환 함수.
+
+    각 segment 가 setpts=PTS/rate 로 출력 시간이 압축되므로 caption overlay 의
+    `enable='between(t, in, out)'` 는 output 시간 기준으로 in/out 을 줘야 한다.
+    이전엔 cap.in_ms/1000 을 그대로 enable 에 넣어 배속 segment 안의 캡션 시간이
+    실제로는 사라진 위치에 표시되던 회귀.
+
+    segments 는 _split_segments_at_effect_boundaries 후라서 각 segment 가 speed 에
+    완전 포함되거나 완전 밖. segment 별 rate 찾기 1회 lookup.
+    """
+    mapping: list[tuple[int, int, float, float]] = []
+    out_cursor = 0.0
+    for seg in segments:
+        cs = seg.combined_start_ms
+        ce = seg.combined_end_ms
+        rate = 1.0
+        for sp in speeds:
+            if sp.in_ms <= cs and sp.out_ms >= ce:
+                rate = max(0.01, float(sp.rate))
+                break
+        seg_user_dur = ce - cs
+        seg_out_dur = seg_user_dur / rate
+        mapping.append((cs, ce, rate, out_cursor))
+        out_cursor += seg_out_dur
+
+    def user_to_output(u_ms: int) -> float:
+        for cs, ce, rate, out_start in mapping:
+            if cs <= u_ms < ce:
+                return out_start + (u_ms - cs) / rate
+        # 끝 경계 또는 끝 너머: 마지막 segment 의 끝 위치 + 잔여.
+        if mapping:
+            cs, ce, rate, out_start = mapping[-1]
+            seg_out_dur = (ce - cs) / rate
+            if u_ms == ce:
+                return out_start + seg_out_dur
+            return out_start + seg_out_dur + (u_ms - ce)
+        return float(u_ms)
+
+    return user_to_output
 
 
 def _remap_effects_to_gap_collapsed(effects, video_track):
