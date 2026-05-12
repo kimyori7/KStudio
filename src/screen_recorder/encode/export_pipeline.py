@@ -202,14 +202,20 @@ def build_export_args(
 
     png_dir 가 None 이면 tempfile.mkdtemp().
     """
-    # Stage D (2026-05-08): 다중 segment 트랙 export 는 v2 follow-up.
-    # 단일 segment (= 원본 영상 그대로) 인 경우 기존 코드가 그대로 동작.
+    # 다중 segment 트랙 — Phase 21 hotfix: 같은 src 의 segment 들을 합쳐 export.
+    # 사용자가 영상을 split 한 케이스가 가장 흔함 (split 후 export 차단되던 회귀).
+    # 다른 src 가 섞이면 v2 — 별도 input + 결합 필터 그래프 필요해 보류.
     if len(sidecar.video_track) > 1:
-        raise NotImplementedError(
-            "다중 segment 트랙 export 는 v2 — 현재는 효과(캡션/배속/줌/곁들임) 와 "
-            "단일 segment (자르기·삽입 없음) 만 export 가능. 트랙을 1개 segment 로 "
-            "단순화한 후 다시 시도해 주세요."
-        )
+        unique_srcs = {seg.src for seg in sidecar.video_track}
+        if len(unique_srcs) > 1:
+            raise NotImplementedError(
+                "다중 src 트랙 export 는 v2 — 현재는 같은 원본 영상의 split 만 지원. "
+                "서로 다른 영상이 섞여 있으면 단일 영상으로 정리 후 다시 시도해 주세요."
+            )
+        if any(seg.media_kind == "image" for seg in sidecar.video_track):
+            raise NotImplementedError(
+                "image segment 가 포함된 트랙 export 는 v2 — 영상 segment 만 지원."
+            )
 
     # 0) 미지원 효과 검증
     for e in sidecar.effects:
@@ -278,12 +284,18 @@ def build_export_args(
             )
 
     # 1) 결합 시간축 segment 리스트
-    segments = build_combined_timeline(int(main_duration_ms), cuts)
+    # 다중 segment 트랙: video_track 의 각 segment 를 TimelineSegment 로 직접 변환.
+    # 같은 src 가정 (위 검증) 이라 모두 source="main" — src_path 와 1:1 매핑.
+    if len(sidecar.video_track) > 1:
+        segments = _build_timeline_from_video_track(sidecar.video_track)
+    else:
+        segments = build_combined_timeline(int(main_duration_ms), cuts)
 
     # 1.5) sidecar.trim 적용 — main segment 만 clip, insert 는 그대로.
+    # 다중 segment 트랙은 각 segment 의 src_in/out 이 이미 자르기 표현이라 sidecar.trim 무시.
     trim_in = max(0, int(sidecar.trim.in_ms))
     trim_out = int(sidecar.trim.out_ms) if sidecar.trim.out_ms > 0 else int(main_duration_ms)
-    if trim_in > 0 or trim_out < main_duration_ms:
+    if len(sidecar.video_track) <= 1 and (trim_in > 0 or trim_out < main_duration_ms):
         segments = _apply_trim_to_main_segments(segments, trim_in, trim_out)
 
     # 1.6) speed/zoom 효과 경계점에서 main segment 자동 분할.
@@ -450,6 +462,37 @@ def build_export_args(
     ])
 
     return argv, png_paths
+
+
+def _build_timeline_from_video_track(video_track) -> list[TimelineSegment]:
+    """sidecar.video_track 의 VideoSegment 들을 export 용 TimelineSegment 로 변환.
+
+    이 함수는 "같은 src 의 split 만" 케이스에서만 호출된다 (호출 측에서 검증).
+    각 VideoSegment 는 source="main" 인 TimelineSegment 로 매핑 — src 가 모두
+    같아 ffmpeg [0:v] 입력 한 개로 충분. combined_start_ms 는 0 부터 누적합으로
+    재계산 (사용자가 만든 갭은 export 결과에서 제거 — 단순화. 갭 유지가 필요하면
+    별도 follow-up).
+    """
+    segs = sorted(video_track, key=lambda s: s.start_ms)
+    out: list[TimelineSegment] = []
+    combined_cursor = 0
+    for s in segs:
+        # source range. src_out_ms=0 는 src 끝까지.
+        src_in = int(s.src_in_ms)
+        src_out = int(s.src_out_ms) if s.src_out_ms > 0 else int(s.src_duration_ms)
+        if src_out <= src_in:
+            continue
+        length = src_out - src_in
+        out.append(TimelineSegment(
+            combined_start_ms=combined_cursor,
+            combined_end_ms=combined_cursor + length,
+            source="main",
+            source_id=None,
+            source_start_ms=src_in,
+            source_end_ms=src_out,
+        ))
+        combined_cursor += length
+    return out
 
 
 def _split_main_segments_at_effect_boundaries(

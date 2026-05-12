@@ -25,6 +25,43 @@ def test_build_args_no_effects_just_copy_main():
     assert png_paths == []
 
 
+def test_multi_segment_track_same_src_exports():
+    """같은 src 의 다중 segment (split 케이스) — export 통과 + 각 segment 가 filter graph 에."""
+    from screen_recorder.effects.segment import VideoSegment
+    seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
+                         media_kind="video", start_ms=0)
+    seg2 = VideoSegment(src="A.mp4", src_in_ms=3000, src_out_ms=10000, src_duration_ms=10000,
+                         media_kind="video", start_ms=3000)
+    sc = Sidecar(source_path="A.mp4", source_hash="h", video_track=[seg1, seg2])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 두 segment: trim=0.0:3.0 + trim=3.0:10.0
+    assert "trim=0.0:3.0" in fc
+    assert "trim=3.0:10.0" in fc
+    # concat 으로 합쳐짐.
+    assert "concat=" in fc
+
+
+def test_multi_segment_track_different_srcs_raises():
+    """서로 다른 src 의 segment — v2. 명시적 거부."""
+    from screen_recorder.effects.segment import VideoSegment
+    seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
+                         media_kind="video", start_ms=0)
+    seg2 = VideoSegment(src="B.mp4", src_in_ms=0, src_out_ms=2000, src_duration_ms=5000,
+                         media_kind="video", start_ms=3000)
+    sc = Sidecar(source_path="A.mp4", source_hash="h", video_track=[seg1, seg2])
+    with pytest.raises(NotImplementedError, match="다중 src"):
+        build_export_args(
+            sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+            main_duration_ms=10000, surface_w=1920, surface_h=1080,
+            ffmpeg_path="ffmpeg",
+        )
+
+
 def test_build_args_with_cut_uses_concat_filter():
     """A 의 3-6 자르기 + B 0-4 → filter_complex 에 trim/concat 등장."""
     cut = CutEffect(in_ms=3000, out_ms=6000, src="B.mp4",
