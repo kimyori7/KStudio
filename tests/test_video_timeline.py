@@ -26,6 +26,34 @@ def test_has_three_children(timeline):
     assert isinstance(timeline.effect_lanes, EffectLanesWidget)
 
 
+def test_playhead_overlay_covers_timeline_and_tracks_position(timeline, qtbot):
+    """playhead_overlay 가 컨테이너 전체를 덮고 set_position_ms 가 x 위치 갱신.
+
+    "재생 빨간 세로 줄을 밑에 편집 기능의 기준점이 되게 길게 이어지게" 의도.
+    overlay 가 슬라이더 lane 뿐 아니라 video_track + effect_lanes 도 통과해야.
+    """
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    overlay = timeline.playhead_overlay
+    # geometry 가 컨테이너 rect 전체.
+    assert overlay.width() == timeline.width()
+    assert overlay.height() == timeline.height()
+    # position 0 → 헤더 끝.
+    timeline.set_position_ms(0)
+    x0 = overlay.position_x()
+    # position 가운데 → 중간 어딘가.
+    timeline.set_position_ms(5_000)
+    x5 = overlay.position_x()
+    # position 끝 → 컨테이너 끝 근처.
+    timeline.set_position_ms(10_000)
+    x10 = overlay.position_x()
+    assert x0 < x5 < x10
+    # transparent for mouse — overlay 가 클릭 가로채면 slider/lane 동작 막힘.
+    from PySide6.QtCore import Qt
+    assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+
+
 def test_set_position_propagates(timeline):
     timeline.set_position_ms(3_000)
     assert timeline.slider_lane.position_ms() == 3_000

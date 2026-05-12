@@ -24,6 +24,46 @@ _TRACK_COLOR = QColor(70, 76, 86)
 _PLAYHEAD_COLOR = QColor(229, 57, 53, 240)
 
 
+class _PlayheadOverlay(QWidget):
+    """전체 timeline 을 가로지르는 수직 playhead 가이드 라인.
+
+    자식 lane 들 위에 그려야 해서 별도 transparent overlay. 헤더 영역 (왼쪽
+    56px) 은 라벨 자리라 그리지 않음. 슬라이더 lane 도 자체 빨간선을 그리지만
+    두께·색이 같아 자연스럽게 합쳐짐. 사용자 의도: "재생 빨간 세로 줄을 밑에
+    편집 기능의 기준점이 되게 길게 이어지게."
+    """
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._position_ms = 0
+        self._duration_ms = 0
+
+    def set_position_ms(self, ms: int) -> None:
+        self._position_ms = max(0, int(ms))
+        self.update()
+
+    def set_duration_ms(self, ms: int) -> None:
+        self._duration_ms = max(0, int(ms))
+        self.update()
+
+    def position_x(self) -> int:
+        """현재 playhead 의 x 좌표 (overlay 의 좌표계). duration 0 이면 헤더 끝."""
+        if self._duration_ms <= 0:
+            return _HEADER_WIDTH
+        body_w = max(1, self.width() - _HEADER_WIDTH)
+        ratio = max(0.0, min(1.0, self._position_ms / self._duration_ms))
+        return _HEADER_WIDTH + int(round(ratio * body_w))
+
+    def paintEvent(self, _event: QPaintEvent) -> None:
+        if self._duration_ms <= 0:
+            return
+        x = self.position_x()
+        p = QPainter(self)
+        p.setPen(QPen(_PLAYHEAD_COLOR, 2))
+        p.drawLine(x, 0, x, self.height())
+
+
 class TimelineSliderLane(QWidget):
     """재생 슬라이더 한 줄 — 헤더(56) + 본체. ms↔x 는 EffectLane 과 동일 공식.
 
@@ -179,6 +219,11 @@ class VideoTimeline(QWidget):
         layout.addWidget(self.video_track_lane)
         layout.addWidget(self.effect_lanes)
 
+        # ---- Playhead 수직 가이드 (전체 lane 관통) ----
+        # transparent overlay 라 자식 lane 들 위에 한 줄 그림. 편집 시 시각 기준점.
+        self.playhead_overlay = _PlayheadOverlay(self)
+        self.playhead_overlay.raise_()
+
         # ---- 시그널 fan-in ----
         self.slider_lane.seek_request.connect(self.seek_request.emit)
         self.trim_marker_lane.seek_request.connect(self.seek_request.emit)
@@ -201,12 +246,24 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.set_duration_ms(ms)
         self.video_track_lane.set_duration_ms(ms)
         self.effect_lanes.set_duration_ms(ms)
+        self.playhead_overlay.set_duration_ms(ms)
 
     def set_position_ms(self, ms: int) -> None:
         ms = max(0, int(ms))
         self.slider_lane.set_position_ms(ms)
         self.trim_marker_lane.set_position_ms(ms)
         self.effect_lanes.set_position_ms(ms)
+        self.playhead_overlay.set_position_ms(ms)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.playhead_overlay.setGeometry(self.rect())
+        self.playhead_overlay.raise_()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.playhead_overlay.setGeometry(self.rect())
+        self.playhead_overlay.raise_()
 
     def set_sidecar(self, sidecar: Sidecar) -> None:
         self.effect_lanes.set_sidecar(sidecar)
