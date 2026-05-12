@@ -110,3 +110,35 @@ def test_video_tab_lanes_visibility_follows_edit_mode(qtbot, tmp_path: Path, sam
     assert tab.lanes_widget().isVisible() is True
     tab.set_edit_mode(False)
     assert tab.lanes_widget().isVisible() is False
+
+
+def test_video_tab_main_splitter_has_preview_and_timeline(qtbot, tmp_path: Path, sample_mp4: Path):
+    """preview ↔ timeline 사이 QSplitter — 사용자가 핸들로 높이 조절."""
+    from PySide6.QtWidgets import QSplitter
+    tab = VideoTab(
+        path=sample_mp4, source_label="sample", duration_ms=10_000,
+        player_settings=PlayerSettings(), player_hotkeys=PlayerHotkeys(),
+        sidecar_dir=tmp_path / "sidecars",
+    )
+    qtbot.addWidget(tab)
+    splitter = tab._main_splitter
+    assert isinstance(splitter, QSplitter)
+    assert splitter.count() == 2   # preview container + timeline
+    assert splitter.childrenCollapsible() is False   # 한쪽 0px 로 접힘 보호.
+
+
+def test_video_tab_splitter_preview_larger_initially(qtbot, tmp_path: Path, sample_mp4: Path):
+    """초기 비중 — preview 영역이 timeline 보다 큼 (stretch 4:1)."""
+    tab = VideoTab(
+        path=sample_mp4, source_label="sample", duration_ms=10_000,
+        player_settings=PlayerSettings(), player_hotkeys=PlayerHotkeys(),
+        sidecar_dir=tmp_path / "sidecars",
+    )
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    sizes = tab._main_splitter.sizes()
+    assert len(sizes) == 2
+    # preview (index 0) > timeline (index 1).
+    assert sizes[0] > sizes[1]

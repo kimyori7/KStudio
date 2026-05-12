@@ -5,7 +5,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QEvent, QTimer, Signal
 from PySide6.QtGui import QCursor, QImage, QKeyEvent
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
 from ..effects.types.caption import CaptionEffect
@@ -141,12 +141,29 @@ class VideoTab(QWidget):
         if duration_ms > 0:
             self.timeline.set_duration_ms(duration_ms)
 
+        # QSplitter — preview (player + controls) ↔ timeline 사이 위/아래 핸들.
+        # 사용자가 핸들 드래그로 timeline 영역 비중 조절 (긴 효과 라인 / 영상 위주 보기 토글).
+        # collapsible 비활성 — 어느 쪽도 0 px 로 접히지 않게 보호.
+        self._preview_container = QWidget()
+        preview_layout = QVBoxLayout(self._preview_container)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(0)
+        preview_layout.addWidget(self.player, stretch=1)
+        preview_layout.addWidget(self.controls)
+
+        self._main_splitter = QSplitter(Qt.Vertical)
+        self._main_splitter.setChildrenCollapsible(False)
+        self._main_splitter.setHandleWidth(6)
+        self._main_splitter.addWidget(self._preview_container)
+        self._main_splitter.addWidget(self.timeline)
+        # 초기 비중 — preview 4 : timeline 1. 사용자가 드래그로 자유 조절.
+        self._main_splitter.setStretchFactor(0, 4)
+        self._main_splitter.setStretchFactor(1, 1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self.player, stretch=1)
-        layout.addWidget(self.controls)
-        layout.addWidget(self.timeline)
+        layout.addWidget(self._main_splitter)
 
         # 편집 모드 OFF 일 땐 trim/effects 숨김 (slider 만 보임)
         self.timeline.set_edit_mode(False)
