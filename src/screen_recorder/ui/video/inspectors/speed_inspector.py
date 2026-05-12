@@ -2,9 +2,11 @@
 
 CaptionInspector / CutInspector 패턴 답습 — `_emitting_guard` 로 set_effect 중에는
 시그널을 무시하고, 위젯 변경 시 dataclasses.replace 로 새 SpeedEffect 를 만들어
-effect_changed 발화. 'rate' 콤보의 마지막 항목 '사용자 지정…' 은 QInputDialog 로
-임의 배율 입력. 'audio' 콤보는 자동/음소거/atempo 매핑.
-'이 배속 삭제' 버튼은 effect_deleted(effect_id) 시그널 발화.
+effect_changed 발화. 'rate' 는 QDoubleSpinBox (0.1~32.0, step 0.25). 'audio' 콤보는
+자동/음소거/atempo 매핑. '이 배속 삭제' 버튼은 effect_deleted(effect_id) 발화.
+
+이전: rate 가 콤보 + 사용자 지정 다이얼로그였는데, "사용자 지정 콤보 재선택해도 팝업
+안 뜸" 회귀 + 임의 입력의 번거로움. spinbox 로 통일 — 화살표 0.25 step + 직접 입력.
 """
 from __future__ import annotations
 from dataclasses import replace
@@ -12,18 +14,12 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel,
-    QPushButton, QSpinBox, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QPushButton, QSpinBox,
 )
 
 from ....effects.types.speed import SpeedEffect
 from .base import InspectorBase
 
-
-# ---- combo 매핑 ----
-# rate 콤보 — 미리 정의된 프리셋 + 마지막 '사용자 지정…' 항목.
-_RATE_PRESETS: list[float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 5.0]
-_CUSTOM_LABEL = "사용자 지정…"
 
 # audio 콤보 — 라벨 ↔ enum 값 양방향.
 _AUDIO_LABELS: list[tuple[str, str]] = [
@@ -33,11 +29,6 @@ _AUDIO_LABELS: list[tuple[str, str]] = [
 ]
 _AUDIO_LABEL_TO_VALUE = {label: value for label, value in _AUDIO_LABELS}
 _AUDIO_VALUE_TO_LABEL = {value: label for label, value in _AUDIO_LABELS}
-
-
-def _format_rate(rate: float) -> str:
-    """1.0 → '1.0×', 0.75 → '0.75×', 2.0 → '2.0×'. 콤보 라벨 통일."""
-    return f"{rate:g}×"
 
 
 class SpeedInspector(InspectorBase):
@@ -59,13 +50,15 @@ class SpeedInspector(InspectorBase):
         form.setLabelAlignment(Qt.AlignRight)
         self._layout.addLayout(form)
 
-        # ---- rate ----
-        self._rate_combo = QComboBox()
-        for r in _RATE_PRESETS:
-            self._rate_combo.addItem(_format_rate(r), userData=r)
-        self._rate_combo.addItem(_CUSTOM_LABEL, userData=None)
-        self._rate_combo.currentIndexChanged.connect(self._on_rate_combo_changed)
-        form.addRow("배속", self._rate_combo)
+        # ---- rate ---- QDoubleSpinBox (0.1~32.0, step 0.25, suffix ×)
+        self._rate_spin = QDoubleSpinBox()
+        self._rate_spin.setRange(0.1, 32.0)
+        self._rate_spin.setSingleStep(0.25)
+        self._rate_spin.setDecimals(2)
+        self._rate_spin.setSuffix(" ×")
+        self._rate_spin.setValue(1.0)
+        self._rate_spin.valueChanged.connect(self._on_any_change)
+        form.addRow("배속", self._rate_spin)
 
         # ---- audio ----
         self._audio_combo = QComboBox()
@@ -112,9 +105,7 @@ class SpeedInspector(InspectorBase):
         self._emitting_guard = True
         try:
             self._effect = effect
-            # rate 콤보 — 프리셋 매칭이면 그 인덱스, 아니면 '사용자 지정…' 라벨에
-            # 현재 값 표시 (선택은 마지막 항목으로).
-            self._select_rate_in_combo(effect.rate)
+            self._rate_spin.setValue(float(effect.rate))
             # audio 콤보
             label = _AUDIO_VALUE_TO_LABEL.get(effect.audio, _AUDIO_LABELS[0][0])
             self._audio_combo.setCurrentText(label)
@@ -133,58 +124,14 @@ class SpeedInspector(InspectorBase):
 
     # ---------- internal ----------
     def _set_form_enabled(self, enabled: bool) -> None:
-        for w in (self._rate_combo, self._audio_combo, self._show_hud_check,
+        for w in (self._rate_spin, self._audio_combo, self._show_hud_check,
                   self._in_spin, self._out_spin, self._delete_btn):
             w.setEnabled(enabled)
-
-    def _select_rate_in_combo(self, rate: float) -> None:
-        """프리셋과 매칭되는 항목이 있으면 그것을, 없으면 마지막 '사용자 지정…' 항목 라벨에
-        현재 값을 끼워 넣어 선택한다 (사용자 입력값을 잃지 않도록).
-        """
-        for i, preset in enumerate(_RATE_PRESETS):
-            if abs(preset - rate) < 1e-6:
-                self._rate_combo.setCurrentIndex(i)
-                return
-        # 비프리셋 — 마지막 항목 라벨에 현재 값 표시. userData 도 갱신.
-        last = self._rate_combo.count() - 1
-        self._rate_combo.setItemText(last, f"{_CUSTOM_LABEL} ({rate:g}×)")
-        self._rate_combo.setItemData(last, rate)
-        self._rate_combo.setCurrentIndex(last)
-
-    def _on_rate_combo_changed(self, index: int) -> None:
-        if self._emitting_guard or self._effect is None:
-            return
-        # 마지막 항목('사용자 지정…') 선택 시: getDouble 로 값 받기, 사용자가 취소하면
-        # 이전 값으로 되돌림.
-        if index == self._rate_combo.count() - 1 and self._rate_combo.itemData(index) is None:
-            value, ok = QInputDialog.getDouble(
-                self, "사용자 지정 배속", "배속 (0.1 ~ 32.0):",
-                value=self._effect.rate, minValue=0.1, maxValue=32.0, decimals=2,
-            )
-            if not ok:
-                # 취소 — 콤보 선택을 원래 효과의 rate 로 복원.
-                self._emitting_guard = True
-                try:
-                    self._select_rate_in_combo(self._effect.rate)
-                finally:
-                    self._emitting_guard = False
-                return
-            # 사용자 입력값을 마지막 항목의 라벨/데이터로 반영.
-            self._emitting_guard = True
-            try:
-                last = self._rate_combo.count() - 1
-                self._rate_combo.setItemText(last, f"{_CUSTOM_LABEL} ({value:g}×)")
-                self._rate_combo.setItemData(last, value)
-            finally:
-                self._emitting_guard = False
-        self._on_any_change()
 
     def _on_any_change(self, *_) -> None:
         if self._emitting_guard or self._effect is None:
             return
-        # rate
-        rate_data = self._rate_combo.currentData()
-        rate = float(rate_data) if rate_data is not None else self._effect.rate
+        rate = float(self._rate_spin.value())
         # audio — 라벨 → enum 값
         audio_label = self._audio_combo.currentText()
         audio = _AUDIO_LABEL_TO_VALUE.get(audio_label, "auto")
