@@ -377,16 +377,27 @@ class PlayerWidget(QStackedWidget):
             margin,
         )
         # 배속 HUD 는 시각 HUD 바로 아래. 사용자가 드래그로 옮겼다면 그 위치 우선.
+        # 매 reposition 마다 새 텍스트로 adjustSize 한 폭으로 다시 계산 — 풀스크린
+        # 전환 / 텍스트 길이 변경 후에도 안전한 위치.
+        hud_w = self._speed_hud.sizeHint().width() or self._speed_hud.width()
+        hud_h = self._speed_hud.sizeHint().height() or self._speed_hud.height()
         if self._speed_hud.isVisible():
             cp = self._speed_hud.custom_pos
             if cp is not None:
-                # 부모 resize 후에도 안 보이지 않게 clamp.
-                cx = max(0, min(self.width() - self._speed_hud.width(), cp.x()))
-                cy = max(0, min(self.height() - self._speed_hud.height(), cp.y()))
+                # 풀스크린 등으로 부모 크기가 크게 변하거나 텍스트가 길어진 경우
+                # custom_pos 가 화면 밖일 수 있다. clamp 후 화면 안에 보이지 않으면
+                # default 위치로 폴백.
+                cx = max(margin, min(self.width() - hud_w - margin, cp.x()))
+                cy = max(margin, min(self.height() - hud_h - margin, cp.y()))
+                # 폭이 부모보다 크면 단순히 좌측 margin 으로.
+                if self.width() < hud_w + 2 * margin:
+                    cx = margin
+                if self.height() < hud_h + 2 * margin:
+                    cy = margin
                 self._speed_hud.move(cx, cy)
             else:
                 self._speed_hud.move(
-                    max(margin, self.width() - self._speed_hud.width() - margin),
+                    max(margin, self.width() - hud_w - margin),
                     margin + self._time_hud.height() + 6,
                 )
         self._action_hud.raise_()

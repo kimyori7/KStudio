@@ -81,9 +81,13 @@ def draw_caption(p: QPainter, c: CaptionEffect, *, position_ms: int,
     # multi-line 에서는 첫 줄의 baseline 위치를 다시 계산한다.
     x, y = anchor_xy(c.position, text_w=text_w, text_h=text_h, pad=pad,
                     surface_w=surface_w, surface_h=surface_h)
-    if c.position.anchor != "free":
-        x += int(c.position.offset_x)
-        y += int(c.position.offset_y)
+    # 9-zone anchor 의 픽셀 offset 적용은 surface 크기 변경 (창 ↔ 풀스크린) 시
+    # 캡션 위치가 어긋나던 회귀 원인 — 픽셀 절대값이라 surface 가 커지면 상대
+    # 위치 달라짐. free anchor 만 정규화 offset_x/offset_y 사용 — 거기서만 적용.
+    # 9-zone 미세 조정이 필요하면 사용자가 free anchor 로 전환해 정규화 좌표 사용.
+    if c.position.anchor == "free":
+        # anchor_xy 가 이미 정규화 좌표를 적용한 좌표를 반환 — 추가 offset 불필요.
+        pass
 
     # 첫 줄 baseline. y 가 마지막 줄 baseline 이라 가정하면 첫 줄 = y - (n-1)*line_h.
     first_baseline_y = y - (len(lines) - 1) * line_h
