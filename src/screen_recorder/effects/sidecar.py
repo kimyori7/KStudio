@@ -191,6 +191,51 @@ def _coerce_nested(f, raw: Any) -> Any:
     return raw
 
 
+_EFFECT_MIN_DURATION_MS = 100   # 클램프 후 폭이 이보다 짧으면 효과 제거.
+
+
+def combined_duration_ms(video_track: list[VideoSegment]) -> int:
+    """video_track 의 끝점 (= max(start_ms + duration_ms)). 빈 트랙은 0.
+
+    Gap-aware 끝 — segment 가 시간상 분산되어 있으면 가장 늦은 끝점이 곧 사용자
+    combined timeline 의 끝.
+    """
+    if not video_track:
+        return 0
+    return max(s.start_ms + s.duration_ms for s in video_track)
+
+
+def clamp_effects_to_track(sidecar: Sidecar) -> list[Effect]:
+    """sidecar.effects 의 in_ms/out_ms 를 video_track 끝점에 맞춰 clamp.
+
+    규칙:
+    - effect.in_ms >= combined_end_ms → 제거 (시작이 트랙 끝 이후).
+    - effect.out_ms > combined_end_ms → out_ms 를 combined_end_ms 로 clamp.
+    - clamp 후 out_ms - in_ms < _EFFECT_MIN_DURATION_MS → 제거 (너무 짧음).
+
+    pure 함수 — 새 list 반환. 호출자가 sidecar.effects 에 대입.
+    cut/trim/segment delete 등으로 트랙 끝이 줄어들 때 효과가 trailing zone 에
+    남는 것을 자동 정리. 빈 트랙 (첫 segment 생성 전) 이면 clamp 건너뜀 — 효과
+    보존. 트랙 생기면 그때 정리됨.
+    """
+    from dataclasses import replace
+    end_ms = combined_duration_ms(sidecar.video_track)
+    if end_ms <= 0:
+        return list(sidecar.effects)
+    out: list[Effect] = []
+    for eff in sidecar.effects:
+        if eff.in_ms >= end_ms:
+            continue
+        if eff.out_ms <= end_ms:
+            out.append(eff)
+            continue
+        new_out = end_ms
+        if new_out - eff.in_ms < _EFFECT_MIN_DURATION_MS:
+            continue
+        out.append(replace(eff, out_ms=int(new_out)))
+    return out
+
+
 def ensure_default_track(sidecar: Sidecar, source_duration_ms: int) -> None:
     """video_track 이 비어 있으면 source_path 가 가리키는 영상 1개 segment 로 채움.
 

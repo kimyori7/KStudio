@@ -103,7 +103,15 @@ class EditController(QObject):
         self.edit_mode_toggled.emit(on)
 
     def update_sidecar(self, new_sidecar: Sidecar) -> None:
-        """효과 추가/삭제/수정 후 호출. History push + autosave 트리거."""
+        """효과 추가/삭제/수정 후 호출. History push + autosave 트리거.
+
+        track 변경 (cut/trim/segment delete 등) 으로 combined duration 이 줄어들면
+        끝점을 넘는 effect 가 trailing zone 에 남아 효과 라인이 어긋남 + export 시
+        엉뚱한 시각에 표시. update_sidecar 가 단일 funnel 이라 여기서 한 번 clamp 하면
+        모든 진입점이 자동 처리. clamp 는 idempotent — track 안 변한 경우 no-op.
+        """
+        from ...effects.sidecar import clamp_effects_to_track
+        new_sidecar.effects = clamp_effects_to_track(new_sidecar)
         self._history.push(new_sidecar)
         self._sidecar = self._history.current()
         self.sidecar_replaced.emit(self._sidecar)
