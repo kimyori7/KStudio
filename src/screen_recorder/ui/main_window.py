@@ -2499,10 +2499,21 @@ class MainWindow(QMainWindow):
             return
         dst = Path(dst)
 
-        # 영상 해상도 — 첫 프레임 / player surface 크기 사용.
-        # 정확한 영상 코덱 해상도는 ffprobe 가 필요하나 surface 크기로 대체 가능.
-        surface_w = max(1, tab.player.width())
-        surface_h = max(1, tab.player.height())
+        # Export 해상도 = 실제 영상 해상도 (ffprobe). player 위젯 크기를 쓰면
+        # 편집창 크기에 따라 surface 가 source aspect 와 어긋나 'stretch' 시 영상이
+        # 위아래로 늘어남. 다중 segment 트랙은 video_track[0].src, 단일이면 src_path.
+        # ffprobe 실패 시 player 위젯 크기로 폴백.
+        from ..services.media_probe import probe_video_size
+        if len(sidecar.video_track) >= 1:
+            primary_src = sidecar.video_track[0].src
+        else:
+            primary_src = str(src_path)
+        pw, ph = probe_video_size(primary_src)
+        if pw > 0 and ph > 0:
+            surface_w, surface_h = pw, ph
+        else:
+            surface_w = max(1, tab.player.width())
+            surface_h = max(1, tab.player.height())
 
         try:
             argv, pngs = build_export_args(

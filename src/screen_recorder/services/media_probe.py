@@ -60,6 +60,44 @@ def has_audio_stream(src: str) -> bool:
         return True
 
 
+def probe_video_size(src: str) -> tuple[int, int]:
+    """영상 파일의 (width, height) 픽셀 크기. 실패 시 (0, 0).
+
+    export 시 surface 크기를 player 위젯 픽셀 (편집창 크기 의존) 대신 실제 영상
+    해상도로 잡기 위함. 위젯 크기를 surface 로 쓰면 source aspect 와 어긋나
+    'stretch' 시 영상이 위아래로 늘어났던 회귀 — surface == source 면 'stretch'
+    가 식별자 동작이 되어 어긋남 없음.
+    """
+    if not src or not Path(src).exists():
+        return (0, 0)
+    try:
+        result = subprocess.run(
+            [
+                _find_ffprobe(), "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "json", src,
+            ],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode != 0:
+            _log.warning("ffprobe (size) failed: %s", result.stderr.decode("utf-8", "replace"))
+            return (0, 0)
+        data = json.loads(result.stdout.decode("utf-8", "replace"))
+        streams = data.get("streams", [])
+        if not streams:
+            return (0, 0)
+        w = int(streams[0].get("width", 0) or 0)
+        h = int(streams[0].get("height", 0) or 0)
+        return (w, h)
+    except FileNotFoundError:
+        _log.warning("ffprobe not found")
+        return (0, 0)
+    except Exception:
+        _log.exception("probe_video_size error")
+        return (0, 0)
+
+
 def probe_duration_ms(src: str) -> int:
     """영상 파일의 길이 (ms). 실패 시 0 반환.
 
