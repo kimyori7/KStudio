@@ -367,10 +367,17 @@ class VideoTab(QWidget):
         return ok
 
     def _get_duration_ms(self) -> int:
-        d = self.player.duration_ms()
+        """현재 트랙의 combined 총 길이. 다중 segment 면 모든 segment 합.
+
+        회귀 fix: player.duration_ms() 는 활성 segment 의 source 영상 길이라
+        다중 segment 트랙에선 일부만 반환 → 후반 segment 영역에 캡션 추가가
+        out_ms > duration 검증으로 거부됐다. timeline.slider_lane 의 duration 이
+        _segment_ctrl.combined_duration_changed 로부터 받은 권위 있는 값.
+        """
+        d = self.timeline.slider_lane.duration_ms()
         if d > 0:
             return d
-        return self.timeline.slider_lane.duration_ms()
+        return self.player.duration_ms()
 
     def _get_position_ms(self) -> int:
         return self.timeline.slider_lane.position_ms() or self.player.position_ms()
