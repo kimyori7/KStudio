@@ -285,6 +285,13 @@ def build_export_args(
         segments, track_extra_srcs = _build_timeline_from_video_track(
             sidecar.video_track, str(src_path),
         )
+        # gap-collapsed 시간축으로 effects 의 in_ms/out_ms 도 remap.
+        # 사용자 effects 는 user combined ms (gap 포함). export 결과는 concat 으로
+        # gap 이 제거된 시간축. mapping 안 하면 효과가 시간창 밖이라 안 보임.
+        captions = _remap_effects_to_gap_collapsed(captions, sidecar.video_track)
+        speeds = _remap_effects_to_gap_collapsed(speeds, sidecar.video_track)
+        zooms = _remap_effects_to_gap_collapsed(zooms, sidecar.video_track)
+        brolls = _remap_effects_to_gap_collapsed(brolls, sidecar.video_track)
     else:
         segments = build_combined_timeline(int(main_duration_ms), cuts)
 
@@ -480,6 +487,47 @@ def build_export_args(
     ])
 
     return argv, png_paths
+
+
+def _remap_effects_to_gap_collapsed(effects, video_track):
+    """video_track 의 gap-collapsed 시간축에 맞춰 effect in_ms/out_ms 를 shift.
+
+    각 segment 에 대해 (user_start_ms, user_end_ms, export_offset) 매핑.
+    effect.in_ms 가 어느 segment 의 user 범위 안에 있으면 그 offset 만큼 shift.
+    gap 에 떨어진 effect 는 제거 (export 결과의 gap 이 사라지므로 표시 의미 없음).
+    effect 가 segment 끝을 넘어 span 하면 그 segment 끝으로 clip (긴 효과의 tail
+    가 다음 segment 로 자연스레 안 넘어가도록 — gap 이 collapse 됐기 때문에).
+    """
+    from dataclasses import replace
+    if not effects or not video_track:
+        return list(effects)
+    segs = sorted(video_track, key=lambda s: s.start_ms)
+    # (user_start, user_end, export_start) 리스트.
+    cursor = 0
+    ranges: list[tuple[int, int, int]] = []
+    for s in segs:
+        ranges.append((s.start_ms, s.end_ms, cursor))
+        cursor += s.duration_ms
+    out = []
+    for eff in effects:
+        # in_ms 가 어느 segment 의 user 범위 안에 있는지 찾음.
+        seg_range = next(
+            ((us, ue, exp) for us, ue, exp in ranges if us <= eff.in_ms < ue),
+            None,
+        )
+        if seg_range is None:
+            # gap 에 떨어졌거나 모든 segment 밖.
+            continue
+        us, ue, exp = seg_range
+        delta = exp - us
+        new_in = eff.in_ms + delta
+        # out_ms 는 그 segment 의 끝을 넘지 않도록 clip 후 shift.
+        clipped_out = min(eff.out_ms, ue)
+        new_out = clipped_out + delta
+        if new_out <= new_in:
+            continue
+        out.append(replace(eff, in_ms=int(new_in), out_ms=int(new_out)))
+    return out
 
 
 def _build_timeline_from_video_track(

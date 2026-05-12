@@ -89,6 +89,57 @@ def test_multi_segment_track_different_srcs_concat_with_extra_input():
     assert "[1:v]" in fc
 
 
+def test_multi_segment_effects_remapped_to_gap_collapsed_timeline():
+    """multi-segment 트랙 + gap 이 있는 사이드카에서 effect 가 gap-collapsed
+    시간축에 맞춰 remap 되는지. SpeedEffect 의 setpts 가 적용된 segment 의
+    export 시간 범위에 정확히 들어가는지로 검증 (caption PNG 는 환경 hang 원인).
+
+    예: seg1 0-3s, gap 3-5s, seg2 5-10s. speed at user 6-7s (seg2 안) →
+    export 에서 seg2 의 sub-segment 가 그 위치에 등장.
+    """
+    from screen_recorder.effects.segment import VideoSegment
+    from screen_recorder.effects.types.speed import SpeedEffect
+    seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
+                         media_kind="video", start_ms=0)
+    seg2 = VideoSegment(src="A.mp4", src_in_ms=5000, src_out_ms=10000, src_duration_ms=10000,
+                         media_kind="video", start_ms=5000)
+    # speed at user combined 6-7s (seg2 안). remap: seg2 export_start=3s (seg1 길이).
+    # user 6 → export 4 (=3 + (6-5)). user 7 → export 5.
+    sp = SpeedEffect(in_ms=6000, out_ms=7000, rate=2.0)
+    sc = Sidecar(source_path="A.mp4", source_hash="h",
+                 video_track=[seg1, seg2], effects=[sp])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # speed (setpts=PTS/2) 가 filter graph 에 등장해야 함.
+    assert "setpts=PTS/2" in fc, f"speed not applied — remap failed: {fc}"
+
+
+def test_effects_in_gap_are_dropped_from_export():
+    """gap 에 떨어진 effect 는 export 에서 제거 (output 에 gap 자체가 없으므로 의미 없음)."""
+    from screen_recorder.effects.segment import VideoSegment
+    from screen_recorder.effects.types.speed import SpeedEffect
+    seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
+                         media_kind="video", start_ms=0)
+    seg2 = VideoSegment(src="A.mp4", src_in_ms=5000, src_out_ms=10000, src_duration_ms=10000,
+                         media_kind="video", start_ms=10000)   # gap 3-10s
+    # gap 안 (4s)
+    sp = SpeedEffect(in_ms=4000, out_ms=4500, rate=2.0)
+    sc = Sidecar(source_path="A.mp4", source_hash="h",
+                 video_track=[seg1, seg2], effects=[sp])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # gap 안 speed 는 drop — setpts 없음.
+    assert "setpts=PTS/2" not in fc
+
+
 def test_multi_segment_track_image_segments_raises():
     """image segment 는 여전히 v2 — 명시적 거부."""
     from screen_recorder.effects.segment import VideoSegment
