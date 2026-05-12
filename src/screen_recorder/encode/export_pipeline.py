@@ -27,6 +27,7 @@ from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
 from ..effects.types.zoom import ZoomEffect
 from .caption_png import render_caption_png
+from .speed_hud_png import render_speed_hud_png
 
 
 _SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom", "broll"}
@@ -318,6 +319,17 @@ def build_export_args(
         render_caption_png(cap, surface_w=surface_w, surface_h=surface_h, dst=png)
         png_paths.append(png)
 
+    # 배속 HUD ("▶▶ N× 배속") PNG — show_hud=True 인 SpeedEffect 만.
+    # font_pt: preview 의 14pt 가 ~800px 위젯에 맞으니 surface_w/800 비례로 잡음 — 4K 도 자연스럽게.
+    speed_hud_pngs: list[tuple[Path, SpeedEffect, int, int]] = []   # (png, eff, w_px, h_px)
+    hud_font_pt = max(14, int(round(14 * surface_w / 800.0)))
+    for sp in speeds:
+        if not getattr(sp, "show_hud", True):
+            continue
+        png = png_dir_path / f"speed_hud_{sp.id}.png"
+        w_px, h_px = render_speed_hud_png(sp, font_pt=hud_font_pt, dst=png)
+        speed_hud_pngs.append((png, sp, w_px, h_px))
+
     # 3) ffmpeg 입력 — A + B (cut 의 src 들, 중복 제거) + caption PNG 들
     argv: list[str] = [str(ffmpeg_path), "-y", "-loglevel", "info"]
     argv.extend(["-i", str(src_path)])
@@ -367,7 +379,22 @@ def build_export_args(
         png_input_index[i] = next_input
         next_input += 1
 
-    # broll PiP 입력 — 캡션 PNG 다음 차례. 각 broll 마다 -i 추가.
+    # 배속 HUD PNG 입력 — 캡션과 같은 패턴. output 시간으로 -t / -itsoffset bound.
+    speed_hud_input_index: dict[int, int] = {}   # speed_hud_pngs idx → ffmpeg input index
+    for i, (png, sp, _w, _h) in enumerate(speed_hud_pngs):
+        out_in_s = user_to_output(sp.in_ms) / 1000.0
+        out_out_s = user_to_output(sp.out_ms) / 1000.0
+        hud_dur_s = max(0.1, out_out_s - out_in_s)
+        argv.extend([
+            "-loop", "1", "-framerate", "30",
+            "-t", f"{hud_dur_s:.3f}",
+            "-itsoffset", f"{out_in_s:.3f}",
+            "-i", str(png),
+        ])
+        speed_hud_input_index[i] = next_input
+        next_input += 1
+
+    # broll PiP 입력 — speed HUD PNG 다음 차례. 각 broll 마다 -i 추가.
     broll_input_index: dict[int, int] = {}   # brolls idx → ffmpeg input index
     for i, broll in enumerate(brolls):
         argv.extend(["-i", broll.src])
@@ -487,7 +514,23 @@ def build_export_args(
         )
         cur_v = next_v
 
-    # broll PiP overlay (Stage 7 v1) — 캡션 overlay 다음.
+    # 배속 HUD overlay — 캡션 overlay 다음. 오른쪽 위 corner + _HUD_MARGIN_PX 마진.
+    # preview 의 reposition_huds 가 우측 상단 기본 — export 도 동일 의도로.
+    _HUD_MARGIN_PX = 16
+    for i, (_png, sp, w_px, h_px) in enumerate(speed_hud_pngs):
+        png_idx = speed_hud_input_index[i]
+        out_in_s = user_to_output(sp.in_ms) / 1000.0
+        out_out_s = user_to_output(sp.out_ms) / 1000.0
+        x = surface_w - w_px - _HUD_MARGIN_PX
+        y = _HUD_MARGIN_PX
+        next_v = f"vh{i}"
+        fc_parts.append(
+            f"[{cur_v}][{png_idx}:v]overlay={x}:{y}:"
+            f"enable='between(t\\,{out_in_s}\\,{out_out_s})'[{next_v}]"
+        )
+        cur_v = next_v
+
+    # broll PiP overlay (Stage 7 v1) — 캡션·HUD overlay 다음.
     # 각 broll 의 입력 스트림을 size_ratio 만큼 scale + setpts 시프트 후 corner 위치에 overlay.
     # placement/pip/audio_mix 는 이미 위에서 검증됨 (PiP only, audio=original_only).
     for i, broll in enumerate(brolls):

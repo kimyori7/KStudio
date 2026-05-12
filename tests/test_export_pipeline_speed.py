@@ -11,6 +11,26 @@ from screen_recorder.encode.export_pipeline import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _autostub_qt_render(monkeypatch, tmp_path):
+    """render_speed_hud_png 와 render_caption_png 가 Qt 호출 시 (no QApplication)
+    hang 하는 회귀를 회피. 모든 테스트가 기본적으로 stub (빈 파일 + 고정 크기).
+    필요한 테스트는 monkeypatch.setattr 로 덮어쓰면 됨.
+    """
+    from screen_recorder.encode import export_pipeline as ep
+    def stub_hud(eff, *, font_pt, dst):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+        return (200, 40)
+    def stub_cap(c, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    monkeypatch.setattr(ep, "render_speed_hud_png", stub_hud)
+    monkeypatch.setattr(ep, "render_caption_png", stub_cap)
+
+
 def _build_argv_with_speed(speed_eff: SpeedEffect, *, main_duration_ms=10000) -> list[str]:
     sc = Sidecar(effects=[speed_eff])
     argv, _ = build_export_args(
@@ -205,19 +225,6 @@ def test_atempo_chain_below_05x():
     assert _atempo_chain(0.25) == "atempo=0.5,atempo=0.5"
 
 
-def _stub_caption_png(monkeypatch):
-    """render_caption_png 가 Qt 렌더링을 시도하지 않도록 빈 파일 생성으로 stub.
-
-    실 테스트에서 PNG 픽셀은 검사하지 않고 argv 의 -filter_complex 만 검증.
-    """
-    from screen_recorder.encode import export_pipeline as ep
-    def stub(c, *, surface_w, surface_h, dst, sample_ms=None):
-        from pathlib import Path
-        Path(dst).parent.mkdir(parents=True, exist_ok=True)
-        Path(dst).write_bytes(b"")
-    monkeypatch.setattr(ep, "render_caption_png", stub)
-
-
 def test_caption_enable_uses_output_time_under_speed(tmp_path, monkeypatch):
     """배속 2.0 안의 캡션 — overlay enable 의 in/out 이 output 시간 (user/rate) 이어야.
 
@@ -227,7 +234,7 @@ def test_caption_enable_uses_output_time_under_speed(tmp_path, monkeypatch):
     user time: 0~10000ms 전체에 speed=2.0 → output time: 0~5000ms.
     caption user 2000~4000 → output 1000~2000.
     """
-    _stub_caption_png(monkeypatch)
+
     from screen_recorder.effects.types.caption import CaptionEffect, Position
     sp = SpeedEffect(in_ms=0, out_ms=10000, rate=2.0)
     cap = CaptionEffect(in_ms=2000, out_ms=4000, text="hello",
@@ -247,7 +254,7 @@ def test_caption_enable_uses_output_time_under_speed(tmp_path, monkeypatch):
 
 def test_caption_enable_unchanged_without_speed(tmp_path, monkeypatch):
     """speed 없으면 user time 이 그대로 output time — caption enable 이 cap.in/out 그대로."""
-    _stub_caption_png(monkeypatch)
+
     from screen_recorder.effects.types.caption import CaptionEffect, Position
     cap = CaptionEffect(in_ms=2000, out_ms=4000, text="hello",
                          position=Position(anchor="bottom-center"))
@@ -261,6 +268,46 @@ def test_caption_enable_unchanged_without_speed(tmp_path, monkeypatch):
     assert "between(t\\,2.0\\,4.0)" in fc, f"caption enable should be 2.0~4.0, got: {fc}"
 
 
+def test_speed_hud_png_input_added_when_show_hud(tmp_path, monkeypatch):
+    """SpeedEffect.show_hud=True → PNG 입력 추가 + overlay enable 의 시간이 output 변환.
+
+    user time: speed 2.0 안에 있음 (user 0~10000ms 중 2000~4000 가 2배속).
+    segment 분할 후 seg1 의 output range = 2000~3000 (user 2000~4000 / 2). 따라서
+    overlay enable = 2.0~3.0 (output 시간).
+    """
+
+
+    sp = SpeedEffect(in_ms=2000, out_ms=4000, rate=2.0, show_hud=True)
+    sc = Sidecar(effects=[sp])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path=str(tmp_path / "out.mp4"),
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg", png_dir=tmp_path,
+    )
+    # PNG path 가 -i 인자로 추가됐는지 검증 — argv 에 "speed_hud_<id>.png" 가 있어야.
+    assert any(a.endswith(".png") and "speed_hud_" in a for a in argv), (
+        f"speed_hud PNG should be an ffmpeg -i input; argv: {argv}"
+    )
+    fc = _fc_of(argv)
+    assert "between(t\\,2.0\\,3.0)" in fc, f"HUD overlay enable expected 2.0~3.0 output time, got fc: {fc}"
+
+
+def test_speed_hud_png_skipped_when_show_hud_false(tmp_path, monkeypatch):
+    """show_hud=False 면 PNG 입력 없음 (overlay 도 없음)."""
+
+
+    sp = SpeedEffect(in_ms=2000, out_ms=4000, rate=2.0, show_hud=False)
+    sc = Sidecar(effects=[sp])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path=str(tmp_path / "out.mp4"),
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg", png_dir=tmp_path,
+    )
+    # PNG 파일 path 가 -i 인자에 없어야. (tmp_path 디렉터리 이름에 'speed_hud_' 가
+    # 들어있을 수 있어 endswith(".png") + 'speed_hud_' 둘 다 검사.)
+    assert not any(a.endswith(".png") and "speed_hud_" in a for a in argv)
+
+
 def test_caption_after_speed_segment_shifts_earlier(tmp_path, monkeypatch):
     """배속 segment 뒤에 있는 캡션 — output 시간으로 앞당겨져야.
 
@@ -268,7 +315,7 @@ def test_caption_after_speed_segment_shifts_earlier(tmp_path, monkeypatch):
     caption user 8000~9000 (배속 안) → output 5000 + (8000-5000)/2 ~ 5000 + (9000-5000)/2
                                        = 6500 ~ 7000.
     """
-    _stub_caption_png(monkeypatch)
+
     from screen_recorder.effects.types.caption import CaptionEffect, Position
     sp = SpeedEffect(in_ms=5000, out_ms=10000, rate=2.0)
     cap = CaptionEffect(in_ms=8000, out_ms=9000, text="hi",
