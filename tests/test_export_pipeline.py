@@ -46,15 +46,40 @@ def test_multi_segment_track_same_src_exports():
     assert "concat=" in fc
 
 
-def test_multi_segment_track_different_srcs_raises():
-    """서로 다른 src 의 segment — v2. 명시적 거부."""
+def test_multi_segment_track_different_srcs_concat_with_extra_input():
+    """서로 다른 src 의 segment — B.mp4 가 추가 ffmpeg input 으로 들어가고
+    concat 필터에 두 segment 가 별도 라벨로 등장."""
     from screen_recorder.effects.segment import VideoSegment
     seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
                          media_kind="video", start_ms=0)
     seg2 = VideoSegment(src="B.mp4", src_in_ms=0, src_out_ms=2000, src_duration_ms=5000,
                          media_kind="video", start_ms=3000)
     sc = Sidecar(source_path="A.mp4", source_hash="h", video_track=[seg1, seg2])
-    with pytest.raises(NotImplementedError, match="다중 src"):
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    # B.mp4 가 두 번째 -i 입력으로 들어감.
+    i_args = [argv[k + 1] for k in range(len(argv) - 1) if argv[k] == "-i"]
+    assert "A.mp4" in i_args and "B.mp4" in i_args
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 두 segment trim — A 의 0:3, B 의 0:2.
+    assert "trim=0.0:3.0" in fc
+    assert "trim=0.0:2.0" in fc
+    # B 는 input idx 1 사용.
+    assert "[1:v]" in fc
+
+
+def test_multi_segment_track_image_segments_raises():
+    """image segment 는 여전히 v2 — 명시적 거부."""
+    from screen_recorder.effects.segment import VideoSegment
+    seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
+                         media_kind="video", start_ms=0)
+    seg2 = VideoSegment(src="img.png", src_in_ms=0, src_out_ms=0, src_duration_ms=0,
+                         media_kind="image", image_duration_ms=2000, start_ms=3000)
+    sc = Sidecar(source_path="A.mp4", source_hash="h", video_track=[seg1, seg2])
+    with pytest.raises(NotImplementedError, match="image segment"):
         build_export_args(
             sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
             main_duration_ms=10000, surface_w=1920, surface_h=1080,

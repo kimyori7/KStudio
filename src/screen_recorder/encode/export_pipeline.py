@@ -202,16 +202,9 @@ def build_export_args(
 
     png_dir 가 None 이면 tempfile.mkdtemp().
     """
-    # 다중 segment 트랙 — Phase 21 hotfix: 같은 src 의 segment 들을 합쳐 export.
-    # 사용자가 영상을 split 한 케이스가 가장 흔함 (split 후 export 차단되던 회귀).
-    # 다른 src 가 섞이면 v2 — 별도 input + 결합 필터 그래프 필요해 보류.
+    # 다중 segment 트랙 export. 같은 src 든 다른 src 든 자동 처리.
+    # image segment 만 v2 보류 — 정지 이미지를 영상 stream 으로 합성하는 별도 그래프 필요.
     if len(sidecar.video_track) > 1:
-        unique_srcs = {seg.src for seg in sidecar.video_track}
-        if len(unique_srcs) > 1:
-            raise NotImplementedError(
-                "다중 src 트랙 export 는 v2 — 현재는 같은 원본 영상의 split 만 지원. "
-                "서로 다른 영상이 섞여 있으면 단일 영상으로 정리 후 다시 시도해 주세요."
-            )
         if any(seg.media_kind == "image" for seg in sidecar.video_track):
             raise NotImplementedError(
                 "image segment 가 포함된 트랙 export 는 v2 — 영상 segment 만 지원."
@@ -285,9 +278,13 @@ def build_export_args(
 
     # 1) 결합 시간축 segment 리스트
     # 다중 segment 트랙: video_track 의 각 segment 를 TimelineSegment 로 직접 변환.
-    # 같은 src 가정 (위 검증) 이라 모두 source="main" — src_path 와 1:1 매핑.
+    # 모든 segment 의 src 가 src_path 와 같으면 source="main" 으로 간단 처리. 다른
+    # src 가 섞이면 source="insert" + source_id=src 로 두고 _build_argv 가 별도 input 추가.
+    track_extra_srcs: list[str] = []   # src_path 가 아닌 segment 들의 unique src
     if len(sidecar.video_track) > 1:
-        segments = _build_timeline_from_video_track(sidecar.video_track)
+        segments, track_extra_srcs = _build_timeline_from_video_track(
+            sidecar.video_track, str(src_path),
+        )
     else:
         segments = build_combined_timeline(int(main_duration_ms), cuts)
 
@@ -326,6 +323,13 @@ def build_export_args(
             cut_src_index[cut.id] = next_input
             next_input += 1
 
+    # 다중 src 트랙 segment 의 추가 입력. source_id=src 로 lookup.
+    track_src_index: dict[str, int] = {}
+    for src in track_extra_srcs:
+        argv.extend(["-i", src])
+        track_src_index[src] = next_input
+        next_input += 1
+
     png_input_index: dict[int, int] = {}   # png_paths idx → ffmpeg input index
     for i, png in enumerate(png_paths):
         argv.extend(["-i", str(png)])
@@ -345,9 +349,11 @@ def build_export_args(
     for i, seg in enumerate(segments):
         v_label = f"s{i}v"
         a_label = f"s{i}a"
-        # speed 효과 적용 결정 — main segment 만. insert 는 위에서 차단됨.
+        # speed 효과 적용 결정 — main segment + 다중 src track 의 insert segment.
+        # 다중 src track 은 source="insert" 지만 timeline 시간축에 정상 위치하므로 적용.
+        # 기존 cut.insert (source_id=cut.id) 만 차단 (위에서 이미 speed+cut 결합 차단).
         speed_match: Optional[SpeedEffect] = None
-        if seg.source == "main" and speeds:
+        if speeds and (seg.source == "main" or seg.source_id in track_src_index):
             speed_match = _speed_overlapping_segment(speeds, seg)
         # speed 가 적용되면 video setpts 는 PTS/{rate} (가속) 또는 PTS*N (감속) 로,
         # audio 는 atempo 체인으로. setpts=PTS/2.0 = 2배속 (시간축 절반).
@@ -358,9 +364,9 @@ def build_export_args(
             speed_v_filter = f",setpts=PTS/{r:g}"
             speed_a_filter = "," + _atempo_chain(r)
 
-        # zoom 효과 적용 결정 — main segment 만 (위에서 zoom×cut/speed 차단).
+        # zoom 효과 적용 결정 — main + 다중 src track insert.
         zoom_match: Optional[ZoomEffect] = None
-        if seg.source == "main" and zooms:
+        if zooms and (seg.source == "main" or seg.source_id in track_src_index):
             zoom_match = _zoom_overlapping_segment(zooms, seg)
         zoom_filter = ""
         if zoom_match is not None:
@@ -377,16 +383,22 @@ def build_export_args(
                 f"[0:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}[{a_label}]"
             )
         else:
-            cut = next(c for c in cuts if c.id == seg.source_id)
-            idx = cut_src_index[cut.id]
+            # source_id 가 cut.id 면 cut 의 insert, src 경로면 track 다중 src.
             in_s = seg.source_start_ms / 1000.0
             out_s = seg.source_end_ms / 1000.0
+            if seg.source_id in track_src_index:
+                idx = track_src_index[seg.source_id]
+                scale_mode = "stretch"   # 다중 src track 은 일관되게 stretch.
+            else:
+                cut = next(c for c in cuts if c.id == seg.source_id)
+                idx = cut_src_index[cut.id]
+                scale_mode = cut.scale_mode
             fc_parts.append(
-                f"[{idx}:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS,"
-                f"{_scale_filter(cut.scale_mode, surface_w, surface_h)}[{v_label}]"
+                f"[{idx}:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
+                f"{_scale_filter(scale_mode, surface_w, surface_h)}{zoom_filter}[{v_label}]"
             )
             fc_parts.append(
-                f"[{idx}:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS[{a_label}]"
+                f"[{idx}:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}[{a_label}]"
             )
         seg_labels.append((v_label, a_label))
 
@@ -464,35 +476,51 @@ def build_export_args(
     return argv, png_paths
 
 
-def _build_timeline_from_video_track(video_track) -> list[TimelineSegment]:
+def _build_timeline_from_video_track(
+    video_track, main_src_path: str,
+) -> tuple[list[TimelineSegment], list[str]]:
     """sidecar.video_track 의 VideoSegment 들을 export 용 TimelineSegment 로 변환.
 
-    이 함수는 "같은 src 의 split 만" 케이스에서만 호출된다 (호출 측에서 검증).
-    각 VideoSegment 는 source="main" 인 TimelineSegment 로 매핑 — src 가 모두
-    같아 ffmpeg [0:v] 입력 한 개로 충분. combined_start_ms 는 0 부터 누적합으로
-    재계산 (사용자가 만든 갭은 export 결과에서 제거 — 단순화. 갭 유지가 필요하면
-    별도 follow-up).
+    각 VideoSegment 는:
+    - src == main_src_path 면 source="main" (ffmpeg [0:v] 사용)
+    - 다른 src 면 source="insert" + source_id=src path (별도 input 필요)
+
+    Returns: (segments, extra_srcs) — extra_srcs 는 src_path 외 unique 경로의
+    삽입 순서 리스트. 호출자가 그 순서대로 ffmpeg -i 인자를 추가하고 input idx
+    를 src 경로 키로 lookup 한다.
+
+    combined_start_ms 는 0 부터 누적합 — 사용자가 만든 갭은 export 결과에서 제거.
     """
     segs = sorted(video_track, key=lambda s: s.start_ms)
     out: list[TimelineSegment] = []
+    extra_srcs: list[str] = []
+    extra_set: set[str] = set()
     combined_cursor = 0
     for s in segs:
-        # source range. src_out_ms=0 는 src 끝까지.
         src_in = int(s.src_in_ms)
         src_out = int(s.src_out_ms) if s.src_out_ms > 0 else int(s.src_duration_ms)
         if src_out <= src_in:
             continue
         length = src_out - src_in
+        if s.src == main_src_path:
+            source_type = "main"
+            source_id = None
+        else:
+            source_type = "insert"
+            source_id = s.src
+            if s.src not in extra_set:
+                extra_set.add(s.src)
+                extra_srcs.append(s.src)
         out.append(TimelineSegment(
             combined_start_ms=combined_cursor,
             combined_end_ms=combined_cursor + length,
-            source="main",
-            source_id=None,
+            source=source_type,
+            source_id=source_id,
             source_start_ms=src_in,
             source_end_ms=src_out,
         ))
         combined_cursor += length
-    return out
+    return out, extra_srcs
 
 
 def _split_main_segments_at_effect_boundaries(
