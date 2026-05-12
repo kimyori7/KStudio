@@ -106,6 +106,11 @@ class VideoTab(QWidget):
         )
         self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
         self._edit_controller.sidecar_replaced.connect(self._warm_caption_fonts)
+        # 마지막으로 사용한 캡션 폰트/크기/굵기 — 새 캡션 추가 시 직전 값 상속.
+        # 사이드카가 갱신될 때마다 가장 최근 (in_ms 가장 큰) 캡션의 font 를 기록.
+        from ..effects.types.caption import Font as _Font
+        self._last_caption_font: _Font | None = None
+        self._edit_controller.sidecar_replaced.connect(self._track_last_caption_font)
         self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
         # Stage A: 사이드카가 비어 있으면 source 1 segment 로 자동 채움
         # (history baseline 도 새 segment 상태로 reset — 사용자가 undo 로 빈 트랙까지 안 감).
@@ -307,7 +312,12 @@ class VideoTab(QWidget):
         if out_ms - in_ms < 100:
             return False
         if effect_type == "caption":
-            eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms)
+            # 직전 사용 폰트/크기/굵기 가 있으면 상속 (세션 한정). 없으면 Font() 기본값.
+            if self._last_caption_font is not None:
+                eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms,
+                                    font=self._last_caption_font)
+            else:
+                eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms)
         elif effect_type in ("cut", "cut_splice"):
             # "cut" = lane 우클릭 add (modifier 없는 기본은 splice).
             # "cut_splice" = 단축키 C 명시.
@@ -357,6 +367,21 @@ class VideoTab(QWidget):
 
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
+
+    def _track_last_caption_font(self, sc) -> None:
+        """사이드카의 가장 최근 (in_ms 가장 큰) 캡션의 font 를 기록.
+
+        새 캡션을 추가할 때 직전 사용 폰트/크기/굵기 를 상속. 세션 한정 — 탭 닫고
+        다시 열면 초기화. 향후 settings 영속화 가능.
+        """
+        from ..effects.types.caption import CaptionEffect
+        latest: CaptionEffect | None = None
+        for eff in sc.effects:
+            if isinstance(eff, CaptionEffect):
+                if latest is None or eff.in_ms > latest.in_ms:
+                    latest = eff
+        if latest is not None:
+            self._last_caption_font = latest.font
 
     def _request_all_thumbnails(self, sc) -> None:
         """사이드카의 모든 segment 의 필름스트립 고정 슬롯 + 모든 broll src 의 대표 프레임을 비동기 요청.

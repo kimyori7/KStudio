@@ -40,6 +40,35 @@ def test_lane_request_add_creates_caption_at_ms(qtbot, sample_mp4, tmp_path):
     assert e.out_ms == 5000 + 3000
 
 
+def test_new_caption_inherits_last_used_font(qtbot, sample_mp4, tmp_path):
+    """첫 캡션 → 폰트 수정 후 두 번째 캡션 추가 → 두 번째도 같은 폰트/크기/굵기."""
+    from dataclasses import replace
+    from screen_recorder.effects.types.caption import Font
+    tab = _make_tab(qtbot, sample_mp4, tmp_path)
+
+    # 1) 첫 캡션 추가 (기본 폰트).
+    tab.lanes_widget().request_add.emit("caption", 1000)
+    sc = tab.sidecar()
+    first = sc.effects[0]
+    assert first.font.family == "sans-serif"  # 기본
+    assert first.font.size == 36
+
+    # 2) 사용자가 폰트 변경 — 인스펙터 경로 모사 (update_effect 직접 호출).
+    custom = Font(family="Arial", size=72, bold=True)
+    new_first = replace(first, font=custom)
+    tab.edit_controller().update_effect(new_first)
+
+    # 3) 두 번째 캡션 추가 → 첫 캡션의 폰트 그대로 상속.
+    tab.lanes_widget().request_add.emit("caption", 5000)
+    sc2 = tab.sidecar()
+    captions = [e for e in sc2.effects if e.type == "caption"]
+    assert len(captions) == 2
+    new_caption = max(captions, key=lambda e: e.in_ms)
+    assert new_caption.font.family == "Arial"
+    assert new_caption.font.size == 72
+    assert new_caption.font.bold is True
+
+
 def test_t_shortcut_adds_caption_at_current_position(qtbot, sample_mp4, tmp_path):
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
     tab.show()
