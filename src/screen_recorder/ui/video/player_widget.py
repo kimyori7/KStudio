@@ -683,6 +683,22 @@ class PlayerWidget(QStackedWidget):
             return self.rect()
         return self._video_surface.video_frame_rect()
 
+    def video_source_size(self) -> tuple[int, int]:
+        """현재 영상 frame 의 원본 픽셀 크기 (w, h). 프레임 없으면 (0, 0).
+
+        오버레이가 export 와 같은 source 좌표계에서 그리도록 painter 를 scale 할 때
+        사용 — 창모드/풀스크린 사이 캡션 위치 일관성 (font 가 절대 픽셀이라 surface
+        크기에 따라 bbox spread 가 달라지던 회귀) 해소.
+        """
+        if self._is_gif:
+            return (self.width(), self.height())
+        src = self._video_surface._frame
+        if src.isNull():
+            src = self._video_surface._thumbnail
+        if src.isNull():
+            return (0, 0)
+        return (src.width(), src.height())
+
     def _on_media_state(self, state) -> None:
         if self._suppress_state_signal:
             return

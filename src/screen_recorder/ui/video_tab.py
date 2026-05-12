@@ -217,6 +217,11 @@ class VideoTab(QWidget):
         self._preview_overlay.set_video_frame_rect_provider(
             self.player.video_frame_rect
         )
+        # source 픽셀 크기 provider — caption 이 source 좌표계에서 그려져 export 와
+        # 일관 + 창모드/풀스크린 사이에서도 같은 상대 위치 유지.
+        self._preview_overlay.set_video_source_size_provider(
+            self.player.video_source_size
+        )
         self._preview_overlay.set_sidecar(self._edit_controller.sidecar())
         # position 은 SegmentPlaybackController 가 emit 하는 combined 시간을 써야
         # effect.in_ms/out_ms (combined 기준) 와 시간창 매칭이 맞음. raw player.position_ms

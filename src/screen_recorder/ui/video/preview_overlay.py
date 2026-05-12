@@ -143,6 +143,9 @@ class PreviewOverlay(QWidget):
         # 영상 프레임 rect provider — letterbox 시 검은 띠를 제외한 실제 영상 영역.
         # None 이면 self.rect() (위젯 전체) 사용. 이 rect 안에서만 그리고 드래그한다.
         self._frame_rect_provider: Optional[Callable[[], QRect]] = None
+        # 영상 source 픽셀 크기 provider — caption painter scale 용. None / (0,0) 이면
+        # 기존 frame 좌표계로 fallback (테스트 / 영상 미로딩 호환).
+        self._source_size_provider: Optional[Callable[[], tuple[int, int]]] = None
         # broll PIP 가이드 안에 표시할 대표 썸네일 (src path 별). VideoTab 이 채워줌.
         self._broll_thumbs: dict[str, "QImage"] = {}
         # broll PIP 실시간 frame (effect_id 별). BrollPipPlayer.frame_ready 가 채움.
@@ -209,6 +212,16 @@ class PreviewOverlay(QWidget):
         None 이면 위젯 전체를 영상 프레임으로 간주 (테스트 호환).
         """
         self._frame_rect_provider = fn
+
+    def set_video_source_size_provider(self, fn: Optional[Callable[[], tuple[int, int]]]) -> None:
+        """현재 영상의 source 픽셀 (w, h) provider. 캡션 painter scale 에 사용.
+
+        font 가 절대 px 라 surface 크기에 따라 bbox spread 가 달라지던 회귀의 fix —
+        preview 가 export 와 같은 source 좌표계에서 그리고 painter scale 로 frame 에
+        맞춤. 결과: 창모드/풀스크린/export 모두 캡션이 같은 *상대 위치*에 표시.
+        None 이거나 (0, 0) 반환 시 기존 frame 좌표계 사용 (테스트 / 영상 없을 때).
+        """
+        self._source_size_provider = fn
         self.update()
 
     # ---------- internal: frame rect ----------
@@ -266,40 +279,61 @@ class PreviewOverlay(QWidget):
             position = Position(anchor="free",
                                 offset_x=self._drag_override_offset[0],
                                 offset_y=self._drag_override_offset[1])
-        # caption_renderer 의 모든 그리기를 호출하기 전에 hit-test bbox 를 기록.
-        # 텍스트 width 계산을 위해 폰트는 잠시 set 후 fontMetrics 만 사용.
+
+        frame = self._frame_rect()
+        # source 좌표계 결정 — provider 가 (w, h) 반환하면 그 픽셀 공간에서 그린 뒤
+        # painter scale 로 frame 에 맞춤. 없으면 (legacy) frame 픽셀 공간에서 직접.
+        src_size = self._source_size_provider() if self._source_size_provider else (0, 0)
+        source_w, source_h = src_size
+        if source_w > 0 and source_h > 0 and frame.width() > 0 and frame.height() > 0:
+            # source 좌표계에서 그리기 (export 와 동일). scale 은 frame/source 비율.
+            surface_w = source_w
+            surface_h = source_h
+            scale_x = frame.width() / source_w
+            scale_y = frame.height() / source_h
+        else:
+            # 영상 size 미정 — 기존 frame 좌표계.
+            surface_w = max(1, frame.width())
+            surface_h = max(1, frame.height())
+            scale_x = 1.0
+            scale_y = 1.0
+
+        # 텍스트 width 계산 — caption_renderer 와 동일한 font 로.
         f = QFont(c.font.family, c.font.size)
         f.setBold(c.font.bold)
-        p.setFont(f)
-        fm = p.fontMetrics()
+        from PySide6.QtGui import QFontMetrics
+        fm = QFontMetrics(f)
         text_w = fm.horizontalAdvance(c.text) if c.text else 0
         text_h = fm.height()
         pad = 8
-        # 위치 계산은 영상 프레임 rect 안에서 — letterbox 가 있으면 검은 띠를 피해 그려진다.
-        frame = self._frame_rect()
-        x, y = caption_renderer.anchor_xy(
+
+        # anchor_xy 는 surface (source 또는 frame) 좌표계의 (x, y) 반환.
+        x_src, y_src = caption_renderer.anchor_xy(
             position, text_w=text_w, text_h=text_h, pad=pad,
-            surface_w=frame.width(), surface_h=frame.height(),
+            surface_w=surface_w, surface_h=surface_h,
         )
         if position.anchor != "free":
-            x += int(position.offset_x)
-            y += int(position.offset_y)
-        x += frame.x()
-        y += frame.y()
-        # 모든 anchor 의 캡션을 hit-test 대상으로 등록 — 호버/드래그 가능.
-        # 보이는 (in_ms~out_ms 범위 내) 캡션만 등록해 안 보이는 캡션 클릭 방지.
+            x_src += int(position.offset_x)
+            y_src += int(position.offset_y)
+
+        # hit-test bbox 는 위젯(widget) 좌표 — mouse event 가 그 공간이므로 scale 변환.
         if c.in_ms <= self._position_ms < c.out_ms:
+            bbox_left = frame.x() + (x_src - pad) * scale_x
+            bbox_top = frame.y() + (y_src - text_h - pad) * scale_y
+            bbox_w = (text_w + 2 * pad) * scale_x
+            bbox_h = (text_h + 2 * pad) * scale_y
             self._caption_bboxes[c.id] = QRect(
-                x - pad, y - text_h - pad, text_w + 2 * pad, text_h + 2 * pad,
+                int(bbox_left), int(bbox_top), int(bbox_w), int(bbox_h),
             )
-        # 실제 그리기는 frame 좌표에서 painter 를 translate 후 caption_renderer 호출 —
-        # caption_renderer 는 surface 안에서 그리므로 translate 가 letterbox 보정.
+
+        # 그리기 — frame.x/y 평행이동 후 source→frame scale.
         p.save()
         p.translate(frame.x(), frame.y())
+        p.scale(scale_x, scale_y)
         eff_for_draw = replace(c, position=position) if position is not c.position else c
         caption_renderer.draw_caption(
             p, eff_for_draw, position_ms=self._position_ms,
-            surface_w=frame.width(), surface_h=frame.height(),
+            surface_w=surface_w, surface_h=surface_h,
         )
         p.restore()
 
@@ -620,14 +654,21 @@ class PreviewOverlay(QWidget):
             raw_y = self._drag_start_offset_norm[1] + delta_y / fh
             # anchor 좌표만 [0, 1] 클램프하면 free 의 텍스트 *중심* 가정 때문에 절반이
             # 화면 밖으로 나감. 텍스트 bbox 가 frame 안에 머물도록 measure 후 clamp.
+            # 측정 / 클램프 모두 source 좌표계 (caption_renderer 와 일관) — frame 픽셀
+            # 기반이면 창 크기에 따라 클램프 결과가 달라짐.
             cap_eff = next(
                 (e for e in self._sidecar.effects if e.id == self._drag_caption_id),
                 None,
             ) if self._sidecar is not None else None
             if cap_eff is not None and cap_eff.type == "caption":
                 tw, th = caption_renderer.measure_text(cap_eff)
+                src_size = self._source_size_provider() if self._source_size_provider else (0, 0)
+                if src_size[0] > 0 and src_size[1] > 0:
+                    cw, ch = src_size
+                else:
+                    cw, ch = fw, fh
                 new_x, new_y = caption_renderer.clamp_free_offset(
-                    tw, th, fw, fh, raw_x, raw_y,
+                    tw, th, cw, ch, raw_x, raw_y,
                 )
             else:
                 new_x = max(0.0, min(1.0, raw_x))
