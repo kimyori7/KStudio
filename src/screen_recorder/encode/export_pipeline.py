@@ -286,6 +286,14 @@ def build_export_args(
     if trim_in > 0 or trim_out < main_duration_ms:
         segments = _apply_trim_to_main_segments(segments, trim_in, trim_out)
 
+    # 1.6) speed/zoom 효과 경계점에서 main segment 자동 분할.
+    # 사용자가 효과 구간을 segment 보다 짧게 잡으면 partial overlap → 이전엔
+    # NotImplementedError. 효과의 in_ms / out_ms 가 segment 안에 떨어지면 그
+    # 지점에서 segment 를 쪼개 각 sub-segment 가 효과에 완전 포함되거나 완전
+    # 밖에 있도록 만든다. 이후 _speed/zoom_overlapping_segment 가 정상 동작.
+    if speeds or zooms:
+        segments = _split_main_segments_at_effect_boundaries(segments, speeds, zooms)
+
     # 2) 캡션 PNG 생성
     png_dir_path = Path(png_dir) if png_dir is not None else Path(tempfile.mkdtemp(prefix="kstudio_export_"))
     png_paths: list[Path] = []
@@ -442,6 +450,67 @@ def build_export_args(
     ])
 
     return argv, png_paths
+
+
+def _split_main_segments_at_effect_boundaries(
+    segments: list[TimelineSegment],
+    speeds: list[SpeedEffect],
+    zooms: list[ZoomEffect],
+) -> list[TimelineSegment]:
+    """speed/zoom 효과의 in_ms / out_ms 경계점에서 main segment 들을 잘라
+    각 segment 가 효과에 완전 포함되거나 완전 밖에 있도록 만든다.
+
+    이전엔 partial overlap 이면 _speed/zoom_overlapping_segment 가
+    NotImplementedError. 사용자가 segment 보다 짧은 구간에 효과를 걸면 export
+    자체가 막혔다. 이 함수가 그 케이스를 자동 split 으로 해결.
+
+    insert segment 는 영향 없음 — v1 에서 speed/zoom + cut/insert 결합은 별도로
+    이미 차단됨. main segment 안에서 source_start_ms ~ source_end_ms 사이에
+    떨어지는 boundary 들만 split 점으로 사용. main segment 안에서 source 와
+    combined 는 1:1 매핑 (build_combined_timeline 보장) 이므로 offset 만 보존.
+    """
+    boundary_points: set[int] = set()
+    for sp in speeds:
+        boundary_points.add(int(sp.in_ms))
+        boundary_points.add(int(sp.out_ms))
+    for z in zooms:
+        boundary_points.add(int(z.in_ms))
+        boundary_points.add(int(z.out_ms))
+
+    out: list[TimelineSegment] = []
+    for seg in segments:
+        if seg.source != "main":
+            out.append(seg)
+            continue
+        s_start = seg.source_start_ms
+        s_end = seg.source_end_ms
+        inside = sorted(b for b in boundary_points if s_start < b < s_end)
+        if not inside:
+            out.append(seg)
+            continue
+        # main segment 안 source-to-combined offset (build_combined_timeline 보장).
+        offset = seg.combined_start_ms - s_start
+        prev_src = s_start
+        for b in inside:
+            out.append(TimelineSegment(
+                combined_start_ms=prev_src + offset,
+                combined_end_ms=b + offset,
+                source="main",
+                source_id=None,
+                source_start_ms=prev_src,
+                source_end_ms=b,
+            ))
+            prev_src = b
+        # 마지막 잔여 부분.
+        out.append(TimelineSegment(
+            combined_start_ms=prev_src + offset,
+            combined_end_ms=seg.combined_end_ms,
+            source="main",
+            source_id=None,
+            source_start_ms=prev_src,
+            source_end_ms=s_end,
+        ))
+    return out
 
 
 def _apply_trim_to_main_segments(

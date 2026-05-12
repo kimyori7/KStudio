@@ -92,20 +92,61 @@ def test_speed_plus_insert_cut_raises():
         )
 
 
-def test_speed_partial_overlap_raises():
-    """SpeedEffect 가 segment 를 부분적으로만 덮음 → NotImplementedError.
+def test_speed_partial_overlap_auto_splits_segment():
+    """SpeedEffect 가 segment 를 부분만 덮으면 segment 를 효과 경계에서 자동 split.
 
-    cut 0 개 + main_duration=10000 → segments 는 main 1개([0, 10000]).
-    Speed 가 [2000, 5000] 만 덮으면 segment 를 부분만 덮어 v1 에서 차단.
+    cut 0 개 + main_duration=10000 → 원래는 main 1개([0, 10000]).
+    Speed [2000, 5000] 적용 시: → 3개 sub-segment ([0,2000], [2000,5000], [5000,10000]).
+    중간 sub-segment 에만 setpts=PTS/2 + atempo 가 붙는다.
+
+    이전엔 NotImplementedError 로 export 자체가 막혔던 케이스 — 자동 split 으로 해결.
     """
     eff = SpeedEffect(in_ms=2000, out_ms=5000, rate=2.0)
     sc = Sidecar(effects=[eff])
-    with pytest.raises(NotImplementedError, match="partial overlap"):
-        build_export_args(
-            sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
-            main_duration_ms=10000, surface_w=1920, surface_h=1080,
-            ffmpeg_path="ffmpeg",
-        )
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    # filter_complex 안에 3개 main segment 라벨 (s0/s1/s2) 와 1개에만 setpts=PTS/2.
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    assert "trim=0.0:2.0" in fc, "head sub-segment missing"
+    assert "trim=2.0:5.0" in fc, "speed sub-segment missing"
+    assert "trim=5.0:10.0" in fc, "tail sub-segment missing"
+    # speed 가 적용된 sub-segment 는 [trim=2.0:5.0,setpts=PTS-STARTPTS,setpts=PTS/2] 식.
+    assert "setpts=PTS/2" in fc
+    # head / tail 에는 setpts=PTS/2 가 직접 붙으면 안 됨 (단 한 번만 등장).
+    assert fc.count("setpts=PTS/2") == 1
+
+
+def test_speed_fully_contained_no_split():
+    """Speed 가 segment 를 완전히 덮으면 split 불필요 — 단일 segment 그대로."""
+    eff = SpeedEffect(in_ms=0, out_ms=10_000, rate=2.0)
+    sc = Sidecar(effects=[eff])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    assert "trim=0.0:10.0" in fc
+    # split 이 일어났다면 다른 trim 구간이 생겼을 것 — 없음 확인.
+    assert "trim=2.0" not in fc and "trim=5.0" not in fc
+
+
+def test_speed_outside_segment_no_split():
+    """Speed 시간창이 main_duration 밖이면 split 도 안 생기고 효과도 적용 안 됨."""
+    eff = SpeedEffect(in_ms=15_000, out_ms=20_000, rate=2.0)   # 영상 끝(10000) 밖
+    sc = Sidecar(effects=[eff])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 원본 1 segment 그대로, speed 적용 안 됨.
+    assert "trim=0.0:10.0" in fc
+    assert "setpts=PTS/" not in fc
 
 
 # ---- _atempo_chain unit tests ----
