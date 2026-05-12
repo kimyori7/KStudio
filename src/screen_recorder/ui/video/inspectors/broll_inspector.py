@@ -148,7 +148,19 @@ class BrollInspector(InspectorBase):
         for label, _value in _AUDIO_MIX_LABELS:
             self._audio_mix_combo.addItem(label)
         self._audio_mix_combo.currentIndexChanged.connect(self._on_any_change)
+        self._audio_mix_combo.currentIndexChanged.connect(
+            lambda _idx: self._update_audio_mix_warning()
+        )
         form.addRow("오디오", self._audio_mix_combo)
+        # 'original_only' 외 모드는 export v1 미지원 — 사용자 사전 경고. v2 audio
+        # mixing 구현 전까지 visible.
+        self._audio_mix_warning = QLabel(
+            "⚠ '원본만' 외 모드는 내보내기 미지원 (v2 작업). 미리보기에선 작동."
+        )
+        self._audio_mix_warning.setStyleSheet("color: #f59e0b; font-size: 11px;")
+        self._audio_mix_warning.setWordWrap(True)
+        self._audio_mix_warning.setVisible(False)
+        form.addRow("", self._audio_mix_warning)
 
         # ---- in / out ms ----
         self._in_spin = QSpinBox()
@@ -214,6 +226,7 @@ class BrollInspector(InspectorBase):
                 effect.audio_mix, _AUDIO_MIX_LABELS[0][0],
             )
             self._audio_mix_combo.setCurrentText(audio_label)
+            self._update_audio_mix_warning()
             # in / out
             self._in_spin.setValue(int(effect.in_ms))
             self._out_spin.setValue(int(effect.out_ms))
@@ -257,6 +270,13 @@ class BrollInspector(InspectorBase):
         return _AUDIO_MIX_LABEL_TO_VALUE.get(
             self._audio_mix_combo.currentText(), "original_only",
         )
+
+    def _update_audio_mix_warning(self) -> None:
+        """audio_mix 가 'original_only' 외면 노란 경고 라벨 표시."""
+        if hasattr(self, "_audio_mix_warning"):
+            self._audio_mix_warning.setVisible(
+                self._current_audio_mix() != "original_only"
+            )
 
     def _update_pip_widgets_enabled(self) -> None:
         """placement 에 따라 PiP 전용 위젯의 enable 상태 + 경고 라벨 표시 결정."""

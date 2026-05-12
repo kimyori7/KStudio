@@ -2,8 +2,13 @@
 from __future__ import annotations
 from typing import Optional
 
+from pathlib import Path as _Path
+
 from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent, QRect
-from PySide6.QtGui import QPixmap, QIcon, QAction, QPainter, QFont, QFontMetrics, QColor
+from PySide6.QtGui import (
+    QPixmap, QIcon, QAction, QPainter, QFont, QFontMetrics, QColor,
+    QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent,
+)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QMenu,
     QProxyStyle, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QApplication,
@@ -132,9 +137,17 @@ def _format_duration(ms: int) -> str:
 class LibraryPanel(QWidget):
     entry_open_requested = Signal(int)       # entry id
     entry_rename_requested = Signal(int)     # entry id (UI 상에서 인라인 편집 시작 요청)
-    entry_delete_requested = Signal(int)     # entry id
+    entry_delete_requested = Signal(int)     # entry id — 휴지통으로 (Shift+Del / 메뉴)
+    entry_remove_requested = Signal(int)     # entry id — 라이브러리에서만 제외 (Del)
     entry_open_folder_requested = Signal(int)  # entry id
     entry_undelete_requested = Signal()       # Ctrl+Z — 마지막 삭제 항목 복원
+    # 외부 파일 드롭 → 라이브러리에 추가 (탭 자동 열림 없음). MainWindow 가 받아 처리.
+    files_dropped_for_library = Signal(list)   # list[str] — 절대 경로
+
+    _ACCEPTED_DROP_EXTS = {
+        ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv", ".gif",
+        ".png", ".jpg", ".jpeg",
+    }
 
     def __init__(self, model: LibraryModel,
                  mode_controller: Optional[ModeController] = None) -> None:
@@ -174,6 +187,22 @@ class LibraryPanel(QWidget):
         if self._mode is not None:
             self._mode.mode_changed.connect(self._refresh_visibility)
             self._refresh_visibility(self._mode.mode())
+
+        # 외부 파일 드롭 수락 — 라이브러리에만 추가 (탭 열림 X). 자식 list_widget 도
+        # viewport drop 이 부모에 전파되도록 viewport.setAcceptDrops(False).
+        self.setAcceptDrops(True)
+        try:
+            self.list_widget.viewport().setAcceptDrops(False)
+        except (RuntimeError, AttributeError):
+            pass
+        # 드래그-드롭 hint — 패널 위 호버 시 표시되는 안내 라벨 (영역별 hint).
+        self._drop_hint = QLabel("📋 여기에 놓으면 라이브러리에 추가됩니다", self)
+        self._drop_hint.setStyleSheet(
+            "background: rgba(59, 130, 246, 230); color: white;"
+            " padding: 6px 12px; border-radius: 4px; font-weight: bold;"
+        )
+        self._drop_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._drop_hint.hide()
 
     # ---------- 모델 → UI ----------
     def _insert(self, entry: LibraryEntry, *, at_top: bool) -> None:
@@ -273,6 +302,60 @@ class LibraryPanel(QWidget):
             self.list_widget.blockSignals(False)
 
     # ---------- UI → 외부 ----------
+    # ---------- 외부 파일 드래그-드롭 (라이브러리에만 추가) ----------
+    def _accepted_paths(self, mime) -> list[str]:
+        """mime data 에서 수락 가능한 파일 절대 경로만 추출. 빈 리스트면 거부."""
+        if not mime.hasUrls():
+            return []
+        out: list[str] = []
+        for u in mime.urls():
+            if not u.isLocalFile():
+                continue
+            p = _Path(u.toLocalFile())
+            if not p.is_file():
+                continue
+            if p.suffix.lower() in self._ACCEPTED_DROP_EXTS:
+                out.append(str(p))
+        return out
+
+    def _show_drop_hint(self, event_pos: QPoint) -> None:
+        """드래그 중 마우스 옆 hint 라벨 표시. 위치는 마우스 아래."""
+        self._drop_hint.adjustSize()
+        x = max(8, min(self.width() - self._drop_hint.width() - 8,
+                       event_pos.x() + 16))
+        y = max(8, min(self.height() - self._drop_hint.height() - 8,
+                       event_pos.y() + 20))
+        self._drop_hint.move(x, y)
+        self._drop_hint.raise_()
+        self._drop_hint.show()
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._accepted_paths(event.mimeData()):
+            event.acceptProposedAction()
+            self._show_drop_hint(event.position().toPoint())
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._accepted_paths(event.mimeData()):
+            event.acceptProposedAction()
+            self._show_drop_hint(event.position().toPoint())
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        self._drop_hint.hide()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        self._drop_hint.hide()
+        paths = self._accepted_paths(event.mimeData())
+        if not paths:
+            event.ignore()
+            return
+        self.files_dropped_for_library.emit(paths)
+        event.acceptProposedAction()
+
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         eid = item.data(Qt.UserRole)
         if eid is not None:
@@ -322,7 +405,11 @@ class LibraryPanel(QWidget):
                 if item is not None:
                     eid = item.data(Qt.UserRole)
                     if eid is not None:
-                        self.entry_delete_requested.emit(int(eid))
+                        # Shift+Del → 휴지통, Del 단독 → 라이브러리에서만 제외.
+                        if event.modifiers() & Qt.ShiftModifier:
+                            self.entry_delete_requested.emit(int(eid))
+                        else:
+                            self.entry_remove_requested.emit(int(eid))
                 return True
             # Ctrl+Z — 마지막 Del 을 휴지통에서 되돌리는 요청. 실제 복원 로직은 MainWindow.
             if event.key() == Qt.Key_Z and (event.modifiers() & Qt.ControlModifier):
@@ -350,7 +437,12 @@ class LibraryPanel(QWidget):
         menu.addAction(open_folder_action)
 
         menu.addSeparator()
-        delete_action = QAction("삭제 (휴지통)", self)
+        remove_action = QAction("라이브러리에서 제외 (Del)", self)
+        remove_action.triggered.connect(
+            lambda: self.entry_remove_requested.emit(eid)
+        )
+        menu.addAction(remove_action)
+        delete_action = QAction("삭제 — 휴지통으로 (Shift+Del)", self)
         delete_action.triggered.connect(
             lambda: self.entry_delete_requested.emit(eid)
         )

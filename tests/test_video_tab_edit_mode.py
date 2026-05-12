@@ -142,3 +142,45 @@ def test_video_tab_splitter_preview_larger_initially(qtbot, tmp_path: Path, samp
     assert len(sizes) == 2
     # preview (index 0) > timeline (index 1).
     assert sizes[0] > sizes[1]
+
+
+def test_video_tab_does_not_accept_drops_preview_area(qtbot, tmp_path: Path, sample_mp4: Path):
+    """회귀: 사용자가 외부 파일을 영상 미리보기 영역 위에 드롭해도 video_track 변경 X.
+
+    2026-05-12 사고: 발표용 폴더 .mp4 를 미리보기 위로 드롭 → 의도치 않게 video_track
+    끝에 append 되어 11:40 분량으로 늘어남. 가드: VideoTab 자체는 setAcceptDrops(False)
+    — 드롭은 video_track_lane (영상 바) 위에서만 수락.
+    """
+    tab = VideoTab(
+        path=sample_mp4, source_label="sample", duration_ms=10_000,
+        player_settings=PlayerSettings(), player_hotkeys=PlayerHotkeys(),
+        sidecar_dir=tmp_path / "sidecars",
+    )
+    qtbot.addWidget(tab)
+    # 가드: VideoTab 은 외부 드래그 거부.
+    assert not tab.acceptDrops(), (
+        "VideoTab 이 드롭을 수락하면 사용자가 미리보기 위에 의도치 않게 영상을 "
+        "떨어뜨려 video_track 이 오염됨"
+    )
+
+
+def test_video_tab_edit_off_hides_timeline(qtbot, tmp_path: Path, sample_mp4: Path):
+    """편집 모드 OFF 시 timeline widget 자체가 hidden (일반 플레이어 모습).
+
+    Phase 31: setSizes([total, 0]) 대신 timeline.setVisible(off) — splitter 가
+    hidden 자식을 자동으로 거둬들이고, 사용자가 드래그한 비율은 보존.
+    """
+    tab = VideoTab(
+        path=sample_mp4, source_label="sample", duration_ms=10_000,
+        player_settings=PlayerSettings(), player_hotkeys=PlayerHotkeys(),
+        sidecar_dir=tmp_path / "sidecars",
+    )
+    qtbot.addWidget(tab)
+    tab.resize(800, 600)
+    tab.show()
+    qtbot.waitExposed(tab)
+    # 편집 OFF — timeline widget hidden.
+    assert not tab.timeline.isVisible(), "편집 OFF 인데 timeline 이 visible"
+    # 편집 ON — timeline visible.
+    tab.set_edit_mode(True)
+    assert tab.timeline.isVisible(), "편집 ON 인데 timeline hidden"

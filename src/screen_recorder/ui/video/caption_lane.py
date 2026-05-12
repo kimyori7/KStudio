@@ -38,6 +38,7 @@ class CaptionLane(EffectLane):
         self._drag_start_x: int = 0
         self._drag_orig_in: int = 0
         self._drag_orig_out: int = 0
+        self._drag_last_eff = None
 
     # ---------- public ----------
     def selected_id(self) -> Optional[str]:
@@ -50,26 +51,32 @@ class CaptionLane(EffectLane):
         x2 = self._ms_to_x(eff.out_ms)
         return x1, x2
 
-    def _hit_test(self, x: int):
-        """포인터 x 좌표 → (effect, kind) 또는 (None, None).
+    def _hit_test(self, x: int, y: int | None = None):
+        """포인터 (x, y) → (effect, kind). y 가 주어지면 track_idx 매칭도 검사.
 
-        kind: "left"=왼쪽 핸들, "right"=오른쪽 핸들, "move"=막대 본체.
+        kind: "left"/"right"/"move".
         """
         if x < _HEADER_WIDTH:
             return None, None
         for eff in self._effects:
             x1, x2 = self._bar_rect_for(eff)
-            if x1 <= x <= x2:
-                if x - x1 <= _EDGE_HANDLE_PX:
-                    return eff, "left"
-                if x2 - x <= _EDGE_HANDLE_PX:
-                    return eff, "right"
-                return eff, "move"
+            if not (x1 <= x <= x2):
+                continue
+            if y is not None:
+                ti = int(getattr(eff, "track_idx", 0))
+                row_top = self._row_y_top(ti)
+                if not (row_top <= y < row_top + self.TRACK_ROW_HEIGHT):
+                    continue
+            if x - x1 <= _EDGE_HANDLE_PX:
+                return eff, "left"
+            if x2 - x <= _EDGE_HANDLE_PX:
+                return eff, "right"
+            return eff, "move"
         return None, None
 
     # ---------- paint ----------
     def paintEvent(self, event: QPaintEvent) -> None:
-        super().paintEvent(event)   # 헤더·배경
+        super().paintEvent(event)   # 헤더·배경 (row 분리 포함)
         if self._duration_ms <= 0:
             return
         p = QPainter(self)
@@ -78,25 +85,27 @@ class CaptionLane(EffectLane):
             x1, x2 = self._bar_rect_for(eff)
             if x2 <= x1:
                 continue
+            ti = int(getattr(eff, "track_idx", 0))
+            row_top = self._row_y_top(ti)
             selected = (eff.id == self._selected_id)
             p.setBrush(_BAR_BG_SELECTED if selected else _BAR_BG)
             pen = QPen(_BAR_BORDER_SELECTED if selected else _BAR_BORDER)
             pen.setWidth(2 if selected else 1)
             p.setPen(pen)
-            p.drawRoundedRect(x1, 2, x2 - x1, self.height() - 4,
+            p.drawRoundedRect(x1, row_top + 2, x2 - x1, self.TRACK_ROW_HEIGHT - 4,
                               _BAR_RADIUS, _BAR_RADIUS)
-            # 텍스트 일부
             if x2 - x1 > 24:
                 p.setPen(_TEXT_COLOR)
                 snippet = eff.text.replace("\n", " ")[:20]
-                p.drawText(x1 + 4, 0, x2 - x1 - 8, self.height(),
+                p.drawText(x1 + 4, row_top, x2 - x1 - 8, self.TRACK_ROW_HEIGHT,
                            Qt.AlignVCenter | Qt.AlignLeft, snippet)
 
     # ---------- mouse ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
         x = int(event.position().x())
+        y = int(event.position().y())
         if event.button() == Qt.LeftButton:
-            eff, kind = self._hit_test(x)
+            eff, kind = self._hit_test(x, y)
             if eff is None:
                 # 빈 영역 좌클릭 → 선택 해제
                 if self._selected_id is not None:
@@ -119,9 +128,10 @@ class CaptionLane(EffectLane):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         x = int(event.position().x())
+        y = int(event.position().y())
         # 드래그 중이 아니면 hover 커서 갱신 후 종료.
         if self._drag_id is None or self._duration_ms <= 0:
-            _, kind = self._hit_test(x)
+            _, kind = self._hit_test(x, y)
             if kind in ("left", "right"):
                 self.setCursor(Qt.SizeHorCursor)
             elif kind == "move":
@@ -156,10 +166,13 @@ class CaptionLane(EffectLane):
         new_eff = replace(eff, in_ms=int(new_in), out_ms=int(new_out))
         # local 즉시 갱신 (중간 상태) — 외부가 set_effects 로 다시 줄 때까지 시각만
         self._effects = [new_eff if e.id == self._drag_id else e for e in self._effects]
+        self._drag_last_eff = new_eff
         self.update()
-        self.effect_changed.emit(new_eff)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._drag_last_eff is not None:
+            self.effect_changed.emit(self._drag_last_eff)
+            self._drag_last_eff = None
         self._drag_id = None
         self._drag_kind = None
 

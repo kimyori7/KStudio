@@ -40,6 +40,7 @@ class SpeedLane(EffectLane):
         self._drag_start_x: int = 0
         self._drag_orig_in: int = 0
         self._drag_orig_out: int = 0
+        self._drag_last_eff = None
 
     # ---------- public ----------
     def selected_id(self) -> Optional[str]:
@@ -81,11 +82,15 @@ class SpeedLane(EffectLane):
             p.drawRoundedRect(x1, 2, x2 - x1, self.height() - 4,
                               _BAR_RADIUS, _BAR_RADIUS)
             if x2 - x1 > 24:
+                # 바 텍스트는 lane 높이 (~24px) 안에 들어가야 — 고정 작은 폰트 + clip.
+                # hud_font_pt 는 영상 위 HUD 오버레이 전용 (바 외부로 튀어나오는 회귀 보고).
+                p.setClipRect(x1 + 2, 2, x2 - x1 - 4, self.height() - 4)
                 p.setPen(_TEXT_COLOR)
                 # rate 가 정수면 "2×", 소수면 "1.5×". {:g} 가 trailing 0 제거.
                 label = f"▶▶ {eff.rate:g}×"
                 p.drawText(x1 + 4, 0, x2 - x1 - 8, self.height(),
                            Qt.AlignVCenter | Qt.AlignLeft, label)
+                p.setClipping(False)
 
     # ---------- mouse ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -143,10 +148,13 @@ class SpeedLane(EffectLane):
             return
         new_eff = replace(eff, in_ms=int(new_in), out_ms=int(new_out))
         self._effects = [new_eff if e.id == self._drag_id else e for e in self._effects]
+        self._drag_last_eff = new_eff
         self.update()
-        self.effect_changed.emit(new_eff)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._drag_last_eff is not None:
+            self.effect_changed.emit(self._drag_last_eff)
+            self._drag_last_eff = None
         self._drag_id = None
         self._drag_kind = None
 

@@ -7,11 +7,12 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent
-from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QAction, QColor, QMouseEvent, QPainter, QPaintEvent
+from PySide6.QtWidgets import QMenu, QWidget
 
 
 _LANE_HEIGHT = 20
+_TRACK_ROW_HEIGHT = 20      # Phase 28 — track_idx 별 row 높이
 _HEADER_WIDTH = 56
 _BG_COLOR = QColor(40, 44, 52)
 _HEADER_BG = QColor(30, 33, 39)
@@ -26,7 +27,10 @@ class EffectLane(QWidget):
     - color_hex: lane 본체의 강조 색 (효과 막대에 사용)
     """
 
-    request_add_at = Signal(int)        # ms — 빈 영역 우클릭 시
+    request_add_at = Signal(int)        # ms — lane 우클릭 메뉴의 자기 type 효과 추가
+    # 우클릭 메뉴 '효과 추가' 서브메뉴 — 다른 type 효과 추가 (효과_type, ms).
+    request_add_other_at = Signal(str, int)
+    request_remove_lane = Signal()      # lane 우클릭 메뉴의 "이 라인 지우기" 선택 시
     effect_selected = Signal(object)    # Effect | None — 막대 클릭 (Stage 3+ 에서 사용)
     effect_changed = Signal(object)     # Effect — 막대 드래그/길이 조정 (Stage 3+)
     effect_deleted = Signal(str)        # effect_id — Delete 키 (Stage 3+)
@@ -40,6 +44,8 @@ class EffectLane(QWidget):
         self._duration_ms = 0
         self._position_ms = 0
         self._effects: list = []
+        # Phase 28 — track_idx 별 row 분리. 외부에서 강제 row 수 보정(빈 lane) 가능.
+        self._extra_empty_rows = 0
         self.setFixedHeight(_LANE_HEIGHT)
         self.setMouseTracking(True)
         self.setContextMenuPolicy(Qt.PreventContextMenu)  # 우클릭은 우리 시그널로
@@ -73,9 +79,44 @@ class EffectLane(QWidget):
         return list(self._effects)
 
     def set_effects(self, effects) -> None:
-        """외부에서 효과 목록 갱신. 자기 effect_type 만 필터링해 보관."""
+        """외부에서 효과 목록 갱신. 자기 effect_type 만 필터링해 보관.
+
+        Phase 28: track_idx 별 row 분리 — height 가 자동 가변.
+        """
         self._effects = [e for e in effects if e.type == self._effect_type]
+        self._refresh_height()
         self.update()
+
+    def set_extra_empty_rows(self, n: int) -> None:
+        """사용자가 명시적으로 추가한 빈 row 수. 실제 효과 row 외 추가 표시."""
+        self._extra_empty_rows = max(0, int(n))
+        self._refresh_height()
+        self.update()
+
+    def row_count(self) -> int:
+        """현재 lane 이 표시 중인 row 수 — 효과 max track_idx + 1, 또는 extra_empty_rows."""
+        max_track = 0
+        for e in self._effects:
+            ti = int(getattr(e, "track_idx", 0))
+            if ti > max_track:
+                max_track = ti
+        used = max_track + 1 if self._effects else 0
+        return max(1, used + self._extra_empty_rows)
+
+    def _refresh_height(self) -> None:
+        new_h = self.row_count() * _TRACK_ROW_HEIGHT
+        if self.height() == new_h:
+            return   # 변화 없음 — setFixedHeight 가 layout invalidate 부르는 것 회피.
+        self.setFixedHeight(new_h)
+
+    def _track_idx_at_y(self, y: int) -> int:
+        """위젯 y 좌표 → track_idx (0-indexed). lane 본체 안 가정."""
+        ti = max(0, int(y) // _TRACK_ROW_HEIGHT)
+        return min(ti, self.row_count() - 1)
+
+    def _row_y_top(self, track_idx: int) -> int:
+        """track_idx 의 row 상단 y. paintEvent / hit_test 에서 사용."""
+        return int(track_idx) * _TRACK_ROW_HEIGHT
 
     # ---------- helpers ----------
     def _x_to_ms(self, x: int) -> int:
@@ -129,19 +170,73 @@ class EffectLane(QWidget):
     # ---------- paint ----------
     def paintEvent(self, event: QPaintEvent) -> None:
         p = QPainter(self)
-        # 헤더 영역
+        # 헤더 영역 — 전체 높이.
         p.fillRect(0, 0, _HEADER_WIDTH, self.height(), _HEADER_BG)
         p.setPen(_HEADER_TEXT)
-        p.drawText(6, 0, _HEADER_WIDTH - 8, self.height(),
+        p.drawText(6, 0, _HEADER_WIDTH - 8, _TRACK_ROW_HEIGHT,
                    Qt.AlignVCenter | Qt.AlignLeft, self._header_label)
-        # 본체 (빈 상태 — 단순 배경)
-        p.fillRect(_HEADER_WIDTH, 0, self.width() - _HEADER_WIDTH, self.height(), _BG_COLOR)
+        # 본체 — row 별 배경 + 1px 구분선 (track 시각적 분리).
+        body_x = _HEADER_WIDTH
+        body_w = self.width() - _HEADER_WIDTH
+        rc = self.row_count()
+        for ti in range(rc):
+            y = self._row_y_top(ti)
+            p.fillRect(body_x, y, body_w, _TRACK_ROW_HEIGHT, _BG_COLOR)
+            if ti > 0:
+                # row 사이 옅은 구분선.
+                p.fillRect(body_x, y - 1, body_w, 1, _HEADER_BG)
 
     # ---------- mouse ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.RightButton and event.position().x() >= _HEADER_WIDTH:
             ms = self._x_to_ms(int(event.position().x()))
-            self.request_add_at.emit(ms)
+            self._show_lane_context_menu(ms, event.globalPosition().toPoint())
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def _show_lane_context_menu(self, ms: int, global_pos) -> None:
+        """lane 본체 우클릭 메뉴 — 3단:
+
+        1. 현재 lane type 효과 추가 (예: '+ 캡션 추가')
+        2. '효과 추가' 서브메뉴 — 다른 type 효과 (캡션/배속/줌/곁들임/화살표 중 자기 제외)
+        3. '이 라인 지우기'
+
+        "1" → request_add_at(ms)
+        "2 서브" → request_add_other_at(eff_type, ms)
+        "3" → request_remove_lane()
+        """
+        menu = QMenu(self)
+        menu.setAttribute(Qt.WA_DeleteOnClose, True)
+        # 1. 현재 lane type 추가.
+        add_action = QAction(f"+ {self._header_label} 추가", menu)
+        add_action.triggered.connect(lambda: self.request_add_at.emit(ms))
+        menu.addAction(add_action)
+        # 2. 효과 추가 서브메뉴 — 자기 type 제외 모든 효과.
+        other_menu = menu.addMenu("효과 추가")
+        # 효과 type → 라벨 매핑 (사용자 노출 한글 라벨, 일관성 유지).
+        _OTHER_TYPES = [
+            ("caption", "캡션"),
+            ("speed", "배속"),
+            ("zoom", "줌"),
+            ("broll", "곁들임"),
+            ("arrow", "화살표"),
+        ]
+        for eff_type, label in _OTHER_TYPES:
+            if eff_type == self._effect_type:
+                continue
+            sub_action = QAction(f"+ {label} 추가", other_menu)
+            sub_action.triggered.connect(
+                lambda _checked=False, t=eff_type:
+                self.request_add_other_at.emit(t, ms)
+            )
+            other_menu.addAction(sub_action)
+        menu.addSeparator()
+        # 3. 라인 지우기.
+        remove_action = QAction("이 라인 지우기", menu)
+        remove_action.triggered.connect(lambda: self.request_remove_lane.emit())
+        menu.addAction(remove_action)
+        menu.popup(global_pos)
+
+    # ---------- public helpers (페인트/hit 외부 노출) ----------
+    TRACK_ROW_HEIGHT = _TRACK_ROW_HEIGHT

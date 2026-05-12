@@ -239,22 +239,62 @@ def test_broll_plus_simple_splice_passes():
     assert "[broll0]" in fc
 
 
-@pytest.mark.parametrize("audio_mix", ["both", "broll_only", "mute"])
-def test_broll_audio_mix_non_original_raises(audio_mix):
-    """audio_mix != 'original_only' → NotImplementedError."""
+@pytest.mark.parametrize("audio_mix", ["mute", "broll_only", "both"])
+def test_broll_audio_mix_non_original_builds_filter(audio_mix):
+    """Phase 32 — audio_mix 모드별 filter_complex 가 생성된다 (v2 audio mixing 지원).
+
+    각 모드는 main audio 의 broll 시간창에 volume= attenuation 을 적용.
+    broll_only / both 는 추가로 broll audio stream 을 adelay + amix.
+    """
     broll = BrollEffect(
-        in_ms=0, out_ms=5000, src="b.mp4",
+        in_ms=1000, out_ms=4000, src="b.mp4",
         placement="pip",
         pip=PipConfig(corner="bottom-right", size_ratio=0.3),
         audio_mix=audio_mix,
+        audio_balance=0.5,
     )
     sc = Sidecar(effects=[broll])
-    with pytest.raises(NotImplementedError, match="audio_mix"):
-        build_export_args(
-            sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
-            main_duration_ms=10000, surface_w=1920, surface_h=1080,
-            ffmpeg_path="ffmpeg",
+    argv, _pngs = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    # filter_complex 안에 volume enable / amix 키워드 확인.
+    fc_idx = argv.index("-filter_complex")
+    fc = argv[fc_idx + 1]
+    assert "volume=enable=" in fc, (
+        f"audio_mix={audio_mix} 인데 volume gating 안 들어감: {fc}"
+    )
+    if audio_mix in ("broll_only", "both"):
+        assert "amix=inputs=2" in fc, (
+            f"audio_mix={audio_mix} 인데 amix 안 들어감: {fc}"
         )
+    else:   # mute
+        # mute 모드는 broll audio 추가 안 함 — amix 없음.
+        assert "amix=inputs=2" not in fc, (
+            f"mute 모드인데 amix 가 들어감: {fc}"
+        )
+
+
+def test_broll_image_src_audio_mix_falls_back_to_original_only():
+    """이미지 broll (.png) 의 audio_mix 가 'broll_only' 이어도 amix 추가 안 됨 (audio 없음)."""
+    broll = BrollEffect(
+        in_ms=1000, out_ms=4000, src="image.png",
+        placement="pip",
+        pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+        audio_mix="broll_only",
+    )
+    sc = Sidecar(effects=[broll])
+    argv, _pngs = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc_idx = argv.index("-filter_complex")
+    fc = argv[fc_idx + 1]
+    # main mute (broll_only 라서) 는 적용. broll audio 는 추가 X (이미지).
+    assert "volume=enable=" in fc
+    assert "amix=inputs=2" not in fc
 
 
 # ---- _broll_pip_xy unit tests ----

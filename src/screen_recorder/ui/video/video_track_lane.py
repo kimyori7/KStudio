@@ -53,7 +53,9 @@ class VideoTrackLane(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumHeight(_BOX_HEIGHT + 8)
+        # 고정 높이 — 타임라인 splitter 가 위로 확장될 때 영상 바가 같이 두꺼워지지
+        # 않도록. 추가 공간은 effect_lanes 아래의 stretch 로 흡수됨.
+        self.setFixedHeight(_BOX_HEIGHT + 8)
         self.setAcceptDrops(True)   # 외부 / 라이브러리 드래그-드롭 활성화
         self._segments: list[VideoSegment] = []
         self._duration_ms: int = 0
@@ -72,6 +74,15 @@ class VideoTrackLane(QWidget):
         self._reorder_started: bool = False
         self._reorder_orig_start_ms: int = 0
         self._reorder_preview_start_ms: int = 0
+        # 외부 파일 드래그 시 마우스 옆 hint — "영상 트랙에 추가됩니다".
+        from PySide6.QtWidgets import QLabel as _QLabel
+        self._drop_hint = _QLabel("🎞 여기에 놓으면 영상 트랙에 추가됩니다", self)
+        self._drop_hint.setStyleSheet(
+            "background: rgba(34, 197, 94, 230); color: white;"
+            " padding: 5px 10px; border-radius: 4px; font-weight: bold;"
+        )
+        self._drop_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._drop_hint.hide()
 
     # ---------- public API ----------
     def set_segments(self, segments: list[VideoSegment]) -> None:
@@ -368,9 +379,29 @@ class VideoTrackLane(QWidget):
         return len(boxes)
 
     # ---------- drag-drop (Stage B Task B5) ----------
+    def _show_drop_hint(self, x, y) -> None:
+        """드래그 중 hint 라벨을 마우스 옆에 표시. mock 환경(테스트)에서는 silently 건너뜀."""
+        try:
+            xi = int(x)
+            yi = int(y)
+            w = int(self.width())
+            h = int(self.height())
+        except (TypeError, ValueError):
+            return
+        self._drop_hint.adjustSize()
+        hw = self._drop_hint.width()
+        hh = self._drop_hint.height()
+        hx = max(4, min(w - hw - 4, xi + 16))
+        hy = max(4, min(h - hh - 4, yi - hh - 4))
+        self._drop_hint.move(hx, hy)
+        self._drop_hint.raise_()
+        self._drop_hint.show()
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
+            pos = event.position().toPoint()
+            self._show_drop_hint(pos.x(), pos.y())
         else:
             event.ignore()
 
@@ -380,6 +411,7 @@ class VideoTrackLane(QWidget):
             return
         event.acceptProposedAction()
         x = int(event.position().x())
+        y = int(event.position().y())
         boxes = self._segment_rects()
         # drop indicator 위치 — insert 인덱스 기준 사각형 사이.
         idx = self._x_to_insert_index(x, boxes)
@@ -390,10 +422,12 @@ class VideoTrackLane(QWidget):
         else:
             ind_x = boxes[idx]["rect"].left()
         self._drop_indicator_x = ind_x
+        self._show_drop_hint(x, y)
         self.update()
 
     def dragLeaveEvent(self, event) -> None:
         self._drop_indicator_x = None
+        self._drop_hint.hide()
         self.update()
 
     def dropEvent(self, event: QDropEvent) -> None:
@@ -407,6 +441,7 @@ class VideoTrackLane(QWidget):
         x = int(event.position().x())
         drop_ms = self._x_to_combined_ms(x)
         self._drop_indicator_x = None
+        self._drop_hint.hide()
         self.update()
         event.acceptProposedAction()
         self.request_insert_files.emit(paths, drop_ms)

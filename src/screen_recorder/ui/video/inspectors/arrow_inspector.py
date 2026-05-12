@@ -46,16 +46,7 @@ class ArrowInspector(InspectorBase):
         form.setLabelAlignment(Qt.AlignRight)
         self._layout.addLayout(form)
 
-        self._start_x_spin = self._mk_norm_spin()
-        form.addRow("시작 X (0~1)", self._start_x_spin)
-        self._start_y_spin = self._mk_norm_spin()
-        form.addRow("시작 Y (0~1)", self._start_y_spin)
-        self._end_x_spin = self._mk_norm_spin()
-        form.addRow("끝 X (0~1)", self._end_x_spin)
-        self._end_y_spin = self._mk_norm_spin()
-        form.addRow("끝 Y (0~1)", self._end_y_spin)
-
-        # 색상
+        # 색상 (가장 자주 만짐 — 맨 위)
         color_row = QHBoxLayout()
         self._color_swatch = QLabel("    ")
         self._color_swatch.setStyleSheet(f"background:{self._color}; border:1px solid #888;")
@@ -100,6 +91,16 @@ class ArrowInspector(InspectorBase):
         self._out_spin.setSuffix(" ms")
         self._out_spin.valueChanged.connect(self._on_any_change)
         form.addRow("끝", self._out_spin)
+
+        # 좌표 (자주 안 만짐 — 미리보기에서 직접 드래그 가능, 맨 밑)
+        self._start_x_spin = self._mk_norm_spin()
+        form.addRow("시작 X (0~1)", self._start_x_spin)
+        self._start_y_spin = self._mk_norm_spin()
+        form.addRow("시작 Y (0~1)", self._start_y_spin)
+        self._end_x_spin = self._mk_norm_spin()
+        form.addRow("끝 X (0~1)", self._end_x_spin)
+        self._end_y_spin = self._mk_norm_spin()
+        form.addRow("끝 Y (0~1)", self._end_y_spin)
 
         self._delete_btn = QPushButton("이 화살표 삭제")
         self._delete_btn.clicked.connect(self._on_delete_clicked)

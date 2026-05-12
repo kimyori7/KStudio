@@ -73,12 +73,15 @@ def test_edit_mode_off_hides_trim_and_effects(timeline, qtbot):
     assert not timeline.effect_lanes.isVisibleTo(timeline)
 
 
-def test_edit_mode_on_shows_trim_and_effects(timeline, qtbot):
+def test_edit_mode_on_shows_effects(timeline, qtbot):
+    """Stage D 이후 trim_marker_lane 은 video_track_lane 으로 흡수돼 영구 숨김.
+    edit 모드 ON 시 effect_lanes 만 visible.
+    """
     timeline.show()
     qtbot.waitExposed(timeline)
     timeline.set_edit_mode(True)
-    assert timeline.trim_marker_lane.isVisibleTo(timeline)
     assert timeline.effect_lanes.isVisibleTo(timeline)
+    assert not timeline.trim_marker_lane.isVisibleTo(timeline)
 
 
 def test_slider_lane_seek_bubbles(timeline, qtbot):

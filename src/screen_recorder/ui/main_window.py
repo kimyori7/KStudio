@@ -18,7 +18,7 @@ from pathlib import Path
 import pygetwindow as gw
 
 from PySide6.QtCore import (
-    Qt, QFileSystemWatcher, QMimeData, QRect, QSize, QTimer, QUrl, Slot,
+    Qt, QMimeData, QRect, QSize, QTimer, QUrl, Slot,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication,
@@ -283,6 +283,14 @@ class MainWindow(QMainWindow):
         self.inspector_panel.effect_changed.connect(self._on_inspector_effect_changed)
         # 인스펙터 내 삭제 버튼(Stage 5+) → 현재 활성 탭의 EditController.remove_effect.
         self.inspector_panel.effect_deleted.connect(self._on_inspector_effect_deleted)
+        # SpeedInspector 의 전역 배속 토글 → settings 영속 + 모든 영상 탭 적용.
+        self.inspector_panel.speed_effects_global_toggled.connect(
+            self._on_global_speed_effects_change
+        )
+        # 시작 시 settings 의 저장된 상태를 패널에 주입 (앞으로 만들어지는 SpeedInspector 에 반영).
+        self.inspector_panel.set_speed_effects_enabled(
+            self.app_settings.preferences.speed_effects_enabled
+        )
 
         # 호환성: 기존 코드에서 _left_dock_container 참조 가능 — 더이상 의미 없으나 None 으로 둔다.
         self._left_dock_container = None
@@ -345,15 +353,29 @@ class MainWindow(QMainWindow):
         self.annotation_toolbar.set_current_color(QColor(self.app_settings.annotation.last_color))
         self.annotation_toolbar.set_current_thickness_step(self.app_settings.annotation.last_thickness)
 
+        # Phase 23: dock 가시성 메뉴 액션 상태를 settings 에서 복원 (X 닫음 영속).
+        # _restore_dock_state 전에 해야 enforce_dock_visibility 가 메뉴 상태를 올바로 본다.
+        prefs = self.app_settings.preferences
+        for action, attr in (
+            (self.menu_bar.library_visible_action, "library_dock_visible"),
+            (self.menu_bar.layers_visible_action, "layers_dock_visible"),
+            (self.menu_bar.status_visible_action, "record_status_dock_visible"),
+        ):
+            action.blockSignals(True)
+            action.setChecked(bool(getattr(prefs, attr, True)))
+            action.blockSignals(False)
+
         # dock 레이아웃 복원 — 사용자가 직전 세션에 옮긴 위치/크기/floating 상태 그대로.
         self._restore_dock_state()
 
-        # 저장 폴더 스캔 → 라이브러리에 기존 파일들을 미리 채움.
-        # 이미지/영상 모두 포함, 모드 필터는 LibraryPanel 이 알아서 처리.
-        self._populate_library_from_disk()
+        # Phase 23: 폴더 스캔 대신 "최근 연 파일" 영속 목록 복원.
+        # settings.preferences.recent_library_entries 에서 읽어 path.exists() 통과한
+        # 것만 라이브러리에 등록. 썸네일은 library_thumbs 캐시에서 즉시 로드, 캐시 미스 시
+        # placeholder + 백그라운드 재추출.
+        self._load_persisted_library()
 
-        # 외부에서 파일이 삭제/이동되면 라이브러리에서도 자동 제거.
-        self._setup_library_disk_watcher()
+        # 라이브러리 변경 시 자동 저장 (디바운스). 외부 삭제 시 정리도 같은 경로로.
+        self._setup_library_persistence()
 
         # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
         # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
@@ -588,6 +610,10 @@ class MainWindow(QMainWindow):
         self.menu_bar.tool_palette_visibility_toggled.connect(self._on_tool_palette_visibility_toggled)
         self.menu_bar.layers_visibility_toggled.connect(self._on_layers_visibility_toggled)
         self.menu_bar.record_status_visibility_toggled.connect(self._on_record_status_visibility_toggled)
+        # Phase 23: dock 가시성을 settings 에 영속화 — X 로 닫은 dock 이 재시작 후 다시 보이던 회귀 fix.
+        self.menu_bar.library_visibility_toggled.connect(self._on_library_dock_visibility_persist)
+        self.menu_bar.layers_visibility_toggled.connect(self._on_layers_dock_visibility_persist)
+        self.menu_bar.record_status_visibility_toggled.connect(self._on_record_status_dock_visibility_persist)
         # 사용자가 dock 의 X 버튼을 직접 눌러 닫는 경우만 menu_check 갱신.
         # closeEvent 는 user 액션에만 발화하고 setVisible(False) 에는 발화하지 않음.
         self._wire_dock_user_close()
@@ -605,8 +631,10 @@ class MainWindow(QMainWindow):
         self.tab_area.video_duration_resolved.connect(self._on_video_duration_resolved)
         self.library_panel.entry_open_requested.connect(self._open_entry)
         self.library_panel.entry_delete_requested.connect(self._on_library_delete)
+        self.library_panel.entry_remove_requested.connect(self._on_library_remove)
         self.library_panel.entry_open_folder_requested.connect(self._on_library_open_folder)
         self.library_panel.entry_undelete_requested.connect(self._on_library_undelete)
+        self.library_panel.files_dropped_for_library.connect(self._on_library_files_dropped)
         self.library_model.entry_renamed.connect(self._on_entry_renamed)
 
         # 영상 탭 프레임 → 스크린샷 단축키 (PlayerHotkeys 에서 동적으로 가져옴)
@@ -1375,6 +1403,9 @@ class MainWindow(QMainWindow):
         tab.edit_mode_change_requested.connect(self._on_global_edit_mode_change)
         # 새 탭 생성 시 현재 전역 모드를 반영.
         tab.set_edit_mode(self.app_settings.preferences.edit_mode_on)
+        # 배속 일괄 켜기/끄기 — 전역 + 세션 간 영속.
+        tab.speed_effects_change_requested.connect(self._on_global_speed_effects_change)
+        tab.set_speed_effects_enabled(self.app_settings.preferences.speed_effects_enabled)
         # 편집 모드 컨트롤바의 출력 버튼 → 기존 export 핸들러로 라우팅.
         tab.export_requested.connect(self._on_export_video)
 
@@ -1453,6 +1484,59 @@ class MainWindow(QMainWindow):
             )
             self.library_model.rename(entry_id, old_path.stem)
 
+    def _on_library_remove(self, entry_id: int) -> None:
+        """Del — 라이브러리 목록에서만 제외 (디스크 파일은 그대로). 열려 있던 탭은 닫음.
+
+        Shift+Del 의 _on_library_delete 와 달리 send2trash 호출 X. Ctrl+Z 복원 시 디스크
+        파일이 이미 있으므로 그대로 다시 라이브러리에 add 하면 됨.
+        """
+        entry = self.library_model.get(entry_id)
+        if entry is None:
+            return
+        snapshot = self._snapshot_entry(entry)
+        snapshot["trashed"] = False
+        self._close_tab_and_release_handles(entry_id)
+        self.library_model.remove(entry_id)
+        self._push_undelete_snapshot(snapshot)
+
+    def _snapshot_entry(self, entry) -> dict:
+        """Del/Shift+Del 공통 — undelete stack 용 entry 스냅샷."""
+        return {
+            "kind": entry.kind,
+            "thumbnail": entry.thumbnail,
+            "source_label": entry.source_label,
+            "display_name": entry.display_name,
+            "path": entry.path,
+            "duration_ms": entry.duration_ms,
+            "origin": entry.origin,
+        }
+
+    def _push_undelete_snapshot(self, snapshot: dict) -> None:
+        self._undelete_stack.append(snapshot)
+        if len(self._undelete_stack) > 8:
+            self._undelete_stack.pop(0)
+
+    def _close_tab_and_release_handles(self, entry_id: int) -> None:
+        """엔트리에 연결된 탭이 있으면 닫고, 영상/GIF 핸들을 해제한 뒤 이벤트 루프를 굴린다.
+
+        Shift+Del 에서 send2trash 가 sharing violation 안 나도록 핸들 해제가 필요.
+        Del(라이브러리에서만 제외) 도 같은 절차를 거쳐 일관성 유지 — 어차피 탭은 닫혀야.
+        """
+        idx = self.tab_area.find_index_by_entry(entry_id)
+        widget = self.tab_area.tab_widget_for_entry(entry_id)
+        if isinstance(widget, VideoTab):
+            try:
+                widget.player.stop()
+                widget.player.release_file_handles()
+            except (RuntimeError, AttributeError):
+                pass
+        if idx >= 0:
+            self.tab_area._on_close_requested(idx)
+        from PySide6.QtCore import QCoreApplication, QEvent
+        QApplication.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        QApplication.processEvents()
+
     def _on_library_delete(self, entry_id: int) -> None:
         entry = self.library_model.get(entry_id)
         if entry is None:
@@ -1462,43 +1546,10 @@ class MainWindow(QMainWindow):
         # 라이브러리에 항목이 남아 있으면 "Del 안 먹은 듯" 한 인상을 줌.
         path = entry.path
         kind = entry.kind
-        idx = self.tab_area.find_index_by_entry(entry_id)
+        snapshot = self._snapshot_entry(entry)
 
-        # 영상/GIF 파일은 QMediaPlayer / QMovie 가 핸들을 잡고 있어 그대로 send2trash
-        # 를 호출하면 Windows 가 "다른 프로그램이 사용 중" (sharing violation) 으로 거부.
-        # 탭 닫기 전에 release_file_handles() 로 두 백엔드의 핸들을 모두 명시 해제하고,
-        # processEvents 로 deferred deletion · media-pipeline tear-down 을 한 번 굴린다.
-        widget = self.tab_area.tab_widget_for_entry(entry_id)
-        if isinstance(widget, VideoTab):
-            try:
-                widget.player.stop()
-                widget.player.release_file_handles()
-            except (RuntimeError, AttributeError):
-                pass
-
-        # Ctrl+Z 복원용 스냅샷 (id 는 보관 X — 다음 add 시 새로 발급).
-        snapshot = {
-            "kind": entry.kind,
-            "thumbnail": entry.thumbnail,
-            "source_label": entry.source_label,
-            "display_name": entry.display_name,
-            "path": path,
-            "duration_ms": entry.duration_ms,
-            "origin": entry.origin,
-        }
-
+        self._close_tab_and_release_handles(entry_id)
         self.library_model.remove(entry_id)
-        # 같이 열려 있던 탭 닫기 (영상이면 player 해제도 같이).
-        if idx >= 0:
-            self.tab_area._on_close_requested(idx)
-        # deleteLater 가 큐에 들어간 상태 — Qt 가 실제로 위젯을 파괴하고 미디어 백엔드의
-        # 파일 핸들을 닫도록 이벤트 루프를 짧게 풀어 준다. GIF (QMovie/QImageReader) 는
-        # 단순 processEvents 만으론 QFile 이 안 닫히는 일이 있어, sendPostedEvents 로
-        # DeferredDelete 만 명시 처리한 뒤 한 번 더 processEvents 로 마무리.
-        from PySide6.QtCore import QCoreApplication, QEvent
-        QApplication.processEvents()
-        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-        QApplication.processEvents()
 
         trashed_ok = True
         # 디스크 파일이 있으면 휴지통으로 — sharing violation (file in use) 은 100ms
@@ -1517,11 +1568,9 @@ class MainWindow(QMainWindow):
                 )
 
         # 휴지통으로 잘 들어갔거나 (혹은 path 가 없는 미저장 항목) 만 undelete stack 에 푸시.
-        # 스택은 짧게(8) 유지 — 너무 많이 쌓이면 메모리/혼란.
         if trashed_ok:
-            self._undelete_stack.append(snapshot)
-            if len(self._undelete_stack) > 8:
-                self._undelete_stack.pop(0)
+            snapshot["trashed"] = True
+            self._push_undelete_snapshot(snapshot)
 
     def _send_to_trash_with_retry(self, path: Path) -> None:
         """send2trash + 짧은 재시도. GIF 의 QMovie 핸들 / 썸네일 ffmpeg 등이 막 끝나는
@@ -1544,14 +1593,19 @@ class MainWindow(QMainWindow):
         send2trash(str(path))
 
     def _on_library_undelete(self) -> None:
-        """라이브러리에서 Ctrl+Z — 마지막 Del 한 항목을 휴지통에서 복원하고 라이브러리에
-        다시 추가한다. 디스크 파일이 없던 항목은 라이브러리에만 다시 등록."""
+        """라이브러리에서 Ctrl+Z — 마지막으로 제외/삭제한 항목을 되돌린다.
+
+        - trashed=True 스냅샷: 휴지통에서 복원 후 라이브러리에 재등록.
+        - trashed=False 스냅샷: 디스크 파일은 그대로이므로 라이브러리에만 재등록.
+        - path=None (미저장 항목): 라이브러리에만 재등록.
+        """
         if not self._undelete_stack:
             return
         snapshot = self._undelete_stack[-1]
         path = snapshot.get("path")
+        trashed = snapshot.get("trashed", True)   # 구버전 스냅샷 호환 — 휴지통이라 가정.
 
-        if path is not None:
+        if path is not None and trashed:
             from screen_recorder.core.recycle_bin import is_supported as rb_supported, restore as rb_restore
             if not rb_supported():
                 QMessageBox.information(
@@ -2087,6 +2141,59 @@ class MainWindow(QMainWindow):
             pass
         self._open_path(p)
 
+    def _on_library_files_dropped(self, paths: list) -> None:
+        """라이브러리 패널에 외부 파일 드롭 → 라이브러리에만 추가 (탭 자동 열림 X).
+
+        이미 라이브러리에 있는 파일은 건너뜀. 추가된 entry 의 썸네일/duration 은
+        백그라운드 probe 로 채워짐 (탭 열 때와 동일 흐름).
+        """
+        added = 0
+        for path_str in paths:
+            try:
+                p = Path(str(path_str))
+            except (TypeError, ValueError):
+                continue
+            if not p.is_file():
+                continue
+            ext = p.suffix.lower()
+            if self._find_library_entry_for_path(p) is not None:
+                continue   # 중복 — 라이브러리에 이미 있음
+            if ext in self.VIDEO_EXTS:
+                placeholder = QImage(64, 36, QImage.Format_ARGB32)
+                placeholder.fill(0xFF222222)
+                entry = self.library_model.add(
+                    EntryKind.VIDEO,
+                    thumbnail=placeholder,
+                    source_label="dropped",
+                    display_name=p.name,
+                    path=p,
+                    duration_ms=0,
+                    origin="opened",
+                )
+                self._probe_duration_async(p, entry.id)
+                self._extract_thumbnail_async(p, entry.id)
+                added += 1
+            elif ext in self.IMAGE_EXTS:
+                try:
+                    img = QImage(str(p))
+                    if img.isNull():
+                        continue
+                except (OSError, ValueError):
+                    continue
+                self.library_model.add(
+                    EntryKind.SCREENSHOT,
+                    thumbnail=img,
+                    source_label="dropped",
+                    display_name=p.name,
+                    path=p,
+                    duration_ms=0,
+                    origin="opened",
+                )
+                added += 1
+        # 라이브러리 dock 가 숨겨져 있으면 사용자가 결과를 못 봄 → 보여주기.
+        if added > 0 and not self.library_dock.isVisible():
+            self.library_dock.show()
+
     def _open_path(self, p: Path) -> None:
         """확장자 기준 분기 + .kstudio 는 magic 으로 zip(이미지)/JSON(영상 사이드카) 구분."""
         ext = p.suffix.lower()
@@ -2535,6 +2642,7 @@ class MainWindow(QMainWindow):
         segs = build_combined_timeline(main_duration, cuts)
         total_combined_ms = segs[-1].combined_end_ms if segs else main_duration
 
+        from .export_dialog import ExportProgressOverlay
         dialog = ExportDialog(total_duration_ms=total_combined_ms, parent=self)
         job = ExportJob(
             ffmpeg_path=self.ffmpeg_path,
@@ -2546,6 +2654,17 @@ class MainWindow(QMainWindow):
         job.error.connect(dialog.set_error)
         dialog.cancel_requested.connect(job.cancel)
         dialog.open_folder_requested.connect(self._open_in_explorer)
+
+        # 오른쪽 하단 미니 진행 위젯 — 비모달이라 편집 계속 가능.
+        overlay = ExportProgressOverlay(self)
+        job.progress.connect(overlay.set_progress)
+        job.finished.connect(overlay.set_finished)
+        job.error.connect(overlay.set_error)
+        overlay.cancel_clicked.connect(job.cancel)
+        overlay.cancel_clicked.connect(dialog.close)
+        overlay.show_export()
+        self._export_overlay = overlay   # GC 방지
+
         job.start()
         dialog.show()
 
@@ -2991,6 +3110,19 @@ class MainWindow(QMainWindow):
                 except (RuntimeError, AttributeError):
                     pass
 
+    def _on_global_speed_effects_change(self, on: bool) -> None:
+        """배속 일괄 켜기/끄기 — settings 영속 + 모든 영상 탭 + 인스펙터 패널 동기화."""
+        on = bool(on)
+        self.app_settings.preferences.speed_effects_enabled = on
+        self._persist_settings()
+        self.inspector_panel.set_speed_effects_enabled(on)
+        for w, _, _ in self.tab_area._tabs:
+            if isinstance(w, VideoTab):
+                try:
+                    w.set_speed_effects_enabled(on)
+                except (RuntimeError, AttributeError):
+                    pass
+
     def _open_sidecar_dir(self) -> None:
         """Edit → 사이드카 폴더 열기. 사이드카 디렉토리를 탐색기로 연다."""
         import subprocess
@@ -3221,6 +3353,19 @@ class MainWindow(QMainWindow):
         # 메뉴 체크 + 영상 모드 둘 다 만족할 때만 보임.
         self.record_status_dock.setVisible(self._record_status_visible_state())
 
+    # Phase 23: dock 가시성 영속 핸들러 — 메뉴 체크 변화를 settings 에 즉시 반영.
+    def _on_library_dock_visibility_persist(self, checked: bool) -> None:
+        self.app_settings.preferences.library_dock_visible = bool(checked)
+        self._persist_settings()
+
+    def _on_layers_dock_visibility_persist(self, checked: bool) -> None:
+        self.app_settings.preferences.layers_dock_visible = bool(checked)
+        self._persist_settings()
+
+    def _on_record_status_dock_visibility_persist(self, checked: bool) -> None:
+        self.app_settings.preferences.record_status_dock_visible = bool(checked)
+        self._persist_settings()
+
     # ---------- dock 레이아웃 영속화 (모드별 분리) ----------
     def _current_mode_state_attr(self) -> str:
         return ("dock_state_image_b64" if self.mode_controller.mode() is AppMode.IMAGE
@@ -3349,124 +3494,170 @@ class MainWindow(QMainWindow):
         self._probe_duration_async(p, entry.id)
         self._extract_thumbnail_async(p, entry.id)
 
-    def _populate_library_from_disk(self) -> None:
-        """앱 시작 시 저장 폴더의 기존 파일을 라이브러리에 미리 등록.
+    # ---------- Phase 23: 라이브러리 영속 (recent files 모델) ----------
+    _LIBRARY_MAX_ENTRIES = 50
 
-        이미지 폴더(screenshot.save_dir)는 이미지/.kstudio, 영상 폴더(general.output_dir)는
-        영상/GIF 를 스캔. 두 폴더가 같아도 확장자로 분기하므로 안전.
-        썸네일: 이미지는 즉시 디스크에서 로드, 영상은 placeholder 후 백그라운드 ffmpeg 추출.
-        모드 필터는 LibraryPanel 이 EntryKind 로 자동 처리.
+    def _library_thumb_cache_dir(self) -> Path:
+        d = settings_path().parent / "library_thumbs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _thumb_cache_key(self, file_path: Path) -> str:
+        import hashlib
+        s = str(Path(file_path).expanduser()).replace("\\", "/").lower()
+        return hashlib.md5(s.encode("utf-8")).hexdigest()[:16]
+
+    def _thumb_cache_path(self, file_path: Path) -> Path:
+        return self._library_thumb_cache_dir() / f"{self._thumb_cache_key(file_path)}.png"
+
+    def _load_thumb_from_cache(self, file_path: Path) -> "QImage | None":
+        p = self._thumb_cache_path(file_path)
+        if not p.exists():
+            return None
+        img = QImage(str(p))
+        return img if not img.isNull() else None
+
+    def _save_thumb_to_cache(self, file_path: Path, image: QImage) -> None:
+        try:
+            cache_path = self._thumb_cache_path(file_path)
+            image.save(str(cache_path), "PNG")
+        except (OSError, RuntimeError):
+            pass
+
+    def _delete_thumb_cache(self, file_path: Path) -> None:
+        try:
+            p = self._thumb_cache_path(file_path)
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+
+    def _load_persisted_library(self) -> None:
+        """settings.recent_library_entries 에서 라이브러리 복원. path 없는/사라진 항목은 스킵.
+
+        썸네일: 캐시 hit 시 즉시 적용, miss 시 placeholder + 백그라운드 재추출.
+        오래된 → 최신 순서로 add → LibraryPanel 이 최신을 맨 위에 끼워 넣음.
         """
-        img_dir = Path(
-            self.app_settings.screenshot.save_dir or default_image_dir()
-        )
-        vid_dir = Path(
-            self.app_settings.general.output_dir or default_video_dir()
-        )
-
-        candidates: list[tuple[Path, EntryKind, float]] = []
-        for d, exts, kind in (
-            (img_dir, self.IMAGE_EXTS, EntryKind.IMAGE),
-            (vid_dir, self.VIDEO_EXTS, EntryKind.VIDEO),
-        ):
+        raw_entries = list(self.app_settings.preferences.recent_library_entries or [])
+        # 점진적 추가용 큐 — 한 번에 다 넣으면 UI 멈춤 가능.
+        survivors: list[dict] = []
+        for d in raw_entries:
             try:
-                if not d.exists() or not d.is_dir():
+                path_str = d.get("path") or ""
+                if not path_str:
                     continue
-                for p in d.iterdir():
-                    if not p.is_file():
-                        continue
-                    if p.suffix.lower() not in exts:
-                        continue
-                    try:
-                        mtime = p.stat().st_mtime
-                    except OSError:
-                        continue
-                    candidates.append((p, kind, mtime))
-            except OSError as e:
-                logging.getLogger(__name__).warning("library scan failed for %s: %s", d, e)
-
-        # add 는 오래된 → 최신 순서로 — LibraryPanel 이 새 항목을 top 에 끼워 넣어
-        # 최신이 맨 위에 오도록.
-        candidates.sort(key=lambda t: t[2])
-
-        # 점진적 추가 — 한 entry 추가 후 event loop yield. 항목 많을 때 UI 클릭이
-        # 막히지 않도록. (관측: 이미지 12 + 영상 14 = 26 entry. 이미지 한 장당
-        # QImage(path) 가 100-200ms 소요해 동기 처리 시 2초+ block.)
-        # 이미지 썸네일도 백그라운드 풀에서 디코딩 → main thread 는 placeholder 추가만.
-        self._populate_pending = list(candidates)   # oldest first
-        self._populate_timer = QTimer(self)
-        self._populate_timer.setSingleShot(True)
-        self._populate_timer.setInterval(0)
-        self._populate_timer.timeout.connect(self._populate_one_step)
-        # 첫 step 은 짧은 지연 후 — 메인 창 paint 우선 처리해 사용자에 즉시 응답.
-        QTimer.singleShot(150, self._populate_timer.start)
-
-    def _populate_one_step(self) -> None:
-        """라이브러리 채우기 1 step — entry 1개 추가 후 event loop 로 yield."""
-        if not getattr(self, "_populate_pending", None):
-            return
-        placeholder = QImage(64, 36, QImage.Format_ARGB32)
-        placeholder.fill(0xFF222222)
-        p, kind, _ = self._populate_pending.pop(0)
-        if kind is EntryKind.IMAGE:
-            # .kstudio 또는 일반 raster 모두 백그라운드 디코딩 풀로 보냄 (이전엔
-            # 메인 스레드 동기 디코딩 → 시작 시 2초+ block).
-            entry = self.library_model.add(
-                EntryKind.IMAGE,
-                thumbnail=placeholder,
-                source_label="opened",
-                display_name=p.name,
-                path=p,
-                origin="opened",
-            )
-            if p.suffix.lower() != ".kstudio":
-                self._decode_image_thumb_async(p, entry.id)
-        else:
-            entry = self.library_model.add(
-                EntryKind.VIDEO,
-                thumbnail=placeholder,
-                source_label="opened",
-                display_name=p.name,
-                path=p,
-                duration_ms=0,
-                origin="opened",
-            )
-            # duration (빠름) 과 thumbnail (느림) 분리 풀.
-            self._probe_duration_async(p, entry.id)
-            self._extract_thumbnail_async(p, entry.id)
-        # 다음 step — singleshot timer 가 이벤트 루프 통해 yield.
-        if self._populate_pending:
-            self._populate_timer.start()
-
-    def _setup_library_disk_watcher(self) -> None:
-        """이미지/영상 저장 폴더를 watch — 외부에서 파일이 삭제/이동되면 라이브러리에서도 제거.
-
-        QFileSystemWatcher.directoryChanged 는 폴더 안 어떤 변화든(생성/삭제/이름 변경)
-        한 번씩 발화. 짧은 시간 내 여러 번 발화할 수 있어 디바운스 타이머로 묶어 처리.
-        """
-        img_dir = Path(self.app_settings.screenshot.save_dir or default_image_dir())
-        vid_dir = Path(self.app_settings.general.output_dir or default_video_dir())
-        # mkdir 은 _populate_library_from_disk 단계에서 안 한다 — 여기서도 강제 생성 안 함.
-        # 폴더가 아직 없으면 watch 못 함 → 첫 저장 후엔 watch 가 필요해질 수 있는데,
-        # 그땐 다음 앱 실행에서 잡힘. 단순성 우선.
-        self._library_disk_watcher = QFileSystemWatcher(self)
-        watched: list[str] = []
-        for d in (img_dir, vid_dir):
-            try:
-                if d.exists() and d.is_dir():
-                    watched.append(str(d))
-            except OSError:
+                p = Path(path_str)
+                if not p.exists():
+                    # 파일 사라짐 → 캐시도 정리 + 스킵.
+                    self._delete_thumb_cache(p)
+                    continue
+                survivors.append(d)
+            except (TypeError, OSError):
                 continue
-        if watched:
-            self._library_disk_watcher.addPaths(watched)
-        # 디바운스: 윈도우에서 파일 한 번 삭제해도 directoryChanged 가 2~3 회 발화하기도 함.
-        self._library_prune_timer = QTimer(self)
-        self._library_prune_timer.setSingleShot(True)
-        self._library_prune_timer.setInterval(150)
-        self._library_prune_timer.timeout.connect(self._prune_library_missing_files)
-        self._library_disk_watcher.directoryChanged.connect(
-            lambda _path: self._library_prune_timer.start()
-        )
+
+        # created_at 기준 정렬 (오래된 → 최신). 없으면 그대로.
+        def _sort_key(d):
+            return d.get("created_at") or ""
+        survivors.sort(key=_sort_key)
+
+        self._persist_restore_queue = survivors
+        QTimer.singleShot(150, self._restore_one_library_entry)
+
+    def _restore_one_library_entry(self) -> None:
+        """복원 큐에서 1개씩 add — event loop yield 로 UI 멈춤 방지."""
+        queue = getattr(self, "_persist_restore_queue", None)
+        if not queue:
+            return
+        d = queue.pop(0)
+        try:
+            kind_str = d.get("kind") or "image"
+            kind = EntryKind.IMAGE if kind_str == "image" else EntryKind.VIDEO
+            p = Path(d["path"])
+            display_name = d.get("display_name") or p.name
+            duration_ms = int(d.get("duration_ms") or 0)
+            origin = d.get("origin") or "opened"
+
+            # 썸네일 — 캐시 hit 시 즉시 사용, miss 시 placeholder + 백그라운드 재추출.
+            cached = self._load_thumb_from_cache(p)
+            if cached is not None:
+                thumb = cached
+            else:
+                thumb = QImage(64, 36, QImage.Format_ARGB32)
+                thumb.fill(0xFF222222)
+
+            entry = self.library_model.add(
+                kind, thumbnail=thumb,
+                source_label="opened",
+                display_name=display_name,
+                path=p, duration_ms=duration_ms, origin=origin,
+            )
+            if cached is None:
+                if kind is EntryKind.IMAGE:
+                    if p.suffix.lower() != ".kstudio":
+                        self._decode_image_thumb_async(p, entry.id)
+                else:
+                    if duration_ms <= 0:
+                        self._probe_duration_async(p, entry.id)
+                    self._extract_thumbnail_async(p, entry.id)
+        except (KeyError, OSError, ValueError):
+            pass
+        if queue:
+            QTimer.singleShot(0, self._restore_one_library_entry)
+
+    def _setup_library_persistence(self) -> None:
+        """라이브러리 변경 → settings 에 즉시 저장 (디바운스 200ms).
+        외부 삭제 감지용 폴더 watcher 는 더 이상 사용 안 함 (폴더 스캔 모델 폐기).
+        """
+        self._library_save_timer = QTimer(self)
+        self._library_save_timer.setSingleShot(True)
+        self._library_save_timer.setInterval(200)
+        self._library_save_timer.timeout.connect(self._save_library_to_settings)
+        # entry id → path 매핑 (제거 시 캐시 삭제용 — remove 시그널이 id 만 전달).
+        self._library_entry_paths: dict = {}
+
+        def _schedule(*_args):
+            self._library_save_timer.start()
+
+        self.library_model.entry_added.connect(self._on_library_entry_added_for_persist)
+        self.library_model.entry_added.connect(_schedule)
+        self.library_model.entry_renamed.connect(_schedule)
+        self.library_model.entry_removed.connect(self._on_library_entry_removed_for_cache)
+        self.library_model.entry_removed.connect(_schedule)
+
+    def _on_library_entry_added_for_persist(self, entry) -> None:
+        """entry_added 직후 path 매핑 갱신 — 나중 remove 시 캐시 정리에 사용."""
+        if entry.path is not None:
+            self._library_entry_paths[entry.id] = Path(entry.path)
+
+    def _on_library_entry_removed_for_cache(self, entry_id: int) -> None:
+        """entry 제거 직전에 저장해 둔 path 로 썸네일 캐시 정리."""
+        path = self._library_entry_paths.pop(entry_id, None)
+        if path is not None:
+            self._delete_thumb_cache(path)
+
+    def _save_library_to_settings(self) -> None:
+        """현재 LibraryModel 내용을 settings.recent_library_entries 에 직렬화 + 저장.
+        최신 50개만 유지 (entries() 가 최신순 reversed 반환하므로 head 50)."""
+        try:
+            entries = self.library_model.entries()    # 최신 → 오래된
+            entries = entries[: self._LIBRARY_MAX_ENTRIES]
+            serialized: list[dict] = []
+            # 저장은 오래된 → 최신 순서로 (시작 시 복원 sort 와 일관).
+            for e in reversed(entries):
+                if e.path is None:
+                    continue
+                serialized.append({
+                    "kind": e.kind.value,
+                    "path": str(e.path),
+                    "display_name": e.display_name,
+                    "duration_ms": int(e.duration_ms or 0),
+                    "origin": e.origin,
+                    "created_at": e.created_at.isoformat() if e.created_at else "",
+                })
+            self.app_settings.preferences.recent_library_entries = serialized
+            self._persist_settings()
+        except (OSError, AttributeError) as exc:
+            logging.getLogger(__name__).warning("library persist failed: %s", exc)
 
     def _prune_library_missing_files(self) -> None:
         """디스크에서 사라진 파일이 가리키는 라이브러리 항목을 제거.
@@ -3767,6 +3958,9 @@ class MainWindow(QMainWindow):
         if entry is None:
             return
         entry.thumbnail = image
+        # 다음 실행 시 재사용 — library_thumbs/{hash}.png 에 저장.
+        if entry.path is not None:
+            self._save_thumb_to_cache(entry.path, image)
         # 라이브러리 패널이 갱신되도록 entry_renamed 또는 직접 view refresh —
         # 가장 간단한 방법: model 의 entry_added 처럼 re-emit 은 어려우므로,
         # rename 시그널을 같은 이름으로 emit 해 list 갱신을 유도.
@@ -3862,6 +4056,12 @@ class MainWindow(QMainWindow):
                 pass
             self._mcp_bridge = None
             self._mcp_dispatcher = None
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        overlay = getattr(self, "_export_overlay", None)
+        if overlay is not None and overlay.isVisible():
+            overlay.reposition()
 
     def closeEvent(self, e):
         # X 버튼은 트레이로 숨김 (실제 종료는 트레이 메뉴 '종료').

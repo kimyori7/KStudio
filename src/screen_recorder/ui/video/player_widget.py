@@ -213,9 +213,11 @@ class _VideoSurface(QWidget):
             self._frame = img
             self.update()
 
-    def set_zoom_preview(self, params: "tuple[float, float, float] | None") -> None:
-        """Stage 3: zoom 미리보기 transform 설정. (cx, cy, scale) 정규화. None 이면 해제.
+    def set_zoom_preview(self, params: "tuple | None") -> None:
+        """Stage 3: zoom 미리보기 transform 설정. None 이면 해제.
 
+        params: (cx, cy, scale) — 기존 fit_screen 호환,
+                또는 (cx, cy, scale, mode, region_w, region_h) — Phase 24.
         scale 1.0 = 그대로. 2.0 = 2× 확대 후 (cx, cy) 점이 화면 중앙.
         VideoTab 의 _on_position_for_zoom 가 매 position_changed 마다 호출.
         """
@@ -237,23 +239,67 @@ class _VideoSurface(QWidget):
             x = (self.width() - scaled.width()) // 2
             y = (self.height() - scaled.height()) // 2
             if self._zoom_preview is not None:
-                cx_n, cy_n, scale = self._zoom_preview
+                # 10-튜플(Phase 27) > 6-튜플(Phase 24) > 3-튜플(legacy) — 뒤로 호환.
+                if len(self._zoom_preview) >= 10:
+                    (cx_n, cy_n, scale, mode, region_w, region_h,
+                     dest_cx_n, dest_cy_n, dest_w_n, dest_h_n) = self._zoom_preview
+                elif len(self._zoom_preview) >= 6:
+                    cx_n, cy_n, scale, mode, region_w, region_h = self._zoom_preview
+                    dest_cx_n, dest_cy_n = cx_n, cy_n
+                    dest_w_n = region_w * max(1.0, float(scale))
+                    dest_h_n = region_h * max(1.0, float(scale))
+                else:
+                    cx_n, cy_n, scale = self._zoom_preview
+                    mode, region_w, region_h = "fit_screen", 0.3, 0.3
+                    dest_cx_n, dest_cy_n = cx_n, cy_n
+                    dest_w_n = region_w * max(1.0, float(scale))
+                    dest_h_n = region_h * max(1.0, float(scale))
                 scale = max(1.0, float(scale))   # zoom out (<1) 은 미리보기에서 미지원
                 sw = scaled.width()
                 sh = scaled.height()
-                src_w = max(1, min(sw, int(round(sw / scale))))
-                src_h = max(1, min(sh, int(round(sh / scale))))
-                src_x = max(0, min(sw - src_w,
-                                    int(round(cx_n * sw - src_w / 2.0))))
-                src_y = max(0, min(sh - src_h,
-                                    int(round(cy_n * sh - src_h / 2.0))))
-                cropped = scaled.copy(src_x, src_y, src_w, src_h)
-                if not cropped.isNull():
-                    final = cropped.scaled(sw, sh, Qt.KeepAspectRatio,
-                                            Qt.SmoothTransformation)
-                    p.drawImage(x, y, final)
-                else:
+                if mode == "magnify_region":
+                    # Phase 27/28 — source/dest 별도. 매 frame paint 가 핫패스이므로
+                    # Qt.FastTransformation 사용 (preview 품질 손실 인지 어려움 + 5×
+                    # 같은 고배속에서 freeze 회피). export 는 lanczos 유지.
+                    src_w = max(1, int(round(region_w * sw)))
+                    src_h = max(1, int(round(region_h * sh)))
+                    src_x = max(0, min(sw - src_w,
+                                       int(round(cx_n * sw - src_w / 2.0))))
+                    src_y = max(0, min(sh - src_h,
+                                       int(round(cy_n * sh - src_h / 2.0))))
                     p.drawImage(x, y, scaled)
+                    dst_w = max(1, int(round(dest_w_n * sw)))
+                    dst_h = max(1, int(round(dest_h_n * sh)))
+                    dst_x = int(round(dest_cx_n * sw - dst_w / 2.0))
+                    dst_y = int(round(dest_cy_n * sh - dst_h / 2.0))
+                    # 화면 안 영역만 처리 — frame 밖으로 나간 부분의 큰 메모리/시간 절약.
+                    visible_x1 = max(0, dst_x)
+                    visible_y1 = max(0, dst_y)
+                    visible_x2 = min(sw, dst_x + dst_w)
+                    visible_y2 = min(sh, dst_y + dst_h)
+                    if visible_x2 <= visible_x1 or visible_y2 <= visible_y1:
+                        return
+                    cropped = scaled.copy(src_x, src_y, src_w, src_h)
+                    if cropped.isNull():
+                        return
+                    magnified = cropped.scaled(dst_w, dst_h, Qt.IgnoreAspectRatio,
+                                               Qt.FastTransformation)
+                    p.drawImage(x + dst_x, y + dst_y, magnified)
+                else:
+                    # fit_screen — 기존 동작 — 1/scale 영역을 전체 화면으로 stretch.
+                    src_w = max(1, min(sw, int(round(sw / scale))))
+                    src_h = max(1, min(sh, int(round(sh / scale))))
+                    src_x = max(0, min(sw - src_w,
+                                        int(round(cx_n * sw - src_w / 2.0))))
+                    src_y = max(0, min(sh - src_h,
+                                        int(round(cy_n * sh - src_h / 2.0))))
+                    cropped = scaled.copy(src_x, src_y, src_w, src_h)
+                    if not cropped.isNull():
+                        final = cropped.scaled(sw, sh, Qt.KeepAspectRatio,
+                                                Qt.SmoothTransformation)
+                        p.drawImage(x, y, final)
+                    else:
+                        p.drawImage(x, y, scaled)
             else:
                 p.drawImage(x, y, scaled)
 
@@ -404,11 +450,12 @@ class PlayerWidget(QStackedWidget):
         self._time_hud.raise_()
         self._speed_hud.raise_()
 
-    def show_speed_hud(self, rate: float) -> None:
+    def show_speed_hud(self, rate: float, font_pt: int = 14) -> None:
         """배속 구간 진입 시 우상단(시각 HUD 바로 아래)에 지속 표시. 1× 면 hide."""
         if abs(float(rate) - 1.0) < 1e-3:
             self._speed_hud.hide()
             return
+        self._speed_hud._font.setPointSize(max(8, int(font_pt)))
         # 1.5 → "1.5", 2.0 → "2", 10.0 → "10". rstrip("0") 은 소수점이 있을 때만
         # 안전 — 정수 "10" 에 적용하면 trailing 0 까지 깎여 "1" 이 되던 회귀.
         formatted = f"{float(rate):g}"
@@ -689,12 +736,15 @@ class PlayerWidget(QStackedWidget):
         오버레이가 export 와 같은 source 좌표계에서 그리도록 painter 를 scale 할 때
         사용 — 창모드/풀스크린 사이 캡션 위치 일관성 (font 가 절대 픽셀이라 surface
         크기에 따라 bbox spread 가 달라지던 회귀) 해소.
+
+        주의: 실제 decoded frame 만 source 로 인정. thumbnail 은 영상보다 작아
+        (e.g., 320×180) source 좌표계로 쓰면 painter scale 이 5× 이상이 되어
+        캡션이 일시적으로 거대하게 보이는 회귀 — 사용자가 seek 직후 캡션 진입 시
+        보고함. frame 이 아직 없으면 (0, 0) 반환 → overlay 가 frame-px 좌표계 fallback.
         """
         if self._is_gif:
             return (self.width(), self.height())
         src = self._video_surface._frame
-        if src.isNull():
-            src = self._video_surface._thumbnail
         if src.isNull():
             return (0, 0)
         return (src.width(), src.height())

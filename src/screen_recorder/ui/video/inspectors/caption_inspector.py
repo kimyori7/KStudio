@@ -7,12 +7,12 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QColorDialog, QDoubleSpinBox, QFontComboBox,
     QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton, QRadioButton,
-    QSlider, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ....core.i18n import tr
@@ -29,6 +29,31 @@ _ANCHORS_3x3 = [
 ]
 
 
+def _make_align_icon(kind: str, size: int = 18) -> QIcon:
+    """text_align radio 용 아이콘 — 가로 선 3개로 정렬 표현. kind ∈ {left, center, right}."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor("#cccccc"))
+    pen.setWidth(2)
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    pad = 3
+    line_lens = [size - 2 * pad, int((size - 2 * pad) * 0.65), size - 2 * pad]
+    ys = [pad + 2, size // 2, size - pad - 2]
+    for y, ln in zip(ys, line_lens):
+        if kind == "left":
+            x0 = pad
+        elif kind == "right":
+            x0 = size - pad - ln
+        else:   # center
+            x0 = (size - ln) // 2
+        p.drawLine(x0, y, x0 + ln, y)
+    p.end()
+    return QIcon(pm)
+
+
 class CaptionInspector(InspectorBase):
     """캡션 효과 편집 폼."""
 
@@ -42,6 +67,19 @@ class CaptionInspector(InspectorBase):
         # ---- 텍스트 ----
         self.text_edit = QTextEdit()
         self.text_edit.setFixedHeight(60)
+        self.text_edit.setPlaceholderText(tr("여기에 캡션 내용을 입력하세요"))
+        # 인스펙터 배경과 구분되도록 입력란답게 — 흰 배경 + 1px 보더 + radius.
+        self.text_edit.setStyleSheet(
+            "QTextEdit {"
+            " background: #ffffff;"
+            " color: #1f2937;"
+            " border: 1px solid #6b7280;"
+            " border-radius: 4px;"
+            " padding: 4px;"
+            " selection-background-color: #93c5fd;"
+            "}"
+            "QTextEdit:focus { border: 1px solid #2563eb; }"
+        )
         self.text_edit.textChanged.connect(self._on_any_change)
         form.addRow(tr("텍스트"), self.text_edit)
 
@@ -91,16 +129,28 @@ class CaptionInspector(InspectorBase):
         form.addRow("", self.shadow_check)
 
         # ---- 텍스트 정렬 (multi-line 내부 정렬, anchor 와 직교) ----
+        # 라디오 텍스트 ("← 좌", "≡ 중앙", "우 →") 대신 SVG 패턴 아이콘 — 시각적으로
+        # 어떤 정렬인지 한눈에 보임 + 좁은 인스펙터 너비 절약.
         self.align_group = QButtonGroup(self)
         align_row = QHBoxLayout()
-        self.align_left_btn = QRadioButton(tr("← 좌"))
-        self.align_center_btn = QRadioButton(tr("≡ 중앙"))
-        self.align_right_btn = QRadioButton(tr("우 →"))
-        self.align_center_btn.setChecked(True)
+        self.align_left_btn = QToolButton()
+        self.align_left_btn.setIcon(_make_align_icon("left"))
+        self.align_left_btn.setToolTip(tr("왼쪽 정렬"))
+        self.align_center_btn = QToolButton()
+        self.align_center_btn.setIcon(_make_align_icon("center"))
+        self.align_center_btn.setToolTip(tr("가운데 정렬"))
+        self.align_right_btn = QToolButton()
+        self.align_right_btn.setIcon(_make_align_icon("right"))
+        self.align_right_btn.setToolTip(tr("오른쪽 정렬"))
         for btn in (self.align_left_btn, self.align_center_btn, self.align_right_btn):
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.setIconSize(QSize(20, 20))
+            btn.setFixedSize(32, 28)
             self.align_group.addButton(btn)
             btn.toggled.connect(lambda on, b=btn: on and self._on_any_change())
             align_row.addWidget(btn)
+        self.align_center_btn.setChecked(True)
         align_row.addStretch(1)
         form.addRow(tr("텍스트 정렬"), align_row)
 
@@ -122,7 +172,25 @@ class CaptionInspector(InspectorBase):
         bg_row.addWidget(self.bg_opacity, stretch=1)
         form.addRow("", bg_row)
 
-        # ---- 위치 9-zone + 자유 위치 ----
+        # ---- 페이드 ----
+        fade_row = QHBoxLayout()
+        self.fade_in_spin = QSpinBox()
+        self.fade_in_spin.setRange(0, 5000)
+        self.fade_in_spin.setValue(300)
+        self.fade_in_spin.setSuffix(" ms")
+        self.fade_in_spin.valueChanged.connect(self._on_any_change)
+        self.fade_out_spin = QSpinBox()
+        self.fade_out_spin.setRange(0, 5000)
+        self.fade_out_spin.setValue(300)
+        self.fade_out_spin.setSuffix(" ms")
+        self.fade_out_spin.valueChanged.connect(self._on_any_change)
+        fade_row.addWidget(QLabel(tr("페이드 인")))
+        fade_row.addWidget(self.fade_in_spin)
+        fade_row.addWidget(QLabel(tr("페이드 아웃")))
+        fade_row.addWidget(self.fade_out_spin)
+        form.addRow(tr("페이드"), fade_row)
+
+        # ---- 위치 9-zone + 자유 위치 (맨 밑 — 자주 안 건드림) ----
         self.anchor_group = QButtonGroup(self)
         self.anchor_buttons: dict[str, QRadioButton] = {}
         anchor_grid = QGridLayout()
@@ -165,24 +233,6 @@ class CaptionInspector(InspectorBase):
         form.addRow("", free_row)
         # 9-zone 선택 시 free 좌표 입력은 비활성화 (시각적 신호).
         self._update_free_spinbox_enabled(False)
-
-        # ---- 페이드 ----
-        fade_row = QHBoxLayout()
-        self.fade_in_spin = QSpinBox()
-        self.fade_in_spin.setRange(0, 5000)
-        self.fade_in_spin.setValue(300)
-        self.fade_in_spin.setSuffix(" ms")
-        self.fade_in_spin.valueChanged.connect(self._on_any_change)
-        self.fade_out_spin = QSpinBox()
-        self.fade_out_spin.setRange(0, 5000)
-        self.fade_out_spin.setValue(300)
-        self.fade_out_spin.setSuffix(" ms")
-        self.fade_out_spin.valueChanged.connect(self._on_any_change)
-        fade_row.addWidget(QLabel(tr("페이드 인")))
-        fade_row.addWidget(self.fade_in_spin)
-        fade_row.addWidget(QLabel(tr("페이드 아웃")))
-        fade_row.addWidget(self.fade_out_spin)
-        form.addRow("", fade_row)
 
         self._layout.addStretch(1)
         # 초기 상태는 disabled (set_effect(None) 와 같은 효과)

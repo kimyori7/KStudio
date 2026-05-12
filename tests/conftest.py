@@ -20,6 +20,21 @@ def reset_ffmpeg_cache():
 
 
 @pytest.fixture(autouse=True)
+def isolate_user_settings(monkeypatch, tmp_path):
+    """테스트가 사용자 실제 settings.json (~/AppData/Local/KStudio/settings.json) 을
+    덮어쓰는 것을 차단.
+
+    회귀 (2026-05-12): 어떤 통합 테스트가 save() 흐름을 타면서 실제 settings 파일을
+    pytest 임시 경로로 채워 사용자의 라이브러리/단축키/dock 상태가 모두 날아갔다.
+    settings_path() 를 tmp_path 안의 가짜 파일로 monkeypatch — 테스트가 어떤
+    경로로 save() 를 호출해도 사용자 데이터에 영향을 주지 않게 격리.
+    """
+    from screen_recorder.core import settings as _settings_mod
+    fake_path = tmp_path / "kstudio_test_settings.json"
+    monkeypatch.setattr(_settings_mod, "settings_path", lambda: fake_path)
+
+
+@pytest.fixture(autouse=True)
 def stub_close_dialog_exec(monkeypatch):
     """테스트 종료 시 '저장 안 된 탭' 모달 다이얼로그가 블로킹하는 것 방지.
 

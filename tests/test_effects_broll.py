@@ -11,7 +11,9 @@ def test_broll_fullscreen_minimal():
     )
     assert b.type == "broll"
     assert b.placement == "fullscreen"
-    assert b.audio_mix == "both"
+    # 2026-05-12: default 가 "both" → "original_only" 로 변경. export v1 이 "both"
+    # 를 지원 안 해 새로 추가한 broll 이 곧바로 export 차단되던 회귀 fix.
+    assert b.audio_mix == "original_only"
     assert b.audio_balance == 0.5    # 50/50
     assert b.pip is None             # fullscreen 일 땐 pip 없음
 

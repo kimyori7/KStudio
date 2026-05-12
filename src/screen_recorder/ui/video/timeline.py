@@ -210,44 +210,78 @@ class VideoTimeline(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # ---- inner 컨테이너 (실제 lane 들) — QScrollArea 안에 담아 가로 스크롤 가능. ----
-        self._inner = QWidget()
-        inner_layout = QVBoxLayout(self._inner)
-        inner_layout.setContentsMargins(0, 0, 0, 0)
-        inner_layout.setSpacing(0)
+        # 두 영역 분리:
+        # - sticky_top: 슬라이더(재생) + 영상 트랙. 항상 위에 고정 (vertical scroll 영향 없음).
+        # - bottom_scroll: 효과 lane 들. 라인 수가 많으면 vertical scroll, 타임라인이
+        #   세로로 커지면 lane 들은 fixed-height 유지하고 하단에 빈 공간 자람.
+        # 두 영역 모두 같은 가로 줌 폭을 가지므로 horizontal scroll 은 동기화한다.
+
+        # ---- sticky_top — 슬라이더 + 영상 트랙 (vertical 스크롤 외) ----
+        self._top_inner = QWidget()
+        top_layout = QVBoxLayout(self._top_inner)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
 
         self.slider_lane = TimelineSliderLane()
-        # TrimMarkerLane 은 새 segment 모델에서 양 끝 자르기를 첫/끝 segment 의
-        # src_in/out 로 흡수하므로 제거. 하위 호환을 위해 attribute 는 남겨두지만 layout 에 미추가.
-        # parent 를 self 로 지정해 별도 top-level 창으로 뜨지 않도록 보장 (회귀 fix).
         self.trim_marker_lane = TrimMarkerLane()
         self.trim_marker_lane.setParent(self)
         self.trim_marker_lane.hide()
         self.video_track_lane = VideoTrackLane()
-        self.effect_lanes = EffectLanesWidget()
 
-        inner_layout.addWidget(self.slider_lane)
-        inner_layout.addWidget(self.video_track_lane)
-        inner_layout.addWidget(self.effect_lanes)
+        top_layout.addWidget(self.slider_lane)
+        top_layout.addWidget(self.video_track_lane)
+
+        self._top_scroll = QScrollArea()
+        self._top_scroll.setWidgetResizable(True)
+        self._top_scroll.setFrameShape(QScrollArea.NoFrame)
+        self._top_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._top_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._top_scroll.setWidget(self._top_inner)
+        # sticky 영역은 자기 자체의 sizeHint 에 맞춰 고정 — top_inner 의 자식이 모두
+        # fixed/Minimum 높이라 sizeHint 가 잘 잡힘.
+        self._top_scroll.setSizePolicy(self._top_scroll.sizePolicy().horizontalPolicy(),
+                                       self._top_scroll.sizePolicy().verticalPolicy())
+        self._top_scroll.setFixedHeight(0)   # showEvent 에서 sizeHint 로 갱신.
+
+        # ---- bottom_inner — 효과 lane 들 (vertical+horizontal scroll) ----
+        self._bottom_inner = QWidget()
+        bottom_layout = QVBoxLayout(self._bottom_inner)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(0)
+
+        self.effect_lanes = EffectLanesWidget()
+        bottom_layout.addWidget(self.effect_lanes)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.NoFrame)
-        # 가로 스크롤바 — 줌 시에만 등장. 세로는 lanes 가 모두 fixed-height 라 필요 없음.
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setWidget(self._inner)
-        outer.addWidget(self._scroll)
+        # lane 이 많아 세로 overflow 가 가능 — AsNeeded 로 변경 (이전 AlwaysOff).
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setWidget(self._bottom_inner)
+
+        outer.addWidget(self._top_scroll)
+        outer.addWidget(self._scroll, stretch=1)
+
+        # 두 scroll area 의 가로 스크롤 동기화 — bottom 이 권위 있는 source.
+        # bottom 가 가로 스크롤 가능 (overflow), top 은 스크롤바 숨김 상태로 같은 값 추종.
+        self._scroll.horizontalScrollBar().valueChanged.connect(
+            self._sync_top_h_scroll
+        )
 
         self._zoom_factor: float = 1.0
 
         # ---- Playhead 수직 가이드 (전체 lane 관통) ----
-        # transparent overlay 라 자식 lane 들 위에 한 줄 그림. 편집 시 시각 기준점.
-        # inner 의 자식이라 가로 스크롤 시 함께 이동.
-        self.playhead_overlay = _PlayheadOverlay(self._inner)
+        # top + bottom 둘 다 같은 시간축이지만 영역이 분리됐으므로 overlay 도 분리.
+        # bottom 의 inner 자식으로 만들면 가로 스크롤·세로 스크롤 모두 자동 추종.
+        self.playhead_overlay = _PlayheadOverlay(self._bottom_inner)
         self.playhead_overlay.raise_()
-        # inner resize 시 overlay 도 따라가도록.
-        self._inner.installEventFilter(self)
+        self._bottom_inner.installEventFilter(self)
+        # top 용 overlay — slider 가 자체 playhead 를 그리므로 추가 그리기 불필요. 그러나
+        # video_track_lane 위에는 빨간 세로선이 있어야 시각 기준점. 별도 overlay 인스턴스.
+        self.playhead_top_overlay = _PlayheadOverlay(self._top_inner)
+        self.playhead_top_overlay.raise_()
+        self._top_inner.installEventFilter(self)
 
         # ---- 시그널 fan-in ----
         self.slider_lane.seek_request.connect(self.seek_request.emit)
@@ -272,6 +306,7 @@ class VideoTimeline(QWidget):
         self.video_track_lane.set_duration_ms(ms)
         self.effect_lanes.set_duration_ms(ms)
         self.playhead_overlay.set_duration_ms(ms)
+        self.playhead_top_overlay.set_duration_ms(ms)
 
     def set_position_ms(self, ms: int) -> None:
         ms = max(0, int(ms))
@@ -279,25 +314,49 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.set_position_ms(ms)
         self.effect_lanes.set_position_ms(ms)
         self.playhead_overlay.set_position_ms(ms)
+        self.playhead_top_overlay.set_position_ms(ms)
 
     def eventFilter(self, watched, event):
         from PySide6.QtCore import QEvent
-        if watched is self._inner and event.type() == QEvent.Resize:
-            self.playhead_overlay.setGeometry(self._inner.rect())
-            self.playhead_overlay.raise_()
+        if event.type() == QEvent.Resize:
+            if watched is self._bottom_inner:
+                self.playhead_overlay.setGeometry(self._bottom_inner.rect())
+                self.playhead_overlay.raise_()
+            elif watched is self._top_inner:
+                self.playhead_top_overlay.setGeometry(self._top_inner.rect())
+                self.playhead_top_overlay.raise_()
         return super().eventFilter(watched, event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_zoom_width()
-        self.playhead_overlay.setGeometry(self._inner.rect())
+        self._sync_top_height()
+        self.playhead_overlay.setGeometry(self._bottom_inner.rect())
         self.playhead_overlay.raise_()
+        self.playhead_top_overlay.setGeometry(self._top_inner.rect())
+        self.playhead_top_overlay.raise_()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._apply_zoom_width()
-        self.playhead_overlay.setGeometry(self._inner.rect())
+        self._sync_top_height()
+        self.playhead_overlay.setGeometry(self._bottom_inner.rect())
         self.playhead_overlay.raise_()
+        self.playhead_top_overlay.setGeometry(self._top_inner.rect())
+        self.playhead_top_overlay.raise_()
+
+    def _sync_top_height(self) -> None:
+        """sticky_top 영역의 높이를 자식 sizeHint 합으로 — splitter 가 늘어나도 stretch 안 됨."""
+        h = self._top_inner.sizeHint().height()
+        if h <= 0:
+            h = self.slider_lane.height() + self.video_track_lane.height()
+        self._top_scroll.setFixedHeight(max(1, h))
+
+    def _sync_top_h_scroll(self, value: int) -> None:
+        """bottom 의 가로 스크롤 값을 top 도 동일하게 이동 — 같은 시간축 정렬."""
+        # top scroll 의 viewport 가 콘텐츠보다 작아질 수 있으므로 max clamp.
+        bar = self._top_scroll.horizontalScrollBar()
+        bar.setValue(max(bar.minimum(), min(bar.maximum(), int(value))))
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Ctrl + 휠 = 가로 줌 in/out. Ctrl 없으면 부모로 전달 (스크롤 등)."""
@@ -311,7 +370,7 @@ class VideoTimeline(QWidget):
             mouse_x_in_viewport = event.position().x()
             scroll_x = self._scroll.horizontalScrollBar().value()
             content_x = scroll_x + int(mouse_x_in_viewport)
-            old_inner_w = max(1, self._inner.width())
+            old_inner_w = max(1, self._bottom_inner.width())
             ratio = content_x / old_inner_w
             # 새 줌.
             factor = self._zoom_factor * (self._ZOOM_STEP ** steps)
@@ -322,7 +381,7 @@ class VideoTimeline(QWidget):
             self._zoom_factor = factor
             self._apply_zoom_width()
             # 줌 후 콘텐츠 너비 재계산 → 마우스 위치가 같은 비율을 가리키도록 스크롤.
-            new_inner_w = max(1, self._inner.width())
+            new_inner_w = max(1, self._bottom_inner.width())
             new_content_x = ratio * new_inner_w
             new_scroll = int(new_content_x - mouse_x_in_viewport)
             self._scroll.horizontalScrollBar().setValue(new_scroll)
@@ -339,7 +398,10 @@ class VideoTimeline(QWidget):
         return self._zoom_factor
 
     def _apply_zoom_width(self) -> None:
-        """inner 의 minimum width 를 viewport_w × zoom_factor 로 — viewport 보다 크면 가로 스크롤."""
+        """두 inner 의 minimum width 를 viewport_w × zoom_factor 로 — viewport 보다 크면 가로 스크롤.
+
+        bottom 이 권위 source. top 은 같은 너비를 따라가야 시간축이 정렬.
+        """
         if not hasattr(self, "_scroll"):
             return
         vp_w = self._scroll.viewport().width()
@@ -347,13 +409,15 @@ class VideoTimeline(QWidget):
         if target <= 0:
             return
         if self._zoom_factor <= 1.0 + 1e-3:
-            # fit-to-window: 최소 너비 0 → viewport 너비로 자동 stretch.
-            self._inner.setMinimumWidth(0)
+            self._bottom_inner.setMinimumWidth(0)
+            self._top_inner.setMinimumWidth(0)
         else:
-            self._inner.setMinimumWidth(target)
-        # playhead overlay 도 inner 전체 너비를 덮도록.
-        self.playhead_overlay.setGeometry(self._inner.rect())
+            self._bottom_inner.setMinimumWidth(target)
+            self._top_inner.setMinimumWidth(target)
+        self.playhead_overlay.setGeometry(self._bottom_inner.rect())
         self.playhead_overlay.raise_()
+        self.playhead_top_overlay.setGeometry(self._top_inner.rect())
+        self.playhead_top_overlay.raise_()
 
     def set_sidecar(self, sidecar: Sidecar) -> None:
         self.effect_lanes.set_sidecar(sidecar)
@@ -372,11 +436,20 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.set_out_ms(out_ms)
 
     def set_edit_mode(self, on: bool) -> None:
+        # 편집 모드 OFF — VideoTimeline 통째로 숨김. splitter 가 player 에 전체 공간 양보 →
+        # 일반 영상 플레이어처럼 보임. 사용자 의도: "편집 모드 끄면 일반 플레이어처럼
+        # 보이게 바도 내려가게."
         # trim_marker_lane 은 Stage D 에서 layout 에서 제외됨 (segment 트랙으로 흡수).
         # parent 없는 widget 이라 setVisible(True) 하면 별도 top-level 창으로 떠 버리는 회귀.
         # → 토글 대상에서 빼고 영구히 숨김 유지.
         self.video_track_lane.setVisible(on)
         self.effect_lanes.setVisible(on)
+        # 편집 OFF 시 top_scroll(슬라이더+영상바) + bottom_scroll(효과 lanes) 모두 hide.
+        # ON 시 top_scroll 만 노출 (effect_lanes 자체는 ON 분기에서 다시 visible).
+        self._top_scroll.setVisible(on)
+        self._scroll.setVisible(on)
+        # sticky_top 영역에 video_track 이 추가/제거되므로 높이 갱신.
+        self._sync_top_height()
 
     # ---------- 내부 ----------
     def _on_trim_in_changed(self, ms: int) -> None:

@@ -36,6 +36,9 @@ class SpeedInspector(InspectorBase):
 
     # InspectorBase 의 effect_changed 외에 effect_deleted 추가 (panel 이 bubble).
     effect_deleted = Signal(str)   # effect_id
+    # 전역 배속 효과 ON/OFF — 한 영상의 모든 배속에 일괄 적용. MainWindow 가 받아
+    # AppSettings 영속 + 모든 영상 탭 동기화. (PlayerControls 에서 이쪽으로 이동).
+    speed_effects_global_toggled = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -46,6 +49,14 @@ class SpeedInspector(InspectorBase):
 
     # ---------- UI build ----------
     def _build_ui(self) -> None:
+        # 전역 ON/OFF — 폼 상단. 이 영상의 모든 배속 효과를 일괄 켜고/끈다.
+        self._global_btn = QPushButton("▶▶ 전체 배속 ON")
+        self._global_btn.setCheckable(True)
+        self._global_btn.setChecked(True)
+        self._global_btn.setToolTip("이 영상의 모든 배속 효과를 일괄 켜고/끈다")
+        self._global_btn.toggled.connect(self._on_global_toggled)
+        self._layout.addWidget(self._global_btn)
+
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
         self._layout.addLayout(form)
@@ -71,6 +82,14 @@ class SpeedInspector(InspectorBase):
         self._show_hud_check = QCheckBox("배속 HUD 표시")
         self._show_hud_check.toggled.connect(self._on_any_change)
         form.addRow("", self._show_hud_check)
+
+        # ---- HUD 폰트 크기 ----
+        self._font_spin = QSpinBox()
+        self._font_spin.setRange(8, 48)
+        self._font_spin.setValue(14)
+        self._font_spin.setSuffix(" pt")
+        self._font_spin.valueChanged.connect(self._on_any_change)
+        form.addRow("HUD 크기", self._font_spin)
 
         # ---- in / out ms ----
         self._in_spin = QSpinBox()
@@ -111,6 +130,8 @@ class SpeedInspector(InspectorBase):
             self._audio_combo.setCurrentText(label)
             # show_hud
             self._show_hud_check.setChecked(effect.show_hud)
+            # hud font size
+            self._font_spin.setValue(int(effect.hud_font_pt))
             # in / out
             self._in_spin.setValue(int(effect.in_ms))
             self._out_spin.setValue(int(effect.out_ms))
@@ -125,7 +146,7 @@ class SpeedInspector(InspectorBase):
     # ---------- internal ----------
     def _set_form_enabled(self, enabled: bool) -> None:
         for w in (self._rate_spin, self._audio_combo, self._show_hud_check,
-                  self._in_spin, self._out_spin, self._delete_btn):
+                  self._font_spin, self._in_spin, self._out_spin, self._delete_btn):
             w.setEnabled(enabled)
 
     def _on_any_change(self, *_) -> None:
@@ -146,6 +167,7 @@ class SpeedInspector(InspectorBase):
                 rate=rate,
                 audio=audio,
                 show_hud=self._show_hud_check.isChecked(),
+                hud_font_pt=int(self._font_spin.value()),
                 in_ms=in_ms,
                 out_ms=out_ms,
             )
@@ -159,3 +181,15 @@ class SpeedInspector(InspectorBase):
         if self._effect is None:
             return
         self.effect_deleted.emit(self._effect.id)
+
+    # ---------- 전역 토글 ----------
+    def _on_global_toggled(self, checked: bool) -> None:
+        self._global_btn.setText("▶▶ 전체 배속 ON" if checked else "▶▶ 전체 배속 OFF")
+        self.speed_effects_global_toggled.emit(checked)
+
+    def set_speed_effects_enabled(self, enabled: bool) -> None:
+        """외부 (MainWindow) 에서 전역 상태 동기화 — 시그널 발화 없이 시각만 갱신."""
+        self._global_btn.blockSignals(True)
+        self._global_btn.setChecked(bool(enabled))
+        self._global_btn.setText("▶▶ 전체 배속 ON" if enabled else "▶▶ 전체 배속 OFF")
+        self._global_btn.blockSignals(False)

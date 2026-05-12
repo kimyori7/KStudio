@@ -10,8 +10,10 @@ API:
     : free anchor 의 정규화 (0~1) 중심점을 텍스트 bbox 가 surface 안에 머물도록 잘라낸다.
 """
 from __future__ import annotations
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtCore import Qt, QPointF
+from PySide6.QtGui import (
+    QBrush, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen,
+)
 
 from ...effects.types.caption import CaptionEffect, Position
 
@@ -137,7 +139,9 @@ def draw_caption(p: QPainter, c: CaptionEffect, *, position_ms: int,
     fm = p.fontMetrics()
     text = c.text
     lines = text.split("\n") if text else [""]
-    line_h = fm.height()
+    # path fill 은 drawText 보다 glyph 영역이 빽빽 → fm.height() 만으로는 멀티라인 사이
+    # 시각적 간격이 거의 0. typography 표준 1.2× 적용 (lineSpacing 보다 살짝 더 여유).
+    line_h = max(fm.height(), int(round(fm.height() * 1.2)))
     line_widths = [fm.horizontalAdvance(line) for line in lines]
     text_w = max(line_widths) if line_widths else 0
     text_h = line_h * len(lines)
@@ -169,44 +173,54 @@ def draw_caption(p: QPainter, c: CaptionEffect, *, position_ms: int,
         bg_h = (len(lines) - 1) * line_h + fm.ascent() + fm.descent() + 2 * v_pad
         p.drawRoundedRect(x - pad, bg_top, text_w + 2 * pad, bg_h, 4, 4)
 
-    def _draw_line(line_idx: int, line: str, dx: int = 0, dy: int = 0) -> None:
-        """line 별 baseline 위치 + 가로 정렬. text_align 이 우선, 없으면 anchor 따라.
-
-        text_align 은 캡션 박스 *내부* 의 줄 정렬. position.anchor 는 캡션
-        박스 *전체* 위치. 둘은 직교 — 예: 캡션 박스를 화면 우측 하단에 배치
-        (anchor=bottom-right) 하면서 박스 안 텍스트는 왼쪽 정렬 (text_align=left).
-        """
-        ly = first_baseline_y + line_idx * line_h + dy
+    def _line_x(line_idx: int) -> int:
+        """line 별 가로 시작 좌표. text_align 이 캡션 박스 *내부* 의 줄 정렬."""
         align = getattr(c, "text_align", "center")
         if align == "center":
-            line_x = x + (text_w - line_widths[line_idx]) // 2 + dx
-        elif align == "right":
-            line_x = x + (text_w - line_widths[line_idx]) + dx
-        else:   # left
-            line_x = x + dx
-        p.drawText(line_x, ly, line)
+            return x + (text_w - line_widths[line_idx]) // 2
+        if align == "right":
+            return x + (text_w - line_widths[line_idx])
+        return x   # left
 
-    # 외곽선
-    if c.stroke is not None and c.stroke.width > 0:
-        stroke = QColor(c.stroke.color)
-        stroke.setAlphaF(alpha)
-        pen = QPen(stroke)
-        pen.setWidth(c.stroke.width)
-        p.setPen(pen)
-        for i, line in enumerate(lines):
-            _draw_line(i, line)
+    # 외곽선 / 그림자 / 본문 — QPainterPath 로 합쳐서 그림.
+    # QPainter.drawText 는 QPen 의 width 를 무시 (텍스트 outline 두께가 적용 안 됨).
+    # path.addText 후 strokePath 로 그리면 실제 두께가 반영. shadow 도 같은 path 를
+    # offset 으로 fill 해 그림자 효과.
+    full_path = QPainterPath()
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        ly = first_baseline_y + i * line_h
+        full_path.addText(QPointF(_line_x(i), ly), f, line)
 
-    # 그림자
+    # 그림자 — 본 텍스트보다 먼저 그려야 본문이 위에 오면서 우하단 그림자가 보임.
+    # offset 은 font size 비례 (font 가 크면 그림자도 커야 자연스러움).
     if c.shadow:
+        offset = max(2, int(round(c.font.size * 0.08)))
         sh = QColor(0, 0, 0)
-        sh.setAlphaF(0.6 * alpha)
-        p.setPen(sh)
-        for i, line in enumerate(lines):
-            _draw_line(i, line, dx=2, dy=2)
+        sh.setAlphaF(0.55 * alpha)
+        p.save()
+        p.translate(offset, offset)
+        p.setPen(Qt.NoPen)
+        p.setBrush(sh)
+        p.drawPath(full_path)
+        p.restore()
+
+    # 외곽선 — width 를 두 배로 그린 뒤 본문이 가운데를 덮는 패턴 (Qt 의 strokePath 는
+    # 중심선 기준 양쪽으로 width/2 씩 — 본문 fill 이 안쪽 절반을 덮으므로 시각상 두께가
+    # 정확히 stroke.width 가 됨).
+    if c.stroke is not None and c.stroke.width > 0:
+        stroke_col = QColor(c.stroke.color)
+        stroke_col.setAlphaF(alpha)
+        pen = QPen(stroke_col)
+        pen.setWidthF(float(c.stroke.width) * 2.0)
+        pen.setJoinStyle(Qt.RoundJoin)
+        pen.setCapStyle(Qt.RoundCap)
+        p.strokePath(full_path, pen)
 
     # 본 텍스트
     fill = QColor(c.fill)
     fill.setAlphaF(alpha)
-    p.setPen(fill)
-    for i, line in enumerate(lines):
-        _draw_line(i, line)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(fill))
+    p.drawPath(full_path)

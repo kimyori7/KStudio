@@ -222,6 +222,122 @@ def test_edit_controller_persists_after_flush_autosave(qtbot, fixture_mp4, tmp_p
 
 # ---------- 4. settings 의 sidecar_dir 가 디스크에 저장/복원 ----------
 
+# ---------- 5. cross-path 자동 마이그레이션 (hash-only 매칭) ----------
+
+def test_load_for_migrates_source_path_when_file_moved(fixture_mp4, tmp_path):
+    """파일 이동: 같은 hash, 다른 source_path → load_for 가 새 경로로 자동 갱신."""
+    sc_dir = tmp_path / "sidecars"
+    sc_dir.mkdir()
+    h = compute_video_hash(fixture_mp4)
+    # 옛 경로로 저장된 사이드카.
+    old_source = r"C:\old\path\rec_20260507_191821.mp4"
+    target = sc_dir / f"rec_old_{h}.kstudio"
+    sc = Sidecar(
+        source_path=old_source,
+        source_hash=h,
+        trim=Trim(in_ms=0, out_ms=0),
+        effects=[CaptionEffect(in_ms=100, out_ms=500, text="kept")],
+    )
+    save_atomic(target, sc)
+
+    # 새 경로 (fixture_mp4) 로 load — hash 만 매칭하므로 hit.
+    store = SidecarStore(sc_dir)
+    loaded = store.load_for(fixture_mp4)
+    assert loaded is not None
+    assert loaded.effects[0].text == "kept"
+    # source_path 가 새 경로로 자동 마이그레이션됨.
+    assert loaded.source_path == str(fixture_mp4)
+
+
+def test_load_for_migrates_segment_src_for_same_source(fixture_mp4, tmp_path):
+    """video_track segment 의 src 도 같은 source 이면 같이 마이그레이션."""
+    from screen_recorder.effects.sidecar import VideoSegment
+
+    sc_dir = tmp_path / "sidecars"
+    sc_dir.mkdir()
+    h = compute_video_hash(fixture_mp4)
+    old_source = r"C:\old\path\rec.mp4"
+    target = sc_dir / f"rec_{h}.kstudio"
+    sc = Sidecar(
+        source_path=old_source,
+        source_hash=h,
+        trim=Trim(in_ms=0, out_ms=0),
+        video_track=[
+            VideoSegment(src=old_source, src_in_ms=0, src_out_ms=1000,
+                         src_duration_ms=1000, start_ms=0),
+            # 다른 src 의 segment — 마이그레이션 영향 받지 않음.
+            VideoSegment(src=r"C:\other\different.mp4",
+                         src_in_ms=0, src_out_ms=500,
+                         src_duration_ms=500, start_ms=1000),
+        ],
+    )
+    save_atomic(target, sc)
+
+    store = SidecarStore(sc_dir)
+    loaded = store.load_for(fixture_mp4)
+    assert loaded is not None
+    # 같은 source 의 segment 만 마이그레이션.
+    assert loaded.video_track[0].src == str(fixture_mp4)
+    # 다른 src 의 segment 는 그대로.
+    assert loaded.video_track[1].src == r"C:\other\different.mp4"
+
+
+def test_load_for_prefers_matching_source_path_over_stale(fixture_mp4, tmp_path):
+    """같은 hash 의 사이드카가 둘 — source_path 매칭이 우선, stale 은 후순위."""
+    sc_dir = tmp_path / "sidecars"
+    sc_dir.mkdir()
+    h = compute_video_hash(fixture_mp4)
+    # Stale: 다른 source_path.
+    stale_target = sc_dir / f"rec_stale_{h}.kstudio"
+    stale_sc = Sidecar(
+        source_path=r"C:\old\rec.mp4", source_hash=h,
+        trim=Trim(in_ms=0, out_ms=0),
+        effects=[CaptionEffect(in_ms=0, out_ms=100, text="stale")],
+    )
+    save_atomic(stale_target, stale_sc)
+    # Fresh: 정확히 매칭하는 source_path.
+    fresh_target = sc_dir / f"rec_fresh_{h}.kstudio"
+    fresh_sc = Sidecar(
+        source_path=str(fixture_mp4), source_hash=h,
+        trim=Trim(in_ms=0, out_ms=0),
+        effects=[CaptionEffect(in_ms=0, out_ms=100, text="fresh")],
+    )
+    save_atomic(fresh_target, fresh_sc)
+
+    store = SidecarStore(sc_dir)
+    loaded = store.load_for(fixture_mp4)
+    assert loaded is not None
+    # fresh 가 우선 — stale 이 알파벳 먼저여도.
+    assert loaded.effects[0].text == "fresh"
+
+
+def test_save_for_cleans_up_other_same_hash_sidecars(fixture_mp4, tmp_path):
+    """save_for 가 같은 hash 의 다른 사이드카를 정리 (hash-only 매칭이라 stale 의미 없음)."""
+    sc_dir = tmp_path / "sidecars"
+    sc_dir.mkdir()
+    h = compute_video_hash(fixture_mp4)
+    # 옛 사이드카 두 개 (다른 source_path).
+    a = sc_dir / f"rec_a_{h}.kstudio"
+    b = sc_dir / f"rec_b_{h}.kstudio"
+    save_atomic(a, Sidecar(source_path=r"C:\old_a.mp4", source_hash=h,
+                            trim=Trim(in_ms=0, out_ms=0)))
+    save_atomic(b, Sidecar(source_path=r"C:\old_b.mp4", source_hash=h,
+                            trim=Trim(in_ms=0, out_ms=0)))
+
+    store = SidecarStore(sc_dir)
+    new_sc = Sidecar(source_path=str(fixture_mp4), source_hash=h,
+                     trim=Trim(in_ms=0, out_ms=0),
+                     effects=[CaptionEffect(in_ms=0, out_ms=100, text="new")])
+    new_path = store.save_for(fixture_mp4, new_sc)
+    # 새 파일만 남고 옛 a, b 는 삭제.
+    remaining = sorted(sc_dir.glob("*.kstudio"))
+    assert remaining == [new_path], (
+        f"같은 hash 의 stale 사이드카가 안 지워짐: {remaining}"
+    )
+
+
+# ---------- 6. settings sidecar_dir round-trip ----------
+
 def test_preferences_sidecar_dir_persists_to_settings(tmp_path):
     """preferences.sidecar_dir 가 save → load round-trip 으로 복원된다."""
     from screen_recorder.core import settings as settings_mod

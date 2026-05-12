@@ -113,6 +113,17 @@ class PreferencesSettings:
     keep_visible_during_capture: bool = False
     # 편집 모드 — 영상 모드의 모든 탭에 전역 적용. 세션 간 영속 (사용자 결정 2026-05-11).
     edit_mode_on: bool = False
+    # 배속 효과 일괄 켜기/끄기 — PlayerControls 의 ▶▶ ON/OFF 버튼 상태 영속.
+    speed_effects_enabled: bool = True
+    # 최근 라이브러리 항목 — 폴더 스캔 대신 "최근 연 파일" 목록 영속. 최대 50개,
+    # 시작 시 path 존재 체크 통과한 것만 복원. 항목 dict 키: kind/path/display_name/
+    # duration_ms/origin/created_at (ISO 문자열). 썸네일은 library_thumbs 캐시 폴더.
+    recent_library_entries: list = field(default_factory=list)
+    # Dock 가시성 영속 — saveState/restoreState 는 위치만 저장, 메뉴 체크 상태는 별도.
+    # 사용자가 X 로 닫은 dock 이 재시작 후 다시 나타나던 회귀 fix.
+    library_dock_visible: bool = True
+    layers_dock_visible: bool = True
+    record_status_dock_visible: bool = True
     # 사이드카(.kvedit) 저장 폴더. 빈 문자열 = OS 기본 (%APPDATA%\KStudio\sidecars).
     sidecar_dir: str = ""
     # 파일 → 열기 다이얼로그의 마지막 사용 폴더. 빈 문자열 = 사용자 홈.

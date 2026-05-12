@@ -114,22 +114,48 @@ def _zoom_overlapping_segment(zooms: list[ZoomEffect], seg: TimelineSegment) -> 
 
 
 def _zoom_crop_scale_filter(z: ZoomEffect, surface_w: int, surface_h: int) -> str:
-    """ZoomEffect → crop+scale ffmpeg 필터 문자열.
+    """ZoomEffect → ffmpeg 필터 문자열.
 
-    중심 (cx*w, cy*h) 로부터 (w/scale × h/scale) 영역을 잘라낸 뒤 원본 surface 크기로
-    다시 scale. v1: start.scale 만 사용 (정적 줌).
+    mode == "fit_screen" (기본): 중심 (cx*w, cy*h) 로부터 (w/scale × h/scale) 영역을
+    잘라낸 뒤 원본 surface 크기로 다시 scale — 영역이 화면 전체를 채움.
 
-    예: cx=0.5, cy=0.5, scale=2.0, surface 1920×1080 → crop=960:540:480:270,scale=1920:1080.
+    mode == "magnify_region" (Phase 24): region_w × region_h 크기의 부분 영역만 N배
+    확대해 같은 중심 위치에 덮어쓰기. 나머지는 원본 그대로 (split → overlay).
+
+    flags=lanczos — 줌 후 upscale 시 기본 bicubic 보다 sharp.
     """
     scale = max(0.1, float(z.start.scale))
     cx = float(z.start.cx)
     cy = float(z.start.cy)
+    mode = getattr(z, "mode", "fit_screen")
+
+    if mode == "magnify_region":
+        region_w = max(0.05, min(1.0, float(getattr(z, "region_w", 0.3))))
+        region_h = max(0.05, min(1.0, float(getattr(z, "region_h", 0.3))))
+        # Phase 27 — dest rect 는 source 와 분리. 사이드카에 없는 구버전은 source × scale 로 보정.
+        dest_cx = float(getattr(z, "dest_cx", cx))
+        dest_cy = float(getattr(z, "dest_cy", cy))
+        dest_w_n = float(getattr(z, "dest_w", region_w * scale))
+        dest_h_n = float(getattr(z, "dest_h", region_h * scale))
+        src_w = surface_w * region_w
+        src_h = surface_h * region_h
+        src_x = cx * surface_w - src_w / 2.0
+        src_y = cy * surface_h - src_h / 2.0
+        dst_w = surface_w * dest_w_n
+        dst_h = surface_h * dest_h_n
+        dst_x = dest_cx * surface_w - dst_w / 2.0
+        dst_y = dest_cy * surface_h - dst_h / 2.0
+        return (
+            f"split=2[mzbg][mzsrc];"
+            f"[mzsrc]crop={src_w:.0f}:{src_h:.0f}:{src_x:.0f}:{src_y:.0f},"
+            f"scale={dst_w:.0f}:{dst_h:.0f}:flags=lanczos[mzmag];"
+            f"[mzbg][mzmag]overlay=x={dst_x:.0f}:y={dst_y:.0f}"
+        )
+
     crop_w = surface_w / scale
     crop_h = surface_h / scale
     crop_x = cx * surface_w - crop_w / 2.0
     crop_y = cy * surface_h - crop_h / 2.0
-    # flags=lanczos — 줌 후 upscale 시 기본 bicubic 보다 sharp. Phase 19.5 사용자
-    # 요청 ("줌 화질 떨어짐") 대응.
     return (
         f"crop={crop_w:.0f}:{crop_h:.0f}:{crop_x:.0f}:{crop_y:.0f},"
         f"scale={surface_w}:{surface_h}:flags=lanczos"
@@ -237,11 +263,9 @@ def build_export_args(
                 raise NotImplementedError(
                     "broll placement='pip' requires PipConfig (broll.pip is None)"
                 )
-            if b.audio_mix != "original_only":
-                raise NotImplementedError(
-                    f"broll audio_mix={b.audio_mix!r} export is v2 follow-up; "
-                    "v1 supports only 'original_only'"
-                )
+            # audio_mix v2 — 'original_only' / 'mute' / 'broll_only' / 'both' 모두 지원.
+            # 이미지 broll (확장자 .png/.jpg/.gif) 은 audio stream 없음 → 'original_only'
+            # 동작으로 자연 fallback. 사용자 명시적 audio_mix 가 그 외라도 export 통과.
         # broll + range cut / insert 결합은 v2.
         for c in cuts:
             if c.out_ms > c.in_ms or c.has_insert:
@@ -601,6 +625,64 @@ def build_export_args(
             f"enable='between(t\\,{in_s}\\,{out_s})'[{next_v}]"
         )
         cur_v = next_v
+
+    # broll audio mixing (v2) — audio_mix 모드별 main + broll audio 합성.
+    # original_only: 변경 없음 (main 만)
+    # mute: main 의 broll 시간창 silence
+    # broll_only: main silence + broll audio 추가
+    # both: main 의 broll 시간창에 audio_balance 만큼 attenuate + broll audio (1-audio_balance) 만큼 mix
+    # 이미지 broll (확장자 .png/.jpg/.gif) 은 audio stream 없으니 original_only 로 자동 fallback.
+    if cur_a is not None:
+        _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+        for i, broll in enumerate(brolls):
+            if broll.audio_mix == "original_only":
+                continue
+            broll_idx = broll_input_index[i]
+            src_ext = Path(broll.src).suffix.lower() if broll.src else ""
+            broll_has_audio = src_ext not in _IMAGE_EXTS
+            in_s = user_to_output(broll.in_ms) / 1000.0
+            out_s = user_to_output(broll.out_ms) / 1000.0
+            # 1. main audio 의 broll 시간창 attenuation.
+            if broll.audio_mix == "mute":
+                main_vol = 0.0
+            elif broll.audio_mix == "broll_only":
+                main_vol = 0.0
+            elif broll.audio_mix == "both":
+                # audio_balance: 0.0 = broll 우세, 1.0 = 원본 우세.
+                main_vol = float(broll.audio_balance)
+            else:
+                continue   # 알 수 없는 모드 — 안전하게 건너뜀
+            a_main_next = f"am{i}"
+            fc_parts.append(
+                f"[{cur_a}]volume=enable='between(t\\,{in_s}\\,{out_s})':"
+                f"volume={main_vol:.3f}[{a_main_next}]"
+            )
+            cur_a = a_main_next
+            # 2. broll audio 추가 (mute 모드 또는 이미지 broll 이면 추가 X).
+            if broll.audio_mix == "mute" or not broll_has_audio:
+                continue
+            if broll.audio_mix == "broll_only":
+                broll_vol = 1.0
+            else:   # both
+                broll_vol = 1.0 - float(broll.audio_balance)
+            # broll source 에서 audio 잘라내고 in_s 만큼 delay 후 volume 조절.
+            # adelay 의 ms 단위 정수, asetpts 으로 PTS reset 한 뒤 delay.
+            in_ms_int = int(round(in_s * 1000.0))
+            broll_dur_s = max(0.001, out_s - in_s)
+            ba_label = f"ba{i}"
+            fc_parts.append(
+                f"[{broll_idx}:a]atrim=0:{broll_dur_s:.3f},"
+                f"asetpts=PTS-STARTPTS,"
+                f"adelay={in_ms_int}|{in_ms_int},"
+                f"volume={broll_vol:.3f}[{ba_label}]"
+            )
+            # 3. main + broll audio amix (1:1 weight, 이미 volume 으로 미리 조절됨).
+            a_mix_next = f"amx{i}"
+            fc_parts.append(
+                f"[{cur_a}][{ba_label}]amix=inputs=2:duration=first:"
+                f"dropout_transition=0[{a_mix_next}]"
+            )
+            cur_a = a_mix_next
 
     fc = ";".join(fc_parts)
     argv.extend(["-filter_complex", fc])

@@ -40,6 +40,8 @@ class VideoTab(QWidget):
     # 사용자가 편집 토글을 요청 — MainWindow 가 받아 *모든* 영상 탭에 동시 적용 (전역 모드).
     edit_mode_change_requested = Signal(bool)
     export_requested = Signal()                # 편집 모드 컨트롤바의 출력 버튼 → MainWindow.
+    # 사용자가 ▶▶ ON/OFF 버튼 클릭 → MainWindow 가 settings 에 저장 + 모든 영상 탭에 동기화.
+    speed_effects_change_requested = Signal(bool)
     effect_selected = Signal(object)           # Effect | None — MainWindow 인스펙터 패널용
 
     _DEFAULT_DURATION_MS: dict[str, int] = {
@@ -59,10 +61,13 @@ class VideoTab(QWidget):
         # 한글 IME ON 상태에서 알파벳 키(T/C/D/F 등) 가 IME 에 가로채여 단축키가
         # 안 먹히는 문제를 방지. 자식 위젯(인스펙터의 QTextEdit 등) 은 영향 없음.
         self.setAttribute(Qt.WA_InputMethodEnabled, False)
-        # 외부 파일 드래그-드롭 — 트랙 lane 위가 아닌 영역 (재생 화면 등) 에
-        # 드롭하면 timeline 끝에 append. 트랙 lane 위의 정확한 위치 드롭은
-        # VideoTrackLane.dropEvent 가 먼저 catch (Qt 의 자식 우선 전파 규칙).
-        self.setAcceptDrops(True)
+        # 외부 파일 드래그-드롭 — VideoTab 자체는 더 이상 수락 안 함 (2026-05-12 회귀).
+        # 사용자 보고: 발표용 폴더 .mp4 를 미리보기 영역 위로 드롭 → 의도치 않게
+        # video_track 끝에 append 되어 11:40 분량으로 늘어남. UX 단서 부족 (preview 영역이
+        # 너무 넓고, 드롭 시 무슨 일이 일어나는지 미리 안 알려줌).
+        # 사용자 요청: "정확히 영상 바에 올려야만 추가". video_track_lane 의 자체 dropEvent
+        # 가 lane 위 정확한 위치 드롭만 수락. 다른 영역(미리보기 등) 드롭은 무시.
+        self.setAcceptDrops(False)
         self._source_label = source_label
         self._source_path = Path(path)
         self._settings = player_settings
@@ -76,6 +81,8 @@ class VideoTab(QWidget):
         self._active_speed_id: Optional[str] = None
         # 'mute' audio 모드 진입 시 이전 mute 상태를 보존했다가 이탈 시 복원.
         self._speed_prev_muted: Optional[bool] = None
+        # 배속 효과 일괄 켜기/끄기 — 런타임 플래그, 사이드카 미포함.
+        self._speed_effects_enabled: bool = True
 
         # 활성 선택 — Del 키가 무엇을 지울지 라우팅. 마지막에 클릭된 lane/segment 가 활성.
         # kind ∈ {"segment", "effect", None}. id 는 해당 객체의 id.
@@ -167,6 +174,11 @@ class VideoTab(QWidget):
 
         # 편집 모드 OFF 일 땐 trim/effects 숨김 (slider 만 보임)
         self.timeline.set_edit_mode(False)
+        # 편집 OFF 시 timeline 자체를 hide — splitter 가 timeline 영역을 자동으로
+        # 거둬들임 (handle 도 사라지지 않고 한쪽 끝으로 이동). stretchFactor 는 init 의
+        # 4:1 그대로 유지 — 편집 ON 시 사용자가 드래그로 비율 조절 가능 + 창 리사이즈
+        # 시 양쪽이 비율로 늘어남.
+        self.timeline.setVisible(False)
 
         # 모델 → 컨트롤
         self.player.duration_changed.connect(self.duration_resolved.emit)
@@ -195,6 +207,9 @@ class VideoTab(QWidget):
         self.controls.export_requested.connect(self.export_requested.emit)
         self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
         self._edit_controller.edit_mode_toggled.connect(self.timeline.set_edit_mode)
+        # 편집 OFF 시 splitter 의 timeline 영역을 0 으로 — 일반 플레이어 모습.
+        # setChildrenCollapsible(False) 가 켜져 있어도 setSizes 로 0 지정 가능.
+        self._edit_controller.edit_mode_toggled.connect(self._on_edit_mode_for_splitter)
 
         # 썸네일 서비스 → VideoTab 핸들러 (broll src 와 segment id 를 prefix 로 구분).
         self._thumb_service.thumbnail_ready.connect(self._on_thumbnail_ready)
@@ -307,6 +322,13 @@ class VideoTab(QWidget):
         return self._source_label
 
     # ---------- 편집 모드 API ----------
+    def _on_edit_mode_for_splitter(self, on: bool) -> None:
+        """편집 OFF 시 timeline widget hide → splitter 가 자동으로 영역 거둬들임.
+        편집 ON 시 다시 show. setStretchFactor 는 init 의 4:1 유지 — 사용자가
+        드래그로 조절한 비율은 보존 (탭 전환·창 리사이즈 시 리셋 안 함).
+        """
+        self.timeline.setVisible(on)
+
     def is_edit_mode_on(self) -> bool:
         return self._edit_controller.is_edit_mode_on()
 
@@ -414,6 +436,14 @@ class VideoTab(QWidget):
 
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
+        # Phase 28 — 인스펙터에서 zoom.preview 체크박스 등 토글 시점은 position_changed 가
+        # 발화 안 함 (재생 중이 아니므로). 사이드카 갱신 시 즉시 zoom_preview 재계산해
+        # 화면 갱신을 강제. preview=False 로 바뀌면 None 전달 → surface 가 다시 paint.
+        try:
+            cur_ms = int(self.player.position())
+            self._on_position_for_zoom(cur_ms)
+        except (AttributeError, RuntimeError):
+            pass
 
     def _track_last_caption_font(self, sc) -> None:
         """사이드카의 가장 최근 (in_ms 가장 큰) 캡션의 font 를 기록.
@@ -884,6 +914,13 @@ class VideoTab(QWidget):
             float(active.start.cx),
             float(active.start.cy),
             float(scale),
+            str(getattr(active, "mode", "fit_screen")),
+            float(getattr(active, "region_w", 0.3)),
+            float(getattr(active, "region_h", 0.3)),
+            float(getattr(active, "dest_cx", active.start.cx)),
+            float(getattr(active, "dest_cy", active.start.cy)),
+            float(getattr(active, "dest_w", getattr(active, "region_w", 0.3) * scale)),
+            float(getattr(active, "dest_h", getattr(active, "region_h", 0.3) * scale)),
         ))
 
     @staticmethod
@@ -899,6 +936,27 @@ class VideoTab(QWidget):
         return t * t * (3.0 - 2.0 * t)
 
     # ---------- Speed preview (Stage 5) ----------
+    def _on_speed_effects_toggled(self, enabled: bool) -> None:
+        """사용자 클릭 — 로컬 적용 + MainWindow 로 bubble (settings 저장 + 다른 탭 동기화)."""
+        self._apply_speed_effects_enabled(enabled)
+        self.speed_effects_change_requested.emit(enabled)
+
+    def set_speed_effects_enabled(self, enabled: bool) -> None:
+        """외부(MainWindow 전역 동기화) 에서 호출 — 플래그 + rate 즉시 적용.
+        UI 토글은 SpeedInspector 의 버튼으로 이동 (PlayerControls 에서 제거됨)."""
+        self._apply_speed_effects_enabled(enabled)
+
+    def _apply_speed_effects_enabled(self, enabled: bool) -> None:
+        self._speed_effects_enabled = enabled
+        if not enabled:
+            # 끈 즉시 rate 1.0 복원 + HUD 숨김.
+            self.player.set_playback_rate(1.0)
+            self.player.hide_speed_hud()
+            if self._speed_prev_muted is not None:
+                self.player.set_muted(self._speed_prev_muted)
+                self._speed_prev_muted = None
+            self._active_speed_id = None
+
     def _on_position_for_speed(self, ms: int) -> None:
         """현재 재생 위치 → 활성 SpeedEffect 결정.
 
@@ -911,6 +969,8 @@ class VideoTab(QWidget):
         Phase 19.5 hotfix6: 고배속 (5×) 시 매 tick 호출되므로 SpeedEffect 자체가
         없으면 즉시 종료 (현재 활성 구간 복원만 처리하고 loop 회피).
         """
+        if not self._speed_effects_enabled:
+            return
         effects = self.sidecar().effects
         if not any(getattr(e, "type", "") == "speed" for e in effects):
             if self._active_speed_id is not None:
@@ -932,7 +992,7 @@ class VideoTab(QWidget):
             if self._active_speed_id != active_eff.id:
                 # 새 구간 진입 — rate 적용 + 지속 HUD (1× 면 hide).
                 self.player.set_playback_rate(active_eff.rate)
-                self.player.show_speed_hud(active_eff.rate)
+                self.player.show_speed_hud(active_eff.rate, font_pt=active_eff.hud_font_pt)
                 if active_eff.audio == "mute":
                     if self._speed_prev_muted is None:
                         self._speed_prev_muted = self.player.is_muted()
