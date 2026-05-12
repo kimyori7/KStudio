@@ -9,6 +9,30 @@ from screen_recorder.encode.export_pipeline import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _autostub_qt_render(monkeypatch):
+    """render_caption_png / render_speed_hud_png / render_arrow_png 가 Qt 호출 시
+    (QApplication 없으면) hang 하는 회귀 회피. 기본 stub — argv 검증만 하는 테스트들
+    이라 픽셀은 무관."""
+    from screen_recorder.encode import export_pipeline as ep
+    def stub_cap(c, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    def stub_hud(eff, *, font_pt, dst):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+        return (200, 40)
+    def stub_arrow(a, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    monkeypatch.setattr(ep, "render_caption_png", stub_cap)
+    monkeypatch.setattr(ep, "render_speed_hud_png", stub_hud)
+    monkeypatch.setattr(ep, "render_arrow_png", stub_arrow)
+
+
 def test_odd_surface_dimensions_floored_to_even():
     """libx264 + yuv420p 는 width/height 짝수 요구. 홀수면 짝수로 floor.
 

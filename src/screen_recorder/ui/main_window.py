@@ -270,6 +270,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.register_inspector("zoom", ZoomInspector)      # Stage 6
         from .video.inspectors.broll_inspector import BrollInspector        # Stage 7
         self.inspector_panel.register_inspector("broll", BrollInspector)    # Stage 7
+        from .video.inspectors.arrow_inspector import ArrowInspector        # Phase 20.11
+        self.inspector_panel.register_inspector("arrow", ArrowInspector)    # Phase 20.11
         self.inspector_dock = QDockWidget("효과 인스펙터", self)
         self.inspector_dock.setObjectName("InspectorDock")
         self.inspector_dock.setWidget(self.inspector_panel)

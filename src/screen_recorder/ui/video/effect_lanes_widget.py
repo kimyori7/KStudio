@@ -7,6 +7,7 @@ from PySide6.QtGui import QAction, QCursor
 from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
 from ...effects import Sidecar
+from .arrow_lane import ArrowLane
 from .broll_lane import BrollLane
 from .caption_lane import CaptionLane
 from .cut_lane import CutLane
@@ -21,6 +22,7 @@ _TYPE_LABEL = {
     "speed":   "배속",
     "zoom":    "줌",
     "broll":   "곁들임 영상",   # B-roll: 원본 영상 위에 다른 영상을 띄우는 효과
+    "arrow":   "화살표",
     "cut":     "자르기 (중간)",   # 자르기 lane 과 통일된 이름. 양 끝 자르기 = TrimMarkerLane.
 }
 _TYPE_COLOR = {
@@ -28,11 +30,12 @@ _TYPE_COLOR = {
     "speed":   "#8b5cf6",   # 보라
     "zoom":    "#10b981",   # 초록
     "broll":   "#f59e0b",   # 주황
+    "arrow":   "#f43f5e",   # 핑크-빨강
     "cut":     "#ef4444",   # 빨강
 }
 
 # 효과 lane 의 표시 순서 (위 → 아래). cut 은 트랙 lane 으로 흡수돼 제거 (Stage D).
-_LANE_ORDER = ["caption", "speed", "zoom", "broll"]
+_LANE_ORDER = ["caption", "speed", "zoom", "broll", "arrow"]
 
 # type → lane 클래스 dispatch. 누락된 type 은 base EffectLane 으로 fallback.
 EFFECT_LANE_CLASSES: dict[str, type] = {
@@ -41,6 +44,7 @@ EFFECT_LANE_CLASSES: dict[str, type] = {
     "speed": SpeedLane,
     "zoom": ZoomLane,
     "broll": BrollLane,
+    "arrow": ArrowLane,
 }
 
 
@@ -137,6 +141,7 @@ class EffectLanesWidget(QWidget):
         ("+ 배속 추가",                 "speed",      True,  "구간 배속 — 기본 2.0× 5초"),
         ("+ 줌 추가",                   "zoom",       True,  "구간 줌 — 기본 2.0× 2초 정적 줌"),
         ("+ 곁들임 영상 추가",          "broll",      True,  "PiP — 화면 모서리에 작은 영상"),
+        ("+ 화살표 추가",               "arrow",      True,  "주의 환기용 빨간 화살표 — 기본 2초"),
     ]
 
     def _show_add_menu_at(self, ms: int) -> None:

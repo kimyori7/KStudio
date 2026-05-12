@@ -24,7 +24,9 @@ from PySide6.QtWidgets import QWidget
 
 from ...effects import Sidecar
 from ...effects.types.broll import BrollEffect
+from ...effects.types.arrow import ArrowEffect
 from ...effects.types.caption import CaptionEffect, Position
+from . import arrow_renderer
 from ...effects.types.zoom import ZoomEffect
 from . import caption_renderer
 
@@ -246,6 +248,12 @@ class PreviewOverlay(QWidget):
                 continue
             self._draw_caption(p, eff)
 
+        # 화살표 — caption 과 같은 painter scale 패턴 (source 좌표계).
+        for eff in self._sidecar.effects:
+            if eff.type != "arrow":
+                continue
+            self._draw_arrow_effect(p, eff)
+
         # Stage 6 — 활성 ZoomEffect 가 있으면 가이드 사각형 그리기.
         # v1: 실제 픽셀 줌은 export 에서만 적용. 미리보기는 사각형으로 영역 표시.
         # Phase 19.4: preview=True (실제 화면 줌인 적용) 이면 가이드 박스 자체는 숨김 —
@@ -331,6 +339,30 @@ class PreviewOverlay(QWidget):
         eff_for_draw = replace(c, position=position) if position is not c.position else c
         caption_renderer.draw_caption(
             p, eff_for_draw, position_ms=self._position_ms,
+            surface_w=surface_w, surface_h=surface_h,
+        )
+        p.restore()
+
+    def _draw_arrow_effect(self, p: QPainter, a: ArrowEffect) -> None:
+        """화살표 — caption 과 동일 좌표계 패턴 (painter scale 로 source 공간)."""
+        frame = self._frame_rect()
+        src_size = self._source_size_provider() if self._source_size_provider else (0, 0)
+        source_w, source_h = src_size
+        if source_w > 0 and source_h > 0 and frame.width() > 0 and frame.height() > 0:
+            surface_w = source_w
+            surface_h = source_h
+            scale_x = frame.width() / source_w
+            scale_y = frame.height() / source_h
+        else:
+            surface_w = max(1, frame.width())
+            surface_h = max(1, frame.height())
+            scale_x = 1.0
+            scale_y = 1.0
+        p.save()
+        p.translate(frame.x(), frame.y())
+        p.scale(scale_x, scale_y)
+        arrow_renderer.draw_arrow(
+            p, a, position_ms=self._position_ms,
             surface_w=surface_w, surface_h=surface_h,
         )
         p.restore()

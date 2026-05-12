@@ -7,6 +7,28 @@ from screen_recorder.effects import Sidecar
 from screen_recorder.effects.types.cut import CutEffect
 from screen_recorder.effects.types.speed import SpeedEffect
 from screen_recorder.effects.types.zoom import ZoomEffect, ZoomPoint
+
+
+@pytest.fixture(autouse=True)
+def _autostub_qt_render(monkeypatch):
+    """Qt 렌더 hang 회피 — caption/speed_hud/arrow PNG stub."""
+    from screen_recorder.encode import export_pipeline as ep
+    def stub_cap(c, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    def stub_hud(eff, *, font_pt, dst):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+        return (200, 40)
+    def stub_arrow(a, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    monkeypatch.setattr(ep, "render_caption_png", stub_cap)
+    monkeypatch.setattr(ep, "render_speed_hud_png", stub_hud)
+    monkeypatch.setattr(ep, "render_arrow_png", stub_arrow)
 from screen_recorder.encode.export_pipeline import (
     _zoom_crop_scale_filter, build_export_args,
 )

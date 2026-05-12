@@ -165,27 +165,38 @@ def _from_plain(cls: type, d: dict[str, Any]) -> Any:
             init_kwargs[f.name] = _from_plain(f.type, raw) if raw is not None else None
         else:
             # f.type 이 string 또는 generic — 단순화: dict 면 자식 dataclass 추정 안 함, 그대로 전달
-            init_kwargs[f.name] = _coerce_nested(f, raw)
+            init_kwargs[f.name] = _coerce_nested(cls, f, raw)
     return cls(**init_kwargs)
 
 
-def _coerce_nested(f, raw: Any) -> Any:
-    """필드 type 힌트가 dataclass 인 경우 dict → dataclass 변환. 그 외는 raw 그대로."""
-    # f.type 이 future annotation 으로 string 인 경우가 많음 → 클래스 객체 얻기 어려움.
-    # 단순화: raw 가 dict 이고 cls.__annotations__ 의 해당 이름이 dataclass 면 변환.
-    # 여기선 raw 가 dict 면 effect 의 알려진 자식 dataclass 풀에서 매칭 시도.
+def _coerce_nested(parent_cls: type, f, raw: Any) -> Any:
+    """필드 type 힌트가 dataclass 인 경우 dict → dataclass 변환. 그 외는 raw 그대로.
+
+    같은 필드 이름 (예: start/end/fade) 가 effect 종류에 따라 다른 dataclass 를
+    가리키므로 parent_cls 별로 매핑 분기.
+    """
     if isinstance(raw, dict):
-        # 캡션의 Font/Stroke/Background/Position/Fade, 줌의 ZoomPoint, broll 의 PipConfig
-        from .types.caption import Font, Stroke, Background, Position, Fade
-        from .types.zoom import ZoomPoint
+        from .types.caption import Font, Stroke, Background, Position, Fade as CapFade
+        from .types.zoom import ZoomPoint, ZoomEffect
         from .types.broll import PipConfig
-        nested_pool: dict[str, type] = {
+        from .types.arrow import Point as ArrowPoint, Fade as ArrowFade, ArrowEffect
+        # Effect 종류별 nested 필드 → 자식 dataclass 매핑.
+        pool: dict[str, type] = {
             "font": Font, "stroke": Stroke, "background": Background,
-            "position": Position, "fade": Fade,
-            "start": ZoomPoint, "end": ZoomPoint,
+            "position": Position,
             "pip": PipConfig,
         }
-        target_cls = nested_pool.get(f.name)
+        # fade — caption.Fade 와 arrow.Fade 가 같은 shape 라 어느 쪽으로 가도 동작
+        # 하나, type annotation 정확성 위해 parent 에 맞춤.
+        if f.name == "fade":
+            pool["fade"] = ArrowFade if parent_cls is ArrowEffect else CapFade
+        # start/end — ZoomEffect 는 ZoomPoint (cx,cy,scale), ArrowEffect 는 Point (x,y).
+        if f.name in ("start", "end"):
+            if parent_cls is ArrowEffect:
+                pool[f.name] = ArrowPoint
+            elif parent_cls is ZoomEffect:
+                pool[f.name] = ZoomPoint
+        target_cls = pool.get(f.name)
         if target_cls is not None:
             return _from_plain(target_cls, raw)
     return raw

@@ -21,16 +21,18 @@ from typing import Optional
 
 from ..effects import Sidecar
 from ..effects.timeline import TimelineSegment, build_combined_timeline
+from ..effects.types.arrow import ArrowEffect
 from ..effects.types.broll import BrollEffect
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
 from ..effects.types.zoom import ZoomEffect
+from .arrow_png import render_arrow_png
 from .caption_png import render_caption_png
 from .speed_hud_png import render_speed_hud_png
 
 
-_SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom", "broll"}
+_SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom", "broll", "arrow"}
 
 
 def _atempo_chain(rate: float) -> str:
@@ -221,6 +223,7 @@ def build_export_args(
     speeds = [e for e in sidecar.effects if isinstance(e, SpeedEffect)]
     zooms = [e for e in sidecar.effects if isinstance(e, ZoomEffect)]
     brolls = [e for e in sidecar.effects if isinstance(e, BrollEffect)]
+    arrows = [e for e in sidecar.effects if isinstance(e, ArrowEffect)]
 
     # 0.7) broll v1 제약 — placement / audio_mix / 다른 효과와의 결합 검증.
     if brolls:
@@ -293,6 +296,7 @@ def build_export_args(
         speeds = _remap_effects_to_gap_collapsed(speeds, sidecar.video_track)
         zooms = _remap_effects_to_gap_collapsed(zooms, sidecar.video_track)
         brolls = _remap_effects_to_gap_collapsed(brolls, sidecar.video_track)
+        arrows = _remap_effects_to_gap_collapsed(arrows, sidecar.video_track)
     else:
         segments = build_combined_timeline(int(main_duration_ms), cuts)
 
@@ -311,13 +315,20 @@ def build_export_args(
     if speeds or zooms:
         segments = _split_main_segments_at_effect_boundaries(segments, speeds, zooms)
 
-    # 2) 캡션 PNG 생성
+    # 2) 캡션 / 화살표 PNG 생성
     png_dir_path = Path(png_dir) if png_dir is not None else Path(tempfile.mkdtemp(prefix="kstudio_export_"))
     png_paths: list[Path] = []
     for cap in captions:
         png = png_dir_path / f"caption_{cap.id}.png"
         render_caption_png(cap, surface_w=surface_w, surface_h=surface_h, dst=png)
         png_paths.append(png)
+    # arrow PNG — caption 과 같은 패턴. arrow 와 caption 은 별개 overlay 체인이라
+    # png_paths 는 caption 만 담고 arrow 는 별도 리스트로 추적.
+    arrow_png_paths: list[Path] = []
+    for arr in arrows:
+        png = png_dir_path / f"arrow_{arr.id}.png"
+        render_arrow_png(arr, surface_w=surface_w, surface_h=surface_h, dst=png)
+        arrow_png_paths.append(png)
 
     # 배속 HUD ("▶▶ N× 배속") PNG — show_hud=True 인 SpeedEffect 만.
     # font_pt: preview 의 14pt 가 ~800px 위젯에 맞으니 surface_w/800 비례로 잡음 — 4K 도 자연스럽게.
@@ -377,6 +388,21 @@ def build_export_args(
             "-i", str(png),
         ])
         png_input_index[i] = next_input
+        next_input += 1
+
+    # 화살표 PNG 입력 — 캡션과 같은 패턴.
+    arrow_input_index: dict[int, int] = {}
+    for i, (png, arr) in enumerate(zip(arrow_png_paths, arrows)):
+        out_in_s = user_to_output(arr.in_ms) / 1000.0
+        out_out_s = user_to_output(arr.out_ms) / 1000.0
+        dur_s = max(0.1, out_out_s - out_in_s)
+        argv.extend([
+            "-loop", "1", "-framerate", "30",
+            "-t", f"{dur_s:.3f}",
+            "-itsoffset", f"{out_in_s:.3f}",
+            "-i", str(png),
+        ])
+        arrow_input_index[i] = next_input
         next_input += 1
 
     # 배속 HUD PNG 입력 — 캡션과 같은 패턴. output 시간으로 -t / -itsoffset bound.
@@ -514,7 +540,25 @@ def build_export_args(
         )
         cur_v = next_v
 
-    # 배속 HUD overlay — 캡션 overlay 다음. 오른쪽 위 corner + _HUD_MARGIN_PX 마진.
+    # 화살표 overlay — 캡션 다음. alpha fade + 시간창 enable.
+    for i, arr in enumerate(arrows):
+        png_idx = arrow_input_index[i]
+        in_s = user_to_output(arr.in_ms) / 1000.0
+        out_s = user_to_output(arr.out_ms) / 1000.0
+        fade_in = arr.fade.in_ms / 1000.0
+        fade_out = arr.fade.out_ms / 1000.0
+        fc_parts.append(
+            f"[{png_idx}:v]format=rgba,"
+            f"fade=t=in:st={in_s}:d={fade_in}:alpha=1,"
+            f"fade=t=out:st={out_s - fade_out}:d={fade_out}:alpha=1[arr{i}]"
+        )
+        next_v = f"va{i}"
+        fc_parts.append(
+            f"[{cur_v}][arr{i}]overlay=enable='between(t\\,{in_s}\\,{out_s})'[{next_v}]"
+        )
+        cur_v = next_v
+
+    # 배속 HUD overlay — 화살표 다음. 오른쪽 위 corner + _HUD_MARGIN_PX 마진.
     # preview 의 reposition_huds 가 우측 상단 기본 — export 도 동일 의도로.
     _HUD_MARGIN_PX = 16
     for i, (_png, sp, w_px, h_px) in enumerate(speed_hud_pngs):
@@ -575,7 +619,9 @@ def build_export_args(
         str(dst_path),
     ])
 
-    return argv, png_paths
+    # caller 가 PNG 정리해야 — caption + arrow + (speed HUD 는 위 list 에 별도) 모두 포함.
+    all_pngs = list(png_paths) + list(arrow_png_paths) + [p for p, *_ in speed_hud_pngs]
+    return argv, all_pngs
 
 
 def _build_user_to_output_time_map(segments, speeds):

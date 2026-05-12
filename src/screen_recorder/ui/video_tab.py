@@ -44,7 +44,7 @@ class VideoTab(QWidget):
 
     _DEFAULT_DURATION_MS: dict[str, int] = {
         "caption": 3000, "speed": 5000, "zoom": 2000,
-        "broll": 5000, "cut": 1000,
+        "broll": 5000, "cut": 1000, "arrow": 2000,
     }
 
     def __init__(self, *, path: Path, source_label: str, duration_ms: int,
@@ -378,6 +378,14 @@ class VideoTab(QWidget):
                 in_ms=in_ms, out_ms=out_ms,
                 placement="pip",
                 pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+            )
+        elif effect_type == "arrow":
+            # 기본 — 화면 좌측 30% 에서 우측 70% 로 향하는 빨간 화살표.
+            from ..effects.types.arrow import ArrowEffect, Point
+            eff = ArrowEffect(
+                in_ms=in_ms, out_ms=out_ms,
+                start=Point(x=0.3, y=0.5),
+                end=Point(x=0.7, y=0.5),
             )
         else:
             return False
