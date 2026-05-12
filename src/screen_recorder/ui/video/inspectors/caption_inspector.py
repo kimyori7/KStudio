@@ -182,7 +182,13 @@ class CaptionInspector(InspectorBase):
             return
         self._emitting_guard = True
         try:
-            self.text_edit.setPlainText(effect.text)
+            # text_edit 의 현재 내용과 동일하면 setPlainText 호출 자체를 생략.
+            # setPlainText 는 커서를 위치 0 으로 리셋하는데, 사용자가 타이핑 중에
+            # sidecar_replaced → refresh_from_sidecar → set_effect 경로가 매 IME
+            # 이벤트마다 들어오면 다음 입력 글자가 위치 0 에 끼어들어가 "확대" →
+            # "대확" 식으로 순서가 뒤집힌다. 같은 텍스트는 갱신 불필요.
+            if self.text_edit.toPlainText() != effect.text:
+                self.text_edit.setPlainText(effect.text)
             self.font_family.setCurrentText(effect.font.family)
             self.font_size.setValue(effect.font.size)
             self.bold_check.setChecked(effect.font.bold)
