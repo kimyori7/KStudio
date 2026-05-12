@@ -698,8 +698,13 @@ class VideoTab(QWidget):
     def _prepend_files_to_track(self, paths: list) -> None:
         """파일 들을 timeline 0 위치에 prepend — 기존 segment 들을 새 segment 들의
         총 길이만큼 뒤로 밀고 새 segment 를 0 부터 순서대로 배치.
+
+        set_segment_start 루프 방식은 free-slot clamp 때문에 silently 실패할 수
+        있어 (먼저 옮긴 segment 가 뒤 slot 을 차지하면 다음 segment 가 clamp).
+        atomic 한 사이드카 교체로 한 번에 처리.
         """
         from dataclasses import replace
+        import copy as _copy
         # 1) 새 segment 들 빌드 + 총 길이.
         new_segs = []
         cursor = 0
@@ -712,16 +717,16 @@ class VideoTab(QWidget):
         if not new_segs:
             return
         total_new = cursor
-        # 2) 기존 segment 들을 total_new 만큼 뒤로 shift.
-        existing = list(self.sidecar().video_track)
-        for seg in existing:
-            self._edit_controller.set_segment_start(seg.id, seg.start_ms + total_new)
-        # 3) 새 segment 들을 trakk 끝(어차피 free-slot clamp 가 0 쪽 빈 곳 찾음) 에 추가.
-        #    set_segment_start 가 free-slot 보장 안 하므로 그냥 append idx, start_ms 명시.
-        for seg in new_segs:
-            self._edit_controller.insert_segment(
-                at_idx=len(self.sidecar().video_track), segment=seg,
-            )
+        # 2) 사이드카 atomic 갱신 — 기존 segment 들 shift + 새 segment 앞에 prepend.
+        new_sc = _copy.deepcopy(self._edit_controller.sidecar())
+        shifted_existing = [replace(s, start_ms=s.start_ms + total_new) for s in new_sc.video_track]
+        # 효과들도 같은 delta 만큼 동반 이동 (set_segment_start 의 "효과 따라감" 정책 유지).
+        new_sc.effects = [
+            replace(e, in_ms=e.in_ms + total_new, out_ms=e.out_ms + total_new)
+            for e in new_sc.effects
+        ]
+        new_sc.video_track = new_segs + shifted_existing
+        self._edit_controller.update_sidecar(new_sc)
 
     def _on_track_insert_files(self, paths: list, at_combined_ms: int) -> None:
         """드래그-드롭 / 라이브러리 드롭 → 여러 파일을 at_combined_ms 부터 순서대로 삽입.
