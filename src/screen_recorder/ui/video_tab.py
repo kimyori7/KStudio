@@ -11,6 +11,8 @@ from ..core.settings import PlayerHotkeys, PlayerSettings
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
+from ..autoedit.coordinator import AutoEditCoordinator
+from ..autoedit.analyzers.silence import SilenceAnalyzer
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 from .video.timeline import VideoTimeline
@@ -333,6 +335,13 @@ class VideoTab(QWidget):
             self._preview_overlay.clear_broll_live_frame
         )
 
+        # 자동편집 — Phase 1: silence 만.
+        self._autoedit_coord = AutoEditCoordinator(self)
+        self._autoedit_coord.set_analyzers([("silence", SilenceAnalyzer())])
+        self._autoedit_coord.result_ready.connect(self._on_autoedit_result_ready)
+        self._autoedit_last_raw = None
+        self._autoedit_button.clicked.connect(self._start_autoedit)
+
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label
@@ -392,6 +401,32 @@ class VideoTab(QWidget):
         """영상-수준 헤더의 [🪄 자동 편집] 버튼 반환."""
         from PySide6.QtWidgets import QPushButton  # noqa: F401 — type hint only
         return self._autoedit_button
+
+    def autoedit_coordinator(self) -> AutoEditCoordinator:
+        """자동편집 코디네이터 반환 — 테스트/외부 연결용."""
+        return self._autoedit_coord
+
+    def _start_autoedit(self) -> None:
+        """[🪄 자동 편집] 버튼 클릭 → coordinator.run() 호출."""
+        src = self._source_path
+        sc = self._edit_controller.sidecar()
+        source_hash = getattr(sc, "source_hash", "") or ""
+        self._autoedit_coord.run(
+            media_path=src,
+            source_hash=source_hash,
+            whisper_model="base",
+            cache_dir=self._edit_controller.sidecar_dir(),
+        )
+
+    def _on_autoedit_result_ready(self, raw, failed: list) -> None:
+        """coordinator 분석 완료 → 리뷰 다이얼로그 표시 → 적용."""
+        from .autoedit.review_dialog import AutoEditReviewDialog
+        self._autoedit_last_raw = raw
+        dlg = AutoEditReviewDialog(raw, parent=self)
+        if dlg.exec() == dlg.Accepted:
+            effects = dlg.compute_effects()
+            for eff in effects:
+                self._edit_controller.add_effect(eff)
 
     # ---------- 효과 추가 흐름 ----------
     def _on_lane_request_add(self, effect_type: str, in_ms: int,

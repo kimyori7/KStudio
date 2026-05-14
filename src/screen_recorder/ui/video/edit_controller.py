@@ -93,6 +93,10 @@ class EditController(QObject):
     def sidecar(self) -> Sidecar:
         return self._sidecar
 
+    def sidecar_dir(self) -> Path:
+        """사이드카 파일이 저장되는 디렉터리 경로."""
+        return self._store.root
+
     def is_edit_mode_on(self) -> bool:
         return self._edit_mode_on
 
