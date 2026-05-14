@@ -39,6 +39,7 @@ class AutoEditReviewDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(self._build_silence_card())
+        root.addWidget(self._build_caption_card())
 
         # 적용 / 취소 / 기본값.
         btn_row = QHBoxLayout()
@@ -84,6 +85,42 @@ class AutoEditReviewDialog(QDialog):
         lay.addLayout(row2)
         return card
 
+    def _build_caption_card(self) -> QFrame:
+        card, lay = _make_card("💬 자막 (Whisper)")
+        row1 = QHBoxLayout()
+        self._caption_check = QCheckBox("사용")
+        self._caption_check.setChecked(self._settings.caption_enabled)
+        self._caption_check.toggled.connect(self._on_caption_toggle)
+        self._caption_count = QLabel("0개 자막")
+        row1.addWidget(self._caption_check)
+        row1.addStretch(1)
+        row1.addWidget(self._caption_count)
+        lay.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("한 줄 최대 글자"))
+        self._caption_slider = QSlider(Qt.Horizontal)
+        self._caption_slider.setRange(10, 80)
+        self._caption_slider.setValue(self._settings.caption_max_chars)
+        self._caption_slider.valueChanged.connect(self._on_caption_slider)
+        self._caption_val = QLabel(f"{self._settings.caption_max_chars}자")
+        row2.addWidget(self._caption_slider, stretch=1)
+        row2.addWidget(self._caption_val)
+        lay.addLayout(row2)
+        return card
+
+    def _on_caption_toggle(self, c: bool) -> None:
+        self._settings.caption_enabled = c
+        self._caption_slider.setEnabled(c)
+        self._filter_timer.start()
+
+    def _on_caption_slider(self, v: int) -> None:
+        self._settings.caption_max_chars = v
+        self._caption_val.setText(f"{v}자")
+        self._filter_timer.start()
+
+    def caption_count_label(self) -> QLabel: return self._caption_count
+
     def _on_silence_toggle(self, checked: bool) -> None:
         self._settings.silence_enabled = checked
         self._silence_slider.setEnabled(checked)
@@ -98,13 +135,17 @@ class AutoEditReviewDialog(QDialog):
         self._settings = default_settings()
         self._silence_check.setChecked(self._settings.silence_enabled)
         self._silence_slider.setValue(self._settings.silence_min_ms)
+        self._caption_check.setChecked(self._settings.caption_enabled)
+        self._caption_slider.setValue(self._settings.caption_max_chars)
         self._filter_timer.stop()
         self._refresh_counts()
 
     def _refresh_counts(self) -> None:
         effects = apply_thresholds(self._raw, self._settings)
         cuts = [e for e in effects if e.type == "cut"]
+        caps = [e for e in effects if e.type == "caption"]
         self._silence_count.setText(f"{len(cuts)}개 컷")
+        self._caption_count.setText(f"{len(caps)}개 자막")
         self._total_label.setText(f"적용 예정: {len(effects)}개")
         self._apply_btn.setEnabled(len(effects) > 0)
 

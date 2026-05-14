@@ -37,3 +37,13 @@ def test_apply_returns_effects(qtbot):
     effects = d.compute_effects()
     assert len(effects) == 1
     assert effects[0].type == "cut"
+
+
+def test_caption_card_count(qtbot):
+    raw = AutoEditResult(source_hash="x", transcript_segments=[
+        {"in_ms": 0, "out_ms": 1000, "text": "hi"},
+        {"in_ms": 1000, "out_ms": 2000, "text": "bye"},
+    ])
+    d = AutoEditReviewDialog(raw)
+    qtbot.addWidget(d)
+    assert "2개" in d.caption_count_label().text()
