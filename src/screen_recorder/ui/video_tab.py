@@ -348,6 +348,7 @@ class VideoTab(QWidget):
         ])
         self._autoedit_coord.result_ready.connect(self._on_autoedit_result_ready)
         self._autoedit_last_raw = None
+        self._progress_dlg = None
         self._autoedit_button.clicked.connect(self._start_autoedit)
 
     # ---------- API ----------
@@ -415,10 +416,16 @@ class VideoTab(QWidget):
         return self._autoedit_coord
 
     def _start_autoedit(self) -> None:
-        """[🪄 자동 편집] 버튼 클릭 → coordinator.run() 호출."""
+        """[🪄 자동 편집] 버튼 클릭 → 진행률 다이얼로그 표시 → coordinator.run() 호출."""
+        from .autoedit.progress_dialog import AutoEditProgressDialog
         src = self._source_path
         sc = self._edit_controller.sidecar()
         source_hash = getattr(sc, "source_hash", "") or ""
+        # 진행률 다이얼로그 미리 띄움 — modal, 분석 중 다른 UI 차단.
+        self._progress_dlg = AutoEditProgressDialog(parent=self)
+        self._autoedit_coord.progress_updated.connect(self._progress_dlg.update_progress)
+        self._progress_dlg.cancelled.connect(self._autoedit_coord.cancel)
+        self._progress_dlg.show()
         self._autoedit_coord.run(
             media_path=src,
             source_hash=source_hash,
@@ -429,12 +436,25 @@ class VideoTab(QWidget):
     def _on_autoedit_result_ready(self, raw, failed: list) -> None:
         """coordinator 분석 완료 → 리뷰 다이얼로그 표시 → 적용."""
         from .autoedit.review_dialog import AutoEditReviewDialog
+        # 진행률 다이얼로그가 떠 있으면 닫음 (캐시 hit 이라 안 떴을 수도).
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.close()
+            self._progress_dlg = None
         self._autoedit_last_raw = raw
         dlg = AutoEditReviewDialog(raw, parent=self)
         if dlg.exec() == dlg.Accepted:
             effects = dlg.compute_effects()
             for eff in effects:
                 self._edit_controller.add_effect(eff)
+            # Task 5.2 에서 시스템 메시지 추가됨.
+            self._notify_autoedit_done(len(effects), failed)
+
+    def _notify_autoedit_done(self, n: int, failed: list[str]) -> None:
+        """자동편집 완료 시 사용자 안내 — Task 5.2 에서 main_window 채팅 패널 연동."""
+        parent = self.window()
+        if not hasattr(parent, "append_autoedit_system_message"):
+            return
+        parent.append_autoedit_system_message(n, failed)
 
     # ---------- 효과 추가 흐름 ----------
     def _on_lane_request_add(self, effect_type: str, in_ms: int,
