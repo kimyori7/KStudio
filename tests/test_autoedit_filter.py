@@ -78,3 +78,19 @@ def test_scene_changes_to_zoom_effects():
     assert zooms[0].in_ms == 5000
     assert zooms[0].out_ms == 7000   # 2초 지속
     assert zooms[0].mode == "magnify_region"
+
+
+def test_bpm_snaps_caption_in_ms_to_nearest_beat():
+    raw = AutoEditResult(
+        source_hash="x",
+        transcript_segments=[{"in_ms": 1100, "out_ms": 2000, "text": "hi"}],
+        beats=[(1000, 0.8), (1500, 0.8)],
+    )
+    s = default_settings()
+    s.silence_enabled = False; s.scene_enabled = False
+    s.bpm_enabled = True
+    s.bpm_confidence = 0.6
+    effects = apply_thresholds(raw, s)
+    caps = [e for e in effects if e.type == "caption"]
+    # 1100ms 가까운 비트 = 1000ms (Δ=100) vs 1500ms (Δ=400) → 1000 으로 snap.
+    assert caps[0].in_ms == 1000

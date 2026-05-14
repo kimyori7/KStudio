@@ -13,13 +13,31 @@ if TYPE_CHECKING:
     from ..effects.types.base import Effect
 
 
+def _snap_to_nearest_beat(ms: int, beats: list[tuple[int, float]], confidence: float, max_delta_ms: int = 200) -> int:
+    """가장 가까운 비트가 max_delta_ms 안이면 snap, 아니면 원본 ms."""
+    valid = [b for b, c in beats if c >= confidence]
+    if not valid:
+        return ms
+    closest = min(valid, key=lambda b: abs(b - ms))
+    return closest if abs(closest - ms) <= max_delta_ms else ms
+
+
 def apply_thresholds(raw: AutoEditResult, s: AutoEditSettings) -> list:
     """raw → 사용자 설정 적용된 Effect 리스트."""
     effects: list = []
     if s.silence_enabled:
         effects.extend(_silence_to_cuts(raw, s))
     if s.caption_enabled:
-        effects.extend(_transcript_to_captions(raw, s))
+        captions = _transcript_to_captions(raw, s)
+        # BPM 활성 시 caption.in_ms 를 가까운 비트로 snap (±200ms).
+        if s.bpm_enabled and raw.beats:
+            from dataclasses import replace
+            snapped = []
+            for c in captions:
+                new_in = _snap_to_nearest_beat(c.in_ms, raw.beats, s.bpm_confidence)
+                snapped.append(replace(c, in_ms=new_in))
+            captions = snapped
+        effects.extend(captions)
     if s.scene_enabled:
         effects.extend(_scenes_to_zooms(raw, s))
     return effects
