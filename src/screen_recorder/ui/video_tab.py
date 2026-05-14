@@ -148,6 +148,17 @@ class VideoTab(QWidget):
         if duration_ms > 0:
             self.timeline.set_duration_ms(duration_ms)
 
+        # 영상-수준 액션 헤더 (~32px) — 자동편집 등.
+        from PySide6.QtWidgets import QHBoxLayout, QPushButton
+        self._tab_header = QWidget()
+        self._tab_header.setFixedHeight(32)
+        header_layout = QHBoxLayout(self._tab_header)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        self._autoedit_button = QPushButton("🪄 자동 편집")
+        self._autoedit_button.setToolTip("무음 컷·자막·씬 감지·BPM 알고리즘으로 1차 편집 자동 생성")
+        header_layout.addWidget(self._autoedit_button)
+        header_layout.addStretch(1)
+
         # QSplitter — preview (player + controls) ↔ timeline 사이 위/아래 핸들.
         # 사용자가 핸들 드래그로 timeline 영역 비중 조절 (긴 효과 라인 / 영상 위주 보기 토글).
         # collapsible 비활성 — 어느 쪽도 0 px 로 접히지 않게 보호.
@@ -155,6 +166,7 @@ class VideoTab(QWidget):
         preview_layout = QVBoxLayout(self._preview_container)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(0)
+        preview_layout.addWidget(self._tab_header)            # 헤더 first
         preview_layout.addWidget(self.player, stretch=1)
         preview_layout.addWidget(self.controls)
 
@@ -375,6 +387,11 @@ class VideoTab(QWidget):
 
     def edit_controller(self):
         return self._edit_controller
+
+    def autoedit_button(self):
+        """영상-수준 헤더의 [🪄 자동 편집] 버튼 반환."""
+        from PySide6.QtWidgets import QPushButton  # noqa: F401 — type hint only
+        return self._autoedit_button
 
     # ---------- 효과 추가 흐름 ----------
     def _on_lane_request_add(self, effect_type: str, in_ms: int,
