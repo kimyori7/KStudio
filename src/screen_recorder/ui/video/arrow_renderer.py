@@ -42,6 +42,14 @@ def draw_arrow(p: QPainter, a: ArrowEffect, *, position_ms: int,
     alpha = fade_alpha(a, position_ms)
     if alpha <= 0:
         return
+    # 2026-05-13 진단 가드 — surface 가 비정상(0/NaN/거대값)이면 paint 자체를 건너뜀.
+    # 사용자 보고 "화살표 있는 구간에 들어가니 멈춤" — paint 폭주/NaN 가능성 차단.
+    if not (isinstance(surface_w, (int, float)) and isinstance(surface_h, (int, float))):
+        return
+    if not (surface_w > 0 and surface_h > 0):
+        return
+    if surface_w != surface_w or surface_h != surface_h:   # NaN check
+        return
     sx = a.start.x * surface_w
     sy = a.start.y * surface_h
     ex = a.end.x * surface_w
@@ -51,6 +59,10 @@ def draw_arrow(p: QPainter, a: ArrowEffect, *, position_ms: int,
     length = math.hypot(dx, dy)
     if length < 1:
         return
+    # 좌표 sanity — NaN/Inf 면 Qt 가 paint queue 에서 무한 처리 가능.
+    for v in (sx, sy, ex, ey, length):
+        if v != v or v in (float("inf"), float("-inf")):
+            return
     ux = dx / length
     uy = dy / length
 

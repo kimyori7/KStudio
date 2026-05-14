@@ -240,6 +240,11 @@ class PreviewOverlay(QWidget):
 
     # ---------- paint ----------
     def paintEvent(self, event: QPaintEvent) -> None:
+        # 2026-05-13 진단 — 화살표 시간창 진입 시 freeze 보고. paint cost 측정해
+        # >50ms 면 app.log 에 경고. event loop 막힘 원인 파악용.
+        import time
+        _paint_start = time.perf_counter()
+
         self._caption_bboxes = {}   # 매 paint 마다 갱신
         self._overlay_hits = []
         if self._sidecar is None:
@@ -283,6 +288,24 @@ class PreviewOverlay(QWidget):
             if not (eff.in_ms <= self._position_ms < eff.out_ms):
                 continue
             self._draw_broll_guide(p, eff)
+
+        # 진단 — paint 가 50ms 넘으면 경고 로그 (event loop 막힘 진단).
+        _paint_ms = (time.perf_counter() - _paint_start) * 1000
+        if _paint_ms > 50:
+            import logging
+            n_arrow = sum(1 for e in self._sidecar.effects
+                          if e.type == "arrow"
+                          and e.in_ms <= self._position_ms < e.out_ms)
+            n_broll_pip = sum(1 for e in self._sidecar.effects
+                              if isinstance(e, BrollEffect) and e.placement == "pip"
+                              and e.in_ms <= self._position_ms < e.out_ms)
+            n_caption = sum(1 for e in self._sidecar.effects
+                            if e.type == "caption"
+                            and e.in_ms <= self._position_ms < e.out_ms)
+            logging.warning(
+                "preview_overlay: SLOW paint %.1fms pos=%dms (arrow=%d broll_pip=%d caption=%d)",
+                _paint_ms, self._position_ms, n_arrow, n_broll_pip, n_caption,
+            )
 
     def _draw_caption(self, p: QPainter, c: CaptionEffect) -> None:
         # 드래그 중인 경우 임시 override position 사용
@@ -354,6 +377,22 @@ class PreviewOverlay(QWidget):
         + body/endpoint hit-test bbox 등록 (_overlay_hits).
         + endpoint 핸들 그리기 (작은 원).
         """
+        # 2026-05-13 진단 — 화살표 시간창 진입 시 어플 멈춤 보고. paint 안 예외가
+        # event loop 을 막을 수 있어 전체를 try/except + logging.exception 으로 감쌈.
+        # 정상 흐름엔 영향 없고, 예외 시 traceback 이 app.log 에 남아 다음 재현 시 진단.
+        import logging
+        try:
+            self._draw_arrow_effect_impl(p, a)
+        except Exception:
+            logging.exception(
+                "preview_overlay: _draw_arrow_effect failed a.id=%s in=%s out=%s pos=%s",
+                getattr(a, "id", "?"),
+                getattr(a, "in_ms", "?"),
+                getattr(a, "out_ms", "?"),
+                self._position_ms,
+            )
+
+    def _draw_arrow_effect_impl(self, p: QPainter, a: ArrowEffect) -> None:
         frame = self._frame_rect()
         src_size = self._source_size_provider() if self._source_size_provider else (0, 0)
         source_w, source_h = src_size
@@ -409,13 +448,16 @@ class PreviewOverlay(QWidget):
         else:
             a_draw = a
         p.save()
-        p.translate(frame.x(), frame.y())
-        p.scale(scale_x, scale_y)
-        arrow_renderer.draw_arrow(
-            p, a_draw, position_ms=self._position_ms,
-            surface_w=surface_w, surface_h=surface_h,
-        )
-        p.restore()
+        try:
+            p.translate(frame.x(), frame.y())
+            p.scale(scale_x, scale_y)
+            arrow_renderer.draw_arrow(
+                p, a_draw, position_ms=self._position_ms,
+                surface_w=surface_w, surface_h=surface_h,
+            )
+        finally:
+            # 진단: draw_arrow 안에서 예외가 나도 painter state 가 깨지지 않게 항상 restore.
+            p.restore()
 
         # endpoint 핸들 — 시간창 안에서만, 작은 원 두 개. drag 중인 endpoint 는 강조.
         if in_window:
@@ -646,7 +688,12 @@ class PreviewOverlay(QWidget):
         fw = max(1, frame.width())
         fh = max(1, frame.height())
         # 1. 가이드 모서리 핸들 hit-test (zoom/broll/zoom-src/zoom-dst) — 박스 안 hit 보다 우선.
+        # 2026-05-13: arrow 는 모서리 resize 가 없고 endpoint 별도 hit-test 가 있음.
+        # 화살표 body bbox 가 가로로 길쭉할 때 좌/우 끝점이 body 의 모서리 hit-area 안에
+        # 들어가 "arrow body 모서리 resize" 로 잘못 분기되어 endpoint drag 가 막히던 회귀.
         for bbox, kind, eff_id in reversed(self._overlay_hits):
+            if kind in ("arrow", "arrow-start", "arrow-end"):
+                continue
             for c, hr in _corner_rects(bbox).items():
                 if hr.contains(pos):
                     self._resize_corner = c
@@ -859,7 +906,10 @@ class PreviewOverlay(QWidget):
                 and self._resize_corner is None):
             # 드래그/리사이즈 안 함 — 호버 커서.
             # 코너 핸들 위 호버 → 사이즈 커서 (가장 위 hit 우선).
+            # arrow 는 모서리 resize 없음 — endpoint 핸들은 본체 hit 로 처리.
             for bbox, _kind, _id in reversed(self._overlay_hits):
+                if _kind in ("arrow", "arrow-start", "arrow-end"):
+                    continue
                 for c, hr in _corner_rects(bbox).items():
                     if hr.contains(pos):
                         self.setCursor(_cursor_for_corner(c))

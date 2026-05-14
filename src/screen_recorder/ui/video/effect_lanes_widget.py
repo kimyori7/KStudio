@@ -55,7 +55,7 @@ class EffectLanesWidget(QWidget):
     Stage 3+: 효과별 자식 lane 이 막대 그리기·드래그를 추가.
     """
 
-    request_add = Signal(str, int)         # (effect_type, ms) — lane 우클릭 add
+    request_add = Signal(str, int, int)    # (effect_type, ms, track_idx) — lane 우클릭 add
     effect_selected = Signal(object)       # Effect | None — Stage 3+
     effect_changed = Signal(object)        # Effect — Stage 3+
     effect_deleted = Signal(str)           # effect_id — Stage 3+
@@ -73,6 +73,12 @@ class EffectLanesWidget(QWidget):
         # Phase 28: 복수-라인 type 의 사용자 명시 "빈 row 한 줄" 수.
         # caption/broll/arrow 의 lane 안에서 track_idx 사용량과 별개로 row 가 그려짐.
         self._extra_empty_lanes: dict[str, int] = {}
+        # 영상 전환 감지용 — source_hash 가 바뀌면 lane 전부 리셋. 같은 영상 안에서는
+        # 효과 변화로 lane 자동 제거 안 함 (사용자 요청: 효과 다 지워도 라인 유지).
+        self._last_source_hash: str = ""
+        # "이 라인 지우기" 후 effect_deleted emit → sidecar 갱신 → set_sidecar 의 사이클
+        # 사이에서 lane 제거 의도 보존. set_sidecar 에서 처리 후 비움.
+        self._lanes_pending_removal: set[str] = set()
         # Phase 24: "+ 효과 추가" 행 — 5종 lane 영구 표시 폐기. 효과 없는 lane 은 안 보임.
         self._add_row = QWidget()
         add_row_layout = QHBoxLayout(self._add_row)
@@ -95,14 +101,31 @@ class EffectLanesWidget(QWidget):
         """사이드카에 따라 lane 들을 동기화한다.
 
         Phase 24/28: 효과가 있는 type 의 lane + 사용자가 명시한 빈 lane 표시.
-        효과 0 개 + extra_empty_lanes 0 인 type 만 제거.
+
+        2026-05-13 정책 변경: 같은 영상 안에서는 효과 0 이라도 lane 유지 (사용자 요청 —
+        "효과 다 지웠는데 라인까지 사라지지 않게"). 다른 영상으로 전환 시 (source_hash
+        변경) 만 lane 전부 리셋. 명시 "이 라인 지우기" 메뉴는 `_lanes_pending_removal`
+        통해 처리.
         """
+        new_hash = (getattr(sidecar, "source_hash", "") or "")
+        is_video_switch = (new_hash != self._last_source_hash)
+        self._last_source_hash = new_hash
+
+        if is_video_switch:
+            # 다른 영상으로 전환 — 이전 영상의 lane 인스턴스 전부 폐기.
+            for t in list(self._lanes.keys()):
+                lane = self._lanes.pop(t)
+                self._layout.removeWidget(lane)
+                lane.deleteLater()
+            self._extra_empty_lanes.clear()
+            self._lanes_pending_removal.clear()
+
         types_in_use = {e.type for e in sidecar.effects if e.type in _LANE_ORDER}
         types_with_extra = {t for t, n in self._extra_empty_lanes.items()
                              if n > 0 and t in _LANE_ORDER}
         all_types = types_in_use | types_with_extra
 
-        # 새로 필요한 type 의 lane 생성.
+        # 새로 필요한 type 의 lane 생성 (영상 전환이거나 신규 type 효과 추가 시).
         for t in _LANE_ORDER:
             if t in all_types and t not in self._lanes:
                 cls = EFFECT_LANE_CLASSES.get(t, EffectLane)
@@ -117,17 +140,30 @@ class EffectLanesWidget(QWidget):
                 self._lanes[t] = lane
                 self._insert_lane_in_order(t, lane)
 
-        # 더 이상 필요 없는 type 의 lane 제거.
-        for t in list(self._lanes.keys()):
-            if t not in all_types:
-                lane = self._lanes.pop(t)
-                self._layout.removeWidget(lane)
-                lane.deleteLater()
-
-        # 남은 lane 에 자기 type 의 효과들 + 빈 row 수 전달.
+        # 효과 0 이어도 lane 유지 (정책 변경) — 자동 제거 없음.
+        # 모든 lane 에 자기 type 의 효과들 + 빈 row 수 전달. 효과 0 이면 빈 lane 표시.
         for t, lane in self._lanes.items():
             lane.set_effects([e for e in sidecar.effects if e.type == t])
             lane.set_extra_empty_rows(self._extra_empty_lanes.get(t, 0))
+
+        # 같은 영상 안에서 명시 "이 라인 지우기" 요청 처리 — 효과/빈 row 모두 0 인 상태에만.
+        # **lane 생성/효과 적용 *이후*** 에 수행. 이유: 중간 set_sidecar (intermediate sidecar
+        # 가 아직 효과를 갖고 있는 시점) 가 들어와도, 이 시점에선 set_effects 가 lane 에 효과를
+        # 다시 넣어 effects() 비어있지 않음 → pending_removal 처리 X. 사이드카가 진짜 효과 0 인
+        # 상태로 도착해야 lane.effects()==[] → 그때 처리.
+        # 회귀 (2026-05-13: "캡션 라인 지우기 누르면 캡션만 날아가고 라인만 남아있지").
+        if not is_video_switch:
+            for t in list(self._lanes_pending_removal):
+                lane = self._lanes.get(t)
+                if lane is None:
+                    self._lanes_pending_removal.discard(t)
+                    continue
+                if not lane.effects() and self._extra_empty_lanes.get(t, 0) <= 0:
+                    self._lanes.pop(t)
+                    self._layout.removeWidget(lane)
+                    lane.deleteLater()
+                    self._lanes_pending_removal.discard(t)
+                # 효과 / 빈 row 남아있으면 pending 유지 → 다음 set_sidecar 에서 재확인.
 
     def add_empty_lane(self, effect_type: str) -> None:
         """Phase 28 — 사용자 메뉴 "+ ... 추가" (복수-라인 type) 클릭 시 빈 row 한 줄 추가.
@@ -161,22 +197,28 @@ class EffectLanesWidget(QWidget):
         - "이 라인 지우기" → 빈 row 줄임. 효과 있는 lane 은 보존.
         """
         lane.request_add_at.connect(
-            lambda ms, t=effect_type: self._on_lane_request_add(t, ms)
+            lambda ms, track_idx, t=effect_type:
+            self._on_lane_request_add(t, ms, track_idx)
         )
-        # 다른 type 효과 추가 — 빈 row 차감 없이 그냥 emit. 그 type 의 lane 이 받아서
-        # 새 효과를 만들거나 (lane 이 있으면) lane 자체를 새로 생성.
+        # 다른 type 효과 추가 — 빈 row 차감 없이 그냥 emit. track_idx 는 다른 type
+        # lane 안에서 자동 결정되므로 그대로 0 전달 (그 lane 의 정책).
         lane.request_add_other_at.connect(
-            lambda other_type, ms: self.request_add.emit(other_type, ms)
+            lambda other_type, ms, track_idx:
+            self.request_add.emit(other_type, ms, 0)
         )
         lane.request_remove_lane.connect(
-            lambda t=effect_type: self._on_remove_lane_requested(t)
+            lambda track_idx, t=effect_type:
+            self._on_remove_lane_requested(t, track_idx)
         )
         lane.effect_selected.connect(self.effect_selected.emit)
         lane.effect_changed.connect(self.effect_changed.emit)
         lane.effect_deleted.connect(self.effect_deleted.emit)
 
-    def _on_lane_request_add(self, effect_type: str, ms: int) -> None:
+    def _on_lane_request_add(self, effect_type: str, ms: int, track_idx: int = 0) -> None:
         """lane 우클릭 메뉴 '효과 추가' — 빈 row 한 칸을 effect 로 채우는 의도.
+
+        2026-05-13: track_idx 추가 — 사용자가 *클릭한 row* 의 track_idx 가 effect 의
+        track_idx 가 되도록 그대로 위로 전파. 클릭한 빈 row 가 그 자리에서 채워짐.
 
         _extra_empty_lanes 가 있으면 한 줄 줄여 set_sidecar 재호출 시 row 가 늘지 않게.
         없으면 그냥 request_add (효과 하나 더 추가). 두 경우 모두 main_window 가 효과 생성.
@@ -185,19 +227,64 @@ class EffectLanesWidget(QWidget):
             self._extra_empty_lanes[effect_type] -= 1
             if self._extra_empty_lanes[effect_type] <= 0:
                 self._extra_empty_lanes.pop(effect_type, None)
-        self.request_add.emit(effect_type, ms)
+        self.request_add.emit(effect_type, ms, track_idx)
 
-    def _on_remove_lane_requested(self, effect_type: str) -> None:
-        """lane 우클릭 메뉴 "이 라인 지우기" — 빈 row 한 줄 줄이거나 lane 자체 제거.
+    def populate_add_submenu_for_lane(self, sub_menu: QMenu, *,
+                                       ms: int, track_idx: int,
+                                       exclude_type: Optional[str] = None,
+                                       source_lane=None) -> None:
+        """lane 우클릭 → '효과 추가' 서브메뉴를 + 효과 추가 버튼 메뉴와 동일 데이터로 빌드.
+
+        2026-05-13: 라벨/단일잠금 검사를 + 효과 추가 메뉴와 통일. track_idx 는 다른
+        type 효과 추가 시 그 type lane 자체 정책으로 결정되므로 사용 안 함 (기본 0).
+        exclude_type 으로 자기 type 한 가지만 제외.
+        """
+        sub_menu.setStyleSheet(
+            "QMenu::item:disabled { color: #5b6068; }"
+            "QMenu::item:disabled:selected { background: transparent; color: #5b6068; }"
+        )
+        sub_menu.setToolTipsVisible(True)
+        for label, eff_type, is_multi, tooltip in self._MENU_ITEMS:
+            if exclude_type is not None and eff_type == exclude_type:
+                continue
+            self._populate_add_action(sub_menu, label, eff_type, is_multi, tooltip, ms)
+
+    def _on_remove_lane_requested(self, effect_type: str, track_idx: int = 0) -> None:
+        """lane 우클릭 메뉴 "이 라인 지우기" — 클릭한 row 의 효과·빈 row 모두 정리.
+
+        2026-05-13: 효과가 있어도 동작하도록. 클릭한 row 의 track_idx 에 속한 효과들을
+        effect_deleted 시그널로 삭제 (controller 가 sidecar 갱신 → set_sidecar 재호출 →
+        lane row 자동 갱신). 사용자 보고 "화살표 있을 때 이 라인 지우기가 안 통함".
 
         규칙:
-        - 빈 row 가 있으면 (_extra_empty_lanes > 0) 한 줄 줄임.
-        - 빈 row 0 이고 효과도 0 이면 lane 인스턴스 자체 제거.
-        - 효과가 있으면 no-op (효과 삭제는 막대 클릭 + Del 키로).
+        - 해당 row 에 효과가 있으면: 그 효과들 모두 effect_deleted.emit (controller 가 삭제)
+        - 빈 row 가 있으면: _extra_empty_lanes 한 줄 줄임
+        - 효과·빈 row 모두 없으면 lane 인스턴스 제거 (drag 흐름과 동일하게 set_sidecar 가 처리)
         """
         lane = self._lanes.get(effect_type)
         if lane is None:
             return
+
+        # 1. 클릭한 row 의 track_idx 에 있는 효과들 삭제 시그널.
+        # effect_lane.effects() 는 lane 보관 중 자기 type 효과들.
+        effects_in_row = [
+            e for e in lane.effects()
+            if int(getattr(e, "track_idx", 0)) == int(track_idx)
+        ]
+        if effects_in_row:
+            # 사용자가 명시 "이 라인 지우기" — 효과 삭제 + lane 제거 의도.
+            # set_sidecar 의 자동 제거가 비활성화돼 있으므로 명시 큐에 등록.
+            # 단, 다른 track_idx 에 효과가 남아 있거나 빈 row 가 있으면 lane 유지.
+            remaining_effects = [e for e in lane.effects() if e not in effects_in_row]
+            has_extra_empty = self._extra_empty_lanes.get(effect_type, 0) > 0
+            if not remaining_effects and not has_extra_empty:
+                self._lanes_pending_removal.add(effect_type)
+            for e in effects_in_row:
+                self.effect_deleted.emit(e.id)
+            # 효과 삭제 후 sidecar_replaced → set_sidecar 가 pending_removal 처리.
+            return
+
+        # 2. 빈 row 처리 (기존 로직).
         if self._extra_empty_lanes.get(effect_type, 0) > 0:
             self._extra_empty_lanes[effect_type] -= 1
             remaining_extra = self._extra_empty_lanes[effect_type]
@@ -210,7 +297,6 @@ class EffectLanesWidget(QWidget):
                 self._layout.removeWidget(lane)
                 lane.deleteLater()
             return
-        # 효과가 있는 lane 은 무시 — 효과 먼저 지우라는 의미.
 
     def set_duration_ms(self, ms: int) -> None:
         self._duration_ms = max(0, int(ms))
@@ -283,29 +369,57 @@ class EffectLanesWidget(QWidget):
             "QMenu::item:disabled:selected { background: transparent; color: #5b6068; }"
         )
         for label, eff_type, is_multi, tooltip in self._MENU_ITEMS:
-            locked = (not is_multi) and (eff_type in self._lanes
-                                          and len(self._lanes[eff_type].effects()) > 0)
-            # 비활성일 때는 라벨에 "(이미 있음)" 부가 텍스트 — disabled 색만으로는 약함.
-            text = f"{label}   ✓ 이미 있음" if locked else label
-            action = QAction(text, menu)
-            enabled = not locked
-            action.setEnabled(enabled)
-            if locked:
-                action.setToolTip("이미 추가됨 — 단일 라인만 가능. 기존 항목을 편집하세요.")
-            elif tooltip:
-                action.setToolTip(tooltip)
-            if enabled:
-                if is_multi:
-                    # 복수-라인: 빈 row 한 줄만 추가. 효과는 lane 안 우클릭으로 별도.
-                    action.triggered.connect(
-                        lambda _checked=False, t=eff_type: self.add_empty_lane(t)
-                    )
-                else:
-                    # 단일-라인: 효과 즉시 생성 — main_window 가 request_add 처리.
-                    action.triggered.connect(
-                        lambda _checked=False, t=eff_type, m=ms: self.request_add.emit(t, m)
-                    )
-            menu.addAction(action)
+            self._populate_add_action(menu, label, eff_type, is_multi, tooltip, ms)
         menu.setToolTipsVisible(True)
         self._last_menu = menu
         menu.popup(QCursor.pos())
+
+    def populate_add_submenu(self, sub_menu: QMenu, ms: int,
+                              exclude_type: Optional[str] = None) -> None:
+        """라인 우클릭 → '효과 추가' 서브메뉴와 + 효과 추가 버튼 메뉴를 같은 데이터로 통일.
+
+        2026-05-13: 사용자 보고 — 서브메뉴 라벨과 + 효과 추가 메뉴 라벨이 달랐음.
+        같은 _MENU_ITEMS 와 단일/이미있음 검사 로직을 공유하도록 위임 API 노출.
+        exclude_type 으로 자기 type 한 가지만 제외 (lane 우클릭의 첫 항목과 중복 회피).
+        """
+        sub_menu.setStyleSheet(
+            "QMenu::item:disabled { color: #5b6068; }"
+            "QMenu::item:disabled:selected { background: transparent; color: #5b6068; }"
+        )
+        sub_menu.setToolTipsVisible(True)
+        for label, eff_type, is_multi, tooltip in self._MENU_ITEMS:
+            if exclude_type is not None and eff_type == exclude_type:
+                continue
+            self._populate_add_action(sub_menu, label, eff_type, is_multi, tooltip, ms)
+
+    def label_for_type(self, eff_type: str) -> Optional[str]:
+        """_MENU_ITEMS 의 통일 라벨 ("+ 캡션 추가 (복수 가능)" 등). 없으면 None."""
+        for label, t, _is_multi, _tip in self._MENU_ITEMS:
+            if t == eff_type:
+                return label
+        return None
+
+    def _populate_add_action(self, menu: QMenu, label: str, eff_type: str,
+                              is_multi: bool, tooltip: str, ms: int) -> None:
+        """_MENU_ITEMS 한 항목을 QAction 으로 빌드해 menu 에 추가 — 단일/이미있음 검사 포함."""
+        locked = (not is_multi) and (eff_type in self._lanes
+                                      and len(self._lanes[eff_type].effects()) > 0)
+        text = f"{label}   ✓ 이미 있음" if locked else label
+        action = QAction(text, menu)
+        enabled = not locked
+        action.setEnabled(enabled)
+        if locked:
+            action.setToolTip("이미 추가됨 — 단일 라인만 가능. 기존 항목을 편집하세요.")
+        elif tooltip:
+            action.setToolTip(tooltip)
+        if enabled:
+            if is_multi:
+                action.triggered.connect(
+                    lambda _checked=False, t=eff_type: self.add_empty_lane(t)
+                )
+            else:
+                action.triggered.connect(
+                    lambda _checked=False, t=eff_type, m=ms:
+                    self.request_add.emit(t, m, 0)
+                )
+        menu.addAction(action)

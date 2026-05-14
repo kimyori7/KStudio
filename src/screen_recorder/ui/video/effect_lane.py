@@ -27,10 +27,16 @@ class EffectLane(QWidget):
     - color_hex: lane 본체의 강조 색 (효과 막대에 사용)
     """
 
-    request_add_at = Signal(int)        # ms — lane 우클릭 메뉴의 자기 type 효과 추가
-    # 우클릭 메뉴 '효과 추가' 서브메뉴 — 다른 type 효과 추가 (효과_type, ms).
-    request_add_other_at = Signal(str, int)
-    request_remove_lane = Signal()      # lane 우클릭 메뉴의 "이 라인 지우기" 선택 시
+    # ms, track_idx — lane 우클릭 메뉴의 자기 type 효과 추가. track_idx 는 클릭한 row
+    # 의 sub-lane 인덱스 (Phase 28: 같은 type 의 여러 row 가 쌓일 수 있음). 사용자가
+    # *클릭한 row* 의 track_idx 에 효과가 들어가도록 시그널에 함께 전달.
+    request_add_at = Signal(int, int)
+    # 우클릭 메뉴 '효과 추가' 서브메뉴 — 다른 type 효과 추가 (효과_type, ms, track_idx).
+    # track_idx 는 다른 type lane 안에서 의미 — main_window 핸들러가 정책 결정.
+    request_add_other_at = Signal(str, int, int)
+    # "이 라인 지우기" — track_idx 함께 emit. 효과가 있는 row 면 그 row 의 효과들도
+    # 삭제 (effect_lanes_widget이 effect_deleted 로 전파). 빈 row 면 row 자체만 줄임.
+    request_remove_lane = Signal(int)
     effect_selected = Signal(object)    # Effect | None — 막대 클릭 (Stage 3+ 에서 사용)
     effect_changed = Signal(object)     # Effect — 막대 드래그/길이 조정 (Stage 3+)
     effect_deleted = Signal(str)        # effect_id — Delete 키 (Stage 3+)
@@ -190,51 +196,64 @@ class EffectLane(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.RightButton and event.position().x() >= _HEADER_WIDTH:
             ms = self._x_to_ms(int(event.position().x()))
-            self._show_lane_context_menu(ms, event.globalPosition().toPoint())
+            # 2026-05-13: 클릭한 *row* 의 track_idx 계산 — 사용자 보고 "라인 누르고
+            # 화살표 추가하면 클릭한 라인 지워지고 맨 위 라인에 효과 생김" fix.
+            ti = self._track_idx_at_y(int(event.position().y()))
+            self._show_lane_context_menu(ms, ti, event.globalPosition().toPoint())
             event.accept()
             return
         super().mousePressEvent(event)
 
-    def _show_lane_context_menu(self, ms: int, global_pos) -> None:
+    def _show_lane_context_menu(self, ms: int, track_idx: int, global_pos) -> None:
         """lane 본체 우클릭 메뉴 — 3단:
 
-        1. 현재 lane type 효과 추가 (예: '+ 캡션 추가')
-        2. '효과 추가' 서브메뉴 — 다른 type 효과 (캡션/배속/줌/곁들임/화살표 중 자기 제외)
+        1. 현재 lane type 효과 추가 (예: '+ 캡션 추가 (복수 가능)')
+        2. '효과 추가' 서브메뉴 — 자기 type 제외 (라벨은 + 효과 추가 메뉴와 동일)
         3. '이 라인 지우기'
 
-        "1" → request_add_at(ms)
-        "2 서브" → request_add_other_at(eff_type, ms)
-        "3" → request_remove_lane()
+        2026-05-13: 메뉴 라벨이 부모(EffectLanesWidget)의 + 효과 추가 버튼 메뉴와
+        일치하도록 위임 (label_for_type, populate_add_submenu). 단일/이미있음 검사
+        로직도 한 곳에서.
         """
         menu = QMenu(self)
         menu.setAttribute(Qt.WA_DeleteOnClose, True)
-        # 1. 현재 lane type 추가.
-        add_action = QAction(f"+ {self._header_label} 추가", menu)
-        add_action.triggered.connect(lambda: self.request_add_at.emit(ms))
+
+        # 부모 EffectLanesWidget (단일 진실의 원천) 가 메뉴 라벨/lock 정보를 제공.
+        parent = self.parentWidget()
+        unified_label = None
+        if parent is not None and hasattr(parent, "label_for_type"):
+            unified_label = parent.label_for_type(self._effect_type)
+
+        # 1. 현재 lane type 추가 — 통일 라벨 사용 (예: "+ 캡션 추가 (복수 가능)").
+        add_label = unified_label or f"+ {self._header_label} 추가"
+        add_action = QAction(add_label, menu)
+        add_action.triggered.connect(
+            lambda _checked=False, m=ms, ti=track_idx:
+            self.request_add_at.emit(m, ti)
+        )
         menu.addAction(add_action)
-        # 2. 효과 추가 서브메뉴 — 자기 type 제외 모든 효과.
+
+        # 2. 효과 추가 서브메뉴 — 부모에 위임. + 효과 추가 버튼 메뉴와 완전 동일 (5개).
+        # 자기 type 도 포함 — 서브 안 자기 type 클릭은 "빈 라인 한 줄 더 추가"
+        # (= add_empty_lane). 첫 항목 "+ 화살표 추가" 와 별개 — 첫 항목은 *클릭한
+        # row 에 효과 즉시* 추가, 서브 안 자기 type 항목은 빈 라인 row 추가.
         other_menu = menu.addMenu("효과 추가")
-        # 효과 type → 라벨 매핑 (사용자 노출 한글 라벨, 일관성 유지).
-        _OTHER_TYPES = [
-            ("caption", "캡션"),
-            ("speed", "배속"),
-            ("zoom", "줌"),
-            ("broll", "곁들임"),
-            ("arrow", "화살표"),
-        ]
-        for eff_type, label in _OTHER_TYPES:
-            if eff_type == self._effect_type:
-                continue
-            sub_action = QAction(f"+ {label} 추가", other_menu)
-            sub_action.triggered.connect(
-                lambda _checked=False, t=eff_type:
-                self.request_add_other_at.emit(t, ms)
+        if parent is not None and hasattr(parent, "populate_add_submenu_for_lane"):
+            parent.populate_add_submenu_for_lane(
+                other_menu, ms=ms, track_idx=track_idx,
+                exclude_type=None, source_lane=self,
             )
-            other_menu.addAction(sub_action)
+        elif parent is not None and hasattr(parent, "populate_add_submenu"):
+            parent.populate_add_submenu(other_menu, ms=ms, exclude_type=None)
+
         menu.addSeparator()
-        # 3. 라인 지우기.
-        remove_action = QAction("이 라인 지우기", menu)
-        remove_action.triggered.connect(lambda: self.request_remove_lane.emit())
+        # 3. 라인 지우기 — type 라벨 명시해 어떤 lane 인지 한눈에 (사용자 보고 2026-05-13).
+        # header_label 우선, 없으면 effect_type 그대로.
+        type_label = self._header_label or self._effect_type
+        remove_action = QAction(f"{type_label} 라인 지우기", menu)
+        remove_action.triggered.connect(
+            lambda _checked=False, ti=track_idx: self.request_remove_lane.emit(ti)
+        )
         menu.addAction(remove_action)
         menu.popup(global_pos)
 

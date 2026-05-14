@@ -30,7 +30,7 @@ def _make_tab(qtbot, sample_mp4, tmp_path):
 def test_lane_request_add_creates_caption_at_ms(qtbot, sample_mp4, tmp_path):
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
     # 가짜로 lanes_widget 의 시그널 발화
-    tab.lanes_widget().request_add.emit("caption", 5000)
+    tab.lanes_widget().request_add.emit("caption", 5000, 0)
 
     sc = tab.sidecar()
     assert len(sc.effects) == 1
@@ -40,25 +40,14 @@ def test_lane_request_add_creates_caption_at_ms(qtbot, sample_mp4, tmp_path):
     assert e.out_ms == 5000 + 3000
 
 
-def test_video_tab_accepts_external_file_drop(qtbot, sample_mp4, tmp_path):
-    """VideoTab 에 드래그-드롭 활성화 + dragEnterEvent 가 영상 url 수락.
+def test_video_tab_rejects_drops_outside_track_lane(qtbot, sample_mp4, tmp_path):
+    """VideoTab 자체는 드롭 거부 — video_track_lane 위 정확한 위치만 수락.
 
-    실제 segment 생성은 ffmpeg 가 영상 길이를 읽어야 하므로 단위 테스트에서는
-    수락 여부만 검증. _on_track_insert_files 의 위임 경로는 별도 통합 테스트.
+    Why: "정확히 영상 바에 올려야만 추가" 정책 (Phase 29~32). VideoTab 전체가
+    드롭 영역이면 미리보기/타임라인 등 의도와 다른 곳에서도 추가됨.
     """
-    from PySide6.QtCore import QMimeData, QPoint, QUrl, Qt
-    from PySide6.QtGui import QDragEnterEvent
-
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
-    assert tab.acceptDrops() is True
-
-    extra = tmp_path / "extra.mp4"
-    extra.write_bytes(b"")
-    md = QMimeData()
-    md.setUrls([QUrl.fromLocalFile(str(extra))])
-    enter = QDragEnterEvent(QPoint(100, 100), Qt.CopyAction, md, Qt.LeftButton, Qt.NoModifier)
-    tab.dragEnterEvent(enter)
-    assert enter.isAccepted()
+    assert tab.acceptDrops() is False
 
 
 def test_video_tab_ignores_unsupported_file_drop(qtbot, sample_mp4, tmp_path):
@@ -80,7 +69,7 @@ def test_ctrl_c_copies_active_effect_to_clipboard(qtbot, sample_mp4, tmp_path):
     """효과 선택 후 Ctrl+C → _effect_clipboard 에 deep copy 저장."""
     from PySide6.QtCore import Qt
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
-    tab.lanes_widget().request_add.emit("caption", 1000)
+    tab.lanes_widget().request_add.emit("caption", 1000, 0)
     sc = tab.sidecar()
     cap = sc.effects[0]
     tab._active_kind = "effect"
@@ -97,7 +86,7 @@ def test_ctrl_v_pastes_effect_with_new_id(qtbot, sample_mp4, tmp_path):
     """Ctrl+V → clipboard 의 효과를 새 id 로 사이드카에 추가."""
     from PySide6.QtCore import Qt
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
-    tab.lanes_widget().request_add.emit("caption", 1000)
+    tab.lanes_widget().request_add.emit("caption", 1000, 0)
     sc = tab.sidecar()
     cap = sc.effects[0]
     tab._active_kind = "effect"
@@ -125,7 +114,7 @@ def test_new_caption_inherits_last_used_font(qtbot, sample_mp4, tmp_path):
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
 
     # 1) 첫 캡션 추가 (기본 폰트).
-    tab.lanes_widget().request_add.emit("caption", 1000)
+    tab.lanes_widget().request_add.emit("caption", 1000, 0)
     sc = tab.sidecar()
     first = sc.effects[0]
     assert first.font.family == "sans-serif"  # 기본
@@ -137,7 +126,7 @@ def test_new_caption_inherits_last_used_font(qtbot, sample_mp4, tmp_path):
     tab.edit_controller().update_effect(new_first)
 
     # 3) 두 번째 캡션 추가 → 첫 캡션의 폰트 그대로 상속.
-    tab.lanes_widget().request_add.emit("caption", 5000)
+    tab.lanes_widget().request_add.emit("caption", 5000, 0)
     sc2 = tab.sidecar()
     captions = [e for e in sc2.effects if e.type == "caption"]
     assert len(captions) == 2
@@ -179,7 +168,7 @@ def test_t_shortcut_no_op_when_edit_mode_off(qtbot, sample_mp4, tmp_path):
 
 def test_lane_effect_deleted_removes_from_sidecar(qtbot, sample_mp4, tmp_path):
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
-    tab.lanes_widget().request_add.emit("caption", 1000)
+    tab.lanes_widget().request_add.emit("caption", 1000, 0)
     cap_id = tab.sidecar().effects[0].id
 
     tab.lanes_widget().effect_deleted.emit(cap_id)
@@ -188,7 +177,7 @@ def test_lane_effect_deleted_removes_from_sidecar(qtbot, sample_mp4, tmp_path):
 
 def test_lane_effect_changed_updates_sidecar(qtbot, sample_mp4, tmp_path):
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
-    tab.lanes_widget().request_add.emit("caption", 1000)
+    tab.lanes_widget().request_add.emit("caption", 1000, 0)
     eff = tab.sidecar().effects[0]
     from dataclasses import replace
     moved = replace(eff, in_ms=2000, out_ms=2000 + 3000)
@@ -200,7 +189,7 @@ def test_lane_effect_changed_updates_sidecar(qtbot, sample_mp4, tmp_path):
 def test_add_caption_near_end_clamps_or_rejects(qtbot, sample_mp4, tmp_path):
     """영상 9.5초 위치에 추가 시 기본 3초 길이가 안 들어가 → 거부 또는 clamp."""
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
-    tab.lanes_widget().request_add.emit("caption", 9500)
+    tab.lanes_widget().request_add.emit("caption", 9500, 0)
     sc = tab.sidecar()
     if len(sc.effects) == 1:
         # clamp 정책: 영상 끝까지 길이 자름

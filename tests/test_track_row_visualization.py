@@ -105,11 +105,11 @@ def test_lane_right_click_add_consumes_empty_row(qtbot):
     assert w._extra_empty_lanes["caption"] == 1
     # lane 의 request_add_at.emit (우클릭 메뉴 '효과 추가' 클릭 시뮬레이션).
     received: list = []
-    w.request_add.connect(lambda t, ms: received.append((t, ms)))
-    w._lanes["caption"].request_add_at.emit(3_000)
+    w.request_add.connect(lambda t, ms, ti: received.append((t, ms, ti)))
+    w._lanes["caption"].request_add_at.emit(3_000, 0)
     # extra_empty 가 감소, request_add 발화.
     assert "caption" not in w._extra_empty_lanes or w._extra_empty_lanes["caption"] == 0
-    assert received == [("caption", 3_000)]
+    assert received == [("caption", 3_000, 0)]
 
 
 def test_lane_right_click_add_without_empty_just_emits(qtbot):
@@ -121,11 +121,11 @@ def test_lane_right_click_add_without_empty_just_emits(qtbot):
     w.set_sidecar(sc)
     assert "caption" in w._lanes
     received: list = []
-    w.request_add.connect(lambda t, ms: received.append((t, ms)))
-    w._lanes["caption"].request_add_at.emit(5_000)
+    w.request_add.connect(lambda t, ms, ti: received.append((t, ms, ti)))
+    w._lanes["caption"].request_add_at.emit(5_000, 0)
     # extra 없음, 그냥 emit.
     assert w._extra_empty_lanes.get("caption", 0) == 0
-    assert received == [("caption", 5_000)]
+    assert received == [("caption", 5_000, 0)]
 
 
 def test_remove_lane_decrements_extra_empty(qtbot):
@@ -146,18 +146,25 @@ def test_remove_lane_decrements_extra_empty(qtbot):
     assert "caption" not in w._lanes
 
 
-def test_remove_lane_with_effects_noop(qtbot):
-    """효과가 있는 lane 은 '이 라인 지우기' 가 no-op (효과 보존)."""
+def test_remove_lane_with_effects_emits_effect_deleted(qtbot):
+    """효과가 있는 row 의 '이 라인 지우기' → 그 row 의 효과들이 effect_deleted 로 발화.
+
+    2026-05-13: 사용자 보고 "화살표 있을 때 이 라인 지우기가 안 통함" 의 fix. 효과 보존
+    no-op 정책에서 → 그 track_idx 의 효과들 삭제 시그널 emit. controller 가 받아 sidecar
+    에서 제거 → set_sidecar 재호출로 lane row 자동 갱신.
+    """
     w = EffectLanesWidget()
     qtbot.addWidget(w)
     w.set_duration_ms(10_000)
-    sc = Sidecar(effects=[_cap(0, 1000, track_idx=0)])
+    eff = _cap(0, 1000, track_idx=0)
+    sc = Sidecar(effects=[eff])
     w.set_sidecar(sc)
     assert "caption" in w._lanes
-    w._on_remove_lane_requested("caption")
-    # 효과 그대로 보존, lane 도 그대로.
-    assert "caption" in w._lanes
-    assert len(w._lanes["caption"].effects()) == 1
+    received: list = []
+    w.effect_deleted.connect(lambda eid: received.append(eid))
+    w._on_remove_lane_requested("caption", track_idx=0)
+    # 그 row 의 효과 id 가 effect_deleted 로 emit.
+    assert received == [eff.id]
 
 
 def test_caption_hit_test_isolates_by_track_row(qtbot):

@@ -194,7 +194,7 @@ class VideoTimeline(QWidget):
 
     seek_request = Signal(int)              # ms — slider/trim 어디서든 시크
     trim_changed = Signal(int, int)         # (in_ms, out_ms) — drag 후 (swap 적용)
-    request_add = Signal(str, int)          # (effect_type, ms)
+    request_add = Signal(str, int, int)     # (effect_type, ms, track_idx)
     effect_selected = Signal(object)        # Effect | None
     effect_changed = Signal(object)         # Effect
     effect_deleted = Signal(str)            # effect_id

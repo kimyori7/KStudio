@@ -34,7 +34,7 @@ def test_lane_right_click_shows_context_menu(qtbot):
     lane.set_duration_ms(10_000)
     # 우클릭 → _show_lane_context_menu 호출 (메뉴 popup, non-blocking).
     # 메뉴 action 직접 trigger 로 효과 추가 시그널 확인.
-    lane._show_lane_context_menu(5_000, QPoint(0, 0))
+    lane._show_lane_context_menu(5_000, 0, QPoint(0, 0))
     # popup 직후 active widget 검색 — Qt 의 QMenu 가 self 의 자식으로 떠 있음.
     from PySide6.QtWidgets import QMenu
     menus = lane.findChildren(QMenu)
@@ -43,7 +43,7 @@ def test_lane_right_click_shows_context_menu(qtbot):
     assert add_action is not None
     with qtbot.waitSignal(lane.request_add_at, timeout=500) as blocker:
         add_action.trigger()
-    assert blocker.args == [5_000]
+    assert blocker.args == [5_000, 0]
 
 
 def test_lane_context_menu_remove_emits_remove_signal(qtbot):
@@ -52,7 +52,7 @@ def test_lane_context_menu_remove_emits_remove_signal(qtbot):
     qtbot.addWidget(lane)
     lane.resize(400, 20)
     lane.set_duration_ms(10_000)
-    lane._show_lane_context_menu(3_000, QPoint(0, 0))
+    lane._show_lane_context_menu(3_000, 0, QPoint(0, 0))
     from PySide6.QtWidgets import QMenu
     menus = lane.findChildren(QMenu)
     remove_action = next((a for a in menus[0].actions() if "지우기" in a.text()), None)

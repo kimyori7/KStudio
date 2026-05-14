@@ -71,7 +71,7 @@ def test_clicking_speed_emits_request_add(widget, qtbot):
     speed_action = next(a for a in menu.actions() if "배속" in a.text())
     with qtbot.waitSignal(widget.request_add, timeout=500) as blocker:
         speed_action.trigger()
-    assert blocker.args == ["speed", 3_000]
+    assert blocker.args == ["speed", 3_000, 0]
     menu.close()
 
 
@@ -83,5 +83,5 @@ def test_add_button_emits_at_playhead(widget, qtbot):
     speed_action = next(a for a in menu.actions() if "배속" in a.text())
     with qtbot.waitSignal(widget.request_add, timeout=500) as blocker:
         speed_action.trigger()
-    assert blocker.args == ["speed", 4_500]
+    assert blocker.args == ["speed", 4_500, 0]
     menu.close()
