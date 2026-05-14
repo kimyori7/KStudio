@@ -12,6 +12,7 @@ dependencies = [
     "rembg[cpu]>=2.0",
     "Pillow>=10",
     "pywin32>=306; sys_platform == 'win32'",
+    "scenedetect>=0.6",
 ]
 
 [project.optional-dependencies]
