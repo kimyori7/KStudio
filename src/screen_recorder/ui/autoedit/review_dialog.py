@@ -14,6 +14,14 @@ from ...autoedit.presets import AutoEditSettings, default_settings
 from ...autoedit.filter import apply_thresholds
 
 
+def _is_scenedetect_available() -> bool:
+    try:
+        import scenedetect  # noqa
+        return True
+    except ImportError:
+        return False
+
+
 def _make_card(title: str) -> tuple[QFrame, QVBoxLayout]:
     f = QFrame()
     f.setFrameShape(QFrame.StyledPanel)
@@ -40,6 +48,7 @@ class AutoEditReviewDialog(QDialog):
         root = QVBoxLayout(self)
         root.addWidget(self._build_silence_card())
         root.addWidget(self._build_caption_card())
+        root.addWidget(self._build_scene_card())
 
         # 적용 / 취소 / 기본값.
         btn_row = QHBoxLayout()
@@ -109,6 +118,51 @@ class AutoEditReviewDialog(QDialog):
         lay.addLayout(row2)
         return card
 
+    def _build_scene_card(self) -> QFrame:
+        card, lay = _make_card("🎬 씬 감지")
+        row1 = QHBoxLayout()
+        self._scene_check = QCheckBox("사용")
+        self._scene_check.setChecked(self._settings.scene_enabled)
+        self._scene_check.toggled.connect(self._on_scene_toggle)
+        self._scene_count = QLabel("0개 줌")
+        row1.addWidget(self._scene_check)
+        row1.addStretch(1)
+        row1.addWidget(self._scene_count)
+        lay.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("민감도"))
+        self._scene_slider = QSlider(Qt.Horizontal)
+        self._scene_slider.setRange(10, 60)
+        self._scene_slider.setValue(self._settings.scene_sensitivity)
+        self._scene_slider.valueChanged.connect(self._on_scene_slider)
+        self._scene_val = QLabel(str(self._settings.scene_sensitivity))
+        row2.addWidget(self._scene_slider, stretch=1)
+        row2.addWidget(self._scene_val)
+        lay.addLayout(row2)
+
+        # 의존성 누락 시 dim.
+        if not _is_scenedetect_available():
+            self._scene_check.setEnabled(False)
+            self._scene_check.setChecked(False)
+            self._scene_check.setToolTip("씬감지를 쓰려면: pip install scenedetect")
+            self._scene_slider.setEnabled(False)
+            self._settings.scene_enabled = False
+        return card
+
+    def _on_scene_toggle(self, c: bool) -> None:
+        self._settings.scene_enabled = c
+        self._scene_slider.setEnabled(c)
+        self._filter_timer.start()
+
+    def _on_scene_slider(self, v: int) -> None:
+        self._settings.scene_sensitivity = v
+        self._scene_val.setText(str(v))
+        self._filter_timer.start()
+
+    def scene_checkbox(self) -> QCheckBox: return self._scene_check
+    def scene_count_label(self) -> QLabel: return self._scene_count
+
     def _on_caption_toggle(self, c: bool) -> None:
         self._settings.caption_enabled = c
         self._caption_slider.setEnabled(c)
@@ -137,6 +191,10 @@ class AutoEditReviewDialog(QDialog):
         self._silence_slider.setValue(self._settings.silence_min_ms)
         self._caption_check.setChecked(self._settings.caption_enabled)
         self._caption_slider.setValue(self._settings.caption_max_chars)
+        # scene card 는 의존성 없으면 OFF 유지 — 강제 활성화 X.
+        if _is_scenedetect_available():
+            self._scene_check.setChecked(self._settings.scene_enabled)
+        self._scene_slider.setValue(self._settings.scene_sensitivity)
         self._filter_timer.stop()
         self._refresh_counts()
 
@@ -144,8 +202,10 @@ class AutoEditReviewDialog(QDialog):
         effects = apply_thresholds(self._raw, self._settings)
         cuts = [e for e in effects if e.type == "cut"]
         caps = [e for e in effects if e.type == "caption"]
+        zooms = [e for e in effects if e.type == "zoom"]
         self._silence_count.setText(f"{len(cuts)}개 컷")
         self._caption_count.setText(f"{len(caps)}개 자막")
+        self._scene_count.setText(f"{len(zooms)}개 줌")
         self._total_label.setText(f"적용 예정: {len(effects)}개")
         self._apply_btn.setEnabled(len(effects) > 0)
 

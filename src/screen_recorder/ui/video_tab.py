@@ -14,6 +14,7 @@ from ..effects.types.speed import SpeedEffect
 from ..autoedit.coordinator import AutoEditCoordinator
 from ..autoedit.analyzers.silence import SilenceAnalyzer
 from ..autoedit.analyzers.transcript import TranscriptAnalyzer
+from ..autoedit.analyzers.scene import SceneAnalyzer
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 from .video.timeline import VideoTimeline
@@ -336,11 +337,12 @@ class VideoTab(QWidget):
             self._preview_overlay.clear_broll_live_frame
         )
 
-        # 자동편집 — Phase 2: silence + transcript.
+        # 자동편집 — Phase 3: silence + transcript + scene.
         self._autoedit_coord = AutoEditCoordinator(self)
         self._autoedit_coord.set_analyzers([
             ("silence", SilenceAnalyzer()),
             ("transcript", TranscriptAnalyzer(model_size="base")),
+            ("scene", SceneAnalyzer()),
         ])
         self._autoedit_coord.result_ready.connect(self._on_autoedit_result_ready)
         self._autoedit_last_raw = None

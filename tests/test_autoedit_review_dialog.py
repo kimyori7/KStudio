@@ -47,3 +47,10 @@ def test_caption_card_count(qtbot):
     d = AutoEditReviewDialog(raw)
     qtbot.addWidget(d)
     assert "2개" in d.caption_count_label().text()
+
+
+def test_scene_card_count(qtbot):
+    raw = AutoEditResult(source_hash="x", scene_changes=[(5000, 35.0)])
+    d = AutoEditReviewDialog(raw)
+    qtbot.addWidget(d)
+    assert "1개" in d.scene_count_label().text()
