@@ -213,8 +213,12 @@ class VideoTab(QWidget):
 
         # 썸네일 서비스 → VideoTab 핸들러 (broll src 와 segment id 를 prefix 로 구분).
         self._thumb_service.thumbnail_ready.connect(self._on_thumbnail_ready)
-        # 처음 채워진 segment 의 썸네일도 즉시 요청.
-        self._request_all_thumbnails(self._edit_controller.sidecar())
+        # 2026-05-14: 초기 thumbnail 디스패치는 *탭이 처음 보일 때까지 defer* — 사용자가
+        # 한 번에 여러 탭을 열면 비가시 탭의 ffmpeg storm 이 가시 탭 로딩까지 막던 회귀
+        # (app.log 09:51:00 — 3 영상 × 32 slot ≈ 90+ ffmpeg call 15초간 폭주). showEvent
+        # 가 첫 발화될 때 한 번만 요청. 그 이후 사이드카 변경은 항상 즉시 dispatch (이미
+        # sidecar_replaced.connect 로 연결됨).
+        self._initial_thumbs_requested = False
 
         # Timeline 시그널
         self.timeline.seek_request.connect(self._on_user_seek_request)
@@ -339,6 +343,32 @@ class VideoTab(QWidget):
     def sidecar(self):
         return self._edit_controller.sidecar()
 
+    def duration_ms(self) -> int:
+        """현재 트랙의 combined 총 길이 (밀리초). 에이전트 도구·외부 호출용 공개 API.
+
+        주의: 이 값은 **자르기/트림 적용 후** 의 재생 가능 길이. 원본 파일 길이가 필요하면
+        [`source_duration_ms()`](src/screen_recorder/ui/video_tab.py:source_duration_ms) 사용.
+        """
+        return self._get_duration_ms()
+
+    def source_duration_ms(self) -> int:
+        """원본 미디어 파일의 길이 (밀리초) — cut/trim 적용 *전*. 에이전트가 사용자에게
+        "이 영상은 X분짜리" 라고 설명할 때 참조해야 하는 값.
+
+        2026-05-14 회귀: 에이전트가 duration_ms (combined, cuts 후) 만 보고 "이 영상은
+        2분이네요" 라고 보고 → 사용자는 파일 자체를 3:24 로 알고 있어서 환각으로 오해.
+        실제론 source=3:24, 적용된 cut 두 개로 combined=2:00. 둘 다 노출 필요.
+        """
+        return self.player.duration_ms()
+
+    def position_ms(self) -> int:
+        """현재 재생 위치 (밀리초). 에이전트 도구·외부 호출용 공개 API."""
+        return self._get_position_ms()
+
+    def source_path(self) -> str:
+        """현재 영상 소스의 절대 경로 문자열."""
+        return str(self._source_path)
+
     def lanes_widget(self):
         """효과 lane 컨테이너 — 하위 호환. 신규 코드는 timeline.effect_lanes 사용."""
         return self.timeline.effect_lanes
@@ -347,16 +377,24 @@ class VideoTab(QWidget):
         return self._edit_controller
 
     # ---------- 효과 추가 흐름 ----------
-    def _on_lane_request_add(self, effect_type: str, in_ms: int) -> None:
-        """Lane 우클릭 → 효과 추가 요청. 편집 모드 체크 후 위임."""
+    def _on_lane_request_add(self, effect_type: str, in_ms: int,
+                              track_idx: int = 0) -> None:
+        """Lane 우클릭 → 효과 추가 요청. 편집 모드 체크 후 위임.
+
+        2026-05-13: track_idx 추가 — 사용자가 *클릭한 row* 의 track_idx 에 효과가
+        들어가도록. 빈 row 클릭 시 그 row 가 그대로 채워짐.
+        """
         if not self.is_edit_mode_on():
             return
-        self._add_effect_at(effect_type, in_ms)
+        self._add_effect_at(effect_type, in_ms, track_idx=track_idx)
 
-    def _add_effect_at(self, effect_type: str, in_ms: int) -> bool:
+    def _add_effect_at(self, effect_type: str, in_ms: int,
+                       track_idx: int = 0) -> bool:
         """현재 사이드카에 effect_type 의 새 효과를 in_ms 위치에 추가.
 
         영상 끝 가까우면 길이를 영상 끝까지 clamp. 100ms 미만으로 작으면 거부.
+        track_idx 는 multi-라인 type (caption/broll/arrow) 의 sub-lane row 지정 —
+        사용자가 클릭한 row 가 그대로 그 row 에 채워지도록.
         """
         duration_ms = self._get_duration_ms()
         if duration_ms <= 0:
@@ -365,13 +403,14 @@ class VideoTab(QWidget):
         out_ms = min(in_ms + default_len, duration_ms)
         if out_ms - in_ms < 100:
             return False
+        ti = max(0, int(track_idx))
         if effect_type == "caption":
             # 직전 사용 폰트/크기/굵기 가 있으면 상속 (세션 한정). 없으면 Font() 기본값.
             if self._last_caption_font is not None:
                 eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms,
-                                    font=self._last_caption_font)
+                                    font=self._last_caption_font, track_idx=ti)
             else:
-                eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms)
+                eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms, track_idx=ti)
         elif effect_type in ("cut", "cut_splice"):
             # "cut" = lane 우클릭 add (modifier 없는 기본은 splice).
             # "cut_splice" = 단축키 C 명시.
@@ -400,6 +439,7 @@ class VideoTab(QWidget):
                 in_ms=in_ms, out_ms=out_ms,
                 placement="pip",
                 pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+                track_idx=ti,
             )
         elif effect_type == "arrow":
             # 기본 — 화면 좌측 30% 에서 우측 70% 로 향하는 빨간 화살표.
@@ -408,6 +448,7 @@ class VideoTab(QWidget):
                 in_ms=in_ms, out_ms=out_ms,
                 start=Point(x=0.3, y=0.5),
                 end=Point(x=0.7, y=0.5),
+                track_idx=ti,
             )
         else:
             return False
@@ -466,7 +507,14 @@ class VideoTab(QWidget):
         - segment 슬롯: 길이(1초당 1슬롯) 로 결정 — 박스 폭 무관.
         - broll: src 1개당 0ms 한 프레임만 — PreviewOverlay PIP 가이드 안에 채움.
         같은 src 는 ThumbnailService 의 dedup + LRU 캐시로 한 번만 추출.
+
+        2026-05-14: 탭이 보이지 않으면 dispatch defer — showEvent 까지 보류.
+        이유: 여러 탭 동시 열기 시 비가시 탭의 ffmpeg storm 이 가시 탭 로딩까지 막던 회귀.
         """
+        if not self.isVisible():
+            # showEvent 가 깨우면 그때 dispatch.
+            self._initial_thumbs_requested = False
+            return
         lane = self.timeline.video_track_lane
         for seg in sc.video_track:
             for src_ms in lane.thumbnail_slots_for(seg):
@@ -1179,9 +1227,38 @@ class VideoTab(QWidget):
         self._frame_step_accum_ms = 0
 
     def _on_user_seek_request(self, ms: int) -> None:
-        """슬라이더 드래그/클릭 또는 트림 레인 시크 — segment 시간축에서 시크."""
+        """슬라이더 드래그/클릭 또는 트림 레인 시크 — segment 시간축에서 시크.
+
+        2026-05-14 진단: 사용자가 줌이 있는 위치로 재생바를 옮기니 어플이 멈췄다는 보고.
+        seek_combined_ms 호출이 >100ms 면 app.log 에 경고. event loop 막힘 진단.
+        """
+        import time
+        import logging
         self._reset_frame_step_accum()
+        _t0 = time.perf_counter()
         self._segment_ctrl.seek_combined_ms(int(ms))
+        _dt_ms = (time.perf_counter() - _t0) * 1000
+        if _dt_ms > 100:
+            sc = self._edit_controller.sidecar()
+            n_zoom = sum(1 for e in sc.effects
+                         if e.type == "zoom" and e.in_ms <= int(ms) < e.out_ms)
+            n_speed = sum(1 for e in sc.effects
+                          if e.type == "speed" and e.in_ms <= int(ms) < e.out_ms)
+            logging.warning(
+                "video_tab: SLOW seek %.1fms ms=%d (zoom=%d speed=%d)",
+                _dt_ms, int(ms), n_zoom, n_speed,
+            )
+
+    def showEvent(self, event) -> None:  # noqa: N802 — Qt signature
+        """탭이 처음 보일 때 thumbnail filmstrip 디스패치 (defer 효과).
+
+        2026-05-14: 여러 탭 동시 열기 시 비가시 탭이 ffmpeg storm 을 일으켜 가시 탭의
+        프리뷰 로딩까지 지연되던 회귀. QTabWidget 은 보이는 탭만 showEvent 발화.
+        """
+        super().showEvent(event)
+        if not self._initial_thumbs_requested:
+            self._initial_thumbs_requested = True
+            self._request_all_thumbnails(self._edit_controller.sidecar())
 
     def _on_user_play_toggle(self) -> None:
         """재생 토글 (스페이스 / 컨트롤바 ▶ 버튼) — 누적 카운터 초기화."""

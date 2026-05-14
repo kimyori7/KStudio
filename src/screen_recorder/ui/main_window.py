@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 import pygetwindow as gw
 
 from PySide6.QtCore import (
@@ -32,8 +33,13 @@ from PySide6.QtWidgets import (
 
 from screen_recorder.core.controller import RecorderController
 from screen_recorder.core.settings import (
-    AppSettings, default_image_dir, default_video_dir, save as save_settings, settings_path,
+    AppSettings, default_image_dir, default_video_dir,
 )
+# NOTE: settings_path / save 를 *이름으로* import 하지 마세요 — 테스트 격리
+# (conftest 의 isolate_user_settings fixture) 가 `core.settings.<name>` 만
+# monkeypatch 하기 때문에 import-by-name 은 우회됩니다 (2026-05-13 사고: pytest 가
+# 사용자 실제 settings.json 을 defaults 로 덮어쓴 회귀). 항상 모듈 attribute 로 호출.
+from screen_recorder.core import settings as _settings_module
 from screen_recorder.core.state import RecorderState
 from screen_recorder.hotkey.manager import HotkeyManager
 from screen_recorder.capture.targets import (
@@ -81,6 +87,9 @@ from screen_recorder.core.filename import build_filename, resolve_collision
 from .edit_tab import EditTab
 from .video_tab import VideoTab
 from .panels.inspector_panel import InspectorPanel
+from .agent.chat_panel import ChatPanel
+from screen_recorder.agent import AgentRuntime, VideoTools, VideoSessionAdapter
+from screen_recorder.agent.runtime import AgentMessage, AgentEvent
 from screen_recorder.encode.trim import TrimJob
 from screen_recorder.encode.filmstrip import FilmstripJob
 from image_editor.tools.select import SelectTool
@@ -99,6 +108,156 @@ _TOOL_MAP = {
 
 
 from PySide6.QtCore import QEvent, QObject
+
+
+class _MainWindowVideoSession:
+    """AgentTools 가 활성 영상 탭 상태를 읽기 위한 어댑터 (VideoSessionAdapter Protocol).
+
+    매 호출마다 tab_area 를 재조회 — 탭 전환·재로드 시 자동으로 새 상태 반영.
+    """
+    def __init__(self, main_window: "MainWindow") -> None:
+        self._mw = main_window
+
+    def _active(self) -> Optional["VideoTab"]:
+        tab_area = getattr(self._mw, "tab_area", None)
+        if tab_area is None or not hasattr(tab_area, "current_video_tab"):
+            return None
+        return tab_area.current_video_tab()
+
+    def has_active_video(self) -> bool:
+        return self._active() is not None
+
+    def source_path(self) -> Optional[str]:
+        t = self._active()
+        return t.source_path() if t else None
+
+    def duration_ms(self) -> int:
+        t = self._active()
+        return t.duration_ms() if t else 0
+
+    def source_duration_ms(self) -> int:
+        """원본 파일 길이 (cut/trim *전*). duration_ms 는 적용 *후*.
+
+        2026-05-14: 에이전트가 duration_ms (combined, 2:00) 만 보고 "이 영상은 2분" 이라고
+        보고 → 사용자는 파일이 3:24 임을 알고 있어 환각으로 오해. 둘 다 노출 필요.
+        """
+        t = self._active()
+        if t is None:
+            return 0
+        try:
+            return int(t.source_duration_ms())
+        except (AttributeError, TypeError):
+            return 0
+
+    def position_ms(self) -> int:
+        t = self._active()
+        return t.position_ms() if t else 0
+
+    def sidecar(self):
+        t = self._active()
+        return t.sidecar() if t else None
+
+    def list_video_tabs(self) -> list[dict]:
+        """현재 열려있는 모든 영상 탭 (Phase 33 멀티 영상 인식)."""
+        tab_area = getattr(self._mw, "tab_area", None)
+        if tab_area is None:
+            return []
+        tabs_attr = getattr(tab_area, "_tabs", None)
+        if tabs_attr is None:
+            return []
+        from screen_recorder.ui.video_tab import VideoTab
+        active = tab_area.current_video_tab() if hasattr(tab_area, "current_video_tab") else None
+        out: list[dict] = []
+        for i, entry in enumerate(tabs_attr):
+            widget = entry[0] if entry else None
+            if not isinstance(widget, VideoTab):
+                continue
+            try:
+                path = widget.source_path()
+                label = widget.source_label() if hasattr(widget, "source_label") else ""
+            except Exception:
+                continue
+            out.append({
+                "index": i,
+                "label": label,
+                "path": path,
+                "is_active": widget is active,
+            })
+        return out
+
+    def list_broll_sources(self) -> list[dict]:
+        """broll 으로 사용 가능한 영상 파일 후보 — 라이브러리 + 열린 탭.
+
+        Claude 가 broll 효과를 propose 하려면 실제 존재하는 파일 경로가 필요. 추측 금지.
+        반환: [{label, path, source('library'|'tab'), duration_ms?}].
+        """
+        out: list[dict] = []
+        seen_paths: set[str] = set()
+        # 라이브러리에서 video kind 만.
+        lib = getattr(self._mw, "library_model", None)
+        if lib is not None:
+            try:
+                from screen_recorder.ui.library_model import EntryKind
+                for entry in lib.entries(kind=EntryKind.VIDEO):
+                    p = entry.path
+                    if p is None:
+                        continue
+                    key = str(p)
+                    if key in seen_paths:
+                        continue
+                    seen_paths.add(key)
+                    out.append({
+                        "label": entry.display_name or entry.source_label or key,
+                        "path": key,
+                        "source": "library",
+                        "duration_ms": int(getattr(entry, "duration_ms", 0) or 0),
+                    })
+            except Exception:
+                pass
+        # 열린 탭 — 라이브러리에 이미 있으면 dedupe.
+        for tab in self.list_video_tabs():
+            p = tab.get("path")
+            if not p or p in seen_paths:
+                continue
+            seen_paths.add(p)
+            out.append({
+                "label": tab.get("label") or p,
+                "path": p,
+                "source": "tab",
+            })
+        return out
+
+
+class _MainWindowTranscriptContext:
+    """자막 도구가 캐시 위치 + 모델 크기 결정용 (TranscriptContext Protocol)."""
+    def __init__(self, main_window: "MainWindow") -> None:
+        self._mw = main_window
+
+    def sidecar_dir(self):
+        return self._mw._resolve_sidecar_dir()
+
+    def source_hash(self) -> Optional[str]:
+        from screen_recorder.effects import compute_video_hash
+        tab_area = getattr(self._mw, "tab_area", None)
+        if tab_area is None or not hasattr(tab_area, "current_video_tab"):
+            return None
+        tab = tab_area.current_video_tab()
+        if tab is None:
+            return None
+        sc = tab.sidecar()
+        if sc and sc.source_hash:
+            return sc.source_hash
+        try:
+            from pathlib import Path
+            return compute_video_hash(Path(tab.source_path()))
+        except Exception:
+            return None
+
+    def default_model_size(self) -> str:
+        try:
+            return self._mw.app_settings.agent.whisper_model_size or "base"
+        except AttributeError:
+            return "base"
 
 
 class _DockCloseFilter(QObject):
@@ -277,6 +436,91 @@ class MainWindow(QMainWindow):
         self.inspector_dock.setWidget(self.inspector_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.inspector_dock)
         self.inspector_dock.hide()   # 기본 숨김
+
+        # ---------- Claude 에이전트 채팅 패널 (Phase 33 — 2026-05-13) ----------
+        # 사용자가 채팅창에 영상 편집 명령을 자연어로 입력 → Claude Agent SDK 가
+        # 도구를 호출해 응답. Phase A 는 read-only 도구 5개만 — 편집은 Phase B+.
+        # 시작 시 stop_loop 가 thread 종료를 막아주므로 closeEvent 에서 명시적 stop.
+        self._video_session_adapter = _MainWindowVideoSession(self)
+        # AgentRuntime 인스턴스 먼저 부분 생성 — VideoTools 가 콜백으로 참조해야 하므로
+        # 임시 placeholder 후 실제 인스턴스로 wire-up.
+        from screen_recorder.agent.proposals import ProposalQueue
+        self._proposal_queue = ProposalQueue()
+        # 콜백: VideoTools (worker thread) → AgentRuntime.emit_apply_request → UI slot.
+        # AgentRuntime 생성 시 콜백 주입 위해 lambda 로 늦은 바인딩.
+        self._transcript_ctx = _MainWindowTranscriptContext(self)
+        self._video_tools = VideoTools(
+            self._video_session_adapter,
+            ffmpeg_path=str(self.ffmpeg_path) if self.ffmpeg_path else None,
+            proposal_queue=self._proposal_queue,
+            on_apply=lambda props, fut: self.agent_runtime.emit_apply_request(props, fut),
+            transcript_ctx=self._transcript_ctx,
+            on_download_whisper=lambda size, fut: self.agent_runtime.emit_whisper_download_request(size, fut),
+        )
+        self.agent_runtime = AgentRuntime(
+            self._video_tools,
+            cwd=Path(__file__).resolve().parents[3],  # 프로젝트 루트
+            parent=self,
+        )
+        self.agent_runtime.proposals_apply_requested.connect(
+            self._on_agent_proposals_apply,
+        )
+        self.agent_runtime.whisper_download_requested.connect(
+            self._on_agent_whisper_download_requested,
+        )
+        # 저장된 모델 ID + 추론 표시 토글 복원.
+        saved_model_id = getattr(self.app_settings.agent, "model_id", None)
+        saved_show_thinking = getattr(self.app_settings.agent, "show_thinking", True)
+        self.agent_chat_panel = ChatPanel(
+            self,
+            initial_model_id=saved_model_id,
+            initial_show_thinking=saved_show_thinking,
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self.agent_chat_panel)
+        self.agent_chat_panel.user_submitted.connect(self.agent_runtime.send)
+        self.agent_chat_panel.model_changed.connect(self.agent_runtime.set_model)
+        self.agent_chat_panel.model_changed.connect(self._on_agent_model_changed)
+        self.agent_chat_panel.cancel_requested.connect(self.agent_runtime.cancel)
+        self.agent_chat_panel.show_thinking_changed.connect(self._on_agent_show_thinking_changed)
+        # 슬래시 명령 — UI 측 정리는 ChatPanel 가 했고, runtime 측 client lifecycle 만.
+        self.agent_chat_panel.clear_requested.connect(self.agent_runtime.clear_session)
+        self.agent_chat_panel.compact_requested.connect(self.agent_runtime.compact_session)
+        # 미리보기 카드 의 적용/취소 버튼 — apply_proposals pending future 의 resolution.
+        self.agent_chat_panel.proposals_apply_confirmed.connect(
+            self._on_proposals_card_apply_clicked
+        )
+        self.agent_chat_panel.proposals_apply_canceled.connect(
+            self._on_proposals_card_cancel_clicked
+        )
+        self.agent_chat_panel.whisper_download_confirmed.connect(
+            self._on_whisper_card_download_clicked
+        )
+        self.agent_chat_panel.whisper_download_canceled.connect(
+            self._on_whisper_card_cancel_clicked
+        )
+        # apply pending 상태 — Claude 의 apply_proposals 호출이 사용자 버튼 기다리는 동안 보관.
+        self._pending_apply_proposals: list = []
+        self._pending_apply_future = None
+        # Whisper 다운로드 pending 상태.
+        self._pending_whisper_size: Optional[str] = None
+        self._pending_whisper_future = None
+        self.agent_runtime.message_received.connect(self.agent_chat_panel.append_message)
+        self.agent_runtime.event_received.connect(self.agent_chat_panel.append_event)
+        # AgentRuntime 도 저장된 모델로 동기화 (첫 send 전에).
+        try:
+            self.agent_runtime.set_model(self.agent_chat_panel.current_model_id())
+        except (RuntimeError, AttributeError):
+            pass
+        # 대화 영속화 — 이전 세션 기록 복원 + 종료 시 자동 저장.
+        try:
+            from screen_recorder.agent.chat_history import default_history_path
+            self.agent_chat_panel.set_history_path(default_history_path())
+        except Exception:
+            logging.exception("chat history wiring failed")
+        self.agent_chat_panel.append_message(AgentMessage(
+            role="system",
+            text="Claude 에이전트 대기 중. 영상을 연 뒤 '이 영상 뭐 있어?' 같은 질문을 시도해 보세요.",
+        ))
         # 인스펙터 효과 변경 → 현재 활성 VideoTab 에만 전달 (단일 연결).
         # per-tab 연결 방식은 탭 N 개 열면 N 번 발화해 비활성 탭 사이드카도 덮어쓰는
         # 데이터 무결성 버그를 일으킴 (Stage 2 에서 도입, Stage 3a 에서 최초 노출).
@@ -895,7 +1139,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_initializing", False):
             return
         try:
-            save_settings(self.app_settings, settings_path())
+            _settings_module.save(self.app_settings, _settings_module.settings_path())
         except OSError as e:
             logging.getLogger(__name__).warning("settings save failed: %s", e)
 
@@ -1421,6 +1665,273 @@ class MainWindow(QMainWindow):
         widget.edit_controller().update_sidecar(
             self._patch_sidecar_effect(widget.sidecar(), new_effect)
         )
+
+    def _on_agent_model_changed(self, model_id: str) -> None:
+        """ChatPanel 의 모델 드롭다운 변경 → settings 영속화."""
+        if not model_id:
+            return
+        try:
+            self.app_settings.agent.model_id = model_id
+            self._persist_settings()
+        except (AttributeError, RuntimeError):
+            logging.exception("agent model persist failed")
+
+    def _on_agent_whisper_download_requested(self, model_size, future) -> None:
+        """Claude 의 download_whisper_model → UI 동의 카드 표시."""
+        if self._pending_whisper_future is not None:
+            future.set_result({
+                "ok": False,
+                "error": "이전 다운로드 요청 처리 중 — 그 카드를 먼저 처리하세요.",
+            })
+            return
+        self._pending_whisper_size = model_size   # Claude 가 *제안* 한 크기.
+        self._pending_whisper_future = future
+        self.agent_chat_panel.append_message(AgentMessage(
+            role="whisper_download_request",
+            text=f"model_size={model_size}",
+        ))
+
+    def _on_whisper_card_download_clicked(self, chosen_size: str) -> None:
+        """사용자가 카드 [✓ 다운로드] 클릭 → 사용자가 *드롭다운에서 고른* 크기로 실행.
+
+        Claude 가 제안한 크기와 다를 수 있음 — 사용자 선택이 우선. 새 크기를
+        settings.agent.whisper_model_size 로 영속화.
+        """
+        if self._pending_whisper_future is None:
+            return
+        future = self._pending_whisper_future
+        self._pending_whisper_size = None
+        self._pending_whisper_future = None
+        model_size = chosen_size
+        # 다음 transcribe 시 같은 크기 자동 사용하도록 설정 갱신.
+        try:
+            self.app_settings.agent.whisper_model_size = model_size
+            self._persist_settings()
+        except (AttributeError, RuntimeError):
+            pass
+        import threading
+
+        def worker():
+            try:
+                from screen_recorder.agent.transcript import get_transcriber
+                get_transcriber()._ensure_model(model_size)
+                future.set_result({"ok": True, "model_size": model_size,
+                                    "downloaded": True})
+                # UI 측 카드 상태 갱신 — Qt slot 호출 (자동 queued).
+                from PySide6.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(
+                    self.agent_chat_panel, "mark_whisper_download_resolved",
+                    Qt.QueuedConnection, Q_ARG(str, "done"),
+                    Q_ARG(str, f"{model_size} 모델 디스크에 저장됨."),
+                )
+            except Exception as exc:
+                logging.exception("whisper download worker failed")
+                future.set_result({"ok": False, "error": str(exc)})
+                from PySide6.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(
+                    self.agent_chat_panel, "mark_whisper_download_resolved",
+                    Qt.QueuedConnection, Q_ARG(str, "failed"),
+                    Q_ARG(str, str(exc)[:200]),
+                )
+
+        threading.Thread(target=worker, daemon=True, name="whisper-download").start()
+
+    def _on_whisper_card_cancel_clicked(self) -> None:
+        """사용자가 다운로드 거절."""
+        if self._pending_whisper_future is None:
+            return
+        future = self._pending_whisper_future
+        self._pending_whisper_size = None
+        self._pending_whisper_future = None
+        future.set_result({"ok": False, "canceled_by_user": True})
+        self.agent_chat_panel.mark_whisper_download_resolved("canceled")
+
+    def _on_agent_show_thinking_changed(self, on: bool) -> None:
+        """추론 보기 토글 → settings 영속화."""
+        try:
+            self.app_settings.agent.show_thinking = bool(on)
+            self._persist_settings()
+        except (AttributeError, RuntimeError):
+            logging.exception("agent show_thinking persist failed")
+
+    def _on_agent_proposals_apply(self, proposals, future) -> None:
+        """Claude 의 apply_proposals 도구 호출 → UI 스레드 슬롯.
+
+        2026-05-14 사용자 요청: "수락 거절 뜨는데 되돌리기 기능만 넣어주고 수락은 알아서
+        하게 해줄래?" — 매번 확인 카드 띄우는 대신 *즉시 적용*. 잘못된 결과는 사용자가
+        Ctrl+Z (편집 메뉴 → 실행 취소) 로 되돌림. 모든 propose 는 EditController.history
+        에 push 되므로 한 번에 N 개 적용했어도 N 번 undo 로 전부 되돌릴 수 있음.
+
+        edge case (활성 탭 없음 / 편집 모드 OFF) 는 그대로 거부 — 잘못된 상태에서 적용 시도는
+        실패해야 사용자가 원인을 알 수 있음.
+
+        남겨둔 함수들 (`_on_proposals_card_apply_clicked` / `_on_proposals_card_cancel_clicked`):
+        ChatPanel 의 시그널 연결 코드가 유지되므로 그대로 두지만, 자동 적용 흐름에선 카드가
+        뜨지 않아 클릭될 일 없음 — dead code 가 아니라 *unreachable until 토글 reintroduce*.
+        """
+        widget = self.tab_area.currentWidget()
+        if not isinstance(widget, VideoTab):
+            future.set_result({
+                "applied": 0,
+                "errors": ["활성 영상 탭 없음 — 영상을 먼저 열어주세요."],
+                "queue_restored": True,
+            })
+            for p in proposals:
+                self._proposal_queue.add(p)
+            return
+        if not widget.is_edit_mode_on():
+            future.set_result({
+                "applied": 0,
+                "errors": ["편집 모드 OFF — 영상 탭에서 편집 모드를 켠 뒤 다시 시도하세요."],
+                "queue_restored": True,
+            })
+            for p in proposals:
+                self._proposal_queue.add(p)
+            return
+        # 즉시 적용 — 사용자 확인 카드 우회.
+        result = self._apply_proposals_now(list(proposals))
+        try:
+            future.set_result(result)
+        except Exception:
+            logging.exception("apply future set_result failed")
+        # 사용자 안내 메시지 — 적용된 개수 + Ctrl+Z 사용법.
+        applied_n = int(result.get("applied", 0) or 0)
+        errors = result.get("errors") or []
+        if applied_n > 0 and not errors:
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="system",
+                text=f"✓ {applied_n}개 적용. 잘못된 결과면 Ctrl+Z 로 되돌릴 수 있습니다.",
+            ))
+        elif applied_n > 0 and errors:
+            err_txt = "; ".join(str(e) for e in errors[:3])
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="system",
+                text=f"⚠ {applied_n}개 적용 / 일부 실패: {err_txt}. Ctrl+Z 로 되돌릴 수 있습니다.",
+            ))
+        elif errors:
+            err_txt = "; ".join(str(e) for e in errors[:3])
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="error",
+                text=f"적용 실패: {err_txt}",
+            ))
+
+    def _on_proposals_card_apply_clicked(self) -> None:
+        """사용자가 미리보기 카드의 [✓ 적용] 클릭 → 실제 적용."""
+        if self._pending_apply_future is None:
+            return
+        proposals = self._pending_apply_proposals
+        future = self._pending_apply_future
+        self._pending_apply_proposals = []
+        self._pending_apply_future = None
+        result = self._apply_proposals_now(proposals)
+        try:
+            future.set_result(result)
+        except Exception:
+            logging.exception("apply future set_result failed")
+        self.agent_chat_panel.mark_proposals_resolved("applied")
+
+    def _on_proposals_card_cancel_clicked(self) -> None:
+        """사용자가 미리보기 카드의 [✗ 취소] 클릭 → 적용 안 함."""
+        if self._pending_apply_future is None:
+            return
+        proposals = self._pending_apply_proposals
+        future = self._pending_apply_future
+        self._pending_apply_proposals = []
+        self._pending_apply_future = None
+        # 큐 복원 — 사용자가 다시 시도 가능.
+        for p in proposals:
+            self._proposal_queue.add(p)
+        try:
+            future.set_result({
+                "applied": 0,
+                "canceled_by_user": True,
+                "queue_restored": True,
+                "note": "사용자가 적용 취소. 제안은 큐에 다시 복원됨.",
+            })
+        except Exception:
+            logging.exception("apply future set_result failed")
+        self.agent_chat_panel.mark_proposals_resolved("canceled")
+
+    def _apply_proposals_now(self, proposals) -> dict:
+        """실제 sidecar mutation 실행 (UI 스레드).
+
+        action 별 디스패치:
+        - "add"    → ec.add_effect(build_effect_from_proposal(p))
+        - "remove" → ec.remove_effect(effect_id)
+        - "modify" → 기존 효과를 dataclasses.replace 로 부분 갱신 후 ec.update_effect
+
+        같은 배치 안에서 add → modify/remove 가 같은 proposal 을 가리킬 때 자동 remap:
+        Claude 가 prop_ABC 로 add 한 직후 modify(effect_id='prop_ABC') 호출 가능. add 가
+        실제로 만든 effect.id 와 prop_ABC 가 다르므로 (uuid 기반) 그대로 두면 'not found'.
+        proposal_id → real_effect_id 매핑을 한 배치 안에서 유지해 remap.
+        """
+        from dataclasses import replace
+        from screen_recorder.agent.proposals import (
+            apply_modify_overrides, build_effect_from_proposal,
+        )
+        widget = self.tab_area.currentWidget()
+        if not isinstance(widget, VideoTab):
+            return {"applied": 0, "errors": ["활성 영상 탭 없음"]}
+        ec = widget.edit_controller()
+        applied: list[dict] = []
+        errors: list[str] = []
+        # 배치 내 proposal_id → 실제 effect.id 매핑. add 가 성공하면 등록.
+        # modify/remove 가 이전 add 의 proposal_id 를 effect_id 로 보내면 remap.
+        proposal_to_real: dict[str, str] = {}
+        for p in proposals:
+            action = getattr(p, "action", "add")
+            try:
+                if action == "add":
+                    eff = build_effect_from_proposal(p)
+                    ok = ec.add_effect(eff)
+                    if ok:
+                        proposal_to_real[p.id] = eff.id
+                        applied.append({"action": "add", "id": eff.id, "type": p.type, "proposal_id": p.id})
+                    else:
+                        errors.append(f"{p.id} (add {p.type}): rejected")
+                elif action == "remove":
+                    eid_raw = str(p.payload.get("effect_id", ""))
+                    eid = proposal_to_real.get(eid_raw, eid_raw)
+                    ok = ec.remove_effect(eid)
+                    if ok:
+                        applied.append({"action": "remove", "effect_id": eid, "proposal_id": p.id})
+                    else:
+                        errors.append(f"{p.id} (remove): effect_id '{eid}' not found")
+                elif action == "modify":
+                    # 매번 최신 sidecar 를 다시 가져옴 — 직전 add 가 새 효과를 추가했을 수 있음.
+                    sc = widget.sidecar()
+                    eid_raw = str(p.payload.get("effect_id", ""))
+                    eid = proposal_to_real.get(eid_raw, eid_raw)
+                    target = next((e for e in sc.effects if e.id == eid), None) if sc else None
+                    if target is None:
+                        errors.append(f"{p.id} (modify): effect_id '{eid_raw}' not found")
+                        continue
+                    overrides = {k: v for k, v in p.payload.items() if k != "effect_id"}
+                    # nested dict (예: caption.font={"family":"...", "size":48}) 는 그대로
+                    # replace 하면 *dataclass 자리에 dict* 가 들어가 paintEvent 등에서
+                    # AttributeError. asdict→merge→_effect_from_dict 로 정상 coerce.
+                    try:
+                        new_eff = apply_modify_overrides(target, overrides)
+                    except (TypeError, ValueError, KeyError) as exc:
+                        errors.append(f"{p.id} (modify {eid}): invalid field — {exc}")
+                        continue
+                    ok = ec.update_effect(new_eff)
+                    if ok:
+                        applied.append({"action": "modify", "effect_id": eid, "proposal_id": p.id,
+                                        "fields_changed": list(overrides.keys())})
+                    else:
+                        errors.append(f"{p.id} (modify {eid}): rejected (time overlap?)")
+                else:
+                    errors.append(f"{p.id}: unknown action {action!r}")
+            except Exception as exc:
+                logging.exception("agent apply: action=%s proposal=%s failed", action, p.id)
+                errors.append(f"{p.id} ({action}): {exc}")
+        return {
+            "applied": len(applied),
+            "applied_details": applied,
+            "errors": errors,
+            "queue_restored": False,
+        }
 
     def _on_inspector_effect_deleted(self, effect_id: str) -> None:
         """인스펙터에서 효과 삭제 버튼 클릭 시 현재 활성 VideoTab 의 사이드카에서 제거.
@@ -3498,7 +4009,7 @@ class MainWindow(QMainWindow):
     _LIBRARY_MAX_ENTRIES = 50
 
     def _library_thumb_cache_dir(self) -> Path:
-        d = settings_path().parent / "library_thumbs"
+        d = _settings_module.settings_path().parent / "library_thumbs"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -4118,5 +4629,15 @@ class MainWindow(QMainWindow):
         self._save_dock_state_for_mode(self.mode_controller.mode())
         self.hotkeys.shutdown()
         self._stop_mcp_bridge()
+        # 대화 기록 즉시 flush (디바운스 우회) — 종료 race 방지.
+        try:
+            self.agent_chat_panel.flush_history_now()
+        except (RuntimeError, AttributeError):
+            pass
+        # Claude 에이전트 worker thread 정리 — asyncio loop 종료 + QThread join.
+        try:
+            self.agent_runtime.stop()
+        except (RuntimeError, AttributeError):
+            pass
         self._hide_border()
         e.accept()
