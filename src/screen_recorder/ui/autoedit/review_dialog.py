@@ -22,6 +22,14 @@ def _is_scenedetect_available() -> bool:
         return False
 
 
+def _is_librosa_available() -> bool:
+    try:
+        import librosa  # noqa
+        return True
+    except ImportError:
+        return False
+
+
 def _make_card(title: str) -> tuple[QFrame, QVBoxLayout]:
     f = QFrame()
     f.setFrameShape(QFrame.StyledPanel)
@@ -49,6 +57,7 @@ class AutoEditReviewDialog(QDialog):
         root.addWidget(self._build_silence_card())
         root.addWidget(self._build_caption_card())
         root.addWidget(self._build_scene_card())
+        root.addWidget(self._build_bpm_card())
 
         # 적용 / 취소 / 기본값.
         btn_row = QHBoxLayout()
@@ -163,6 +172,48 @@ class AutoEditReviewDialog(QDialog):
     def scene_checkbox(self) -> QCheckBox: return self._scene_check
     def scene_count_label(self) -> QLabel: return self._scene_count
 
+    def _build_bpm_card(self) -> QFrame:
+        card, lay = _make_card("🥁 BPM 비트 sync")
+        row1 = QHBoxLayout()
+        self._bpm_check = QCheckBox("사용 (음악 영상에 권장)")
+        self._bpm_check.setChecked(self._settings.bpm_enabled)
+        self._bpm_check.toggled.connect(self._on_bpm_toggle)
+        row1.addWidget(self._bpm_check)
+        row1.addStretch(1)
+        lay.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("신뢰도"))
+        self._bpm_slider = QSlider(Qt.Horizontal)
+        self._bpm_slider.setRange(40, 90)   # 0.4 ~ 0.9 (slider int → /100)
+        self._bpm_slider.setValue(int(self._settings.bpm_confidence * 100))
+        self._bpm_slider.valueChanged.connect(self._on_bpm_slider)
+        self._bpm_val = QLabel(f"{self._settings.bpm_confidence:.2f}")
+        self._bpm_slider.setEnabled(self._settings.bpm_enabled)
+        row2.addWidget(self._bpm_slider, stretch=1)
+        row2.addWidget(self._bpm_val)
+        lay.addLayout(row2)
+
+        if not _is_librosa_available():
+            self._bpm_check.setEnabled(False)
+            self._bpm_check.setChecked(False)
+            self._bpm_check.setToolTip("BPM 분석을 쓰려면: pip install librosa")
+            self._bpm_slider.setEnabled(False)
+            self._settings.bpm_enabled = False
+        return card
+
+    def _on_bpm_toggle(self, c: bool) -> None:
+        self._settings.bpm_enabled = c
+        self._bpm_slider.setEnabled(c)
+        self._filter_timer.start()
+
+    def _on_bpm_slider(self, v: int) -> None:
+        self._settings.bpm_confidence = v / 100.0
+        self._bpm_val.setText(f"{self._settings.bpm_confidence:.2f}")
+        self._filter_timer.start()
+
+    def bpm_checkbox(self) -> QCheckBox: return self._bpm_check
+
     def _on_caption_toggle(self, c: bool) -> None:
         self._settings.caption_enabled = c
         self._caption_slider.setEnabled(c)
@@ -195,6 +246,9 @@ class AutoEditReviewDialog(QDialog):
         if _is_scenedetect_available():
             self._scene_check.setChecked(self._settings.scene_enabled)
         self._scene_slider.setValue(self._settings.scene_sensitivity)
+        if _is_librosa_available():
+            self._bpm_check.setChecked(self._settings.bpm_enabled)
+        self._bpm_slider.setValue(int(self._settings.bpm_confidence * 100))
         self._filter_timer.stop()
         self._refresh_counts()
 

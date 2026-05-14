@@ -54,3 +54,10 @@ def test_scene_card_count(qtbot):
     d = AutoEditReviewDialog(raw)
     qtbot.addWidget(d)
     assert "1개" in d.scene_count_label().text()
+
+
+def test_bpm_card_off_by_default(qtbot):
+    raw = AutoEditResult(source_hash="x")
+    d = AutoEditReviewDialog(raw)
+    qtbot.addWidget(d)
+    assert not d.bpm_checkbox().isChecked()

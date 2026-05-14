@@ -11,3 +11,12 @@ def test_scenedetect_missing_dims_scene_card(qtbot):
         qtbot.addWidget(d)
         assert not d.scene_checkbox().isEnabled()
         assert "pip install scenedetect" in d.scene_checkbox().toolTip()
+
+
+def test_librosa_missing_dims_bpm_card(qtbot):
+    raw = AutoEditResult(source_hash="x")
+    with patch("screen_recorder.ui.autoedit.review_dialog._is_librosa_available", return_value=False):
+        d = AutoEditReviewDialog(raw)
+        qtbot.addWidget(d)
+        assert not d.bpm_checkbox().isEnabled()
+        assert "pip install librosa" in d.bpm_checkbox().toolTip()
