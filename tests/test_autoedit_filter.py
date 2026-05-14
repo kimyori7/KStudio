@@ -64,3 +64,17 @@ def test_caption_max_chars_splits_long_segment():
     assert len(effects) == 4
     assert effects[0].in_ms == 0
     assert effects[-1].out_ms == 6000
+
+
+def test_scene_changes_to_zoom_effects():
+    raw = AutoEditResult(source_hash="x", scene_changes=[(5000, 35.0), (10000, 28.0)])
+    s = default_settings()
+    s.silence_enabled = False; s.caption_enabled = False
+    s.scene_sensitivity = 30
+    effects = apply_thresholds(raw, s)
+    # 30 임계값 이상만 — 35.0 통과, 28.0 제외.
+    zooms = [e for e in effects if e.type == "zoom"]
+    assert len(zooms) == 1
+    assert zooms[0].in_ms == 5000
+    assert zooms[0].out_ms == 7000   # 2초 지속
+    assert zooms[0].mode == "magnify_region"

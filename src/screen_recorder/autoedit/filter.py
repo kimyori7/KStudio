@@ -20,7 +20,8 @@ def apply_thresholds(raw: AutoEditResult, s: AutoEditSettings) -> list:
         effects.extend(_silence_to_cuts(raw, s))
     if s.caption_enabled:
         effects.extend(_transcript_to_captions(raw, s))
-    # scene / bpm 은 후속 Phase 에서 채움.
+    if s.scene_enabled:
+        effects.extend(_scenes_to_zooms(raw, s))
     return effects
 
 
@@ -58,6 +59,34 @@ def _transcript_to_captions(raw: AutoEditResult, s: AutoEditSettings) -> list:
                 text=ch,
                 font=Font(),
             ))
+    return out
+
+
+def _scenes_to_zooms(raw: AutoEditResult, s: AutoEditSettings) -> list:
+    """씬 시작 지점 → magnify_region ZoomEffect (가운데 60% 영역 → 화면 가득).
+
+    sensitivity 이상 score 만 통과. 지속 2초 고정.
+
+    ZoomEffect 에는 region_cx/region_cy 필드가 없다 (center 는 ZoomPoint.cx/cy).
+    region_w/region_h 만 지정 — 중심은 기본값 0.5/0.5 (start/end ZoomPoint 기본값).
+    """
+    from ..effects.types.zoom import ZoomEffect, ZoomPoint
+    out = []
+    for ms, score in raw.scene_changes:
+        if score < s.scene_sensitivity:
+            continue
+        out.append(ZoomEffect(
+            id=str(uuid4()),
+            in_ms=ms,
+            out_ms=ms + 2000,
+            mode="magnify_region",
+            region_w=0.6,
+            region_h=0.6,
+            dest_cx=0.5,
+            dest_cy=0.5,
+            dest_w=1.0,
+            dest_h=1.0,
+        ))
     return out
 
 
