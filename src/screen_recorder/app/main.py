@@ -14,14 +14,19 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from screen_recorder.app import windows_assoc, windows_autostart
 from screen_recorder.core.ffmpeg_check import find_ffmpeg
-from screen_recorder.core.settings import AppSettings, load, save, settings_path
+from screen_recorder.core import settings as _settings_module
+from screen_recorder.core.settings import AppSettings
 from screen_recorder.ui.main_window import MainWindow
 
 # 부팅 시 자동 시작으로 진입했음을 알리는 플래그 — 메인 창을 숨기고 트레이만 띄운다.
 _TRAY_FLAG = "--tray"
 
 
-SETTINGS_PATH = settings_path()
+# **주의**: 모듈 import 시점에 한 번 평가하면 테스트 isolate fixture(`isolate_user_settings`)
+# 가 적용되기 *이전* 에 실제 경로가 박혀 우회 가능. 회귀 (2026-05-13: pytest 가 사용자
+# 실제 settings.json 을 defaults 로 덮어씀). 항상 함수 호출 시점에 평가하도록 변경.
+def SETTINGS_PATH() -> Path:
+    return _settings_module.settings_path()
 
 
 def build_main_window(
@@ -36,7 +41,7 @@ def build_main_window(
     """
     if settings is None:
         try:
-            settings = load(SETTINGS_PATH)
+            settings = _settings_module.load(SETTINGS_PATH())
         except (OSError, ValueError):
             settings = AppSettings()
     if ffmpeg_path is None:
@@ -68,7 +73,7 @@ def main() -> int:
     app.setWindowIcon(app_icon())
     # 마지막 사용 모드를 settings 에서 읽어 초기 테마 적용 — 재시작 시 깜빡임 방지.
     # 잘못된 값(파일 손상/구버전)은 "image" 로 폴백.
-    settings = load(SETTINGS_PATH)
+    settings = _settings_module.load(SETTINGS_PATH())
     initial_palette = settings.preferences.last_mode
     if initial_palette not in ("video", "image"):
         initial_palette = "image"
@@ -104,7 +109,7 @@ def main() -> int:
     win = MainWindow(settings=settings, ffmpeg_path=ffmpeg)
 
     def on_about_to_quit():
-        save(win.app_settings, SETTINGS_PATH)
+        _settings_module.save(win.app_settings, SETTINGS_PATH())
     app.aboutToQuit.connect(on_about_to_quit)
 
     # 패키지된 빌드라면 .kstudio 확장자 연결을 한 번 갱신 (HKCU, idempotent).

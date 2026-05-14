@@ -24,14 +24,42 @@ def isolate_user_settings(monkeypatch, tmp_path):
     """테스트가 사용자 실제 settings.json (~/AppData/Local/KStudio/settings.json) 을
     덮어쓰는 것을 차단.
 
-    회귀 (2026-05-12): 어떤 통합 테스트가 save() 흐름을 타면서 실제 settings 파일을
-    pytest 임시 경로로 채워 사용자의 라이브러리/단축키/dock 상태가 모두 날아갔다.
-    settings_path() 를 tmp_path 안의 가짜 파일로 monkeypatch — 테스트가 어떤
-    경로로 save() 를 호출해도 사용자 데이터에 영향을 주지 않게 격리.
+    회귀 (2026-05-12, 2026-05-13): 통합 테스트의 save() 가 실제 settings 파일을
+    덮어써 라이브러리/단축키/dock 상태가 날아갔다.
+
+    2026-05-13 추가 회귀: `settings_path` 를 *이름으로* import 한 모듈 (예:
+    `from .settings import settings_path`) 은 모듈-attribute monkeypatch 우회 가능.
+    main_window.py 와 app/main.py 가 그런 import 를 했었음. 이중 차단:
+    1) `core.settings.settings_path` 자체 patch — 함수 호출 시점 lookup 하는 경로.
+    2) 직접 path-방어: `core.settings.save` 도 패치해 tmp_path 외부 쓰기 거부 +
+       즉시 fail. 호출자가 이름-bound `settings_path` 를 끼고 들어와도 save 가
+       경로를 검사해서 막음.
     """
     from screen_recorder.core import settings as _settings_mod
     fake_path = tmp_path / "kstudio_test_settings.json"
     monkeypatch.setattr(_settings_mod, "settings_path", lambda: fake_path)
+
+    # belt-and-suspenders: save() 도 wrap — 호출 경로가 tmp_path 가 아니면
+    # 강제로 fake_path 로 리다이렉트 + AssertionError 로 즉시 실패. 테스트가
+    # 우회 경로로 사용자 데이터에 쓰는 사고를 발견 즉시 잡음.
+    _real_save = _settings_mod.save
+
+    def _guarded_save(settings, path):
+        from pathlib import Path
+        p = Path(path).resolve()
+        tmp_root = Path(tmp_path).resolve()
+        try:
+            p.relative_to(tmp_root)
+        except ValueError:
+            raise AssertionError(
+                f"테스트가 tmp_path 외부 경로에 settings save 시도! path={p}\n"
+                f"원인: settings_path 를 import-by-name 으로 가져온 모듈이 monkeypatch "
+                f"우회. core.settings 의 `from screen_recorder.core import settings as _m` "
+                f"패턴으로 변경하세요."
+            )
+        return _real_save(settings, path)
+
+    monkeypatch.setattr(_settings_mod, "save", _guarded_save)
 
 
 @pytest.fixture(autouse=True)
