@@ -1852,6 +1852,16 @@ class MainWindow(QMainWindow):
             logging.exception("apply future set_result failed")
         self.agent_chat_panel.mark_proposals_resolved("canceled")
 
+    def append_autoedit_system_message(self, n_effects: int, failed: list[str]) -> None:
+        """자동편집 완료 시 사용자 안내. 채팅 패널에 시스템 메시지로 출력."""
+        if not hasattr(self, "agent_chat_panel"):
+            return
+        msg = f"✓ 자동편집 완료. {n_effects}개 효과 추가. Ctrl+Z 로 되돌릴 수 있습니다."
+        if failed:
+            msg += f" (실패한 분석기: {', '.join(failed)})"
+        from screen_recorder.agent.runtime import AgentMessage
+        self.agent_chat_panel.append_message(AgentMessage(role="system", text=msg))
+
     def _apply_proposals_now(self, proposals) -> dict:
         """실제 sidecar mutation 실행 (UI 스레드).
 
