@@ -435,6 +435,7 @@ class VideoTab(QWidget):
 
     def _on_autoedit_result_ready(self, raw, failed: list) -> None:
         """coordinator 분석 완료 → 리뷰 다이얼로그 표시 → 적용."""
+        from PySide6.QtWidgets import QDialog
         from .autoedit.review_dialog import AutoEditReviewDialog
         # 진행률 다이얼로그가 떠 있으면 닫음 (캐시 hit 이라 안 떴을 수도).
         if getattr(self, "_progress_dlg", None) is not None:
@@ -442,11 +443,11 @@ class VideoTab(QWidget):
             self._progress_dlg = None
         self._autoedit_last_raw = raw
         dlg = AutoEditReviewDialog(raw, parent=self)
-        if dlg.exec() == dlg.Accepted:
+        # PySide6 에서 enum 은 클래스 통해서만 접근 — `dlg.Accepted` 는 AttributeError.
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             effects = dlg.compute_effects()
             for eff in effects:
                 self._edit_controller.add_effect(eff)
-            # Task 5.2 에서 시스템 메시지 추가됨.
             self._notify_autoedit_done(len(effects), failed)
 
     def _notify_autoedit_done(self, n: int, failed: list[str]) -> None:
