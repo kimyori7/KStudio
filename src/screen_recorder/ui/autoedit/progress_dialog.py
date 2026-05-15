@@ -37,6 +37,19 @@ class AutoEditProgressDialog(QDialog):
             self._bar.setRange(0, 100)
         self._bar.setValue(int(max(0.0, min(1.0, frac)) * 100))
 
+    def set_phase_label(self, whisper_model: str, is_download: bool) -> None:
+        """초기 라벨을 모델별 메시지로 — '다운로드 중' / '분석 중'.
+
+        VideoTab._start_autoedit 가 모델 캐시 여부 확인 후 호출.
+        """
+        if is_download:
+            self._label.setText(
+                f"⬇ Whisper '{whisper_model}' 모델 다운로드 중...\n"
+                f"(네트워크 속도에 따라 1~10분, 한 번만 받음)"
+            )
+        else:
+            self._label.setText(f"분석 중... (Whisper '{whisper_model}')")
+
     def label(self) -> QLabel: return self._label
     def bar(self) -> QProgressBar: return self._bar
     def cancel_button(self) -> QPushButton: return self._cancel

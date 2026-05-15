@@ -1,4 +1,5 @@
 """AutoEditReviewDialog — 슬라이더 변경 시 카운트 라이브 갱신, '적용' 시 effects 반환."""
+from unittest.mock import patch
 from screen_recorder.autoedit.result import AutoEditResult
 from screen_recorder.ui.autoedit.review_dialog import AutoEditReviewDialog
 
@@ -114,3 +115,33 @@ def test_reanalyze_click_emits_signal_with_new_model(qtbot):
     with qtbot.waitSignal(d.reanalyze_requested, timeout=1000) as blocker:
         d.reanalyze_button().click()
     assert blocker.args == ["medium"]
+
+
+def test_button_label_download_for_uncached_model(qtbot):
+    """캐시 안 된 모델 선택 → 버튼 라벨 '⬇ 다운로드 + 분석'."""
+    raw = AutoEditResult(source_hash="x")
+    # large-v3 만 받음 — 나머지는 미다운로드 가정.
+    with patch("screen_recorder.ui.autoedit.review_dialog._is_model_downloaded",
+               side_effect=lambda m: m == "large-v3"):
+        d = AutoEditReviewDialog(raw, current_whisper_model="large-v3")
+        qtbot.addWidget(d)
+        # tiny 로 변경 → 캐시 X → 다운로드 라벨.
+        for i in range(d.model_combo().count()):
+            if d.model_combo().itemData(i) == "tiny":
+                d.model_combo().setCurrentIndex(i)
+                break
+        assert "다운로드" in d.reanalyze_button().text()
+
+
+def test_button_label_reanalyze_for_cached_model(qtbot):
+    """캐시 된 모델 선택 → 버튼 라벨 '재분석'."""
+    raw = AutoEditResult(source_hash="x")
+    with patch("screen_recorder.ui.autoedit.review_dialog._is_model_downloaded",
+               return_value=True):
+        d = AutoEditReviewDialog(raw, current_whisper_model="large-v3")
+        qtbot.addWidget(d)
+        for i in range(d.model_combo().count()):
+            if d.model_combo().itemData(i) == "base":
+                d.model_combo().setCurrentIndex(i)
+                break
+        assert d.reanalyze_button().text() == "재분석"

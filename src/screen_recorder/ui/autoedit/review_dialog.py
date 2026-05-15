@@ -179,8 +179,18 @@ class AutoEditReviewDialog(QDialog):
         return card
 
     def _refresh_reanalyze_state(self) -> None:
+        """버튼 라벨/활성 — 같은 모델이면 비활성, 다른 모델이면 캐시 여부 따라 라벨."""
         selected = self._model_combo.currentData()
-        self._reanalyze_btn.setEnabled(selected != self._current_whisper_model)
+        if selected == self._current_whisper_model:
+            self._reanalyze_btn.setEnabled(False)
+            self._reanalyze_btn.setText("재분석")
+        elif _is_model_downloaded(selected):
+            self._reanalyze_btn.setEnabled(True)
+            self._reanalyze_btn.setText("재분석")
+        else:
+            # 캐시 X — 누르면 faster-whisper 가 자동 다운로드 후 분석.
+            self._reanalyze_btn.setEnabled(True)
+            self._reanalyze_btn.setText("⬇ 다운로드 + 분석")
 
     def _on_reanalyze_clicked(self) -> None:
         new_model = self._model_combo.currentData()

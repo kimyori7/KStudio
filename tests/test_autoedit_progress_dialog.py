@@ -37,3 +37,21 @@ def test_initial_label_mentions_first_run_download(qtbot):
     d = AutoEditProgressDialog(parent=None)
     qtbot.addWidget(d)
     assert "Whisper" in d.label().text() or "다운로드" in d.label().text()
+
+
+def test_set_phase_label_download(qtbot):
+    """다운로드 phase 라벨에 모델명 + 다운로드 안내."""
+    d = AutoEditProgressDialog(parent=None)
+    qtbot.addWidget(d)
+    d.set_phase_label("large-v3", is_download=True)
+    assert "large-v3" in d.label().text()
+    assert "다운로드" in d.label().text()
+
+
+def test_set_phase_label_analyze(qtbot):
+    """분석 phase 라벨에 모델명만 (다운로드 표시 없음)."""
+    d = AutoEditProgressDialog(parent=None)
+    qtbot.addWidget(d)
+    d.set_phase_label("base", is_download=False)
+    assert "base" in d.label().text()
+    assert "분석" in d.label().text()

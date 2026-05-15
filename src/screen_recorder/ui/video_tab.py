@@ -431,6 +431,12 @@ class VideoTab(QWidget):
         parent = self.window()
         agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
         whisper_model = agent_settings.whisper_model_size if agent_settings else "large-v3"
+        # 진행률 다이얼로그 라벨을 모델 다운로드 / 분석 따라 적절히.
+        from .autoedit.review_dialog import _is_model_downloaded
+        self._progress_dlg.set_phase_label(
+            whisper_model=whisper_model,
+            is_download=not _is_model_downloaded(whisper_model),
+        )
         self._autoedit_coord.run(
             media_path=src,
             source_hash=source_hash,
