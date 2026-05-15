@@ -9,11 +9,13 @@ def test_caption_minimal_construct():
     c = CaptionEffect(in_ms=0, out_ms=1000, text="hi")
     assert c.type == "caption"
     assert c.text == "hi"
-    # 기본값 확인
-    assert c.font.family  # 비어있지 않음
-    assert c.font.size == 36
+    # 기본값 확인 (2026-05-15 변경: 맑은 고딕 30 + 외곽선 검정 두께 2 기본)
+    assert c.font.family == "맑은 고딕"
+    assert c.font.size == 30
     assert c.fill == "#ffffff"
-    assert c.stroke is None or isinstance(c.stroke, Stroke)
+    assert isinstance(c.stroke, Stroke)
+    assert c.stroke.color == "#000000"
+    assert c.stroke.width == 2
 
 
 def test_caption_full_construct():

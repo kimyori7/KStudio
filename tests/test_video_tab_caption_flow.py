@@ -117,8 +117,8 @@ def test_new_caption_inherits_last_used_font(qtbot, sample_mp4, tmp_path):
     tab.lanes_widget().request_add.emit("caption", 1000, 0)
     sc = tab.sidecar()
     first = sc.effects[0]
-    assert first.font.family == "sans-serif"  # 기본
-    assert first.font.size == 36
+    assert first.font.family == "맑은 고딕"   # 기본 (2026-05-15 변경)
+    assert first.font.size == 30
 
     # 2) 사용자가 폰트 변경 — 인스펙터 경로 모사 (update_effect 직접 호출).
     custom = Font(family="Arial", size=72, bold=True)

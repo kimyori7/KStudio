@@ -426,10 +426,15 @@ class VideoTab(QWidget):
         self._autoedit_coord.progress_updated.connect(self._progress_dlg.update_progress)
         self._progress_dlg.cancelled.connect(self._autoedit_coord.cancel)
         self._progress_dlg.show()
+        # 모델은 MainWindow.app_settings.agent 에서 — 사용자가 환경설정 변경 시 즉시 반영.
+        # MainWindow 없는 단위 테스트 환경엔 default "large-v3" fallback.
+        parent = self.window()
+        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
+        whisper_model = agent_settings.whisper_model_size if agent_settings else "large-v3"
         self._autoedit_coord.run(
             media_path=src,
             source_hash=source_hash,
-            whisper_model="base",
+            whisper_model=whisper_model,
             cache_dir=self._edit_controller.sidecar_dir(),
         )
 
@@ -446,8 +451,7 @@ class VideoTab(QWidget):
         # PySide6 에서 enum 은 클래스 통해서만 접근 — `dlg.Accepted` 는 AttributeError.
         if dlg.exec() == QDialog.DialogCode.Accepted:
             effects = dlg.compute_effects()
-            for eff in effects:
-                self._edit_controller.add_effect(eff)
+            self._edit_controller.add_effects(effects)
             self._notify_autoedit_done(len(effects), failed)
 
     def _notify_autoedit_done(self, n: int, failed: list[str]) -> None:

@@ -197,10 +197,11 @@ class AgentSettings:
 
     - model_id: ChatPanel 드롭다운으로 사용자가 선택. 다음 실행 시 복원.
     - whisper_model_size: Phase D 자막 추출용 (tiny/base/small/medium/large-v3).
-      base 가 한국어 정확도/속도 균형 권장. 사용자가 환경설정에서 변경.
+      large-v3 가 한국어 정확도 가장 높음 (3GB, base 대비 ~5배 느림).
+      사용자 요구 (2026-05-15) — "제일 좋은 걸로". 환경설정에서 변경 가능.
     """
     model_id: str = "claude-sonnet-4-6"
-    whisper_model_size: str = "base"
+    whisper_model_size: str = "large-v3"
     # 추론(ThinkingBlock) 표시 ON/OFF — 노이즈 줄이고 싶을 때 끔.
     # OFF 여도 Claude 는 내부적으로 thinking 수행 (응답 품질 유지) — 화면 표시만 가림.
     show_thinking: bool = True

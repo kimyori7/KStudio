@@ -16,8 +16,9 @@ _VALID_ANCHORS = {
 
 @dataclass
 class Font:
-    family: str = "sans-serif"
-    size: int = 36
+    # 한국어 화면녹화 대상 — Windows 기본 시스템 폰트.
+    family: str = "맑은 고딕"
+    size: int = 30
     bold: bool = False
 
     def __post_init__(self) -> None:
@@ -70,7 +71,8 @@ class CaptionEffect(Effect):
     text: str = ""
     font: Font = field(default_factory=Font)
     fill: str = "#ffffff"
-    stroke: Stroke | None = None
+    # 기본 외곽선 — 어떤 배경에서도 가독성 보장 (검정 두께 2).
+    stroke: Stroke | None = field(default_factory=lambda: Stroke(color="#000000", width=2))
     shadow: bool = False
     background: Background | None = None
     position: Position = field(default_factory=Position)
