@@ -43,40 +43,58 @@ def apply_thresholds(raw: AutoEditResult, s: AutoEditSettings) -> list:
     return effects
 
 
+def _wrap_text_for_caption(text: str, max_chars: int) -> str:
+    """한 자막 안에서 max_chars 단위로 줄바꿈.
+
+    1순위: 공백 단위 (영문/한글 띄어쓰기 보존).
+    각 단어가 max_chars 보다 길거나 공백 없는 텍스트는 char-level fallback.
+    """
+    if len(text) <= max_chars:
+        return text
+    words = text.split()
+    if len(words) > 1:
+        lines: list[str] = []
+        cur = ""
+        for w in words:
+            if not cur:
+                cur = w
+            elif len(cur) + 1 + len(w) <= max_chars:
+                cur += " " + w
+            else:
+                lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        # 단어 wrap 성공 시 (모든 줄이 max_chars 안) 반환.
+        if all(len(l) <= max_chars for l in lines):
+            return "\n".join(lines)
+    # 공백 없는 텍스트 (한국어 한 덩어리) — char-level 분할 fallback.
+    return "\n".join(text[i:i + max_chars] for i in range(0, len(text), max_chars))
+
+
 def _transcript_to_captions(raw: AutoEditResult, s: AutoEditSettings) -> list:
     """Whisper transcript segments → CaptionEffect.
 
-    한 줄 글자수 (s.caption_max_chars) 초과 시 균등 분할. 시간도 균등 분할.
+    한 자막 = 한 Whisper segment. text 가 caption_max_chars 초과 시 한 자막 *안에서*
+    줄바꿈 (\\n) — 시간 분할 X. 사용자 기대: '한 줄 최대 N자' = 자동 줄바꿈.
     """
     from ..effects.types.caption import CaptionEffect, Font
     out = []
+    max_chars = max(1, s.caption_max_chars)
     for seg in raw.transcript_segments:
         text = seg.get("text", "")
         in_ms = int(seg.get("in_ms", 0))
         out_ms = int(seg.get("out_ms", in_ms + 1000))
         if not text:
             continue
-        # max_chars 초과 시 균등 분할.
-        max_chars = max(1, s.caption_max_chars)
-        if len(text) <= max_chars:
-            chunks = [text]
-        else:
-            n = (len(text) + max_chars - 1) // max_chars
-            chunk_len = (len(text) + n - 1) // n
-            chunks = [text[i:i + chunk_len] for i in range(0, len(text), chunk_len)]
-        # 시간도 균등 분할.
-        total = max(1, out_ms - in_ms)
-        per = total // len(chunks)
-        for i, ch in enumerate(chunks):
-            start = in_ms + i * per
-            end = in_ms + (i + 1) * per if i < len(chunks) - 1 else out_ms
-            out.append(CaptionEffect(
-                id=str(uuid4()),
-                in_ms=start,
-                out_ms=end,
-                text=ch,
-                font=Font(),
-            ))
+        wrapped = _wrap_text_for_caption(text, max_chars)
+        out.append(CaptionEffect(
+            id=str(uuid4()),
+            in_ms=in_ms,
+            out_ms=out_ms,
+            text=wrapped,
+            font=Font(),
+        ))
     return out
 
 

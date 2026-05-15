@@ -3,15 +3,32 @@
 Phase 1 = silence 카드만. caption/scene/bpm 카드는 후속 Phase 에서 추가.
 """
 from __future__ import annotations
+from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
+    QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
     QSlider, QVBoxLayout, QWidget,
 )
 
 from ...autoedit.result import AutoEditResult
 from ...autoedit.presets import AutoEditSettings, default_settings
 from ...autoedit.filter import apply_thresholds
+
+
+WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+WHISPER_MODEL_LABELS = {
+    "tiny": "tiny (~75MB, 가장 빠름, 정확도 낮음)",
+    "base": "base (~150MB, 빠름)",
+    "small": "small (~500MB, 보통)",
+    "medium": "medium (~1.5GB, 느림, 정확)",
+    "large-v3": "large-v3 (~3GB, 매우 느림, 최고 정확)",
+}
+
+
+def _is_model_downloaded(model_size: str) -> bool:
+    """HuggingFace 캐시에 해당 모델이 받아져 있는지 — 라벨에 '(다운로드 필요)' 표시용."""
+    cache = Path.home() / ".cache" / "huggingface" / "hub" / f"models--Systran--faster-whisper-{model_size}"
+    return cache.exists()
 
 
 def _is_scenedetect_available() -> bool:
@@ -40,11 +57,21 @@ def _make_card(title: str) -> tuple[QFrame, QVBoxLayout]:
 
 
 class AutoEditReviewDialog(QDialog):
-    def __init__(self, raw: AutoEditResult, parent: QWidget | None = None) -> None:
+    # 사용자가 자막 카드의 '재분석' 누름 → 다이얼로그 닫고 새 모델로 다시 분석.
+    reanalyze_requested = Signal(str)   # new_model
+
+    def __init__(
+        self,
+        raw: AutoEditResult,
+        parent: QWidget | None = None,
+        *,
+        current_whisper_model: str = "large-v3",
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("자동 편집 결과 미리보기")
         self.setModal(True)
         self._raw = raw
+        self._current_whisper_model = current_whisper_model
         self._settings = default_settings()
 
         # debounce: 슬라이더 드래그 중 100ms 마다만 재필터.
@@ -125,7 +152,44 @@ class AutoEditReviewDialog(QDialog):
         row2.addWidget(self._caption_slider, stretch=1)
         row2.addWidget(self._caption_val)
         lay.addLayout(row2)
+
+        # Whisper 모델 선택 + 재분석 (정확도 부족할 때 더 큰 모델로).
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Whisper 모델"))
+        self._model_combo = QComboBox()
+        for m in WHISPER_MODELS:
+            label = WHISPER_MODEL_LABELS[m]
+            if not _is_model_downloaded(m):
+                label += "  ⬇ 다운로드 필요"
+            self._model_combo.addItem(label, userData=m)
+        # 현재 모델 선택.
+        for i in range(self._model_combo.count()):
+            if self._model_combo.itemData(i) == self._current_whisper_model:
+                self._model_combo.setCurrentIndex(i)
+                break
+        row3.addWidget(self._model_combo, stretch=1)
+        self._reanalyze_btn = QPushButton("재분석")
+        self._reanalyze_btn.setToolTip("선택한 모델로 다시 분석 — 다운로드 안 되어 있으면 자동 받음")
+        self._reanalyze_btn.clicked.connect(self._on_reanalyze_clicked)
+        # 현재 모델 그대로면 비활성 (의미 없는 재분석 방지).
+        self._model_combo.currentIndexChanged.connect(self._refresh_reanalyze_state)
+        self._refresh_reanalyze_state()
+        row3.addWidget(self._reanalyze_btn)
+        lay.addLayout(row3)
         return card
+
+    def _refresh_reanalyze_state(self) -> None:
+        selected = self._model_combo.currentData()
+        self._reanalyze_btn.setEnabled(selected != self._current_whisper_model)
+
+    def _on_reanalyze_clicked(self) -> None:
+        new_model = self._model_combo.currentData()
+        # 다이얼로그 닫고 시그널 emit — VideoTab 이 받아 settings 갱신 + _start_autoedit.
+        self.reject()
+        self.reanalyze_requested.emit(new_model)
+
+    def model_combo(self) -> QComboBox: return self._model_combo
+    def reanalyze_button(self) -> QPushButton: return self._reanalyze_btn
 
     def _build_scene_card(self) -> QFrame:
         card, lay = _make_card("🎬 씬 감지")

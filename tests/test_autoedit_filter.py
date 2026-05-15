@@ -49,27 +49,52 @@ def test_caption_segments_to_caption_effects_sentence_split():
     assert effects[0].text == "안녕하세요."
 
 
-def test_caption_max_chars_splits_long_segment():
+def test_caption_max_chars_wraps_within_single_effect():
+    """한 자막 안에서 줄바꿈 — 시간 분할 X. (2026-05-15 fix)"""
     raw = AutoEditResult(
         source_hash="x",
         transcript_segments=[
-            {"in_ms": 0, "out_ms": 6000, "text": "0123456789" * 4},  # 40자
+            {"in_ms": 0, "out_ms": 6000, "text": "0123456789" * 4},  # 공백 없는 40자
         ],
     )
     s = default_settings()
     s.silence_enabled = False; s.scene_enabled = False
     s.caption_max_chars = 10
     effects = apply_thresholds(raw, s)
-    # 40 / 10 = 4 분할.
-    assert len(effects) == 4
+    # 1개 effect, text 안에 \n 으로 4줄.
+    assert len(effects) == 1
     assert effects[0].in_ms == 0
-    assert effects[-1].out_ms == 6000
+    assert effects[0].out_ms == 6000
+    lines = effects[0].text.split("\n")
+    assert len(lines) == 4
+    assert all(len(l) <= 10 for l in lines)
+
+
+def test_caption_wrap_prefers_word_boundary():
+    """공백 있는 텍스트는 단어 단위로 wrap (영문/한글 띄어쓰기 보존)."""
+    raw = AutoEditResult(
+        source_hash="x",
+        transcript_segments=[
+            {"in_ms": 0, "out_ms": 5000, "text": "안녕 자동 편집 테스트 입니다"},
+        ],
+    )
+    s = default_settings()
+    s.silence_enabled = False; s.scene_enabled = False
+    s.caption_max_chars = 10
+    effects = apply_thresholds(raw, s)
+    assert len(effects) == 1
+    lines = effects[0].text.split("\n")
+    # 단어 경계 보존 — 단어 중간에 잘리지 않음.
+    for line in lines:
+        assert "  " not in line   # 줄 안 이중 공백 X
+        assert not line.startswith(" ") and not line.endswith(" ")
 
 
 def test_scene_changes_to_zoom_effects():
     raw = AutoEditResult(source_hash="x", scene_changes=[(5000, 35.0), (10000, 28.0)])
     s = default_settings()
     s.silence_enabled = False; s.caption_enabled = False
+    s.scene_enabled = True
     s.scene_sensitivity = 30
     effects = apply_thresholds(raw, s)
     # 30 임계값 이상만 — 35.0 통과, 28.0 제외.

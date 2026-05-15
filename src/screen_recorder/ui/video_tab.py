@@ -447,7 +447,12 @@ class VideoTab(QWidget):
             self._progress_dlg.close()
             self._progress_dlg = None
         self._autoedit_last_raw = raw
-        dlg = AutoEditReviewDialog(raw, parent=self)
+        # 현재 모델명 — 다이얼로그가 dropdown 의 기본 선택 표시.
+        parent = self.window()
+        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
+        current_model = agent_settings.whisper_model_size if agent_settings else "large-v3"
+        dlg = AutoEditReviewDialog(raw, parent=self, current_whisper_model=current_model)
+        dlg.reanalyze_requested.connect(self._on_autoedit_reanalyze)
         # PySide6 에서 enum 은 클래스 통해서만 접근 — `dlg.Accepted` 는 AttributeError.
         if dlg.exec() == QDialog.DialogCode.Accepted:
             effects = dlg.compute_effects()
@@ -460,6 +465,19 @@ class VideoTab(QWidget):
         if not hasattr(parent, "append_autoedit_system_message"):
             return
         parent.append_autoedit_system_message(n, failed)
+
+    def _on_autoedit_reanalyze(self, new_model: str) -> None:
+        """리뷰 다이얼로그에서 모델 변경 + '재분석' 누름 → 새 모델로 다시 분석.
+
+        MainWindow.app_settings.agent.whisper_model_size 갱신 → settings 영구 저장 +
+        자동편집 캐시 키 다르니 새 분석 자동 트리거.
+        """
+        parent = self.window()
+        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
+        if agent_settings is not None:
+            agent_settings.whisper_model_size = new_model
+        # 분석 재시작 — 새 모델로 캐시 키 달라지므로 자동 새 분석.
+        self._start_autoedit()
 
     # ---------- 효과 추가 흐름 ----------
     def _on_lane_request_add(self, effect_type: str, in_ms: int,
