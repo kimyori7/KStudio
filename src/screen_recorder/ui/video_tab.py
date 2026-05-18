@@ -1446,12 +1446,16 @@ class VideoTab(QWidget):
             self._fullscreen_holder.close()
             return
 
-        # 복귀 시 layout 의 원래 순서를 보존하기 위해 인덱스를 *modify 전* 에 캡처.
-        # 한쪽을 reparent 한 뒤 indexOf 를 부르면 이미 줄어든 인덱스가 나와 복귀 시
-        # 순서가 뒤집힘 (player 가 controls 뒤로 들어감 → 컨트롤바가 화면 상단에 나옴).
-        player_index = self.layout().indexOf(self.player)
-        ctrl_index = self.layout().indexOf(self.controls)
-        timeline_index = self.layout().indexOf(self.timeline)
+        # 복귀 시 원래 위치 보존을 위해 *modify 전* 에 부모 layout 안에서의 인덱스를
+        # 캡처. 2026-05-12 의 QSplitter 도입 이후 위젯들은 self.layout() (outer
+        # QVBoxLayout) 의 직접 자식이 아니라 _preview_container 안 (player/controls)
+        # + splitter 안 (timeline) 에 있다. 회귀: self.layout().indexOf 가 모두 -1
+        # 반환 → 복귀 시 outer layout 끝에 append 되어 splitter 가 비고 playbar 가
+        # 사라지는 보고 ("영상 편집 갔다가 편집 끝니까 플레이바 사라짐").
+        preview_layout = self._preview_container.layout()
+        player_index = preview_layout.indexOf(self.player)
+        ctrl_index = preview_layout.indexOf(self.controls)
+        timeline_index = self._main_splitter.indexOf(self.timeline)
 
         # 새 top-level 창에 player 를 일시적으로 reparent.
         # holder 자체엔 layout 을 두지 않는다 — player 는 fillRect 로 깔고, controls
@@ -1468,13 +1472,13 @@ class VideoTab(QWidget):
 
         # controls 도 holder 의 자식으로 reparent — layout 이 아닌 floating overlay
         # 로 두어야 player 위에 겹쳐 그릴 수 있다.
-        self.layout().removeWidget(self.controls)
+        preview_layout.removeWidget(self.controls)
         self.controls.setParent(holder)
         self.controls.show()
         # timeline (재생 슬라이더) 도 풀스크린에서 보여줌 — 사용자가 위치/길이 확인
         # 못해 답답하다는 보고 (이전엔 hide 처리). controls 와 함께 화면 하단에
         # floating overlay 로 띄움.
-        self.layout().removeWidget(self.timeline)
+        # timeline 은 splitter 의 자식 — splitter 에서 직접 제거 후 reparent.
         self.timeline.setParent(holder)
         self.timeline.show()
 
@@ -1528,14 +1532,16 @@ class VideoTab(QWidget):
                 self.timeline.setParent(None)
             except RuntimeError:
                 pass
-            # 진입 전과 동일한 순서로 복귀 (player_index, ctrl_index, timeline_index 는
-            # 모두 modify 전에 잡아둔 값). 보통 player_index=0, ctrl_index=1, timeline_index=2.
-            self.layout().insertWidget(player_index, self.player, stretch=1)
-            self.layout().insertWidget(ctrl_index, self.controls)
-            self.layout().insertWidget(timeline_index, self.timeline)
+            # 진입 전과 동일한 위치로 복귀 — player/controls 는 preview_container,
+            # timeline 은 splitter. *_index 는 modify 전에 잡아둔 값.
+            preview_layout.insertWidget(player_index, self.player, stretch=1)
+            preview_layout.insertWidget(ctrl_index, self.controls)
+            self._main_splitter.insertWidget(timeline_index, self.timeline)
+            # 편집 OFF 일 때 timeline 은 다시 hide 되어야 함 — _on_edit_mode_for_splitter
+            # 가 사이드카 이벤트 의존이라 명시적으로 갱신.
+            self.timeline.setVisible(self.is_edit_mode_on())
             self.player.show()
             self.controls.show()
-            self.timeline.show()
             self.player.setFocus()
 
         # 닫힐 때(Esc 등) 복귀 처리
