@@ -2204,11 +2204,22 @@ class MainWindow(QMainWindow):
             return False
 
     def _on_video_snapshot(self, image: QImage, label_at: str) -> None:
-        """영상 탭에서 '현재 프레임 → 스크린샷' 요청."""
+        """영상 탭에서 '현재 프레임 → 스크린샷' 요청.
+
+        screenshot 캡처와 동일하게 display_name 을 미리 만들어 라이브러리/탭 라벨이
+        실제 저장될 파일명으로 즉시 보이도록 한다 (사용자 요청: "영상에서 나오면 이름은
+        바로 바꿔줘야지"). label_at ('region @ 01:23.4') 은 `:` / `@` 가 들어가 그대로
+        쓰면 사용자가 "파일이름이 이상하다" 고 느낌 + 사용자 패턴에 {target} 포함 시
+        Windows 파일명으로 부적합 → target 으로는 `:` / `@` 를 `_` 로 치환한 안전판 사용.
+        """
+        safe_target = label_at.replace(":", "_").replace("@", "_").replace(" ", "_").strip("_")
+        display = self._build_screenshot_display_name(safe_target)
         entry = self.library_model.add(
-            EntryKind.SCREENSHOT, thumbnail=image, source_label=label_at
+            EntryKind.SCREENSHOT, thumbnail=image, source_label=label_at,
+            display_name=display,
         )
-        self.tab_area.add_screenshot(image=image, source_label=label_at, entry_id=entry.id)
+        self.tab_area.add_screenshot(image=image, source_label=label_at, entry_id=entry.id,
+                                      display_name=display)
 
     def _on_recording_mode_changed(self, mode_key: str) -> None:
         """녹화 모드 (영상/GIF) 변경 — 테두리·도크 라벨 즉시 반영."""
