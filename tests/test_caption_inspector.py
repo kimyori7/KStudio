@@ -18,7 +18,7 @@ def test_inspector_loads_effect_into_widgets(qtbot):
     eff = _make_caption("안녕")
     insp.set_effect(eff)
     assert insp.text_edit.toPlainText() == "안녕"
-    assert insp.font_size.value() == 36   # 기본
+    assert insp.font_size.value() == 30   # 기본
     assert insp.bold_check.isChecked() is False
 
 
@@ -108,7 +108,10 @@ def test_bold_toggle_emits(qtbot):
 def test_stroke_toggle_creates_stroke(qtbot):
     insp = CaptionInspector()
     qtbot.addWidget(insp)
-    insp.set_effect(_make_caption())   # stroke=None
+    # 기본 캡션은 이제 stroke=Stroke(...) — 토글 의미 회복을 위해 명시적 None.
+    from dataclasses import replace
+    eff = replace(_make_caption(), stroke=None)
+    insp.set_effect(eff)
 
     received: list = []
     insp.effect_changed.connect(received.append)

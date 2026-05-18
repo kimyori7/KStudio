@@ -626,6 +626,11 @@ class VideoTab(QWidget):
             return
         lane = self.timeline.video_track_lane
         for seg in sc.video_track:
+            # GIF 는 random-access 불가 — ffmpeg 가 매 슬롯마다 frame 0 부터 linear
+            # decode → 슬롯 N 개 만큼 동일 파일을 N 번 풀스캔. 메인 GIF 보기 흐름에서
+            # 트랙 lane 의 정보 가치가 작아 스킵.
+            if seg.src.lower().endswith(".gif"):
+                continue
             for src_ms in lane.thumbnail_slots_for(seg):
                 self._thumb_service.request(self._thumb_request_cls(
                     segment_id=seg.id, src=seg.src, ms=int(src_ms),

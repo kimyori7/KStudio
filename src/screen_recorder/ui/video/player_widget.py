@@ -505,12 +505,17 @@ class PlayerWidget(QStackedWidget):
         self._is_gif = self._path.suffix.lower() in GIF_EXTS
         if self._is_gif:
             self._movie = QMovie(str(self._path))
-            self._movie.setCacheMode(QMovie.CacheAll)   # ← gotcha fix (see below)
+            # CacheAll 은 RGBA 전체 프레임을 메모리에 보관 — native-res 스크린 녹화
+            # GIF (예: 1920×1080×50프레임 ≈ 400MB) 에서 UI 가 응답 불가능해짐.
+            # 기본 CacheNone 사용 — 역방향 스크럽 시 재디코드 비용은 감수.
             self._movie.frameChanged.connect(lambda _i: self._emit_position())
             self._gif_label.setMovie(self._movie)
             self._movie.jumpToFrame(0)
             self.setCurrentIndex(1)
-            self.duration_changed.emit(self._gif_total_ms())
+            # frameCount() 는 GIF 전체 선형 스캔을 강제 — load() 반환 후 다음 이벤트
+            # 루프 turn 에서 보내 메인 스레드 차단 시간을 끊는다.
+            # 3-arg singleShot: self 가 destroy 되면 슬롯 취소 → 테스트 격리.
+            QTimer.singleShot(0, self, lambda: self.duration_changed.emit(self._gif_total_ms()))
         else:
             self._video_surface.clear_frame()
             self._media.setSource(QUrl.fromLocalFile(str(self._path)))
