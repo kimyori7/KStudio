@@ -16,8 +16,9 @@ _VALID_ANCHORS = {
 
 @dataclass
 class Font:
-    family: str = "sans-serif"
-    size: int = 36
+    # 한국어 화면녹화 대상 — Windows 기본 시스템 폰트.
+    family: str = "맑은 고딕"
+    size: int = 30
     bold: bool = False
 
     def __post_init__(self) -> None:
@@ -70,8 +71,12 @@ class CaptionEffect(Effect):
     text: str = ""
     font: Font = field(default_factory=Font)
     fill: str = "#ffffff"
-    stroke: Stroke | None = None
+    # 기본 외곽선 — 어떤 배경에서도 가독성 보장 (검정 두께 2).
+    stroke: Stroke | None = field(default_factory=lambda: Stroke(color="#000000", width=2))
     shadow: bool = False
     background: Background | None = None
     position: Position = field(default_factory=Position)
     fade: Fade = field(default_factory=Fade)
+    # multi-line 시 텍스트 가로 정렬. anchor 가 캡션의 *위치* 라면 text_align 은
+    # 캡션 *내부* 의 줄별 정렬. 기존 단일 라인 캡션엔 시각 영향 없음 (default center).
+    text_align: Literal["left", "center", "right"] = "center"

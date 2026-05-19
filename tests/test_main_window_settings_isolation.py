@@ -17,9 +17,6 @@ def test_constructing_main_window_does_not_write_settings_file(qtbot, tmp_path, 
     fake_settings_dir = tmp_path / "appdata"
     fake_settings_path = fake_settings_dir / "settings.json"
     monkeypatch.setattr(settings_module, "settings_path", lambda: fake_settings_path)
-    # main_window 가 from-import 로 가져온 심볼도 같이 패치.
-    import screen_recorder.ui.main_window as mw
-    monkeypatch.setattr(mw, "settings_path", lambda: fake_settings_path)
 
     f = tmp_path / "ffmpeg.exe"
     f.write_bytes(b"")

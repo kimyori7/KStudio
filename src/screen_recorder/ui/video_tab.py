@@ -5,12 +5,17 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QEvent, QTimer, Signal
 from PySide6.QtGui import QCursor, QImage, QKeyEvent
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
+from ..autoedit.coordinator import AutoEditCoordinator
+from ..autoedit.analyzers.silence import SilenceAnalyzer
+from ..autoedit.analyzers.transcript import TranscriptAnalyzer
+from ..autoedit.analyzers.scene import SceneAnalyzer
+from ..autoedit.analyzers.bpm import BPMAnalyzer
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 from .video.timeline import VideoTimeline
@@ -40,11 +45,13 @@ class VideoTab(QWidget):
     # 사용자가 편집 토글을 요청 — MainWindow 가 받아 *모든* 영상 탭에 동시 적용 (전역 모드).
     edit_mode_change_requested = Signal(bool)
     export_requested = Signal()                # 편집 모드 컨트롤바의 출력 버튼 → MainWindow.
+    # 사용자가 ▶▶ ON/OFF 버튼 클릭 → MainWindow 가 settings 에 저장 + 모든 영상 탭에 동기화.
+    speed_effects_change_requested = Signal(bool)
     effect_selected = Signal(object)           # Effect | None — MainWindow 인스펙터 패널용
 
     _DEFAULT_DURATION_MS: dict[str, int] = {
         "caption": 3000, "speed": 5000, "zoom": 2000,
-        "broll": 5000, "cut": 1000,
+        "broll": 5000, "cut": 1000, "arrow": 2000,
     }
 
     def __init__(self, *, path: Path, source_label: str, duration_ms: int,
@@ -59,6 +66,13 @@ class VideoTab(QWidget):
         # 한글 IME ON 상태에서 알파벳 키(T/C/D/F 등) 가 IME 에 가로채여 단축키가
         # 안 먹히는 문제를 방지. 자식 위젯(인스펙터의 QTextEdit 등) 은 영향 없음.
         self.setAttribute(Qt.WA_InputMethodEnabled, False)
+        # 외부 파일 드래그-드롭 — VideoTab 자체는 더 이상 수락 안 함 (2026-05-12 회귀).
+        # 사용자 보고: 발표용 폴더 .mp4 를 미리보기 영역 위로 드롭 → 의도치 않게
+        # video_track 끝에 append 되어 11:40 분량으로 늘어남. UX 단서 부족 (preview 영역이
+        # 너무 넓고, 드롭 시 무슨 일이 일어나는지 미리 안 알려줌).
+        # 사용자 요청: "정확히 영상 바에 올려야만 추가". video_track_lane 의 자체 dropEvent
+        # 가 lane 위 정확한 위치 드롭만 수락. 다른 영역(미리보기 등) 드롭은 무시.
+        self.setAcceptDrops(False)
         self._source_label = source_label
         self._source_path = Path(path)
         self._settings = player_settings
@@ -72,11 +86,16 @@ class VideoTab(QWidget):
         self._active_speed_id: Optional[str] = None
         # 'mute' audio 모드 진입 시 이전 mute 상태를 보존했다가 이탈 시 복원.
         self._speed_prev_muted: Optional[bool] = None
+        # 배속 효과 일괄 켜기/끄기 — 런타임 플래그, 사이드카 미포함.
+        self._speed_effects_enabled: bool = True
 
         # 활성 선택 — Del 키가 무엇을 지울지 라우팅. 마지막에 클릭된 lane/segment 가 활성.
         # kind ∈ {"segment", "effect", None}. id 는 해당 객체의 id.
         self._active_kind: Optional[str] = None
         self._active_id: Optional[str] = None
+        # 효과 복사붙여넣기 (Ctrl+C / Ctrl+V). 선택된 효과의 deep copy + id 비움.
+        # 붙여넣기 시 마우스 위치를 ms 로 환산해 in_ms 로 설정, duration 보존.
+        self._effect_clipboard: object | None = None
 
         # 프레임 스킵 누적 — D/F 키와 ◀/▶ 버튼으로 프레임 단위 이동할 때마다 누적,
         # 다른 종류의 시크(슬라이더 드래그, 화살표 초단위 이동, Home/End) 가 일어나면 0 으로 리셋.
@@ -106,6 +125,11 @@ class VideoTab(QWidget):
         )
         self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
         self._edit_controller.sidecar_replaced.connect(self._warm_caption_fonts)
+        # 마지막으로 사용한 캡션 폰트/크기/굵기 — 새 캡션 추가 시 직전 값 상속.
+        # 사이드카가 갱신될 때마다 가장 최근 (in_ms 가장 큰) 캡션의 font 를 기록.
+        from ..effects.types.caption import Font as _Font
+        self._last_caption_font: _Font | None = None
+        self._edit_controller.sidecar_replaced.connect(self._track_last_caption_font)
         self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
         # Stage A: 사이드카가 비어 있으면 source 1 segment 로 자동 채움
         # (history baseline 도 새 segment 상태로 reset — 사용자가 undo 로 빈 트랙까지 안 감).
@@ -129,20 +153,57 @@ class VideoTab(QWidget):
         if duration_ms > 0:
             self.timeline.set_duration_ms(duration_ms)
 
+        # 영상-수준 액션 헤더 (~32px) — 자동편집 등.
+        from PySide6.QtWidgets import QHBoxLayout, QPushButton
+        self._tab_header = QWidget()
+        self._tab_header.setFixedHeight(32)
+        header_layout = QHBoxLayout(self._tab_header)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        self._autoedit_button = QPushButton("🪄 자동 편집")
+        self._autoedit_button.setToolTip("무음 컷·자막·씬 감지·BPM 알고리즘으로 1차 편집 자동 생성")
+        header_layout.addWidget(self._autoedit_button)
+        header_layout.addStretch(1)
+
+        # QSplitter — preview (player + controls) ↔ timeline 사이 위/아래 핸들.
+        # 사용자가 핸들 드래그로 timeline 영역 비중 조절 (긴 효과 라인 / 영상 위주 보기 토글).
+        # collapsible 비활성 — 어느 쪽도 0 px 로 접히지 않게 보호.
+        self._preview_container = QWidget()
+        preview_layout = QVBoxLayout(self._preview_container)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(0)
+        preview_layout.addWidget(self._tab_header)            # 헤더 first
+        preview_layout.addWidget(self.player, stretch=1)
+        preview_layout.addWidget(self.controls)
+
+        self._main_splitter = QSplitter(Qt.Vertical)
+        self._main_splitter.setChildrenCollapsible(False)
+        self._main_splitter.setHandleWidth(6)
+        self._main_splitter.addWidget(self._preview_container)
+        self._main_splitter.addWidget(self.timeline)
+        # 초기 비중 — preview 4 : timeline 1. 사용자가 드래그로 자유 조절.
+        self._main_splitter.setStretchFactor(0, 4)
+        self._main_splitter.setStretchFactor(1, 1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self.player, stretch=1)
-        layout.addWidget(self.controls)
-        layout.addWidget(self.timeline)
+        layout.addWidget(self._main_splitter)
 
         # 편집 모드 OFF 일 땐 trim/effects 숨김 (slider 만 보임)
         self.timeline.set_edit_mode(False)
+        # 편집 OFF 시 timeline 자체를 hide — splitter 가 timeline 영역을 자동으로
+        # 거둬들임 (handle 도 사라지지 않고 한쪽 끝으로 이동). stretchFactor 는 init 의
+        # 4:1 그대로 유지 — 편집 ON 시 사용자가 드래그로 비율 조절 가능 + 창 리사이즈
+        # 시 양쪽이 비율로 늘어남.
+        self.timeline.setVisible(False)
 
         # 모델 → 컨트롤
         self.player.duration_changed.connect(self.duration_resolved.emit)
-        self.player.duration_changed.connect(self.timeline.set_duration_ms)
-        self.player.duration_changed.connect(self.controls.set_duration_ms)
+        # 회귀 fix: player.duration_changed 는 segment 전환마다 그 segment 의 source
+        # 영상 길이로 발화 → timeline 의 set_duration_ms 를 덮어쓰면 효과 lane 들의
+        # 시간축이 활성 segment 의 길이로 좁아져 캡션·배속·줌 의 절대 in_ms 위치가
+        # 어긋남. 권위 있는 source 는 _segment_ctrl.combined_duration_changed (트랙
+        # 전체 길이) — 그 단일 source 만 timeline/controls 에 연결.
         # 첫 segment 의 src_duration_ms 가 비어 있으면 (init 시 duration_ms=0 로 들어온 경우)
         # player 가 실제 길이 로드한 시점에 채워주고 segment_ctrl·track lane 갱신.
         self.player.duration_changed.connect(self._on_player_duration_for_segment)
@@ -163,11 +224,18 @@ class VideoTab(QWidget):
         self.controls.export_requested.connect(self.export_requested.emit)
         self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
         self._edit_controller.edit_mode_toggled.connect(self.timeline.set_edit_mode)
+        # 편집 OFF 시 splitter 의 timeline 영역을 0 으로 — 일반 플레이어 모습.
+        # setChildrenCollapsible(False) 가 켜져 있어도 setSizes 로 0 지정 가능.
+        self._edit_controller.edit_mode_toggled.connect(self._on_edit_mode_for_splitter)
 
         # 썸네일 서비스 → VideoTab 핸들러 (broll src 와 segment id 를 prefix 로 구분).
         self._thumb_service.thumbnail_ready.connect(self._on_thumbnail_ready)
-        # 처음 채워진 segment 의 썸네일도 즉시 요청.
-        self._request_all_thumbnails(self._edit_controller.sidecar())
+        # 2026-05-14: 초기 thumbnail 디스패치는 *탭이 처음 보일 때까지 defer* — 사용자가
+        # 한 번에 여러 탭을 열면 비가시 탭의 ffmpeg storm 이 가시 탭 로딩까지 막던 회귀
+        # (app.log 09:51:00 — 3 영상 × 32 slot ≈ 90+ ffmpeg call 15초간 폭주). showEvent
+        # 가 첫 발화될 때 한 번만 요청. 그 이후 사이드카 변경은 항상 즉시 dispatch (이미
+        # sidecar_replaced.connect 로 연결됨).
+        self._initial_thumbs_requested = False
 
         # Timeline 시그널
         self.timeline.seek_request.connect(self._on_user_seek_request)
@@ -201,6 +269,11 @@ class VideoTab(QWidget):
         # 이 rect 안에서만 캡션·줌·곁들임 가이드가 그려지고 드래그도 그 안으로 갇힌다.
         self._preview_overlay.set_video_frame_rect_provider(
             self.player.video_frame_rect
+        )
+        # source 픽셀 크기 provider — caption 이 source 좌표계에서 그려져 export 와
+        # 일관 + 창모드/풀스크린 사이에서도 같은 상대 위치 유지.
+        self._preview_overlay.set_video_source_size_provider(
+            self.player.video_source_size
         )
         self._preview_overlay.set_sidecar(self._edit_controller.sidecar())
         # position 은 SegmentPlaybackController 가 emit 하는 combined 시간을 써야
@@ -247,12 +320,54 @@ class VideoTab(QWidget):
         # ZoomEffect.preview=True 인 효과만 활성 구간에서 화면 zoom transform 적용.
         self._segment_ctrl.combined_position_changed.connect(self._on_position_for_zoom)
         # 사이드카 변경 후 평가는 다음 combined_position_changed emit 시 자동 — 별도 트리거 불필요.
+        # ---- Cut skip (2026-05-19) ----
+        # 사용자 보고: cut 효과가 사이드카 마커만이라 preview 에서 cut 콘텐츠가 그대로
+        # 재생됨 → 사용자가 export 결과와 다른 화면을 봄. preview_skip=True (기본) 인
+        # cut 구간 진입 시 out_ms 로 자동 점프해 export 결과를 미리 체감.
+        self._segment_ctrl.combined_position_changed.connect(self._on_position_for_cut_skip)
+
+        # ---- Broll PIP 실시간 재생 (Phase 20) ----
+        # main 과 별도의 QMediaPlayer 로 broll src 재생 → frame 을 PreviewOverlay
+        # PIP 박스 안에 그림. position/play/speed 미러.
+        from .video.broll_pip_player import BrollPipPlayer
+        self._broll_pip = BrollPipPlayer(self)
+        self._broll_pip.set_sidecar(self._edit_controller.sidecar())
+        self._edit_controller.sidecar_replaced.connect(self._broll_pip.set_sidecar)
+        self._segment_ctrl.combined_position_changed.connect(
+            self._broll_pip.on_combined_position_changed
+        )
+        self.player.playing_changed.connect(self._broll_pip.set_playing)
+        self.controls.speed_changed.connect(self._broll_pip.set_speed)
+        self._broll_pip.frame_ready.connect(self._on_broll_pip_frame)
+        self._broll_pip.effect_deactivated.connect(
+            self._preview_overlay.clear_broll_live_frame
+        )
+
+        # 자동편집 — Phase 4: silence + transcript + scene + bpm.
+        self._autoedit_coord = AutoEditCoordinator(self)
+        self._autoedit_coord.set_analyzers([
+            ("silence", SilenceAnalyzer()),
+            ("transcript", TranscriptAnalyzer(model_size="base")),
+            ("scene", SceneAnalyzer()),
+            ("bpm", BPMAnalyzer()),
+        ])
+        self._autoedit_coord.result_ready.connect(self._on_autoedit_result_ready)
+        self._autoedit_last_raw = None
+        self._progress_dlg = None
+        self._autoedit_button.clicked.connect(self._start_autoedit)
 
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label
 
     # ---------- 편집 모드 API ----------
+    def _on_edit_mode_for_splitter(self, on: bool) -> None:
+        """편집 OFF 시 timeline widget hide → splitter 가 자동으로 영역 거둬들임.
+        편집 ON 시 다시 show. setStretchFactor 는 init 의 4:1 유지 — 사용자가
+        드래그로 조절한 비율은 보존 (탭 전환·창 리사이즈 시 리셋 안 함).
+        """
+        self.timeline.setVisible(on)
+
     def is_edit_mode_on(self) -> bool:
         return self._edit_controller.is_edit_mode_on()
 
@@ -263,6 +378,32 @@ class VideoTab(QWidget):
     def sidecar(self):
         return self._edit_controller.sidecar()
 
+    def duration_ms(self) -> int:
+        """현재 트랙의 combined 총 길이 (밀리초). 에이전트 도구·외부 호출용 공개 API.
+
+        주의: 이 값은 **자르기/트림 적용 후** 의 재생 가능 길이. 원본 파일 길이가 필요하면
+        [`source_duration_ms()`](src/screen_recorder/ui/video_tab.py:source_duration_ms) 사용.
+        """
+        return self._get_duration_ms()
+
+    def source_duration_ms(self) -> int:
+        """원본 미디어 파일의 길이 (밀리초) — cut/trim 적용 *전*. 에이전트가 사용자에게
+        "이 영상은 X분짜리" 라고 설명할 때 참조해야 하는 값.
+
+        2026-05-14 회귀: 에이전트가 duration_ms (combined, cuts 후) 만 보고 "이 영상은
+        2분이네요" 라고 보고 → 사용자는 파일 자체를 3:24 로 알고 있어서 환각으로 오해.
+        실제론 source=3:24, 적용된 cut 두 개로 combined=2:00. 둘 다 노출 필요.
+        """
+        return self.player.duration_ms()
+
+    def position_ms(self) -> int:
+        """현재 재생 위치 (밀리초). 에이전트 도구·외부 호출용 공개 API."""
+        return self._get_position_ms()
+
+    def source_path(self) -> str:
+        """현재 영상 소스의 절대 경로 문자열."""
+        return str(self._source_path)
+
     def lanes_widget(self):
         """효과 lane 컨테이너 — 하위 호환. 신규 코드는 timeline.effect_lanes 사용."""
         return self.timeline.effect_lanes
@@ -270,17 +411,104 @@ class VideoTab(QWidget):
     def edit_controller(self):
         return self._edit_controller
 
+    def autoedit_button(self):
+        """영상-수준 헤더의 [🪄 자동 편집] 버튼 반환."""
+        from PySide6.QtWidgets import QPushButton  # noqa: F401 — type hint only
+        return self._autoedit_button
+
+    def autoedit_coordinator(self) -> AutoEditCoordinator:
+        """자동편집 코디네이터 반환 — 테스트/외부 연결용."""
+        return self._autoedit_coord
+
+    def _start_autoedit(self) -> None:
+        """[🪄 자동 편집] 버튼 클릭 → 진행률 다이얼로그 표시 → coordinator.run() 호출."""
+        from .autoedit.progress_dialog import AutoEditProgressDialog
+        src = self._source_path
+        sc = self._edit_controller.sidecar()
+        source_hash = getattr(sc, "source_hash", "") or ""
+        # 진행률 다이얼로그 미리 띄움 — modal, 분석 중 다른 UI 차단.
+        self._progress_dlg = AutoEditProgressDialog(parent=self)
+        self._autoedit_coord.progress_updated.connect(self._progress_dlg.update_progress)
+        self._progress_dlg.cancelled.connect(self._autoedit_coord.cancel)
+        self._progress_dlg.show()
+        # 모델은 MainWindow.app_settings.agent 에서 — 사용자가 환경설정 변경 시 즉시 반영.
+        # MainWindow 없는 단위 테스트 환경엔 default "large-v3" fallback.
+        parent = self.window()
+        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
+        whisper_model = agent_settings.whisper_model_size if agent_settings else "large-v3"
+        # 진행률 다이얼로그 라벨을 모델 다운로드 / 분석 따라 적절히.
+        from .autoedit.review_dialog import _is_model_downloaded
+        self._progress_dlg.set_phase_label(
+            whisper_model=whisper_model,
+            is_download=not _is_model_downloaded(whisper_model),
+        )
+        self._autoedit_coord.run(
+            media_path=src,
+            source_hash=source_hash,
+            whisper_model=whisper_model,
+            cache_dir=self._edit_controller.sidecar_dir(),
+        )
+
+    def _on_autoedit_result_ready(self, raw, failed: list) -> None:
+        """coordinator 분석 완료 → 리뷰 다이얼로그 표시 → 적용."""
+        from PySide6.QtWidgets import QDialog
+        from .autoedit.review_dialog import AutoEditReviewDialog
+        # 진행률 다이얼로그가 떠 있으면 닫음 (캐시 hit 이라 안 떴을 수도).
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.close()
+            self._progress_dlg = None
+        self._autoedit_last_raw = raw
+        # 현재 모델명 — 다이얼로그가 dropdown 의 기본 선택 표시.
+        parent = self.window()
+        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
+        current_model = agent_settings.whisper_model_size if agent_settings else "large-v3"
+        dlg = AutoEditReviewDialog(raw, parent=self, current_whisper_model=current_model)
+        dlg.reanalyze_requested.connect(self._on_autoedit_reanalyze)
+        # PySide6 에서 enum 은 클래스 통해서만 접근 — `dlg.Accepted` 는 AttributeError.
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            effects = dlg.compute_effects()
+            self._edit_controller.add_effects(effects)
+            self._notify_autoedit_done(len(effects), failed)
+
+    def _notify_autoedit_done(self, n: int, failed: list[str]) -> None:
+        """자동편집 완료 시 사용자 안내 — Task 5.2 에서 main_window 채팅 패널 연동."""
+        parent = self.window()
+        if not hasattr(parent, "append_autoedit_system_message"):
+            return
+        parent.append_autoedit_system_message(n, failed)
+
+    def _on_autoedit_reanalyze(self, new_model: str) -> None:
+        """리뷰 다이얼로그에서 모델 변경 + '재분석' 누름 → 새 모델로 다시 분석.
+
+        MainWindow.app_settings.agent.whisper_model_size 갱신 → settings 영구 저장 +
+        자동편집 캐시 키 다르니 새 분석 자동 트리거.
+        """
+        parent = self.window()
+        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
+        if agent_settings is not None:
+            agent_settings.whisper_model_size = new_model
+        # 분석 재시작 — 새 모델로 캐시 키 달라지므로 자동 새 분석.
+        self._start_autoedit()
+
     # ---------- 효과 추가 흐름 ----------
-    def _on_lane_request_add(self, effect_type: str, in_ms: int) -> None:
-        """Lane 우클릭 → 효과 추가 요청. 편집 모드 체크 후 위임."""
+    def _on_lane_request_add(self, effect_type: str, in_ms: int,
+                              track_idx: int = 0) -> None:
+        """Lane 우클릭 → 효과 추가 요청. 편집 모드 체크 후 위임.
+
+        2026-05-13: track_idx 추가 — 사용자가 *클릭한 row* 의 track_idx 에 효과가
+        들어가도록. 빈 row 클릭 시 그 row 가 그대로 채워짐.
+        """
         if not self.is_edit_mode_on():
             return
-        self._add_effect_at(effect_type, in_ms)
+        self._add_effect_at(effect_type, in_ms, track_idx=track_idx)
 
-    def _add_effect_at(self, effect_type: str, in_ms: int) -> bool:
+    def _add_effect_at(self, effect_type: str, in_ms: int,
+                       track_idx: int = 0) -> bool:
         """현재 사이드카에 effect_type 의 새 효과를 in_ms 위치에 추가.
 
         영상 끝 가까우면 길이를 영상 끝까지 clamp. 100ms 미만으로 작으면 거부.
+        track_idx 는 multi-라인 type (caption/broll/arrow) 의 sub-lane row 지정 —
+        사용자가 클릭한 row 가 그대로 그 row 에 채워지도록.
         """
         duration_ms = self._get_duration_ms()
         if duration_ms <= 0:
@@ -289,8 +517,14 @@ class VideoTab(QWidget):
         out_ms = min(in_ms + default_len, duration_ms)
         if out_ms - in_ms < 100:
             return False
+        ti = max(0, int(track_idx))
         if effect_type == "caption":
-            eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms)
+            # 직전 사용 폰트/크기/굵기 가 있으면 상속 (세션 한정). 없으면 Font() 기본값.
+            if self._last_caption_font is not None:
+                eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms,
+                                    font=self._last_caption_font, track_idx=ti)
+            else:
+                eff = CaptionEffect(in_ms=in_ms, out_ms=out_ms, track_idx=ti)
         elif effect_type in ("cut", "cut_splice"):
             # "cut" = lane 우클릭 add (modifier 없는 기본은 splice).
             # "cut_splice" = 단축키 C 명시.
@@ -319,6 +553,16 @@ class VideoTab(QWidget):
                 in_ms=in_ms, out_ms=out_ms,
                 placement="pip",
                 pip=PipConfig(corner="bottom-right", size_ratio=0.3),
+                track_idx=ti,
+            )
+        elif effect_type == "arrow":
+            # 기본 — 화면 좌측 30% 에서 우측 70% 로 향하는 빨간 화살표.
+            from ..effects.types.arrow import ArrowEffect, Point
+            eff = ArrowEffect(
+                in_ms=in_ms, out_ms=out_ms,
+                start=Point(x=0.3, y=0.5),
+                end=Point(x=0.7, y=0.5),
+                track_idx=ti,
             )
         else:
             return False
@@ -330,16 +574,46 @@ class VideoTab(QWidget):
         return ok
 
     def _get_duration_ms(self) -> int:
-        d = self.player.duration_ms()
+        """현재 트랙의 combined 총 길이. 다중 segment 면 모든 segment 합.
+
+        회귀 fix: player.duration_ms() 는 활성 segment 의 source 영상 길이라
+        다중 segment 트랙에선 일부만 반환 → 후반 segment 영역에 캡션 추가가
+        out_ms > duration 검증으로 거부됐다. timeline.slider_lane 의 duration 이
+        _segment_ctrl.combined_duration_changed 로부터 받은 권위 있는 값.
+        """
+        d = self.timeline.slider_lane.duration_ms()
         if d > 0:
             return d
-        return self.timeline.slider_lane.duration_ms()
+        return self.player.duration_ms()
 
     def _get_position_ms(self) -> int:
         return self.timeline.slider_lane.position_ms() or self.player.position_ms()
 
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
+        # Phase 28 — 인스펙터에서 zoom.preview 체크박스 등 토글 시점은 position_changed 가
+        # 발화 안 함 (재생 중이 아니므로). 사이드카 갱신 시 즉시 zoom_preview 재계산해
+        # 화면 갱신을 강제. preview=False 로 바뀌면 None 전달 → surface 가 다시 paint.
+        try:
+            cur_ms = int(self.player.position())
+            self._on_position_for_zoom(cur_ms)
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _track_last_caption_font(self, sc) -> None:
+        """사이드카의 가장 최근 (in_ms 가장 큰) 캡션의 font 를 기록.
+
+        새 캡션을 추가할 때 직전 사용 폰트/크기/굵기 를 상속. 세션 한정 — 탭 닫고
+        다시 열면 초기화. 향후 settings 영속화 가능.
+        """
+        from ..effects.types.caption import CaptionEffect
+        latest: CaptionEffect | None = None
+        for eff in sc.effects:
+            if isinstance(eff, CaptionEffect):
+                if latest is None or eff.in_ms > latest.in_ms:
+                    latest = eff
+        if latest is not None:
+            self._last_caption_font = latest.font
 
     def _request_all_thumbnails(self, sc) -> None:
         """사이드카의 모든 segment 의 필름스트립 고정 슬롯 + 모든 broll src 의 대표 프레임을 비동기 요청.
@@ -347,9 +621,21 @@ class VideoTab(QWidget):
         - segment 슬롯: 길이(1초당 1슬롯) 로 결정 — 박스 폭 무관.
         - broll: src 1개당 0ms 한 프레임만 — PreviewOverlay PIP 가이드 안에 채움.
         같은 src 는 ThumbnailService 의 dedup + LRU 캐시로 한 번만 추출.
+
+        2026-05-14: 탭이 보이지 않으면 dispatch defer — showEvent 까지 보류.
+        이유: 여러 탭 동시 열기 시 비가시 탭의 ffmpeg storm 이 가시 탭 로딩까지 막던 회귀.
         """
+        if not self.isVisible():
+            # showEvent 가 깨우면 그때 dispatch.
+            self._initial_thumbs_requested = False
+            return
         lane = self.timeline.video_track_lane
         for seg in sc.video_track:
+            # GIF 는 random-access 불가 — ffmpeg 가 매 슬롯마다 frame 0 부터 linear
+            # decode → 슬롯 N 개 만큼 동일 파일을 N 번 풀스캔. 메인 GIF 보기 흐름에서
+            # 트랙 lane 의 정보 가치가 작아 스킵.
+            if seg.src.lower().endswith(".gif"):
+                continue
             for src_ms in lane.thumbnail_slots_for(seg):
                 self._thumb_service.request(self._thumb_request_cls(
                     segment_id=seg.id, src=seg.src, ms=int(src_ms),
@@ -367,6 +653,10 @@ class VideoTab(QWidget):
             self._thumb_service.request(self._thumb_request_cls(
                 segment_id=_BROLL_THUMB_PREFIX + src, src=src, ms=0,
             ))
+
+    def _on_broll_pip_frame(self, effect_id: str, img) -> None:
+        """BrollPipPlayer.frame_ready → PreviewOverlay 의 live frame 캐시 갱신."""
+        self._preview_overlay.set_broll_live_frame(effect_id, img)
 
     def _on_overlay_broll_dropped(self, effect_id: str, path: str) -> None:
         """영상 위 broll PIP 박스 위에 외부 파일 드롭 → 그 effect 의 src 갱신.
@@ -522,6 +812,163 @@ class VideoTab(QWidget):
             except (RuntimeError, AttributeError):
                 pass
 
+    def _paste_effect_at_cursor(self) -> None:
+        """clipboard 의 효과를 deep copy → 마우스 위치 ms 를 in_ms 로, duration 보존.
+
+        마우스가 timeline 영역 밖이면 현재 재생 위치 (playhead) 로 폴백.
+        같은 type 시간 겹침 시 EditController 가 차단 — fallback 으로 가장 가까운
+        빈 슬롯 (target_ms 이상의 첫 비어 있는 자리) 으로 자동 이동 후 1회 재시도.
+        """
+        from dataclasses import replace
+        from PySide6.QtGui import QCursor
+        import copy
+        import uuid
+        if self._effect_clipboard is None:
+            return
+        # advisor 지적: replace 는 top-level 만 복사. nested dataclass (Font / Stroke /
+        # Position / Fade / PipConfig 등) 가 두 효과 인스턴스간 공유돼 잠재 corruption.
+        # deepcopy 로 명시적 분리.
+        eff = copy.deepcopy(self._effect_clipboard)
+        # 마우스 글로벌 → slider_lane 로컬 x → ms.
+        slider = self.timeline.slider_lane
+        local = slider.mapFromGlobal(QCursor.pos())
+        target_ms: int
+        if 0 <= local.x() < slider.width() and 0 <= local.y() < slider.height():
+            target_ms = slider._ms_for_pixel(int(local.x()))
+        else:
+            target_ms = self._get_position_ms()
+        duration = max(100, int(eff.out_ms - eff.in_ms))
+        timeline_end = self._get_duration_ms()
+        if timeline_end > 0:
+            target_ms = max(0, min(target_ms, max(0, timeline_end - duration)))
+        # 같은 type 의 효과들과 겹치지 않는 빈 슬롯으로 자동 이동.
+        target_ms = self._find_free_slot_for_paste(eff, target_ms, duration)
+        new_eff = replace(eff, id=str(uuid.uuid4()),
+                          in_ms=int(target_ms), out_ms=int(target_ms + duration))
+        ok = self._edit_controller.add_effect(new_eff)
+        if ok:
+            self.player.flash_action("📋 효과 붙여넣기")
+        else:
+            self.player.flash_action("⚠ 붙여넣기 실패 — 빈 자리가 없음")
+
+    def _find_free_slot_for_paste(self, eff, target_ms: int, duration: int) -> int:
+        """같은 type + 같은 track_idx 의 효과들과 [target_ms, target_ms+duration) 가
+        겹치면 그 이후 첫 빈 자리로 이동. 영상 끝을 넘으면 target_ms 그대로.
+
+        Phase 21: track_idx 가 다르면 같은 type 이라도 동시 가능 — auto_shift 도 같은
+        track_idx 안에서만.
+        """
+        timeline_end = self._get_duration_ms() or (target_ms + duration)
+        target_type = getattr(eff, "type", "")
+        target_ti = getattr(eff, "track_idx", 0)
+        same_type = sorted(
+            (e for e in self.sidecar().effects
+             if getattr(e, "type", "") == target_type
+             and getattr(e, "track_idx", 0) == target_ti),
+            key=lambda e: e.in_ms,
+        )
+        cursor = target_ms
+        for existing in same_type:
+            if cursor + duration <= existing.in_ms:
+                # 이 구간 비어 있음.
+                return cursor
+            if cursor < existing.out_ms:
+                # 겹침 — 이 효과 끝으로 이동.
+                cursor = existing.out_ms
+        # 마지막까지 — timeline 끝을 넘지 않는 한 그대로.
+        if cursor + duration <= timeline_end:
+            return cursor
+        return target_ms   # 빈 자리 없음 — add_effect 가 거부, 호출자가 flash 안내
+
+    _ACCEPTED_VIDEO_DROP_SUFFIXES = {
+        ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv", ".gif",
+        ".png", ".jpg", ".jpeg",
+    }
+
+    def dragEnterEvent(self, event) -> None:
+        """외부 파일 드래그 진입 — 영상/이미지 확장자만 수락."""
+        md = event.mimeData()
+        if not md.hasUrls():
+            event.ignore()
+            return
+        paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+        if not any(
+            Path(p).suffix.lower() in self._ACCEPTED_VIDEO_DROP_SUFFIXES
+            for p in paths
+        ):
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        """재생 화면 / timeline 빈 영역에 영상·이미지 드롭.
+
+        사용자 의도 "뒤나 앞에 붙어야 되는데" — 드롭 위치 x 가 widget 의 왼쪽
+        절반이면 timeline 0 위치에 prepend (기존 segment 들 뒤로 shift),
+        오른쪽 절반이면 끝에 append.
+
+        트랙 lane 위 정확한 위치 드롭은 VideoTrackLane.dropEvent 가 먼저 catch
+        (Qt 자식 우선 전파). 여기로 도달하는 건 lane 외 영역 드롭.
+        """
+        md = event.mimeData()
+        if not md.hasUrls():
+            event.ignore()
+            return
+        paths = [
+            u.toLocalFile() for u in md.urls()
+            if u.isLocalFile()
+            and Path(u.toLocalFile()).suffix.lower() in self._ACCEPTED_VIDEO_DROP_SUFFIXES
+        ]
+        if not paths:
+            event.ignore()
+            return
+        # 드롭 x 위치 — widget 의 왼쪽 절반이면 prepend, 오른쪽이면 append.
+        drop_x = int(event.position().x())
+        is_left_half = drop_x < self.width() // 2
+        if is_left_half:
+            self._prepend_files_to_track(paths)
+        else:
+            track = self.sidecar().video_track
+            end_ms = max((seg.start_ms + seg.duration_ms for seg in track), default=0)
+            self._on_track_insert_files(paths, end_ms)
+        event.acceptProposedAction()
+
+    def _prepend_files_to_track(self, paths: list) -> None:
+        """파일 들을 timeline 0 위치에 prepend — 기존 segment 들을 새 segment 들의
+        총 길이만큼 뒤로 밀고 새 segment 를 0 부터 순서대로 배치.
+
+        set_segment_start 루프 방식은 free-slot clamp 때문에 silently 실패할 수
+        있어 (먼저 옮긴 segment 가 뒤 slot 을 차지하면 다음 segment 가 clamp).
+        atomic 한 사이드카 교체로 한 번에 처리.
+        """
+        from dataclasses import replace
+        import copy as _copy
+        # 1) 새 segment 들 빌드 + 총 길이.
+        new_segs = []
+        cursor = 0
+        for p in paths:
+            seg = self._build_segment_for_path(str(p))
+            if seg is None:
+                continue
+            new_segs.append(replace(seg, start_ms=cursor))
+            cursor += seg.duration_ms
+        if not new_segs:
+            return
+        total_new = cursor
+        # 2) 사이드카 atomic 갱신 — 기존 segment 들 shift + 새 segment 앞에 prepend.
+        new_sc = _copy.deepcopy(self._edit_controller.sidecar())
+        shifted_existing = [replace(s, start_ms=s.start_ms + total_new) for s in new_sc.video_track]
+        # 효과들도 같은 delta 만큼 동반 이동 (set_segment_start 의 "효과 따라감" 정책 유지).
+        new_sc.effects = [
+            replace(e, in_ms=e.in_ms + total_new, out_ms=e.out_ms + total_new)
+            for e in new_sc.effects
+        ]
+        new_sc.video_track = new_segs + shifted_existing
+        self._edit_controller.update_sidecar(new_sc)
+
     def _on_track_insert_files(self, paths: list, at_combined_ms: int) -> None:
         """드래그-드롭 / 라이브러리 드롭 → 여러 파일을 at_combined_ms 부터 순서대로 삽입.
 
@@ -634,6 +1081,13 @@ class VideoTab(QWidget):
             float(active.start.cx),
             float(active.start.cy),
             float(scale),
+            str(getattr(active, "mode", "fit_screen")),
+            float(getattr(active, "region_w", 0.3)),
+            float(getattr(active, "region_h", 0.3)),
+            float(getattr(active, "dest_cx", active.start.cx)),
+            float(getattr(active, "dest_cy", active.start.cy)),
+            float(getattr(active, "dest_w", getattr(active, "region_w", 0.3) * scale)),
+            float(getattr(active, "dest_h", getattr(active, "region_h", 0.3) * scale)),
         ))
 
     @staticmethod
@@ -648,7 +1102,47 @@ class VideoTab(QWidget):
         # in-out (기본) — smoothstep.
         return t * t * (3.0 - 2.0 * t)
 
+    # ---------- Cut skip (2026-05-19) ----------
+    def _on_position_for_cut_skip(self, ms: int) -> None:
+        """playhead 가 preview_skip=True 인 cut 구간 진입 시 out_ms 로 점프.
+
+        사용자 보고: cut 효과는 사이드카 마커만이라 preview 재생에서 잘려야 할 콘텐츠가
+        그대로 보임 → export 결과와 화면 불일치. 자동 skip 으로 WYSIWYG 회복.
+
+        seek loop 방지: out_ms 도 같은 cut 안이라면 다음 tick 에 또 점프하지만,
+        find_cut_skip_target 가 in_ms <= ms < out_ms 만 매치하므로 out_ms 정확
+        도달 시점에 다시 매치되지 않음 — 안전.
+        """
+        from ..effects.types.cut import find_cut_skip_target
+        target = find_cut_skip_target(self.sidecar().effects, ms)
+        if target is None:
+            return
+        # 자기 자신을 다시 트리거 안 하도록 seek 만 — 정상 재생 흐름은 SegmentPlaybackController
+        # 가 알아서.
+        self._segment_ctrl.seek_combined_ms(int(target))
+
     # ---------- Speed preview (Stage 5) ----------
+    def _on_speed_effects_toggled(self, enabled: bool) -> None:
+        """사용자 클릭 — 로컬 적용 + MainWindow 로 bubble (settings 저장 + 다른 탭 동기화)."""
+        self._apply_speed_effects_enabled(enabled)
+        self.speed_effects_change_requested.emit(enabled)
+
+    def set_speed_effects_enabled(self, enabled: bool) -> None:
+        """외부(MainWindow 전역 동기화) 에서 호출 — 플래그 + rate 즉시 적용.
+        UI 토글은 SpeedInspector 의 버튼으로 이동 (PlayerControls 에서 제거됨)."""
+        self._apply_speed_effects_enabled(enabled)
+
+    def _apply_speed_effects_enabled(self, enabled: bool) -> None:
+        self._speed_effects_enabled = enabled
+        if not enabled:
+            # 끈 즉시 rate 1.0 복원 + HUD 숨김.
+            self.player.set_playback_rate(1.0)
+            self.player.hide_speed_hud()
+            if self._speed_prev_muted is not None:
+                self.player.set_muted(self._speed_prev_muted)
+                self._speed_prev_muted = None
+            self._active_speed_id = None
+
     def _on_position_for_speed(self, ms: int) -> None:
         """현재 재생 위치 → 활성 SpeedEffect 결정.
 
@@ -661,6 +1155,8 @@ class VideoTab(QWidget):
         Phase 19.5 hotfix6: 고배속 (5×) 시 매 tick 호출되므로 SpeedEffect 자체가
         없으면 즉시 종료 (현재 활성 구간 복원만 처리하고 loop 회피).
         """
+        if not self._speed_effects_enabled:
+            return
         effects = self.sidecar().effects
         if not any(getattr(e, "type", "") == "speed" for e in effects):
             if self._active_speed_id is not None:
@@ -682,7 +1178,7 @@ class VideoTab(QWidget):
             if self._active_speed_id != active_eff.id:
                 # 새 구간 진입 — rate 적용 + 지속 HUD (1× 면 hide).
                 self.player.set_playback_rate(active_eff.rate)
-                self.player.show_speed_hud(active_eff.rate)
+                self.player.show_speed_hud(active_eff.rate, font_pt=active_eff.hud_font_pt)
                 if active_eff.audio == "mute":
                     if self._speed_prev_muted is None:
                         self._speed_prev_muted = self.player.is_muted()
@@ -721,6 +1217,22 @@ class VideoTab(QWidget):
                 or (k == Qt.Key_Y and (m & Qt.ControlModifier)):
             if self._edit_controller.redo():
                 self.player.flash_action("↷ 다시 실행")
+            event.accept(); return
+        # Ctrl+C — 활성 효과 복사. Ctrl+V — 마우스 위치에 붙여넣기.
+        # 캡션·배속·줌·곁들임 박스 선택 후 Ctrl+C, 다음 위치에서 Ctrl+V.
+        if k == Qt.Key_C and (m & Qt.ControlModifier) and not (m & Qt.ShiftModifier):
+            if self._active_kind == "effect" and self._active_id:
+                eff = next(
+                    (e for e in self.sidecar().effects if getattr(e, "id", None) == self._active_id),
+                    None,
+                )
+                if eff is not None:
+                    self._effect_clipboard = eff
+                    self.player.flash_action("📋 효과 복사")
+            event.accept(); return
+        if k == Qt.Key_V and (m & Qt.ControlModifier):
+            if self._effect_clipboard is not None and self.is_edit_mode_on():
+                self._paste_effect_at_cursor()
             event.accept(); return
         # T — 편집 모드 ON 일 때만 캡션 추가 (현재 위치 + 기본 길이)
         if self.is_edit_mode_on() and k == Qt.Key_T and m == Qt.NoModifier:
@@ -853,9 +1365,38 @@ class VideoTab(QWidget):
         self._frame_step_accum_ms = 0
 
     def _on_user_seek_request(self, ms: int) -> None:
-        """슬라이더 드래그/클릭 또는 트림 레인 시크 — segment 시간축에서 시크."""
+        """슬라이더 드래그/클릭 또는 트림 레인 시크 — segment 시간축에서 시크.
+
+        2026-05-14 진단: 사용자가 줌이 있는 위치로 재생바를 옮기니 어플이 멈췄다는 보고.
+        seek_combined_ms 호출이 >100ms 면 app.log 에 경고. event loop 막힘 진단.
+        """
+        import time
+        import logging
         self._reset_frame_step_accum()
+        _t0 = time.perf_counter()
         self._segment_ctrl.seek_combined_ms(int(ms))
+        _dt_ms = (time.perf_counter() - _t0) * 1000
+        if _dt_ms > 100:
+            sc = self._edit_controller.sidecar()
+            n_zoom = sum(1 for e in sc.effects
+                         if e.type == "zoom" and e.in_ms <= int(ms) < e.out_ms)
+            n_speed = sum(1 for e in sc.effects
+                          if e.type == "speed" and e.in_ms <= int(ms) < e.out_ms)
+            logging.warning(
+                "video_tab: SLOW seek %.1fms ms=%d (zoom=%d speed=%d)",
+                _dt_ms, int(ms), n_zoom, n_speed,
+            )
+
+    def showEvent(self, event) -> None:  # noqa: N802 — Qt signature
+        """탭이 처음 보일 때 thumbnail filmstrip 디스패치 (defer 효과).
+
+        2026-05-14: 여러 탭 동시 열기 시 비가시 탭이 ffmpeg storm 을 일으켜 가시 탭의
+        프리뷰 로딩까지 지연되던 회귀. QTabWidget 은 보이는 탭만 showEvent 발화.
+        """
+        super().showEvent(event)
+        if not self._initial_thumbs_requested:
+            self._initial_thumbs_requested = True
+            self._request_all_thumbnails(self._edit_controller.sidecar())
 
     def _on_user_play_toggle(self) -> None:
         """재생 토글 (스페이스 / 컨트롤바 ▶ 버튼) — 누적 카운터 초기화."""
@@ -929,12 +1470,16 @@ class VideoTab(QWidget):
             self._fullscreen_holder.close()
             return
 
-        # 복귀 시 layout 의 원래 순서를 보존하기 위해 인덱스를 *modify 전* 에 캡처.
-        # 한쪽을 reparent 한 뒤 indexOf 를 부르면 이미 줄어든 인덱스가 나와 복귀 시
-        # 순서가 뒤집힘 (player 가 controls 뒤로 들어감 → 컨트롤바가 화면 상단에 나옴).
-        player_index = self.layout().indexOf(self.player)
-        ctrl_index = self.layout().indexOf(self.controls)
-        timeline_index = self.layout().indexOf(self.timeline)
+        # 복귀 시 원래 위치 보존을 위해 *modify 전* 에 부모 layout 안에서의 인덱스를
+        # 캡처. 2026-05-12 의 QSplitter 도입 이후 위젯들은 self.layout() (outer
+        # QVBoxLayout) 의 직접 자식이 아니라 _preview_container 안 (player/controls)
+        # + splitter 안 (timeline) 에 있다. 회귀: self.layout().indexOf 가 모두 -1
+        # 반환 → 복귀 시 outer layout 끝에 append 되어 splitter 가 비고 playbar 가
+        # 사라지는 보고 ("영상 편집 갔다가 편집 끝니까 플레이바 사라짐").
+        preview_layout = self._preview_container.layout()
+        player_index = preview_layout.indexOf(self.player)
+        ctrl_index = preview_layout.indexOf(self.controls)
+        timeline_index = self._main_splitter.indexOf(self.timeline)
 
         # 새 top-level 창에 player 를 일시적으로 reparent.
         # holder 자체엔 layout 을 두지 않는다 — player 는 fillRect 로 깔고, controls
@@ -951,13 +1496,13 @@ class VideoTab(QWidget):
 
         # controls 도 holder 의 자식으로 reparent — layout 이 아닌 floating overlay
         # 로 두어야 player 위에 겹쳐 그릴 수 있다.
-        self.layout().removeWidget(self.controls)
+        preview_layout.removeWidget(self.controls)
         self.controls.setParent(holder)
         self.controls.show()
         # timeline (재생 슬라이더) 도 풀스크린에서 보여줌 — 사용자가 위치/길이 확인
         # 못해 답답하다는 보고 (이전엔 hide 처리). controls 와 함께 화면 하단에
         # floating overlay 로 띄움.
-        self.layout().removeWidget(self.timeline)
+        # timeline 은 splitter 의 자식 — splitter 에서 직접 제거 후 reparent.
         self.timeline.setParent(holder)
         self.timeline.show()
 
@@ -1011,14 +1556,16 @@ class VideoTab(QWidget):
                 self.timeline.setParent(None)
             except RuntimeError:
                 pass
-            # 진입 전과 동일한 순서로 복귀 (player_index, ctrl_index, timeline_index 는
-            # 모두 modify 전에 잡아둔 값). 보통 player_index=0, ctrl_index=1, timeline_index=2.
-            self.layout().insertWidget(player_index, self.player, stretch=1)
-            self.layout().insertWidget(ctrl_index, self.controls)
-            self.layout().insertWidget(timeline_index, self.timeline)
+            # 진입 전과 동일한 위치로 복귀 — player/controls 는 preview_container,
+            # timeline 은 splitter. *_index 는 modify 전에 잡아둔 값.
+            preview_layout.insertWidget(player_index, self.player, stretch=1)
+            preview_layout.insertWidget(ctrl_index, self.controls)
+            self._main_splitter.insertWidget(timeline_index, self.timeline)
+            # 편집 OFF 일 때 timeline 은 다시 hide 되어야 함 — _on_edit_mode_for_splitter
+            # 가 사이드카 이벤트 의존이라 명시적으로 갱신.
+            self.timeline.setVisible(self.is_edit_mode_on())
             self.player.show()
             self.controls.show()
-            self.timeline.show()
             self.player.setFocus()
 
         # 닫힐 때(Esc 등) 복귀 처리

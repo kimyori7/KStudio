@@ -15,10 +15,11 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 import pygetwindow as gw
 
 from PySide6.QtCore import (
-    Qt, QFileSystemWatcher, QMimeData, QRect, QSize, QTimer, QUrl, Slot,
+    Qt, QMimeData, QRect, QSize, QTimer, QUrl, Slot,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication,
@@ -27,13 +28,18 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QToolBar,
     QDockWidget, QFileDialog, QMessageBox, QApplication, QSystemTrayIcon,
-    QInputDialog, QProgressDialog, QDialog,
+    QInputDialog, QProgressDialog, QDialog, QScrollArea, QFrame,
 )
 
 from screen_recorder.core.controller import RecorderController
 from screen_recorder.core.settings import (
-    AppSettings, default_image_dir, default_video_dir, save as save_settings, settings_path,
+    AppSettings, default_image_dir, default_video_dir,
 )
+# NOTE: settings_path / save 를 *이름으로* import 하지 마세요 — 테스트 격리
+# (conftest 의 isolate_user_settings fixture) 가 `core.settings.<name>` 만
+# monkeypatch 하기 때문에 import-by-name 은 우회됩니다 (2026-05-13 사고: pytest 가
+# 사용자 실제 settings.json 을 defaults 로 덮어쓴 회귀). 항상 모듈 attribute 로 호출.
+from screen_recorder.core import settings as _settings_module
 from screen_recorder.core.state import RecorderState
 from screen_recorder.hotkey.manager import HotkeyManager
 from screen_recorder.capture.targets import (
@@ -81,6 +87,9 @@ from screen_recorder.core.filename import build_filename, resolve_collision
 from .edit_tab import EditTab
 from .video_tab import VideoTab
 from .panels.inspector_panel import InspectorPanel
+from .agent.chat_panel import ChatPanel
+from screen_recorder.agent import AgentRuntime, VideoTools, VideoSessionAdapter
+from screen_recorder.agent.runtime import AgentMessage, AgentEvent
 from screen_recorder.encode.trim import TrimJob
 from screen_recorder.encode.filmstrip import FilmstripJob
 from image_editor.tools.select import SelectTool
@@ -99,6 +108,156 @@ _TOOL_MAP = {
 
 
 from PySide6.QtCore import QEvent, QObject
+
+
+class _MainWindowVideoSession:
+    """AgentTools 가 활성 영상 탭 상태를 읽기 위한 어댑터 (VideoSessionAdapter Protocol).
+
+    매 호출마다 tab_area 를 재조회 — 탭 전환·재로드 시 자동으로 새 상태 반영.
+    """
+    def __init__(self, main_window: "MainWindow") -> None:
+        self._mw = main_window
+
+    def _active(self) -> Optional["VideoTab"]:
+        tab_area = getattr(self._mw, "tab_area", None)
+        if tab_area is None or not hasattr(tab_area, "current_video_tab"):
+            return None
+        return tab_area.current_video_tab()
+
+    def has_active_video(self) -> bool:
+        return self._active() is not None
+
+    def source_path(self) -> Optional[str]:
+        t = self._active()
+        return t.source_path() if t else None
+
+    def duration_ms(self) -> int:
+        t = self._active()
+        return t.duration_ms() if t else 0
+
+    def source_duration_ms(self) -> int:
+        """원본 파일 길이 (cut/trim *전*). duration_ms 는 적용 *후*.
+
+        2026-05-14: 에이전트가 duration_ms (combined, 2:00) 만 보고 "이 영상은 2분" 이라고
+        보고 → 사용자는 파일이 3:24 임을 알고 있어 환각으로 오해. 둘 다 노출 필요.
+        """
+        t = self._active()
+        if t is None:
+            return 0
+        try:
+            return int(t.source_duration_ms())
+        except (AttributeError, TypeError):
+            return 0
+
+    def position_ms(self) -> int:
+        t = self._active()
+        return t.position_ms() if t else 0
+
+    def sidecar(self):
+        t = self._active()
+        return t.sidecar() if t else None
+
+    def list_video_tabs(self) -> list[dict]:
+        """현재 열려있는 모든 영상 탭 (Phase 33 멀티 영상 인식)."""
+        tab_area = getattr(self._mw, "tab_area", None)
+        if tab_area is None:
+            return []
+        tabs_attr = getattr(tab_area, "_tabs", None)
+        if tabs_attr is None:
+            return []
+        from screen_recorder.ui.video_tab import VideoTab
+        active = tab_area.current_video_tab() if hasattr(tab_area, "current_video_tab") else None
+        out: list[dict] = []
+        for i, entry in enumerate(tabs_attr):
+            widget = entry[0] if entry else None
+            if not isinstance(widget, VideoTab):
+                continue
+            try:
+                path = widget.source_path()
+                label = widget.source_label() if hasattr(widget, "source_label") else ""
+            except Exception:
+                continue
+            out.append({
+                "index": i,
+                "label": label,
+                "path": path,
+                "is_active": widget is active,
+            })
+        return out
+
+    def list_broll_sources(self) -> list[dict]:
+        """broll 으로 사용 가능한 영상 파일 후보 — 라이브러리 + 열린 탭.
+
+        Claude 가 broll 효과를 propose 하려면 실제 존재하는 파일 경로가 필요. 추측 금지.
+        반환: [{label, path, source('library'|'tab'), duration_ms?}].
+        """
+        out: list[dict] = []
+        seen_paths: set[str] = set()
+        # 라이브러리에서 video kind 만.
+        lib = getattr(self._mw, "library_model", None)
+        if lib is not None:
+            try:
+                from screen_recorder.ui.library_model import EntryKind
+                for entry in lib.entries(kind=EntryKind.VIDEO):
+                    p = entry.path
+                    if p is None:
+                        continue
+                    key = str(p)
+                    if key in seen_paths:
+                        continue
+                    seen_paths.add(key)
+                    out.append({
+                        "label": entry.display_name or entry.source_label or key,
+                        "path": key,
+                        "source": "library",
+                        "duration_ms": int(getattr(entry, "duration_ms", 0) or 0),
+                    })
+            except Exception:
+                pass
+        # 열린 탭 — 라이브러리에 이미 있으면 dedupe.
+        for tab in self.list_video_tabs():
+            p = tab.get("path")
+            if not p or p in seen_paths:
+                continue
+            seen_paths.add(p)
+            out.append({
+                "label": tab.get("label") or p,
+                "path": p,
+                "source": "tab",
+            })
+        return out
+
+
+class _MainWindowTranscriptContext:
+    """자막 도구가 캐시 위치 + 모델 크기 결정용 (TranscriptContext Protocol)."""
+    def __init__(self, main_window: "MainWindow") -> None:
+        self._mw = main_window
+
+    def sidecar_dir(self):
+        return self._mw._resolve_sidecar_dir()
+
+    def source_hash(self) -> Optional[str]:
+        from screen_recorder.effects import compute_video_hash
+        tab_area = getattr(self._mw, "tab_area", None)
+        if tab_area is None or not hasattr(tab_area, "current_video_tab"):
+            return None
+        tab = tab_area.current_video_tab()
+        if tab is None:
+            return None
+        sc = tab.sidecar()
+        if sc and sc.source_hash:
+            return sc.source_hash
+        try:
+            from pathlib import Path
+            return compute_video_hash(Path(tab.source_path()))
+        except Exception:
+            return None
+
+    def default_model_size(self) -> str:
+        try:
+            return self._mw.app_settings.agent.whisper_model_size or "base"
+        except AttributeError:
+            return "base"
 
 
 class _DockCloseFilter(QObject):
@@ -148,6 +307,11 @@ class MainWindow(QMainWindow):
             self.setGeometry(s.viewer_x, s.viewer_y, s.viewer_w, s.viewer_h)
         else:
             self.resize(1280, 820)
+        # 종료 시점이 최대화 상태였으면 windowState 에 플래그를 미리 세팅 — hidden 상태에서
+        # 적용해도 Qt 가 첫 show() 시 자동 반영. main.py 의 show() 흐름이나 트레이 모드
+        # (show 안 함) 둘 다 영향 없음. 사용자가 일반 크기로 줄이면 setGeometry 좌표/크기로 복귀.
+        if getattr(s, "viewer_maximized", False):
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
         # 창을 작게 만드는 것이 차단되지 않도록 최소 크기 명시 (캡처 후 lockup 방지).
         self.setMinimumSize(480, 320)
 
@@ -156,7 +320,12 @@ class MainWindow(QMainWindow):
 
         # ---------- 모델 / 컨트롤러 멤버 ----------
         self.library_model = LibraryModel()
-        self.mode_controller = ModeController()
+        # settings 에 저장된 마지막 모드로 시작 — 잘못된 값이면 IMAGE 폴백.
+        try:
+            saved_mode = AppMode(self.app_settings.preferences.last_mode)
+        except ValueError:
+            saved_mode = AppMode.IMAGE
+        self.mode_controller = ModeController(saved_mode)
         # 마술봉 / 마스크 브러시 / 래스터 브러시 라이브 파라미터 (옵션 툴바 슬라이더와 동기화)
         self._magic_wand_tolerance = 32
         self._mask_brush_size = 30
@@ -175,7 +344,18 @@ class MainWindow(QMainWindow):
         # 키. 없으면 매 실행마다 "objectName not set" 경고 + 위치 복원 불가능.
         self._global_tb_host.setObjectName("GlobalToolBarHost")
         self._global_tb_host.setMovable(False)
-        self._global_tb_host.addWidget(self.global_toolbar)
+        # 창 폭이 좁아지면 글로벌 툴바의 모든 버튼이 다 안 들어가 서로 겹치던 회귀 fix —
+        # QScrollArea 로 감싸 폭 부족 시 가로 스크롤로 모든 버튼 접근 가능하게.
+        # 세로 스크롤은 절대 금지 (툴바 높이는 항상 고정), frame 도 제거해 시각적 동일.
+        self._global_tb_scroll = QScrollArea()
+        self._global_tb_scroll.setWidget(self.global_toolbar)
+        self._global_tb_scroll.setWidgetResizable(True)
+        self._global_tb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._global_tb_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._global_tb_scroll.setFrameShape(QFrame.NoFrame)
+        # global_toolbar 의 sizeHint 높이 + 스크롤바 여유로 host 높이 고정.
+        self._global_tb_scroll.setFixedHeight(self.global_toolbar.sizeHint().height() + 12)
+        self._global_tb_host.addWidget(self._global_tb_scroll)
         self.addToolBar(self._global_tb_host)
 
         # ---------- 옵션바 (annotation toolbar) ----------
@@ -249,17 +429,109 @@ class MainWindow(QMainWindow):
         self.inspector_panel.register_inspector("zoom", ZoomInspector)      # Stage 6
         from .video.inspectors.broll_inspector import BrollInspector        # Stage 7
         self.inspector_panel.register_inspector("broll", BrollInspector)    # Stage 7
+        from .video.inspectors.arrow_inspector import ArrowInspector        # Phase 20.11
+        self.inspector_panel.register_inspector("arrow", ArrowInspector)    # Phase 20.11
         self.inspector_dock = QDockWidget("효과 인스펙터", self)
         self.inspector_dock.setObjectName("InspectorDock")
         self.inspector_dock.setWidget(self.inspector_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.inspector_dock)
         self.inspector_dock.hide()   # 기본 숨김
+
+        # ---------- Claude 에이전트 채팅 패널 (Phase 33 — 2026-05-13) ----------
+        # 사용자가 채팅창에 영상 편집 명령을 자연어로 입력 → Claude Agent SDK 가
+        # 도구를 호출해 응답. Phase A 는 read-only 도구 5개만 — 편집은 Phase B+.
+        # 시작 시 stop_loop 가 thread 종료를 막아주므로 closeEvent 에서 명시적 stop.
+        self._video_session_adapter = _MainWindowVideoSession(self)
+        # AgentRuntime 인스턴스 먼저 부분 생성 — VideoTools 가 콜백으로 참조해야 하므로
+        # 임시 placeholder 후 실제 인스턴스로 wire-up.
+        from screen_recorder.agent.proposals import ProposalQueue
+        self._proposal_queue = ProposalQueue()
+        # 콜백: VideoTools (worker thread) → AgentRuntime.emit_apply_request → UI slot.
+        # AgentRuntime 생성 시 콜백 주입 위해 lambda 로 늦은 바인딩.
+        self._transcript_ctx = _MainWindowTranscriptContext(self)
+        self._video_tools = VideoTools(
+            self._video_session_adapter,
+            ffmpeg_path=str(self.ffmpeg_path) if self.ffmpeg_path else None,
+            proposal_queue=self._proposal_queue,
+            on_apply=lambda props, fut: self.agent_runtime.emit_apply_request(props, fut),
+            transcript_ctx=self._transcript_ctx,
+            on_download_whisper=lambda size, fut: self.agent_runtime.emit_whisper_download_request(size, fut),
+        )
+        self.agent_runtime = AgentRuntime(
+            self._video_tools,
+            cwd=Path(__file__).resolve().parents[3],  # 프로젝트 루트
+            parent=self,
+        )
+        self.agent_runtime.proposals_apply_requested.connect(
+            self._on_agent_proposals_apply,
+        )
+        self.agent_runtime.whisper_download_requested.connect(
+            self._on_agent_whisper_download_requested,
+        )
+        # 저장된 모델 ID + 추론 표시 토글 복원.
+        saved_model_id = getattr(self.app_settings.agent, "model_id", None)
+        saved_show_thinking = getattr(self.app_settings.agent, "show_thinking", True)
+        self.agent_chat_panel = ChatPanel(
+            self,
+            initial_model_id=saved_model_id,
+            initial_show_thinking=saved_show_thinking,
+            plan_gate=self.agent_runtime.plan_gate(),
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self.agent_chat_panel)
+        self.agent_chat_panel.user_submitted.connect(self.agent_runtime.send)
+        self.agent_chat_panel.model_changed.connect(self.agent_runtime.set_model)
+        self.agent_chat_panel.model_changed.connect(self._on_agent_model_changed)
+        self.agent_chat_panel.cancel_requested.connect(self.agent_runtime.cancel)
+        self.agent_chat_panel.show_thinking_changed.connect(self._on_agent_show_thinking_changed)
+        # 슬래시 명령 — UI 측 정리는 ChatPanel 가 했고, runtime 측 client lifecycle 만.
+        self.agent_chat_panel.clear_requested.connect(self.agent_runtime.clear_session)
+        self.agent_chat_panel.compact_requested.connect(self.agent_runtime.compact_session)
+        # 미리보기 카드 의 적용/취소 버튼 — apply_proposals pending future 의 resolution.
+        self.agent_chat_panel.proposals_apply_confirmed.connect(
+            self._on_proposals_card_apply_clicked
+        )
+        self.agent_chat_panel.proposals_apply_canceled.connect(
+            self._on_proposals_card_cancel_clicked
+        )
+        self.agent_chat_panel.whisper_download_confirmed.connect(
+            self._on_whisper_card_download_clicked
+        )
+        self.agent_chat_panel.whisper_download_canceled.connect(
+            self._on_whisper_card_cancel_clicked
+        )
+        # apply pending 상태 — Claude 의 apply_proposals 호출이 사용자 버튼 기다리는 동안 보관.
+        self._pending_apply_proposals: list = []
+        self._pending_apply_future = None
+        # Whisper 다운로드 pending 상태.
+        self._pending_whisper_size: Optional[str] = None
+        self._pending_whisper_future = None
+        self.agent_runtime.message_received.connect(self.agent_chat_panel.append_message)
+        self.agent_runtime.event_received.connect(self.agent_chat_panel.append_event)
+        # AgentRuntime 도 저장된 모델로 동기화 (첫 send 전에).
+        try:
+            self.agent_runtime.set_model(self.agent_chat_panel.current_model_id())
+        except (RuntimeError, AttributeError):
+            pass
+        # 대화 영속화 — 이전 세션 기록 복원 + 종료 시 자동 저장.
+        try:
+            from screen_recorder.agent.chat_history import default_history_path
+            self.agent_chat_panel.set_history_path(default_history_path())
+        except Exception:
+            logging.exception("chat history wiring failed")
         # 인스펙터 효과 변경 → 현재 활성 VideoTab 에만 전달 (단일 연결).
         # per-tab 연결 방식은 탭 N 개 열면 N 번 발화해 비활성 탭 사이드카도 덮어쓰는
         # 데이터 무결성 버그를 일으킴 (Stage 2 에서 도입, Stage 3a 에서 최초 노출).
         self.inspector_panel.effect_changed.connect(self._on_inspector_effect_changed)
         # 인스펙터 내 삭제 버튼(Stage 5+) → 현재 활성 탭의 EditController.remove_effect.
         self.inspector_panel.effect_deleted.connect(self._on_inspector_effect_deleted)
+        # SpeedInspector 의 전역 배속 토글 → settings 영속 + 모든 영상 탭 적용.
+        self.inspector_panel.speed_effects_global_toggled.connect(
+            self._on_global_speed_effects_change
+        )
+        # 시작 시 settings 의 저장된 상태를 패널에 주입 (앞으로 만들어지는 SpeedInspector 에 반영).
+        self.inspector_panel.set_speed_effects_enabled(
+            self.app_settings.preferences.speed_effects_enabled
+        )
 
         # 호환성: 기존 코드에서 _left_dock_container 참조 가능 — 더이상 의미 없으나 None 으로 둔다.
         self._left_dock_container = None
@@ -322,15 +594,41 @@ class MainWindow(QMainWindow):
         self.annotation_toolbar.set_current_color(QColor(self.app_settings.annotation.last_color))
         self.annotation_toolbar.set_current_thickness_step(self.app_settings.annotation.last_thickness)
 
+        # Phase 23: dock 가시성 메뉴 액션 상태를 settings 에서 복원 (X 닫음 영속).
+        # _restore_dock_state 전에 해야 enforce_dock_visibility 가 메뉴 상태를 올바로 본다.
+        prefs = self.app_settings.preferences
+        for action, attr in (
+            (self.menu_bar.library_visible_action, "library_dock_visible"),
+            (self.menu_bar.layers_visible_action, "layers_dock_visible"),
+            (self.menu_bar.status_visible_action, "record_status_dock_visible"),
+        ):
+            action.blockSignals(True)
+            action.setChecked(bool(getattr(prefs, attr, True)))
+            action.blockSignals(False)
+
         # dock 레이아웃 복원 — 사용자가 직전 세션에 옮긴 위치/크기/floating 상태 그대로.
         self._restore_dock_state()
 
-        # 저장 폴더 스캔 → 라이브러리에 기존 파일들을 미리 채움.
-        # 이미지/영상 모두 포함, 모드 필터는 LibraryPanel 이 알아서 처리.
-        self._populate_library_from_disk()
+        # Phase 23: 폴더 스캔 대신 "최근 연 파일" 영속 목록 복원.
+        # settings.preferences.recent_library_entries 에서 읽어 path.exists() 통과한
+        # 것만 라이브러리에 등록. 썸네일은 library_thumbs 캐시에서 즉시 로드, 캐시 미스 시
+        # placeholder + 백그라운드 재추출.
+        self._load_persisted_library()
 
-        # 외부에서 파일이 삭제/이동되면 라이브러리에서도 자동 제거.
-        self._setup_library_disk_watcher()
+        # 라이브러리 변경 시 자동 저장 (디바운스). 외부 삭제 시 정리도 같은 경로로.
+        self._setup_library_persistence()
+
+        # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
+        # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
+        # 매번 재등록 안 해도 됨). 회귀 fix: 이전엔 이 블록이 _enable_perf_diag 안에
+        # 잘못 들어가 있어 KSTUDIO_PERF_DIAG=1 일 때만 _mcp_bridge 가 만들어졌고,
+        # 일반 사용자는 closeEvent → _stop_mcp_bridge 에서 AttributeError 로 죽었음.
+        from screen_recorder.mcp.pending_requests import PendingRequestStore
+        self._mcp_bridge = None
+        self._mcp_dispatcher = None
+        self._mcp_request_store = PendingRequestStore()   # async 도구 결과 보관
+        if self.app_settings.mcp.enabled:
+            self._start_mcp_bridge()
 
         # 초기화 끝 — 이제부터 사용자 액션에 의한 persist 허용.
         self._initializing = False
@@ -480,16 +778,6 @@ class MainWindow(QMainWindow):
         self._diag_timer.start()
         logging.warning("PERF_DIAG enabled — 5초 주기 로깅 시작 (RSS 기반)")
 
-        # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
-        # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
-        # 매번 재등록 안 해도 됨).
-        from screen_recorder.mcp.pending_requests import PendingRequestStore
-        self._mcp_bridge = None
-        self._mcp_dispatcher = None
-        self._mcp_request_store = PendingRequestStore()   # async 도구 결과 보관
-        if self.app_settings.mcp.enabled:
-            self._start_mcp_bridge()
-
     # ---------- 시그널 와이어링 ----------
 
     def _wire_signals(self) -> None:
@@ -563,6 +851,10 @@ class MainWindow(QMainWindow):
         self.menu_bar.tool_palette_visibility_toggled.connect(self._on_tool_palette_visibility_toggled)
         self.menu_bar.layers_visibility_toggled.connect(self._on_layers_visibility_toggled)
         self.menu_bar.record_status_visibility_toggled.connect(self._on_record_status_visibility_toggled)
+        # Phase 23: dock 가시성을 settings 에 영속화 — X 로 닫은 dock 이 재시작 후 다시 보이던 회귀 fix.
+        self.menu_bar.library_visibility_toggled.connect(self._on_library_dock_visibility_persist)
+        self.menu_bar.layers_visibility_toggled.connect(self._on_layers_dock_visibility_persist)
+        self.menu_bar.record_status_visibility_toggled.connect(self._on_record_status_dock_visibility_persist)
         # 사용자가 dock 의 X 버튼을 직접 눌러 닫는 경우만 menu_check 갱신.
         # closeEvent 는 user 액션에만 발화하고 setVisible(False) 에는 발화하지 않음.
         self._wire_dock_user_close()
@@ -580,8 +872,10 @@ class MainWindow(QMainWindow):
         self.tab_area.video_duration_resolved.connect(self._on_video_duration_resolved)
         self.library_panel.entry_open_requested.connect(self._open_entry)
         self.library_panel.entry_delete_requested.connect(self._on_library_delete)
+        self.library_panel.entry_remove_requested.connect(self._on_library_remove)
         self.library_panel.entry_open_folder_requested.connect(self._on_library_open_folder)
         self.library_panel.entry_undelete_requested.connect(self._on_library_undelete)
+        self.library_panel.files_dropped_for_library.connect(self._on_library_files_dropped)
         self.library_model.entry_renamed.connect(self._on_entry_renamed)
 
         # 영상 탭 프레임 → 스크린샷 단축키 (PlayerHotkeys 에서 동적으로 가져옴)
@@ -842,7 +1136,7 @@ class MainWindow(QMainWindow):
         if getattr(self, "_initializing", False):
             return
         try:
-            save_settings(self.app_settings, settings_path())
+            _settings_module.save(self.app_settings, _settings_module.settings_path())
         except OSError as e:
             logging.getLogger(__name__).warning("settings save failed: %s", e)
 
@@ -974,6 +1268,7 @@ class MainWindow(QMainWindow):
             self._mini = MiniControl()
             self._mini.stop_clicked.connect(self._on_stop_clicked)
             self._mini.pause_clicked.connect(self._on_pause_clicked)
+            self._mini.close_requested.connect(self._on_mini_close_requested)
             self._mini.show_at_bottom_right()
             exclude_from_capture(self._mini)
 
@@ -991,6 +1286,19 @@ class MainWindow(QMainWindow):
 
         if self._should_minimize_main():
             self.showNormal()
+
+    def _on_mini_close_requested(self):
+        """MiniControl 의 X 버튼 — 사용자가 다시는 안 보고 싶음.
+
+        녹화 자체는 계속됨 (stop 과 구분). preferences.use_mini_control = False
+        로 영속화 + 디스크 저장. 다음 녹화부터 미생성. 사용자가 환경설정에서
+        다시 켤 수 있음.
+        """
+        if self._mini is not None:
+            self._mini.close()
+            self._mini = None
+        self.app_settings.preferences.use_mini_control = False
+        self._persist_settings()
 
     def _on_pause_clicked(self):
         if self.controller.state == RecorderState.RECORDING:
@@ -1193,6 +1501,19 @@ class MainWindow(QMainWindow):
         if prev_mode is not None and prev_mode is not mode:
             self._save_dock_state_for_mode(prev_mode)
         self._last_mode = mode
+        # 마지막 사용 모드 영속화 — 다음 실행 시 같은 모드로 복원.
+        # _persist_settings 가 _initializing 플래그를 자체적으로 체크하므로 init 중엔 no-op.
+        self.app_settings.preferences.last_mode = mode.value
+        self._persist_settings()
+        # 모드별 테마 — 영상=현재 시안 / 이미지=mono+emerald.
+        # 실제 전환일 때만 재적용 — init(prev_mode is None) 에선 main.py 의
+        # 초기 apply_theme 호출이 이미 끝났으므로 중복 방지.
+        if prev_mode is not None and prev_mode is not mode:
+            from screen_recorder.ui.theme import apply_theme
+            apply_theme(
+                QApplication.instance(),
+                "video" if mode is AppMode.VIDEO else "image",
+            )
         self.global_toolbar.set_mode(mode)
         is_image = (mode is AppMode.IMAGE)
         # ToolPalette: 이미지 모드 + 창 메뉴 체크 둘 다일 때만
@@ -1323,6 +1644,9 @@ class MainWindow(QMainWindow):
         tab.edit_mode_change_requested.connect(self._on_global_edit_mode_change)
         # 새 탭 생성 시 현재 전역 모드를 반영.
         tab.set_edit_mode(self.app_settings.preferences.edit_mode_on)
+        # 배속 일괄 켜기/끄기 — 전역 + 세션 간 영속.
+        tab.speed_effects_change_requested.connect(self._on_global_speed_effects_change)
+        tab.set_speed_effects_enabled(self.app_settings.preferences.speed_effects_enabled)
         # 편집 모드 컨트롤바의 출력 버튼 → 기존 export 핸들러로 라우팅.
         tab.export_requested.connect(self._on_export_video)
 
@@ -1338,6 +1662,284 @@ class MainWindow(QMainWindow):
         widget.edit_controller().update_sidecar(
             self._patch_sidecar_effect(widget.sidecar(), new_effect)
         )
+
+    def _on_agent_model_changed(self, model_id: str) -> None:
+        """ChatPanel 의 모델 드롭다운 변경 → settings 영속화."""
+        if not model_id:
+            return
+        try:
+            self.app_settings.agent.model_id = model_id
+            self._persist_settings()
+        except (AttributeError, RuntimeError):
+            logging.exception("agent model persist failed")
+
+    def _on_agent_whisper_download_requested(self, model_size, future) -> None:
+        """Claude 의 download_whisper_model → UI 동의 카드 표시."""
+        if self._pending_whisper_future is not None:
+            future.set_result({
+                "ok": False,
+                "error": "이전 다운로드 요청 처리 중 — 그 카드를 먼저 처리하세요.",
+            })
+            return
+        self._pending_whisper_size = model_size   # Claude 가 *제안* 한 크기.
+        self._pending_whisper_future = future
+        self.agent_chat_panel.append_message(AgentMessage(
+            role="whisper_download_request",
+            text=f"model_size={model_size}",
+        ))
+
+    def _on_whisper_card_download_clicked(self, chosen_size: str) -> None:
+        """사용자가 카드 [✓ 다운로드] 클릭 → 사용자가 *드롭다운에서 고른* 크기로 실행.
+
+        Claude 가 제안한 크기와 다를 수 있음 — 사용자 선택이 우선. 새 크기를
+        settings.agent.whisper_model_size 로 영속화.
+        """
+        if self._pending_whisper_future is None:
+            return
+        future = self._pending_whisper_future
+        self._pending_whisper_size = None
+        self._pending_whisper_future = None
+        model_size = chosen_size
+        # 다음 transcribe 시 같은 크기 자동 사용하도록 설정 갱신.
+        try:
+            self.app_settings.agent.whisper_model_size = model_size
+            self._persist_settings()
+        except (AttributeError, RuntimeError):
+            pass
+        import threading
+
+        def worker():
+            try:
+                from screen_recorder.agent.transcript import get_transcriber
+                get_transcriber()._ensure_model(model_size)
+                future.set_result({"ok": True, "model_size": model_size,
+                                    "downloaded": True})
+                # UI 측 카드 상태 갱신 — Qt slot 호출 (자동 queued).
+                from PySide6.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(
+                    self.agent_chat_panel, "mark_whisper_download_resolved",
+                    Qt.QueuedConnection, Q_ARG(str, "done"),
+                    Q_ARG(str, f"{model_size} 모델 디스크에 저장됨."),
+                )
+            except Exception as exc:
+                logging.exception("whisper download worker failed")
+                future.set_result({"ok": False, "error": str(exc)})
+                from PySide6.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(
+                    self.agent_chat_panel, "mark_whisper_download_resolved",
+                    Qt.QueuedConnection, Q_ARG(str, "failed"),
+                    Q_ARG(str, str(exc)[:200]),
+                )
+
+        threading.Thread(target=worker, daemon=True, name="whisper-download").start()
+
+    def _on_whisper_card_cancel_clicked(self) -> None:
+        """사용자가 다운로드 거절."""
+        if self._pending_whisper_future is None:
+            return
+        future = self._pending_whisper_future
+        self._pending_whisper_size = None
+        self._pending_whisper_future = None
+        future.set_result({"ok": False, "canceled_by_user": True})
+        self.agent_chat_panel.mark_whisper_download_resolved("canceled")
+
+    def _on_agent_show_thinking_changed(self, on: bool) -> None:
+        """추론 보기 토글 → settings 영속화."""
+        try:
+            self.app_settings.agent.show_thinking = bool(on)
+            self._persist_settings()
+        except (AttributeError, RuntimeError):
+            logging.exception("agent show_thinking persist failed")
+
+    def _on_agent_proposals_apply(self, proposals, future) -> None:
+        """Claude 의 apply_proposals 도구 호출 → UI 스레드 슬롯.
+
+        2026-05-14 사용자 요청: "수락 거절 뜨는데 되돌리기 기능만 넣어주고 수락은 알아서
+        하게 해줄래?" — 매번 확인 카드 띄우는 대신 *즉시 적용*. 잘못된 결과는 사용자가
+        Ctrl+Z (편집 메뉴 → 실행 취소) 로 되돌림. 모든 propose 는 EditController.history
+        에 push 되므로 한 번에 N 개 적용했어도 N 번 undo 로 전부 되돌릴 수 있음.
+
+        edge case (활성 탭 없음 / 편집 모드 OFF) 는 그대로 거부 — 잘못된 상태에서 적용 시도는
+        실패해야 사용자가 원인을 알 수 있음.
+
+        남겨둔 함수들 (`_on_proposals_card_apply_clicked` / `_on_proposals_card_cancel_clicked`):
+        ChatPanel 의 시그널 연결 코드가 유지되므로 그대로 두지만, 자동 적용 흐름에선 카드가
+        뜨지 않아 클릭될 일 없음 — dead code 가 아니라 *unreachable until 토글 reintroduce*.
+        """
+        widget = self.tab_area.currentWidget()
+        if not isinstance(widget, VideoTab):
+            future.set_result({
+                "applied": 0,
+                "errors": ["활성 영상 탭 없음 — 영상을 먼저 열어주세요."],
+                "queue_restored": True,
+            })
+            for p in proposals:
+                self._proposal_queue.add(p)
+            return
+        if not widget.is_edit_mode_on():
+            # 2026-05-19: 편집 모드 OFF 면 효과 lane 이 안 보여 사용자가 "왜 안 됐지" 혼동.
+            # 자동 ON + 안내 메시지로 침묵 거부보다 친절하게. set_edit_mode 는 전역 토글
+            # (모든 탭 + AppSettings 영속) — Claude 가 의도적으로 편집을 시작한 컨텍스트이므로
+            # 전역 활성도 합리적 (사용자가 "필러 빼줘" 한 자체가 편집 의도 표명).
+            self._on_global_edit_mode_change(True)
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="system",
+                text="ℹ 편집 모드를 자동으로 켰습니다 — 타임라인에서 효과를 확인할 수 있습니다.",
+            ))
+        # 즉시 적용 — 사용자 확인 카드 우회.
+        result = self._apply_proposals_now(list(proposals))
+        try:
+            future.set_result(result)
+        except Exception:
+            logging.exception("apply future set_result failed")
+        # 사용자 안내 메시지 — 적용된 개수 + Ctrl+Z 사용법.
+        applied_n = int(result.get("applied", 0) or 0)
+        errors = result.get("errors") or []
+        if applied_n > 0 and not errors:
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="system",
+                text=f"✓ {applied_n}개 적용. 잘못된 결과면 Ctrl+Z 로 되돌릴 수 있습니다.",
+            ))
+        elif applied_n > 0 and errors:
+            err_txt = "; ".join(str(e) for e in errors[:3])
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="system",
+                text=f"⚠ {applied_n}개 적용 / 일부 실패: {err_txt}. Ctrl+Z 로 되돌릴 수 있습니다.",
+            ))
+        elif errors:
+            err_txt = "; ".join(str(e) for e in errors[:3])
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="error",
+                text=f"적용 실패: {err_txt}",
+            ))
+
+    def _on_proposals_card_apply_clicked(self) -> None:
+        """사용자가 미리보기 카드의 [✓ 적용] 클릭 → 실제 적용."""
+        if self._pending_apply_future is None:
+            return
+        proposals = self._pending_apply_proposals
+        future = self._pending_apply_future
+        self._pending_apply_proposals = []
+        self._pending_apply_future = None
+        result = self._apply_proposals_now(proposals)
+        try:
+            future.set_result(result)
+        except Exception:
+            logging.exception("apply future set_result failed")
+        self.agent_chat_panel.mark_proposals_resolved("applied")
+
+    def _on_proposals_card_cancel_clicked(self) -> None:
+        """사용자가 미리보기 카드의 [✗ 취소] 클릭 → 적용 안 함."""
+        if self._pending_apply_future is None:
+            return
+        proposals = self._pending_apply_proposals
+        future = self._pending_apply_future
+        self._pending_apply_proposals = []
+        self._pending_apply_future = None
+        # 큐 복원 — 사용자가 다시 시도 가능.
+        for p in proposals:
+            self._proposal_queue.add(p)
+        try:
+            future.set_result({
+                "applied": 0,
+                "canceled_by_user": True,
+                "queue_restored": True,
+                "note": "사용자가 적용 취소. 제안은 큐에 다시 복원됨.",
+            })
+        except Exception:
+            logging.exception("apply future set_result failed")
+        self.agent_chat_panel.mark_proposals_resolved("canceled")
+
+    def append_autoedit_system_message(self, n_effects: int, failed: list[str]) -> None:
+        """자동편집 완료 시 사용자 안내. 채팅 패널에 시스템 메시지로 출력."""
+        if not hasattr(self, "agent_chat_panel"):
+            return
+        msg = f"✓ 자동편집 완료. {n_effects}개 효과 추가. Ctrl+Z 로 되돌릴 수 있습니다."
+        if failed:
+            msg += f" (실패한 분석기: {', '.join(failed)})"
+        from screen_recorder.agent.runtime import AgentMessage
+        self.agent_chat_panel.append_message(AgentMessage(role="system", text=msg))
+
+    def _apply_proposals_now(self, proposals) -> dict:
+        """실제 sidecar mutation 실행 (UI 스레드).
+
+        action 별 디스패치:
+        - "add"    → ec.add_effect(build_effect_from_proposal(p))
+        - "remove" → ec.remove_effect(effect_id)
+        - "modify" → 기존 효과를 dataclasses.replace 로 부분 갱신 후 ec.update_effect
+
+        같은 배치 안에서 add → modify/remove 가 같은 proposal 을 가리킬 때 자동 remap:
+        Claude 가 prop_ABC 로 add 한 직후 modify(effect_id='prop_ABC') 호출 가능. add 가
+        실제로 만든 effect.id 와 prop_ABC 가 다르므로 (uuid 기반) 그대로 두면 'not found'.
+        proposal_id → real_effect_id 매핑을 한 배치 안에서 유지해 remap.
+        """
+        from dataclasses import replace
+        from screen_recorder.agent.proposals import (
+            apply_modify_overrides, build_effect_from_proposal,
+        )
+        widget = self.tab_area.currentWidget()
+        if not isinstance(widget, VideoTab):
+            return {"applied": 0, "errors": ["활성 영상 탭 없음"]}
+        ec = widget.edit_controller()
+        applied: list[dict] = []
+        errors: list[str] = []
+        # 배치 내 proposal_id → 실제 effect.id 매핑. add 가 성공하면 등록.
+        # modify/remove 가 이전 add 의 proposal_id 를 effect_id 로 보내면 remap.
+        proposal_to_real: dict[str, str] = {}
+        for p in proposals:
+            action = getattr(p, "action", "add")
+            try:
+                if action == "add":
+                    eff = build_effect_from_proposal(p)
+                    ok = ec.add_effect(eff)
+                    if ok:
+                        proposal_to_real[p.id] = eff.id
+                        applied.append({"action": "add", "id": eff.id, "type": p.type, "proposal_id": p.id})
+                    else:
+                        errors.append(f"{p.id} (add {p.type}): rejected")
+                elif action == "remove":
+                    eid_raw = str(p.payload.get("effect_id", ""))
+                    eid = proposal_to_real.get(eid_raw, eid_raw)
+                    ok = ec.remove_effect(eid)
+                    if ok:
+                        applied.append({"action": "remove", "effect_id": eid, "proposal_id": p.id})
+                    else:
+                        errors.append(f"{p.id} (remove): effect_id '{eid}' not found")
+                elif action == "modify":
+                    # 매번 최신 sidecar 를 다시 가져옴 — 직전 add 가 새 효과를 추가했을 수 있음.
+                    sc = widget.sidecar()
+                    eid_raw = str(p.payload.get("effect_id", ""))
+                    eid = proposal_to_real.get(eid_raw, eid_raw)
+                    target = next((e for e in sc.effects if e.id == eid), None) if sc else None
+                    if target is None:
+                        errors.append(f"{p.id} (modify): effect_id '{eid_raw}' not found")
+                        continue
+                    overrides = {k: v for k, v in p.payload.items() if k != "effect_id"}
+                    # nested dict (예: caption.font={"family":"...", "size":48}) 는 그대로
+                    # replace 하면 *dataclass 자리에 dict* 가 들어가 paintEvent 등에서
+                    # AttributeError. asdict→merge→_effect_from_dict 로 정상 coerce.
+                    try:
+                        new_eff = apply_modify_overrides(target, overrides)
+                    except (TypeError, ValueError, KeyError) as exc:
+                        errors.append(f"{p.id} (modify {eid}): invalid field — {exc}")
+                        continue
+                    ok = ec.update_effect(new_eff)
+                    if ok:
+                        applied.append({"action": "modify", "effect_id": eid, "proposal_id": p.id,
+                                        "fields_changed": list(overrides.keys())})
+                    else:
+                        errors.append(f"{p.id} (modify {eid}): rejected (time overlap?)")
+                else:
+                    errors.append(f"{p.id}: unknown action {action!r}")
+            except Exception as exc:
+                logging.exception("agent apply: action=%s proposal=%s failed", action, p.id)
+                errors.append(f"{p.id} ({action}): {exc}")
+        return {
+            "applied": len(applied),
+            "applied_details": applied,
+            "errors": errors,
+            "queue_restored": False,
+        }
 
     def _on_inspector_effect_deleted(self, effect_id: str) -> None:
         """인스펙터에서 효과 삭제 버튼 클릭 시 현재 활성 VideoTab 의 사이드카에서 제거.
@@ -1401,6 +2003,59 @@ class MainWindow(QMainWindow):
             )
             self.library_model.rename(entry_id, old_path.stem)
 
+    def _on_library_remove(self, entry_id: int) -> None:
+        """Del — 라이브러리 목록에서만 제외 (디스크 파일은 그대로). 열려 있던 탭은 닫음.
+
+        Shift+Del 의 _on_library_delete 와 달리 send2trash 호출 X. Ctrl+Z 복원 시 디스크
+        파일이 이미 있으므로 그대로 다시 라이브러리에 add 하면 됨.
+        """
+        entry = self.library_model.get(entry_id)
+        if entry is None:
+            return
+        snapshot = self._snapshot_entry(entry)
+        snapshot["trashed"] = False
+        self._close_tab_and_release_handles(entry_id)
+        self.library_model.remove(entry_id)
+        self._push_undelete_snapshot(snapshot)
+
+    def _snapshot_entry(self, entry) -> dict:
+        """Del/Shift+Del 공통 — undelete stack 용 entry 스냅샷."""
+        return {
+            "kind": entry.kind,
+            "thumbnail": entry.thumbnail,
+            "source_label": entry.source_label,
+            "display_name": entry.display_name,
+            "path": entry.path,
+            "duration_ms": entry.duration_ms,
+            "origin": entry.origin,
+        }
+
+    def _push_undelete_snapshot(self, snapshot: dict) -> None:
+        self._undelete_stack.append(snapshot)
+        if len(self._undelete_stack) > 8:
+            self._undelete_stack.pop(0)
+
+    def _close_tab_and_release_handles(self, entry_id: int) -> None:
+        """엔트리에 연결된 탭이 있으면 닫고, 영상/GIF 핸들을 해제한 뒤 이벤트 루프를 굴린다.
+
+        Shift+Del 에서 send2trash 가 sharing violation 안 나도록 핸들 해제가 필요.
+        Del(라이브러리에서만 제외) 도 같은 절차를 거쳐 일관성 유지 — 어차피 탭은 닫혀야.
+        """
+        idx = self.tab_area.find_index_by_entry(entry_id)
+        widget = self.tab_area.tab_widget_for_entry(entry_id)
+        if isinstance(widget, VideoTab):
+            try:
+                widget.player.stop()
+                widget.player.release_file_handles()
+            except (RuntimeError, AttributeError):
+                pass
+        if idx >= 0:
+            self.tab_area._on_close_requested(idx)
+        from PySide6.QtCore import QCoreApplication, QEvent
+        QApplication.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        QApplication.processEvents()
+
     def _on_library_delete(self, entry_id: int) -> None:
         entry = self.library_model.get(entry_id)
         if entry is None:
@@ -1410,43 +2065,10 @@ class MainWindow(QMainWindow):
         # 라이브러리에 항목이 남아 있으면 "Del 안 먹은 듯" 한 인상을 줌.
         path = entry.path
         kind = entry.kind
-        idx = self.tab_area.find_index_by_entry(entry_id)
+        snapshot = self._snapshot_entry(entry)
 
-        # 영상/GIF 파일은 QMediaPlayer / QMovie 가 핸들을 잡고 있어 그대로 send2trash
-        # 를 호출하면 Windows 가 "다른 프로그램이 사용 중" (sharing violation) 으로 거부.
-        # 탭 닫기 전에 release_file_handles() 로 두 백엔드의 핸들을 모두 명시 해제하고,
-        # processEvents 로 deferred deletion · media-pipeline tear-down 을 한 번 굴린다.
-        widget = self.tab_area.tab_widget_for_entry(entry_id)
-        if isinstance(widget, VideoTab):
-            try:
-                widget.player.stop()
-                widget.player.release_file_handles()
-            except (RuntimeError, AttributeError):
-                pass
-
-        # Ctrl+Z 복원용 스냅샷 (id 는 보관 X — 다음 add 시 새로 발급).
-        snapshot = {
-            "kind": entry.kind,
-            "thumbnail": entry.thumbnail,
-            "source_label": entry.source_label,
-            "display_name": entry.display_name,
-            "path": path,
-            "duration_ms": entry.duration_ms,
-            "origin": entry.origin,
-        }
-
+        self._close_tab_and_release_handles(entry_id)
         self.library_model.remove(entry_id)
-        # 같이 열려 있던 탭 닫기 (영상이면 player 해제도 같이).
-        if idx >= 0:
-            self.tab_area._on_close_requested(idx)
-        # deleteLater 가 큐에 들어간 상태 — Qt 가 실제로 위젯을 파괴하고 미디어 백엔드의
-        # 파일 핸들을 닫도록 이벤트 루프를 짧게 풀어 준다. GIF (QMovie/QImageReader) 는
-        # 단순 processEvents 만으론 QFile 이 안 닫히는 일이 있어, sendPostedEvents 로
-        # DeferredDelete 만 명시 처리한 뒤 한 번 더 processEvents 로 마무리.
-        from PySide6.QtCore import QCoreApplication, QEvent
-        QApplication.processEvents()
-        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-        QApplication.processEvents()
 
         trashed_ok = True
         # 디스크 파일이 있으면 휴지통으로 — sharing violation (file in use) 은 100ms
@@ -1465,11 +2087,9 @@ class MainWindow(QMainWindow):
                 )
 
         # 휴지통으로 잘 들어갔거나 (혹은 path 가 없는 미저장 항목) 만 undelete stack 에 푸시.
-        # 스택은 짧게(8) 유지 — 너무 많이 쌓이면 메모리/혼란.
         if trashed_ok:
-            self._undelete_stack.append(snapshot)
-            if len(self._undelete_stack) > 8:
-                self._undelete_stack.pop(0)
+            snapshot["trashed"] = True
+            self._push_undelete_snapshot(snapshot)
 
     def _send_to_trash_with_retry(self, path: Path) -> None:
         """send2trash + 짧은 재시도. GIF 의 QMovie 핸들 / 썸네일 ffmpeg 등이 막 끝나는
@@ -1492,14 +2112,19 @@ class MainWindow(QMainWindow):
         send2trash(str(path))
 
     def _on_library_undelete(self) -> None:
-        """라이브러리에서 Ctrl+Z — 마지막 Del 한 항목을 휴지통에서 복원하고 라이브러리에
-        다시 추가한다. 디스크 파일이 없던 항목은 라이브러리에만 다시 등록."""
+        """라이브러리에서 Ctrl+Z — 마지막으로 제외/삭제한 항목을 되돌린다.
+
+        - trashed=True 스냅샷: 휴지통에서 복원 후 라이브러리에 재등록.
+        - trashed=False 스냅샷: 디스크 파일은 그대로이므로 라이브러리에만 재등록.
+        - path=None (미저장 항목): 라이브러리에만 재등록.
+        """
         if not self._undelete_stack:
             return
         snapshot = self._undelete_stack[-1]
         path = snapshot.get("path")
+        trashed = snapshot.get("trashed", True)   # 구버전 스냅샷 호환 — 휴지통이라 가정.
 
-        if path is not None:
+        if path is not None and trashed:
             from screen_recorder.core.recycle_bin import is_supported as rb_supported, restore as rb_restore
             if not rb_supported():
                 QMessageBox.information(
@@ -1577,11 +2202,22 @@ class MainWindow(QMainWindow):
             return False
 
     def _on_video_snapshot(self, image: QImage, label_at: str) -> None:
-        """영상 탭에서 '현재 프레임 → 스크린샷' 요청."""
+        """영상 탭에서 '현재 프레임 → 스크린샷' 요청.
+
+        screenshot 캡처와 동일하게 display_name 을 미리 만들어 라이브러리/탭 라벨이
+        실제 저장될 파일명으로 즉시 보이도록 한다 (사용자 요청: "영상에서 나오면 이름은
+        바로 바꿔줘야지"). label_at ('region @ 01:23.4') 은 `:` / `@` 가 들어가 그대로
+        쓰면 사용자가 "파일이름이 이상하다" 고 느낌 + 사용자 패턴에 {target} 포함 시
+        Windows 파일명으로 부적합 → target 으로는 `:` / `@` 를 `_` 로 치환한 안전판 사용.
+        """
+        safe_target = label_at.replace(":", "_").replace("@", "_").replace(" ", "_").strip("_")
+        display = self._build_screenshot_display_name(safe_target)
         entry = self.library_model.add(
-            EntryKind.SCREENSHOT, thumbnail=image, source_label=label_at
+            EntryKind.SCREENSHOT, thumbnail=image, source_label=label_at,
+            display_name=display,
         )
-        self.tab_area.add_screenshot(image=image, source_label=label_at, entry_id=entry.id)
+        self.tab_area.add_screenshot(image=image, source_label=label_at, entry_id=entry.id,
+                                      display_name=display)
 
     def _on_recording_mode_changed(self, mode_key: str) -> None:
         """녹화 모드 (영상/GIF) 변경 — 테두리·도크 라벨 즉시 반영."""
@@ -2035,6 +2671,59 @@ class MainWindow(QMainWindow):
             pass
         self._open_path(p)
 
+    def _on_library_files_dropped(self, paths: list) -> None:
+        """라이브러리 패널에 외부 파일 드롭 → 라이브러리에만 추가 (탭 자동 열림 X).
+
+        이미 라이브러리에 있는 파일은 건너뜀. 추가된 entry 의 썸네일/duration 은
+        백그라운드 probe 로 채워짐 (탭 열 때와 동일 흐름).
+        """
+        added = 0
+        for path_str in paths:
+            try:
+                p = Path(str(path_str))
+            except (TypeError, ValueError):
+                continue
+            if not p.is_file():
+                continue
+            ext = p.suffix.lower()
+            if self._find_library_entry_for_path(p) is not None:
+                continue   # 중복 — 라이브러리에 이미 있음
+            if ext in self.VIDEO_EXTS:
+                placeholder = QImage(64, 36, QImage.Format_ARGB32)
+                placeholder.fill(0xFF222222)
+                entry = self.library_model.add(
+                    EntryKind.VIDEO,
+                    thumbnail=placeholder,
+                    source_label="dropped",
+                    display_name=p.name,
+                    path=p,
+                    duration_ms=0,
+                    origin="opened",
+                )
+                self._probe_duration_async(p, entry.id)
+                self._extract_thumbnail_async(p, entry.id)
+                added += 1
+            elif ext in self.IMAGE_EXTS:
+                try:
+                    img = QImage(str(p))
+                    if img.isNull():
+                        continue
+                except (OSError, ValueError):
+                    continue
+                self.library_model.add(
+                    EntryKind.SCREENSHOT,
+                    thumbnail=img,
+                    source_label="dropped",
+                    display_name=p.name,
+                    path=p,
+                    duration_ms=0,
+                    origin="opened",
+                )
+                added += 1
+        # 라이브러리 dock 가 숨겨져 있으면 사용자가 결과를 못 봄 → 보여주기.
+        if added > 0 and not self.library_dock.isVisible():
+            self.library_dock.show()
+
     def _open_path(self, p: Path) -> None:
         """확장자 기준 분기 + .kstudio 는 magic 으로 zip(이미지)/JSON(영상 사이드카) 구분."""
         ext = p.suffix.lower()
@@ -2449,10 +3138,21 @@ class MainWindow(QMainWindow):
             return
         dst = Path(dst)
 
-        # 영상 해상도 — 첫 프레임 / player surface 크기 사용.
-        # 정확한 영상 코덱 해상도는 ffprobe 가 필요하나 surface 크기로 대체 가능.
-        surface_w = max(1, tab.player.width())
-        surface_h = max(1, tab.player.height())
+        # Export 해상도 = 실제 영상 해상도 (ffprobe). player 위젯 크기를 쓰면
+        # 편집창 크기에 따라 surface 가 source aspect 와 어긋나 'stretch' 시 영상이
+        # 위아래로 늘어남. 다중 segment 트랙은 video_track[0].src, 단일이면 src_path.
+        # ffprobe 실패 시 player 위젯 크기로 폴백.
+        from ..services.media_probe import probe_video_size
+        if len(sidecar.video_track) >= 1:
+            primary_src = sidecar.video_track[0].src
+        else:
+            primary_src = str(src_path)
+        pw, ph = probe_video_size(primary_src)
+        if pw > 0 and ph > 0:
+            surface_w, surface_h = pw, ph
+        else:
+            surface_w = max(1, tab.player.width())
+            surface_h = max(1, tab.player.height())
 
         try:
             argv, pngs = build_export_args(
@@ -2472,6 +3172,7 @@ class MainWindow(QMainWindow):
         segs = build_combined_timeline(main_duration, cuts)
         total_combined_ms = segs[-1].combined_end_ms if segs else main_duration
 
+        from .export_dialog import ExportProgressOverlay
         dialog = ExportDialog(total_duration_ms=total_combined_ms, parent=self)
         job = ExportJob(
             ffmpeg_path=self.ffmpeg_path,
@@ -2483,6 +3184,17 @@ class MainWindow(QMainWindow):
         job.error.connect(dialog.set_error)
         dialog.cancel_requested.connect(job.cancel)
         dialog.open_folder_requested.connect(self._open_in_explorer)
+
+        # 오른쪽 하단 미니 진행 위젯 — 비모달이라 편집 계속 가능.
+        overlay = ExportProgressOverlay(self)
+        job.progress.connect(overlay.set_progress)
+        job.finished.connect(overlay.set_finished)
+        job.error.connect(overlay.set_error)
+        overlay.cancel_clicked.connect(job.cancel)
+        overlay.cancel_clicked.connect(dialog.close)
+        overlay.show_export()
+        self._export_overlay = overlay   # GC 방지
+
         job.start()
         dialog.show()
 
@@ -2928,6 +3640,19 @@ class MainWindow(QMainWindow):
                 except (RuntimeError, AttributeError):
                     pass
 
+    def _on_global_speed_effects_change(self, on: bool) -> None:
+        """배속 일괄 켜기/끄기 — settings 영속 + 모든 영상 탭 + 인스펙터 패널 동기화."""
+        on = bool(on)
+        self.app_settings.preferences.speed_effects_enabled = on
+        self._persist_settings()
+        self.inspector_panel.set_speed_effects_enabled(on)
+        for w, _, _ in self.tab_area._tabs:
+            if isinstance(w, VideoTab):
+                try:
+                    w.set_speed_effects_enabled(on)
+                except (RuntimeError, AttributeError):
+                    pass
+
     def _open_sidecar_dir(self) -> None:
         """Edit → 사이드카 폴더 열기. 사이드카 디렉토리를 탐색기로 연다."""
         import subprocess
@@ -3158,6 +3883,19 @@ class MainWindow(QMainWindow):
         # 메뉴 체크 + 영상 모드 둘 다 만족할 때만 보임.
         self.record_status_dock.setVisible(self._record_status_visible_state())
 
+    # Phase 23: dock 가시성 영속 핸들러 — 메뉴 체크 변화를 settings 에 즉시 반영.
+    def _on_library_dock_visibility_persist(self, checked: bool) -> None:
+        self.app_settings.preferences.library_dock_visible = bool(checked)
+        self._persist_settings()
+
+    def _on_layers_dock_visibility_persist(self, checked: bool) -> None:
+        self.app_settings.preferences.layers_dock_visible = bool(checked)
+        self._persist_settings()
+
+    def _on_record_status_dock_visibility_persist(self, checked: bool) -> None:
+        self.app_settings.preferences.record_status_dock_visible = bool(checked)
+        self._persist_settings()
+
     # ---------- dock 레이아웃 영속화 (모드별 분리) ----------
     def _current_mode_state_attr(self) -> str:
         return ("dock_state_image_b64" if self.mode_controller.mode() is AppMode.IMAGE
@@ -3286,124 +4024,170 @@ class MainWindow(QMainWindow):
         self._probe_duration_async(p, entry.id)
         self._extract_thumbnail_async(p, entry.id)
 
-    def _populate_library_from_disk(self) -> None:
-        """앱 시작 시 저장 폴더의 기존 파일을 라이브러리에 미리 등록.
+    # ---------- Phase 23: 라이브러리 영속 (recent files 모델) ----------
+    _LIBRARY_MAX_ENTRIES = 50
 
-        이미지 폴더(screenshot.save_dir)는 이미지/.kstudio, 영상 폴더(general.output_dir)는
-        영상/GIF 를 스캔. 두 폴더가 같아도 확장자로 분기하므로 안전.
-        썸네일: 이미지는 즉시 디스크에서 로드, 영상은 placeholder 후 백그라운드 ffmpeg 추출.
-        모드 필터는 LibraryPanel 이 EntryKind 로 자동 처리.
+    def _library_thumb_cache_dir(self) -> Path:
+        d = _settings_module.settings_path().parent / "library_thumbs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _thumb_cache_key(self, file_path: Path) -> str:
+        import hashlib
+        s = str(Path(file_path).expanduser()).replace("\\", "/").lower()
+        return hashlib.md5(s.encode("utf-8")).hexdigest()[:16]
+
+    def _thumb_cache_path(self, file_path: Path) -> Path:
+        return self._library_thumb_cache_dir() / f"{self._thumb_cache_key(file_path)}.png"
+
+    def _load_thumb_from_cache(self, file_path: Path) -> "QImage | None":
+        p = self._thumb_cache_path(file_path)
+        if not p.exists():
+            return None
+        img = QImage(str(p))
+        return img if not img.isNull() else None
+
+    def _save_thumb_to_cache(self, file_path: Path, image: QImage) -> None:
+        try:
+            cache_path = self._thumb_cache_path(file_path)
+            image.save(str(cache_path), "PNG")
+        except (OSError, RuntimeError):
+            pass
+
+    def _delete_thumb_cache(self, file_path: Path) -> None:
+        try:
+            p = self._thumb_cache_path(file_path)
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
+
+    def _load_persisted_library(self) -> None:
+        """settings.recent_library_entries 에서 라이브러리 복원. path 없는/사라진 항목은 스킵.
+
+        썸네일: 캐시 hit 시 즉시 적용, miss 시 placeholder + 백그라운드 재추출.
+        오래된 → 최신 순서로 add → LibraryPanel 이 최신을 맨 위에 끼워 넣음.
         """
-        img_dir = Path(
-            self.app_settings.screenshot.save_dir or default_image_dir()
-        )
-        vid_dir = Path(
-            self.app_settings.general.output_dir or default_video_dir()
-        )
-
-        candidates: list[tuple[Path, EntryKind, float]] = []
-        for d, exts, kind in (
-            (img_dir, self.IMAGE_EXTS, EntryKind.IMAGE),
-            (vid_dir, self.VIDEO_EXTS, EntryKind.VIDEO),
-        ):
+        raw_entries = list(self.app_settings.preferences.recent_library_entries or [])
+        # 점진적 추가용 큐 — 한 번에 다 넣으면 UI 멈춤 가능.
+        survivors: list[dict] = []
+        for d in raw_entries:
             try:
-                if not d.exists() or not d.is_dir():
+                path_str = d.get("path") or ""
+                if not path_str:
                     continue
-                for p in d.iterdir():
-                    if not p.is_file():
-                        continue
-                    if p.suffix.lower() not in exts:
-                        continue
-                    try:
-                        mtime = p.stat().st_mtime
-                    except OSError:
-                        continue
-                    candidates.append((p, kind, mtime))
-            except OSError as e:
-                logging.getLogger(__name__).warning("library scan failed for %s: %s", d, e)
-
-        # add 는 오래된 → 최신 순서로 — LibraryPanel 이 새 항목을 top 에 끼워 넣어
-        # 최신이 맨 위에 오도록.
-        candidates.sort(key=lambda t: t[2])
-
-        # 점진적 추가 — 한 entry 추가 후 event loop yield. 항목 많을 때 UI 클릭이
-        # 막히지 않도록. (관측: 이미지 12 + 영상 14 = 26 entry. 이미지 한 장당
-        # QImage(path) 가 100-200ms 소요해 동기 처리 시 2초+ block.)
-        # 이미지 썸네일도 백그라운드 풀에서 디코딩 → main thread 는 placeholder 추가만.
-        self._populate_pending = list(candidates)   # oldest first
-        self._populate_timer = QTimer(self)
-        self._populate_timer.setSingleShot(True)
-        self._populate_timer.setInterval(0)
-        self._populate_timer.timeout.connect(self._populate_one_step)
-        # 첫 step 은 짧은 지연 후 — 메인 창 paint 우선 처리해 사용자에 즉시 응답.
-        QTimer.singleShot(150, self._populate_timer.start)
-
-    def _populate_one_step(self) -> None:
-        """라이브러리 채우기 1 step — entry 1개 추가 후 event loop 로 yield."""
-        if not getattr(self, "_populate_pending", None):
-            return
-        placeholder = QImage(64, 36, QImage.Format_ARGB32)
-        placeholder.fill(0xFF222222)
-        p, kind, _ = self._populate_pending.pop(0)
-        if kind is EntryKind.IMAGE:
-            # .kstudio 또는 일반 raster 모두 백그라운드 디코딩 풀로 보냄 (이전엔
-            # 메인 스레드 동기 디코딩 → 시작 시 2초+ block).
-            entry = self.library_model.add(
-                EntryKind.IMAGE,
-                thumbnail=placeholder,
-                source_label="opened",
-                display_name=p.name,
-                path=p,
-                origin="opened",
-            )
-            if p.suffix.lower() != ".kstudio":
-                self._decode_image_thumb_async(p, entry.id)
-        else:
-            entry = self.library_model.add(
-                EntryKind.VIDEO,
-                thumbnail=placeholder,
-                source_label="opened",
-                display_name=p.name,
-                path=p,
-                duration_ms=0,
-                origin="opened",
-            )
-            # duration (빠름) 과 thumbnail (느림) 분리 풀.
-            self._probe_duration_async(p, entry.id)
-            self._extract_thumbnail_async(p, entry.id)
-        # 다음 step — singleshot timer 가 이벤트 루프 통해 yield.
-        if self._populate_pending:
-            self._populate_timer.start()
-
-    def _setup_library_disk_watcher(self) -> None:
-        """이미지/영상 저장 폴더를 watch — 외부에서 파일이 삭제/이동되면 라이브러리에서도 제거.
-
-        QFileSystemWatcher.directoryChanged 는 폴더 안 어떤 변화든(생성/삭제/이름 변경)
-        한 번씩 발화. 짧은 시간 내 여러 번 발화할 수 있어 디바운스 타이머로 묶어 처리.
-        """
-        img_dir = Path(self.app_settings.screenshot.save_dir or default_image_dir())
-        vid_dir = Path(self.app_settings.general.output_dir or default_video_dir())
-        # mkdir 은 _populate_library_from_disk 단계에서 안 한다 — 여기서도 강제 생성 안 함.
-        # 폴더가 아직 없으면 watch 못 함 → 첫 저장 후엔 watch 가 필요해질 수 있는데,
-        # 그땐 다음 앱 실행에서 잡힘. 단순성 우선.
-        self._library_disk_watcher = QFileSystemWatcher(self)
-        watched: list[str] = []
-        for d in (img_dir, vid_dir):
-            try:
-                if d.exists() and d.is_dir():
-                    watched.append(str(d))
-            except OSError:
+                p = Path(path_str)
+                if not p.exists():
+                    # 파일 사라짐 → 캐시도 정리 + 스킵.
+                    self._delete_thumb_cache(p)
+                    continue
+                survivors.append(d)
+            except (TypeError, OSError):
                 continue
-        if watched:
-            self._library_disk_watcher.addPaths(watched)
-        # 디바운스: 윈도우에서 파일 한 번 삭제해도 directoryChanged 가 2~3 회 발화하기도 함.
-        self._library_prune_timer = QTimer(self)
-        self._library_prune_timer.setSingleShot(True)
-        self._library_prune_timer.setInterval(150)
-        self._library_prune_timer.timeout.connect(self._prune_library_missing_files)
-        self._library_disk_watcher.directoryChanged.connect(
-            lambda _path: self._library_prune_timer.start()
-        )
+
+        # created_at 기준 정렬 (오래된 → 최신). 없으면 그대로.
+        def _sort_key(d):
+            return d.get("created_at") or ""
+        survivors.sort(key=_sort_key)
+
+        self._persist_restore_queue = survivors
+        QTimer.singleShot(150, self._restore_one_library_entry)
+
+    def _restore_one_library_entry(self) -> None:
+        """복원 큐에서 1개씩 add — event loop yield 로 UI 멈춤 방지."""
+        queue = getattr(self, "_persist_restore_queue", None)
+        if not queue:
+            return
+        d = queue.pop(0)
+        try:
+            kind_str = d.get("kind") or "image"
+            kind = EntryKind.IMAGE if kind_str == "image" else EntryKind.VIDEO
+            p = Path(d["path"])
+            display_name = d.get("display_name") or p.name
+            duration_ms = int(d.get("duration_ms") or 0)
+            origin = d.get("origin") or "opened"
+
+            # 썸네일 — 캐시 hit 시 즉시 사용, miss 시 placeholder + 백그라운드 재추출.
+            cached = self._load_thumb_from_cache(p)
+            if cached is not None:
+                thumb = cached
+            else:
+                thumb = QImage(64, 36, QImage.Format_ARGB32)
+                thumb.fill(0xFF222222)
+
+            entry = self.library_model.add(
+                kind, thumbnail=thumb,
+                source_label="opened",
+                display_name=display_name,
+                path=p, duration_ms=duration_ms, origin=origin,
+            )
+            if cached is None:
+                if kind is EntryKind.IMAGE:
+                    if p.suffix.lower() != ".kstudio":
+                        self._decode_image_thumb_async(p, entry.id)
+                else:
+                    if duration_ms <= 0:
+                        self._probe_duration_async(p, entry.id)
+                    self._extract_thumbnail_async(p, entry.id)
+        except (KeyError, OSError, ValueError):
+            pass
+        if queue:
+            QTimer.singleShot(0, self._restore_one_library_entry)
+
+    def _setup_library_persistence(self) -> None:
+        """라이브러리 변경 → settings 에 즉시 저장 (디바운스 200ms).
+        외부 삭제 감지용 폴더 watcher 는 더 이상 사용 안 함 (폴더 스캔 모델 폐기).
+        """
+        self._library_save_timer = QTimer(self)
+        self._library_save_timer.setSingleShot(True)
+        self._library_save_timer.setInterval(200)
+        self._library_save_timer.timeout.connect(self._save_library_to_settings)
+        # entry id → path 매핑 (제거 시 캐시 삭제용 — remove 시그널이 id 만 전달).
+        self._library_entry_paths: dict = {}
+
+        def _schedule(*_args):
+            self._library_save_timer.start()
+
+        self.library_model.entry_added.connect(self._on_library_entry_added_for_persist)
+        self.library_model.entry_added.connect(_schedule)
+        self.library_model.entry_renamed.connect(_schedule)
+        self.library_model.entry_removed.connect(self._on_library_entry_removed_for_cache)
+        self.library_model.entry_removed.connect(_schedule)
+
+    def _on_library_entry_added_for_persist(self, entry) -> None:
+        """entry_added 직후 path 매핑 갱신 — 나중 remove 시 캐시 정리에 사용."""
+        if entry.path is not None:
+            self._library_entry_paths[entry.id] = Path(entry.path)
+
+    def _on_library_entry_removed_for_cache(self, entry_id: int) -> None:
+        """entry 제거 직전에 저장해 둔 path 로 썸네일 캐시 정리."""
+        path = self._library_entry_paths.pop(entry_id, None)
+        if path is not None:
+            self._delete_thumb_cache(path)
+
+    def _save_library_to_settings(self) -> None:
+        """현재 LibraryModel 내용을 settings.recent_library_entries 에 직렬화 + 저장.
+        최신 50개만 유지 (entries() 가 최신순 reversed 반환하므로 head 50)."""
+        try:
+            entries = self.library_model.entries()    # 최신 → 오래된
+            entries = entries[: self._LIBRARY_MAX_ENTRIES]
+            serialized: list[dict] = []
+            # 저장은 오래된 → 최신 순서로 (시작 시 복원 sort 와 일관).
+            for e in reversed(entries):
+                if e.path is None:
+                    continue
+                serialized.append({
+                    "kind": e.kind.value,
+                    "path": str(e.path),
+                    "display_name": e.display_name,
+                    "duration_ms": int(e.duration_ms or 0),
+                    "origin": e.origin,
+                    "created_at": e.created_at.isoformat() if e.created_at else "",
+                })
+            self.app_settings.preferences.recent_library_entries = serialized
+            self._persist_settings()
+        except (OSError, AttributeError) as exc:
+            logging.getLogger(__name__).warning("library persist failed: %s", exc)
 
     def _prune_library_missing_files(self) -> None:
         """디스크에서 사라진 파일이 가리키는 라이브러리 항목을 제거.
@@ -3704,6 +4488,9 @@ class MainWindow(QMainWindow):
         if entry is None:
             return
         entry.thumbnail = image
+        # 다음 실행 시 재사용 — library_thumbs/{hash}.png 에 저장.
+        if entry.path is not None:
+            self._save_thumb_to_cache(entry.path, image)
         # 라이브러리 패널이 갱신되도록 entry_renamed 또는 직접 view refresh —
         # 가장 간단한 방법: model 의 entry_added 처럼 re-emit 은 어려우므로,
         # rename 시그널을 같은 이름으로 emit 해 list 갱신을 유도.
@@ -3789,13 +4576,22 @@ class MainWindow(QMainWindow):
             )
 
     def _stop_mcp_bridge(self) -> None:
-        if self._mcp_bridge is not None:
+        # __init__ 이 487 라인(`_mcp_bridge = None`) 도달 전에 예외로 중단되면
+        # closeEvent 가 부분 초기화 self 로 호출돼 AttributeError 가 났던 회귀.
+        bridge = getattr(self, "_mcp_bridge", None)
+        if bridge is not None:
             try:
-                self._mcp_bridge.stop()
+                bridge.stop()
             except Exception:   # noqa: BLE001
                 pass
             self._mcp_bridge = None
             self._mcp_dispatcher = None
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        overlay = getattr(self, "_export_overlay", None)
+        if overlay is not None and overlay.isVisible():
+            overlay.reposition()
 
     def closeEvent(self, e):
         # X 버튼은 트레이로 숨김 (실제 종료는 트레이 메뉴 '종료').
@@ -3837,15 +4633,30 @@ class MainWindow(QMainWindow):
                     w.edit_controller().flush_autosave()
             except (RuntimeError, AttributeError):
                 pass
-        # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출)
-        g = self.geometry()
+        # 메인 창 위치/크기 영속화 (app/main.py 의 종료 hook 이 settings.save 호출).
+        # 최대화/최소화 상태에서는 geometry() 가 모니터 전체 크기를 반환하므로 그걸 그대로
+        # 저장하면 다음 실행 시 최대화 해제해도 거대한 일반 창이 남는 회귀가 난다.
+        # normalGeometry() 는 showNormal() 시 복원될 "일반 창 크기" 를 별도로 보관한다.
+        is_max = self.isMaximized()
+        g = self.normalGeometry() if (is_max or self.isMinimized()) else self.geometry()
         self.app_settings.screenshot.viewer_x = g.x()
         self.app_settings.screenshot.viewer_y = g.y()
         self.app_settings.screenshot.viewer_w = g.width()
         self.app_settings.screenshot.viewer_h = g.height()
+        self.app_settings.screenshot.viewer_maximized = is_max
         # dock 레이아웃 영속화 — 현재 모드 기준.
         self._save_dock_state_for_mode(self.mode_controller.mode())
         self.hotkeys.shutdown()
         self._stop_mcp_bridge()
+        # 대화 기록 즉시 flush (디바운스 우회) — 종료 race 방지.
+        try:
+            self.agent_chat_panel.flush_history_now()
+        except (RuntimeError, AttributeError):
+            pass
+        # Claude 에이전트 worker thread 정리 — asyncio loop 종료 + QThread join.
+        try:
+            self.agent_runtime.stop()
+        except (RuntimeError, AttributeError):
+            pass
         self._hide_border()
         e.accept()

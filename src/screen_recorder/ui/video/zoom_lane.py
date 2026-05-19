@@ -44,6 +44,7 @@ class ZoomLane(EffectLane):
         self._drag_start_x: int = 0
         self._drag_orig_in: int = 0
         self._drag_orig_out: int = 0
+        self._drag_last_eff = None
 
     # ---------- public ----------
     def selected_id(self) -> Optional[str]:
@@ -131,10 +132,13 @@ class ZoomLane(EffectLane):
         if self._drag_kind == "move":
             new_in = self._drag_orig_in + delta_ms
             new_out = self._drag_orig_out + delta_ms
+            new_in, new_out = self._snap_pair_to_playhead(new_in, new_out)
         elif self._drag_kind == "left":
             new_in = max(0, min(self._drag_orig_out - 100, self._drag_orig_in + delta_ms))
+            new_in = self._snap_ms_to_playhead(new_in)
         elif self._drag_kind == "right":
             new_out = max(self._drag_orig_in + 100, self._drag_orig_out + delta_ms)
+            new_out = self._snap_ms_to_playhead(new_out)
         new_in = max(0, min(self._duration_ms, new_in))
         new_out = max(0, min(self._duration_ms, new_out))
         if new_out <= new_in:
@@ -144,10 +148,13 @@ class ZoomLane(EffectLane):
             return
         new_eff = replace(eff, in_ms=int(new_in), out_ms=int(new_out))
         self._effects = [new_eff if e.id == self._drag_id else e for e in self._effects]
+        self._drag_last_eff = new_eff
         self.update()
-        self.effect_changed.emit(new_eff)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._drag_last_eff is not None:
+            self.effect_changed.emit(self._drag_last_eff)
+            self._drag_last_eff = None
         self._drag_id = None
         self._drag_kind = None
 

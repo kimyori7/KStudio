@@ -83,10 +83,10 @@ def test_drag_move_emits_changed(lane, qtbot):
     with qtbot.waitSignal(lane.effect_changed) as sig:
         lane.mousePressEvent(press)
         lane.mouseMoveEvent(move)
+        lane.mouseReleaseEvent(release)   # release 에서 effect_changed 발화
     new_eff = sig.args[0]
     assert new_eff.id == e.id
     assert new_eff.in_ms > e.in_ms  # 오른쪽으로 이동
-    lane.mouseReleaseEvent(release)
 
 
 def test_double_click_emits_selected(lane, qtbot):

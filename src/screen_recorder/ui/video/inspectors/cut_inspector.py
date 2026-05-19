@@ -134,6 +134,14 @@ class CutInspector(InspectorBase):
         self.combined_label = QLabel("")
         form.addRow("결합 후", self.combined_label)
 
+        # ---- 미리보기 적용 토글 (2026-05-19 다) ----
+        # ON (기본): 재생 시 cut 구간 자동 skip → export 결과 미리 체감.
+        # OFF: cut 마커는 timeline 에 남고 export 시점에만 적용. preview 에서 원본 콘텐츠
+        # 그대로 재생됨 → 사용자가 잘리기 전 모습 확인 가능.
+        self.preview_skip_check = QCheckBox("재생 시 이 구간 자동 skip")
+        self.preview_skip_check.toggled.connect(self._on_any_change)
+        form.addRow("미리보기", self.preview_skip_check)
+
     # ---------- public API ----------
     def has_src_section(self) -> bool:
         return self._src_section.isVisible()
@@ -160,6 +168,7 @@ class CutInspector(InspectorBase):
                 btn = self.scale_mode_group.button(idx)
                 if btn is not None:
                     btn.setChecked(True)
+            self.preview_skip_check.setChecked(effect.preview_skip)
             self._update_combined_label()
         finally:
             self._emitting_guard = False
@@ -198,6 +207,7 @@ class CutInspector(InspectorBase):
             src_in_ms=self.src_in_ms_spin.value() if self._has_src else 0,
             src_out_ms=self.src_out_ms_spin.value() if self._has_src else 0,
             scale_mode=scale_mode,
+            preview_skip=self.preview_skip_check.isChecked(),
         )
         self._effect = new_eff
         self._update_combined_label()

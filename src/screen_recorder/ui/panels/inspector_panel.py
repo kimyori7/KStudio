@@ -21,6 +21,8 @@ class InspectorPanel(QWidget):
 
     effect_changed = Signal(object)   # Effect — 인스펙터에서 bubble
     effect_deleted = Signal(str)      # effect_id — 인스펙터의 삭제 버튼이 발화 시 bubble
+    # SpeedInspector 의 "▶▶ 전체 배속 ON/OFF" 버튼 클릭 → MainWindow 가 전역 적용 + 영속.
+    speed_effects_global_toggled = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -36,6 +38,9 @@ class InspectorPanel(QWidget):
         self._current_inspector: QWidget = self._empty
         # 현재 인스펙터에 표시 중인 효과의 id — sidecar 변경 시 동기화 위함.
         self._current_effect_id: Optional[str] = None
+        # SpeedInspector 가 매번 새로 만들어지므로 전역 배속 토글 상태를 패널이 기억해
+        # 인스턴스 생성 시마다 set_speed_effects_enabled 로 시각 복원.
+        self._speed_effects_enabled: bool = True
 
     # ---------- public ----------
     def register_inspector(self, effect_type: str, cls: type) -> None:
@@ -65,8 +70,21 @@ class InspectorPanel(QWidget):
         # hasattr 로 안전하게 연결.
         if hasattr(inspector, "effect_deleted"):
             inspector.effect_deleted.connect(self.effect_deleted.emit)
+        # SpeedInspector 의 전역 배속 토글 시그널 bubble + 현재 상태 주입.
+        if hasattr(inspector, "speed_effects_global_toggled"):
+            inspector.speed_effects_global_toggled.connect(
+                self.speed_effects_global_toggled.emit
+            )
+        if hasattr(inspector, "set_speed_effects_enabled"):
+            inspector.set_speed_effects_enabled(self._speed_effects_enabled)
         self._current_effect_id = effect.id
         self._swap_current(inspector)
+
+    def set_speed_effects_enabled(self, enabled: bool) -> None:
+        """MainWindow 에서 호출 — 현재 표시 중 SpeedInspector 가 있으면 즉시 적용."""
+        self._speed_effects_enabled = bool(enabled)
+        if hasattr(self._current_inspector, "set_speed_effects_enabled"):
+            self._current_inspector.set_speed_effects_enabled(self._speed_effects_enabled)
 
     def refresh_from_sidecar(self, sidecar) -> None:
         """sidecar 변경 후 호출 — 현재 인스펙터에 표시 중인 효과의 최신값으로 spin 동기화.

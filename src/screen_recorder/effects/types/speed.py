@@ -15,6 +15,7 @@ class SpeedEffect(Effect):
     rate: float = 1.0
     audio: str = "auto"
     show_hud: bool = True
+    hud_font_pt: int = 14
 
     def __post_init__(self) -> None:
         super().__post_init__()

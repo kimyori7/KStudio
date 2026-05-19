@@ -43,7 +43,11 @@ class BrollEffect(Effect):
     src: str = ""                       # 영상/이미지/GIF 경로
     placement: str = "fullscreen"       # fullscreen | pip
     pip: PipConfig | None = None        # placement="pip" 일 때만
-    audio_mix: str = "both"             # original_only | broll_only | both | mute
+    # Default 가 "both" 였으나 export pipeline v1 이 "original_only" 만 지원해 새로
+    # 추가하는 broll 이 곧바로 export 차단되는 회귀. v2 mixing 구현 전까지 default 를
+    # original_only 로 보수적 — 사용자가 명시적으로 다른 모드 선택할 땐 인스펙터의
+    # 콤보로 변경 (UI 경고는 다음 라운드에서 추가).
+    audio_mix: str = "original_only"    # original_only | broll_only | both | mute
     audio_balance: float = 0.5          # both 일 때 원본 비율 (0.0 ~ 1.0)
 
     def __post_init__(self) -> None:

@@ -1,6 +1,7 @@
 ; KStudio Inno Setup script
 ; - 빌드: dist/KStudio/  (PyInstaller onedir 출력) 을 그대로 패키징
-; - 설치: 사용자 단위 (관리자 권한 불필요), %LocalAppData%\Programs\KStudio
+; - 설치: 기본 Program Files (관리자 권한 필요), 사용자가 거부 시 %LocalAppData%\Programs\KStudio 로 폴백
+;   (PrivilegesRequiredOverridesAllowed=dialog — 사내 admin 권한 제한 환경에서도 설치 가능하게).
 ; - 결과: dist/installer/KStudio-Setup-<version>.exe
 ; - 코드 서명 안 함 — SmartScreen 경고 발생 가능 (내부 배포 가정)
 
@@ -15,12 +16,15 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={localappdata}\Programs\{#AppName}
+DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 DisableDirPage=no
 UsePreviousAppDir=yes
-PrivilegesRequired=lowest
+; 기본 admin 권한으로 Program Files 에 설치. 사용자가 UAC 다이얼로그에서 거부하면
+; Inno Setup 가 자동으로 LocalAppData\Programs 폴백 옵션 제공 (override=dialog).
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist\installer
 OutputBaseFilename={#AppName}-Setup-{#AppVersion}

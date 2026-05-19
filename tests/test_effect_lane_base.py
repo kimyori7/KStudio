@@ -26,17 +26,39 @@ def test_lane_set_duration_and_position(qtbot):
     assert lane.position_ms() == 2_500
 
 
-def test_lane_right_click_emits_request_with_time(qtbot):
-    """lane 의 빈 영역 우클릭 → request_add_at(ms) 시그널."""
+def test_lane_right_click_shows_context_menu(qtbot):
+    """lane 우클릭 → 컨텍스트 메뉴 (효과 추가 / 라인 지우기). Phase 28."""
     lane = EffectLane(effect_type="caption", header_label="캡션", color="#3b82f6")
     qtbot.addWidget(lane)
     lane.resize(400, 20)
     lane.set_duration_ms(10_000)
-    # 우클릭 위치: 가운데 (5_000ms 근처)
-    with qtbot.waitSignal(lane.request_add_at, timeout=1000) as blocker:
-        qtbot.mouseClick(lane, Qt.RightButton, pos=QPoint(200, 10))
-    ms = blocker.args[0]
-    assert 4_000 <= ms <= 6_000  # 위치-시간 변환 정확성
+    # 우클릭 → _show_lane_context_menu 호출 (메뉴 popup, non-blocking).
+    # 메뉴 action 직접 trigger 로 효과 추가 시그널 확인.
+    lane._show_lane_context_menu(5_000, 0, QPoint(0, 0))
+    # popup 직후 active widget 검색 — Qt 의 QMenu 가 self 의 자식으로 떠 있음.
+    from PySide6.QtWidgets import QMenu
+    menus = lane.findChildren(QMenu)
+    assert menus, "context menu 가 떠야 한다"
+    add_action = next((a for a in menus[0].actions() if "추가" in a.text()), None)
+    assert add_action is not None
+    with qtbot.waitSignal(lane.request_add_at, timeout=500) as blocker:
+        add_action.trigger()
+    assert blocker.args == [5_000, 0]
+
+
+def test_lane_context_menu_remove_emits_remove_signal(qtbot):
+    """lane 우클릭 메뉴의 '이 라인 지우기' → request_remove_lane 시그널."""
+    lane = EffectLane(effect_type="caption", header_label="캡션", color="#3b82f6")
+    qtbot.addWidget(lane)
+    lane.resize(400, 20)
+    lane.set_duration_ms(10_000)
+    lane._show_lane_context_menu(3_000, 0, QPoint(0, 0))
+    from PySide6.QtWidgets import QMenu
+    menus = lane.findChildren(QMenu)
+    remove_action = next((a for a in menus[0].actions() if "지우기" in a.text()), None)
+    assert remove_action is not None
+    with qtbot.waitSignal(lane.request_remove_lane, timeout=500):
+        remove_action.trigger()
 
 
 def test_lane_left_click_no_signal_when_no_effects(qtbot):

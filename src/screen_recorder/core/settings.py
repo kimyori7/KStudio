@@ -78,11 +78,14 @@ class ScreenshotSettings:
     filename_pattern: str = "screenshot_{date}_{time}"
     format: str = "png"
     magnifier_enabled: bool = True
-    # 뷰어 창 위치/크기 (-1이면 미설정)
+    # 뷰어 창 위치/크기 (-1이면 미설정). 최대화 상태에서도 "일반 창" 크기로 저장됨
+    # (normalGeometry 사용) — 다음 실행 시 최대화 해제하면 이 크기로 돌아온다.
     viewer_x: int = -1
     viewer_y: int = -1
     viewer_w: int = -1
     viewer_h: int = -1
+    # 종료 시점 최대화 상태였는지. True 면 다음 실행 시 일반 크기 적용 후 추가로 최대화.
+    viewer_maximized: bool = False
 
 
 @dataclass
@@ -110,10 +113,23 @@ class PreferencesSettings:
     keep_visible_during_capture: bool = False
     # 편집 모드 — 영상 모드의 모든 탭에 전역 적용. 세션 간 영속 (사용자 결정 2026-05-11).
     edit_mode_on: bool = False
+    # 배속 효과 일괄 켜기/끄기 — PlayerControls 의 ▶▶ ON/OFF 버튼 상태 영속.
+    speed_effects_enabled: bool = True
+    # 최근 라이브러리 항목 — 폴더 스캔 대신 "최근 연 파일" 목록 영속. 최대 50개,
+    # 시작 시 path 존재 체크 통과한 것만 복원. 항목 dict 키: kind/path/display_name/
+    # duration_ms/origin/created_at (ISO 문자열). 썸네일은 library_thumbs 캐시 폴더.
+    recent_library_entries: list = field(default_factory=list)
+    # Dock 가시성 영속 — saveState/restoreState 는 위치만 저장, 메뉴 체크 상태는 별도.
+    # 사용자가 X 로 닫은 dock 이 재시작 후 다시 나타나던 회귀 fix.
+    library_dock_visible: bool = True
+    layers_dock_visible: bool = True
+    record_status_dock_visible: bool = True
     # 사이드카(.kvedit) 저장 폴더. 빈 문자열 = OS 기본 (%APPDATA%\KStudio\sidecars).
     sidecar_dir: str = ""
     # 파일 → 열기 다이얼로그의 마지막 사용 폴더. 빈 문자열 = 사용자 홈.
     last_open_dir: str = ""
+    # 앱 재시작 시 복원할 마지막 모드. "video" | "image" — 잘못된 값이면 "image" 폴백.
+    last_mode: str = "image"
 
 
 @dataclass
@@ -176,6 +192,22 @@ class EditorShortcuts:
 
 
 @dataclass
+class AgentSettings:
+    """Claude Agent in-app 임베드 설정 (Phase 33).
+
+    - model_id: ChatPanel 드롭다운으로 사용자가 선택. 다음 실행 시 복원.
+    - whisper_model_size: Phase D 자막 추출용 (tiny/base/small/medium/large-v3).
+      large-v3 가 한국어 정확도 가장 높음 (3GB, base 대비 ~5배 느림).
+      사용자 요구 (2026-05-15) — "제일 좋은 걸로". 환경설정에서 변경 가능.
+    """
+    model_id: str = "claude-sonnet-4-6"
+    whisper_model_size: str = "large-v3"
+    # 추론(ThinkingBlock) 표시 ON/OFF — 노이즈 줄이고 싶을 때 끔.
+    # OFF 여도 Claude 는 내부적으로 thinking 수행 (응답 품질 유지) — 화면 표시만 가림.
+    show_thinking: bool = True
+
+
+@dataclass
 class AppSettings:
     general: GeneralSettings = field(default_factory=GeneralSettings)
     video: VideoSettings = field(default_factory=VideoSettings)
@@ -189,14 +221,53 @@ class AppSettings:
     player_hotkeys: PlayerHotkeys = field(default_factory=PlayerHotkeys)
     editor_shortcuts: EditorShortcuts = field(default_factory=EditorShortcuts)
     mcp: McpSettings = field(default_factory=McpSettings)
+    agent: AgentSettings = field(default_factory=AgentSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # 자동 백업 — 기존 파일이 있으면 hourly rolling 백업 (settings.json.bak.YYYYMMDD_HH).
+    # 회귀 (2026-05-13: 사용자 settings 가 pytest 통해 defaults 로 덮어써짐). 백업이
+    # 있으면 영구 손실 대신 직전 시각 데이터로 복구 가능.
+    # hourly granularity — 같은 시간대 안에선 한 번만 백업 (디스크 절약 + 복구 시
+    # 의미 있는 시각 단위). minutely 면 부팅 직후 N번 저장 시 직전 시각 백업이
+    # 의미 없는 동일 데이터로 덮어써짐.
+    try:
+        if path.exists():
+            from datetime import datetime
+            stamp = datetime.now().strftime("%Y%m%d_%H")
+            bak = path.with_suffix(path.suffix + f".bak.{stamp}")
+            if not bak.exists():
+                import shutil
+                shutil.copy2(path, bak)
+                _prune_old_backups(path)
+    except OSError:
+        pass   # 백업 실패해도 메인 저장은 진행.
     path.write_text(
         json.dumps(asdict(settings), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+_MAX_BACKUPS = 24   # ~하루치 백업 (시간당 1개). 그 이상은 prune.
+
+
+def _prune_old_backups(settings_path: Path) -> None:
+    """settings.json.bak.YYYYMMDD_HH 백업 중 가장 오래된 것부터 _MAX_BACKUPS 초과분 삭제.
+
+    오래된 백업은 보통 의미 없음 (사용자가 한 달 전 시점으로 되돌리지 않음).
+    """
+    parent = settings_path.parent
+    stem = settings_path.name + ".bak."
+    candidates = sorted(
+        (p for p in parent.iterdir() if p.name.startswith(stem)),
+        key=lambda p: p.name,
+    )
+    for old in candidates[:-_MAX_BACKUPS]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 
 
 def settings_path() -> Path:

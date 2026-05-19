@@ -20,12 +20,13 @@ from .widgets import OneShotKeySequenceEdit
 _TB_ICON_PX = 16
 
 
-def _targets() -> list[tuple[str, str]]:
-    """대상 토글 라벨 — tr() 가 부팅 시점 언어 기준이라 함수로 감싸서 lazy 평가."""
+def _targets() -> list[tuple[str, str, str]]:
+    """대상 토글 라벨 — (key, text, icon_name). tr() 가 부팅 시점 언어 기준이라
+    함수로 감싸서 lazy 평가. 아이콘 명은 icons.py 의 _PATHS 키."""
     return [
-        ("region", tr("▭ 지정 영역")),
-        ("window", tr("🪟 특정 창")),
-        ("fullscreen", tr("🖥 전체화면")),
+        ("region", tr("지정 영역"), "square-dashed"),
+        ("window", tr("특정 창"), "app-window"),
+        ("fullscreen", tr("전체화면"), "monitor"),
     ]
 
 
@@ -114,8 +115,8 @@ class GlobalToolbar(QWidget):
         # ---------- 모드 토글 (양쪽 공통) ----------
         self._mode_group = QButtonGroup(self)
         self._mode_group.setExclusive(True)
-        self.video_btn = self._make_toggle_btn(tr("🎞 영상"), min_width=80)
-        self.image_btn = self._make_toggle_btn(tr("🖼 이미지"), min_width=80)
+        self.video_btn = self._make_toggle_btn(tr("영상"), min_width=80, icon_name="film")
+        self.image_btn = self._make_toggle_btn(tr("이미지"), min_width=80, icon_name="image")
         self._mode_group.addButton(self.video_btn)
         self._mode_group.addButton(self.image_btn)
         self.video_btn.clicked.connect(lambda: self.mode_clicked.emit(AppMode.VIDEO))
@@ -145,7 +146,9 @@ class GlobalToolbar(QWidget):
         layout.addWidget(self.stop_btn)
 
         # ---------- 영상 모드: 내보내기 버튼 ----------
-        self.export_video_btn = QPushButton(tr("📤 내보내기"))
+        self.export_video_btn = QPushButton(tr("내보내기"))
+        self.export_video_btn.setIcon(load_icon("upload", size=_TB_ICON_PX))
+        self.export_video_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.export_video_btn.setToolTip(tr("현재 영상 탭을 새 MP4 로 내보내기 (Ctrl+Shift+E)"))
         self.export_video_btn.clicked.connect(self.export_video_requested.emit)
         layout.addWidget(self.export_video_btn)
@@ -170,8 +173,8 @@ class GlobalToolbar(QWidget):
         self._target_group = QButtonGroup(self)
         self._target_group.setExclusive(True)
         self._target_btns: dict[str, QPushButton] = {}
-        for key, label in _targets():
-            btn = self._make_toggle_btn(label, min_width=70)
+        for key, label, icon_name in _targets():
+            btn = self._make_toggle_btn(label, min_width=70, icon_name=icon_name)
             self._target_btns[key] = btn
             self._target_group.addButton(btn)
             btn.clicked.connect(lambda _chk=False, k=key: self._on_target_btn_clicked(k))
@@ -181,7 +184,12 @@ class GlobalToolbar(QWidget):
         self._target_btns["fullscreen"].setChecked(True)
 
         # ---------- 모니터 콤보 (전체화면 전용) — 전체화면 버튼 바로 옆 ----------
-        self._monitor_label = QLabel(" 🖥")
+        # SVG 아이콘 라벨 — 텍스트 이모지(🖥) 대체. QLabel 에 QPixmap 으로 SVG 렌더.
+        self._monitor_label = QLabel()
+        self._monitor_label.setPixmap(
+            load_icon("monitor", size=_TB_ICON_PX).pixmap(_TB_ICON_PX, _TB_ICON_PX)
+        )
+        self._monitor_label.setContentsMargins(4, 0, 0, 0)
         self._monitor_label.setToolTip(tr("전체화면 캡처/녹화 시 사용할 모니터 — 전체 모니터 또는 1개 선택"))
         layout.addWidget(self._monitor_label)
         self.monitor_combo = _MonitorComboBox()
@@ -267,9 +275,10 @@ class GlobalToolbar(QWidget):
         self.copy_btn.clicked.connect(self.copy_clicked.emit)
         layout.addWidget(self.copy_btn)
 
-        # 누끼 (배경 제거) 는 좌측 ToolPalette '✨ 자동 누끼' 와 메뉴 '이미지>배경 제거' 로 옮김.
+        # 누끼 (배경 제거) 는 좌측 ToolPalette '자동 누끼' 와 메뉴 '이미지>배경 제거' 로 옮김.
         # 외부 (메뉴 등) 에서 trigger 할 수 있도록 QAction 만 유지 (UI 버튼은 제거).
-        self._action_remove_bg = QAction(tr("✨ 배경 제거"), self)
+        self._action_remove_bg = QAction(tr("배경 제거"), self)
+        self._action_remove_bg.setIcon(load_icon("sparkles", size=_TB_ICON_PX))
         self._action_remove_bg.setToolTip(tr("활성 ImageLayer 의 배경을 제거 (Ctrl+Shift+B)"))
         self._actions_by_key["remove_bg"] = self._action_remove_bg
 
@@ -398,10 +407,13 @@ class GlobalToolbar(QWidget):
         self._sep4.setVisible(is_video)
 
     # ---------- 내부 ----------
-    def _make_toggle_btn(self, text: str, *, min_width: int) -> QPushButton:
+    def _make_toggle_btn(self, text: str, *, min_width: int, icon_name: str | None = None) -> QPushButton:
         b = QPushButton(text)
         b.setCheckable(True)
         b.setMinimumWidth(min_width)
+        if icon_name is not None:
+            b.setIcon(load_icon(icon_name, size=_TB_ICON_PX))
+            b.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         return b
 
     def _make_sep(self) -> QFrame:

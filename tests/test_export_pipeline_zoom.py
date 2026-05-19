@@ -7,6 +7,28 @@ from screen_recorder.effects import Sidecar
 from screen_recorder.effects.types.cut import CutEffect
 from screen_recorder.effects.types.speed import SpeedEffect
 from screen_recorder.effects.types.zoom import ZoomEffect, ZoomPoint
+
+
+@pytest.fixture(autouse=True)
+def _autostub_qt_render(monkeypatch):
+    """Qt 렌더 hang 회피 — caption/speed_hud/arrow PNG stub."""
+    from screen_recorder.encode import export_pipeline as ep
+    def stub_cap(c, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    def stub_hud(eff, *, font_pt, dst):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+        return (200, 40)
+    def stub_arrow(a, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"")
+    monkeypatch.setattr(ep, "render_caption_png", stub_cap)
+    monkeypatch.setattr(ep, "render_speed_hud_png", stub_hud)
+    monkeypatch.setattr(ep, "render_arrow_png", stub_arrow)
 from screen_recorder.encode.export_pipeline import (
     _zoom_crop_scale_filter, build_export_args,
 )
@@ -106,21 +128,27 @@ def test_zoom_plus_speed_raises():
         )
 
 
-def test_zoom_partial_overlap_raises():
-    """ZoomEffect 가 segment 를 부분적으로만 덮음 → NotImplementedError.
+def test_zoom_partial_overlap_auto_splits_segment():
+    """ZoomEffect 가 segment 를 부분만 덮으면 segment 를 효과 경계에서 자동 split.
 
-    cut 0 개 + main_duration=10000 → segments 는 main 1개([0, 10000]).
-    Zoom 이 [2000, 5000] 만 덮으면 segment 를 부분만 덮어 v1 에서 차단.
+    cut 0 개 + main_duration=10000 → 원래는 main 1개([0, 10000]).
+    Zoom [2000, 5000] 적용 시: → 3개 sub-segment, 중간만 crop+scale 필터.
+    이전엔 NotImplementedError 였던 케이스 — 자동 split 으로 해결.
     """
     pt = ZoomPoint(cx=0.5, cy=0.5, scale=2.0)
     eff = ZoomEffect(in_ms=2000, out_ms=5000, start=pt, end=pt)
     sc = Sidecar(effects=[eff])
-    with pytest.raises(NotImplementedError, match="partial overlap"):
-        build_export_args(
-            sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
-            main_duration_ms=10000, surface_w=1920, surface_h=1080,
-            ffmpeg_path="ffmpeg",
-        )
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    assert "trim=0.0:2.0" in fc
+    assert "trim=2.0:5.0" in fc
+    assert "trim=5.0:10.0" in fc
+    # crop 은 zoom sub-segment 에만 한 번 등장.
+    assert fc.count("crop=") == 1
 
 
 # ---- _zoom_crop_scale_filter unit tests ----

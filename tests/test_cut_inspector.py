@@ -99,3 +99,46 @@ def test_splice_toggle_emits_once(inspector, qtbot):
     inspector.splice_check.setChecked(True)
     assert len(received) == 1
     assert received[0].is_splice
+
+
+# ============================================================
+# 2026-05-19 다: preview_skip 체크박스 — 재생 시 cut 자동 skip 여부 토글
+# ============================================================
+def test_preview_skip_checkbox_default_checked(inspector):
+    """기본값 preview_skip=True → 체크 ON 상태."""
+    e = CutEffect(in_ms=1000, out_ms=2000)
+    inspector.set_effect(e)
+    assert inspector.preview_skip_check.isChecked()
+
+
+def test_preview_skip_checkbox_off_for_false_effect(inspector):
+    e = CutEffect(in_ms=1000, out_ms=2000, preview_skip=False)
+    inspector.set_effect(e)
+    assert not inspector.preview_skip_check.isChecked()
+
+
+def test_preview_skip_toggle_emits_effect_changed(inspector, qtbot):
+    """체크박스 토글 시 effect_changed 발화 + 새 effect.preview_skip 반영."""
+    e = CutEffect(in_ms=1000, out_ms=2000)   # preview_skip=True (기본)
+    inspector.set_effect(e)
+    with qtbot.waitSignal(inspector.effect_changed) as sig:
+        inspector.preview_skip_check.setChecked(False)
+    assert sig.args[0].preview_skip is False
+
+
+def test_preview_skip_toggle_back_on_emits(inspector, qtbot):
+    e = CutEffect(in_ms=1000, out_ms=2000, preview_skip=False)
+    inspector.set_effect(e)
+    with qtbot.waitSignal(inspector.effect_changed) as sig:
+        inspector.preview_skip_check.setChecked(True)
+    assert sig.args[0].preview_skip is True
+
+
+def test_preview_skip_preserved_through_other_field_changes(inspector, qtbot):
+    """preview_skip=False 인 채로 in_ms 변경 시 preview_skip 값 유지."""
+    e = CutEffect(in_ms=1000, out_ms=2000, preview_skip=False)
+    inspector.set_effect(e)
+    with qtbot.waitSignal(inspector.effect_changed) as sig:
+        inspector.in_ms_spin.setValue(1500)
+    assert sig.args[0].preview_skip is False
+    assert sig.args[0].in_ms == 1500

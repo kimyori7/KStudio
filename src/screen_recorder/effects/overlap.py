@@ -6,16 +6,22 @@ from .model import Effect
 
 
 def overlaps_existing(existing: Iterable[Effect], candidate: Effect) -> bool:
-    """candidate 와 같은 type 의 existing 중 시간이 겹치는 게 있으면 True.
+    """candidate 와 같은 type + 같은 track_idx 의 existing 중 시간이 겹치는 게 있으면 True.
 
     같은 id(자기 자신) 는 제외 — 시간 이동 시 자기 자신과의 비교를 막음.
     구간 [in, out) 반열림 — 끝점 = 시작점 일 땐 안 겹침.
+
+    Phase 21: track_idx 가 다르면 같은 type 이라도 시간 겹쳐도 OK — 동시에 여러 캡션
+    등 sub-lane 별 분리. 사용자가 인스펙터에서 track_idx 를 바꿔 분리한다.
     """
     cin, cout = candidate.in_ms, candidate.out_ms
+    cti = getattr(candidate, "track_idx", 0)
     for e in existing:
         if e.id == candidate.id:
             continue
         if e.type != candidate.type:
+            continue
+        if getattr(e, "track_idx", 0) != cti:
             continue
         # 구간 [in, out) 겹침: not (cout <= e.in_ms or cin >= e.out_ms)
         if not (cout <= e.in_ms or cin >= e.out_ms):

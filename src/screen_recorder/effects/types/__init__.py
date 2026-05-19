@@ -1,4 +1,4 @@
-"""효과 종류별 dataclass — caption/speed/zoom/broll/cut.
+"""효과 종류별 dataclass — caption/speed/zoom/broll/cut/arrow.
 
 EFFECT_CLASSES 는 직렬화/역직렬화에서 type 문자열 → 클래스 매핑으로 쓰인다.
 """
@@ -7,6 +7,7 @@ from .speed import SpeedEffect
 from .zoom import ZoomEffect
 from .broll import BrollEffect
 from .cut import CutEffect
+from .arrow import ArrowEffect
 
 EFFECT_CLASSES: dict[str, type] = {
     "caption": CaptionEffect,
@@ -14,6 +15,7 @@ EFFECT_CLASSES: dict[str, type] = {
     "zoom": ZoomEffect,
     "broll": BrollEffect,
     "cut": CutEffect,
+    "arrow": ArrowEffect,
 }
 
 

@@ -59,6 +59,7 @@ class CutLane(EffectLane):
         self._drag_start_x: int = 0
         self._drag_orig_in: int = 0
         self._drag_orig_out: int = 0
+        self._drag_last_eff = None
 
     def selected_id(self) -> Optional[str]:
         return self._selected_id
@@ -200,10 +201,13 @@ class CutLane(EffectLane):
             return
         new_eff = replace(eff, in_ms=int(new_in), out_ms=int(new_out))
         self._effects = [new_eff if e.id == self._drag_id else e for e in self._effects]
+        self._drag_last_eff = new_eff
         self.update()
-        self.effect_changed.emit(new_eff)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._drag_last_eff is not None:
+            self.effect_changed.emit(self._drag_last_eff)
+            self._drag_last_eff = None
         self._drag_id = None
         self._drag_kind = None
 

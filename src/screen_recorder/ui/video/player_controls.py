@@ -120,7 +120,10 @@ class PlayerControls(QWidget):
         layout.addWidget(self.edit_toggle)
 
         # 출력(export) 버튼 — 편집 모드일 때만 보임. 클릭 시 export 다이얼로그.
-        self.export_btn = QPushButton(tr("📤 출력"))
+        # 📤 이모지 대신 SVG 'upload' 아이콘 (이모지가 OS 폰트에 의존해 표시 불일치).
+        self.export_btn = QPushButton(tr(" 출력"))
+        self.export_btn.setIcon(load_icon("upload", size=_ICON_PX))
+        self.export_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.export_btn.setToolTip(tr("편집 결과를 새 mp4 로 저장 (Ctrl+Shift+E / Ctrl+S)"))
         self.export_btn.setFixedHeight(32)
         self.export_btn.clicked.connect(self.export_requested.emit)

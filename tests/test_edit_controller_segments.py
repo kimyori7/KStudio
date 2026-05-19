@@ -193,3 +193,61 @@ def test_delete_segment_removes_effects_within(qtbot, ec_with_track):
     remaining = [e.text for e in ec_with_track.sidecar().effects]
     assert "inside" not in remaining
     assert "outside" in remaining
+
+
+def test_effect_past_new_end_dropped_after_track_shrinks(qtbot, ec_with_track):
+    """트랙이 줄어들면 끝점 이후에 in_ms 가 있는 effect 자동 제거.
+
+    초기 10s 트랙 + caption 8~9s. segment update 로 트랙을 7s 로 줄이면 caption
+    완전히 trailing zone → 제거.
+    """
+    from dataclasses import replace
+    from screen_recorder.effects.types.caption import CaptionEffect
+    sc = ec_with_track.sidecar()
+    sc.effects.append(CaptionEffect(in_ms=8000, out_ms=9000, text="trailing"))
+    # segment 의 src_out_ms 를 7000 으로 줄임 → duration 7000.
+    seg = sc.video_track[0]
+    shorter = replace(seg, src_out_ms=7000)
+    ec_with_track.update_segment(shorter)
+    remaining = [e.text for e in ec_with_track.sidecar().effects]
+    assert "trailing" not in remaining
+
+
+def test_effect_spanning_new_end_clamped(qtbot, ec_with_track):
+    """효과가 트랙 끝을 넘어 걸치면 out_ms 만 clamp, 효과는 보존."""
+    from dataclasses import replace
+    from screen_recorder.effects.types.caption import CaptionEffect
+    sc = ec_with_track.sidecar()
+    sc.effects.append(CaptionEffect(in_ms=5000, out_ms=9500, text="spanning"))
+    seg = sc.video_track[0]
+    ec_with_track.update_segment(replace(seg, src_out_ms=7000))
+    effs = ec_with_track.sidecar().effects
+    spanning = next(e for e in effs if e.text == "spanning")
+    assert spanning.in_ms == 5000
+    assert spanning.out_ms == 7000   # 새 끝점으로 clamp
+
+
+def test_effect_after_clamp_too_short_dropped(qtbot, ec_with_track):
+    """clamp 후 폭이 min duration (100ms) 미만이면 제거."""
+    from dataclasses import replace
+    from screen_recorder.effects.types.caption import CaptionEffect
+    sc = ec_with_track.sidecar()
+    # in_ms 6950, out_ms 9000 — 새 end 7000 이면 폭 50ms → 제거.
+    sc.effects.append(CaptionEffect(in_ms=6950, out_ms=9000, text="tiny"))
+    seg = sc.video_track[0]
+    ec_with_track.update_segment(replace(seg, src_out_ms=7000))
+    assert "tiny" not in [e.text for e in ec_with_track.sidecar().effects]
+
+
+def test_effect_within_new_end_preserved_unchanged(qtbot, ec_with_track):
+    """효과가 새 끝점 안에 있으면 변경 없음 — clamp idempotent."""
+    from dataclasses import replace
+    from screen_recorder.effects.types.caption import CaptionEffect
+    sc = ec_with_track.sidecar()
+    sc.effects.append(CaptionEffect(in_ms=2000, out_ms=5000, text="inside"))
+    seg = sc.video_track[0]
+    ec_with_track.update_segment(replace(seg, src_out_ms=7000))
+    effs = ec_with_track.sidecar().effects
+    inside = next(e for e in effs if e.text == "inside")
+    assert inside.in_ms == 2000
+    assert inside.out_ms == 5000

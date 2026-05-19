@@ -26,6 +26,34 @@ def test_has_three_children(timeline):
     assert isinstance(timeline.effect_lanes, EffectLanesWidget)
 
 
+def test_playhead_overlay_covers_timeline_and_tracks_position(timeline, qtbot):
+    """playhead_overlay 가 컨테이너 전체를 덮고 set_position_ms 가 x 위치 갱신.
+
+    "재생 빨간 세로 줄을 밑에 편집 기능의 기준점이 되게 길게 이어지게" 의도.
+    overlay 가 슬라이더 lane 뿐 아니라 video_track + effect_lanes 도 통과해야.
+    """
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    overlay = timeline.playhead_overlay
+    # geometry 가 컨테이너 rect 전체.
+    assert overlay.width() == timeline.width()
+    assert overlay.height() == timeline.height()
+    # position 0 → 헤더 끝.
+    timeline.set_position_ms(0)
+    x0 = overlay.position_x()
+    # position 가운데 → 중간 어딘가.
+    timeline.set_position_ms(5_000)
+    x5 = overlay.position_x()
+    # position 끝 → 컨테이너 끝 근처.
+    timeline.set_position_ms(10_000)
+    x10 = overlay.position_x()
+    assert x0 < x5 < x10
+    # transparent for mouse — overlay 가 클릭 가로채면 slider/lane 동작 막힘.
+    from PySide6.QtCore import Qt
+    assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+
+
 def test_set_position_propagates(timeline):
     timeline.set_position_ms(3_000)
     assert timeline.slider_lane.position_ms() == 3_000
@@ -45,12 +73,15 @@ def test_edit_mode_off_hides_trim_and_effects(timeline, qtbot):
     assert not timeline.effect_lanes.isVisibleTo(timeline)
 
 
-def test_edit_mode_on_shows_trim_and_effects(timeline, qtbot):
+def test_edit_mode_on_shows_effects(timeline, qtbot):
+    """Stage D 이후 trim_marker_lane 은 video_track_lane 으로 흡수돼 영구 숨김.
+    edit 모드 ON 시 effect_lanes 만 visible.
+    """
     timeline.show()
     qtbot.waitExposed(timeline)
     timeline.set_edit_mode(True)
-    assert timeline.trim_marker_lane.isVisibleTo(timeline)
     assert timeline.effect_lanes.isVisibleTo(timeline)
+    assert not timeline.trim_marker_lane.isVisibleTo(timeline)
 
 
 def test_slider_lane_seek_bubbles(timeline, qtbot):
@@ -95,3 +126,70 @@ def test_trim_in_drag_with_no_out_emits_zero_for_out(timeline, qtbot):
     with qtbot.waitSignal(timeline.trim_changed, timeout=300) as blocker:
         timeline.trim_marker_lane.in_changed.emit(3_000)
     assert blocker.args == [3_000, 0]
+
+
+def test_zoom_factor_default_one(timeline):
+    """초기 zoom = 1.0 (fit-to-window)."""
+    assert timeline.zoom_factor() == 1.0
+
+
+def test_set_zoom_factor_expands_inner_width(timeline, qtbot):
+    """zoom 2x → inner widget 의 minimum width 가 viewport × 2."""
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    vp_w = timeline._scroll.viewport().width()
+    timeline.set_zoom_factor(2.0)
+    assert timeline._inner.minimumWidth() == vp_w * 2
+
+
+def test_set_zoom_factor_clamped(timeline):
+    """zoom 범위 [1.0, 20.0] 밖이면 clamp."""
+    timeline.set_zoom_factor(0.5)
+    assert timeline.zoom_factor() == 1.0
+    timeline.set_zoom_factor(100.0)
+    assert timeline.zoom_factor() == 20.0
+
+
+def test_ctrl_wheel_zooms(timeline, qtbot):
+    """Ctrl+휠 위 = 확대, 아래 = 축소."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    # 줌 인 — angleDelta=+120 (한 칸).
+    ev_in = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50),
+        QPoint(0, 0), QPoint(0, 120),
+        Qt.NoButton, Qt.ControlModifier,
+        Qt.NoScrollPhase, False,
+    )
+    timeline.wheelEvent(ev_in)
+    assert timeline.zoom_factor() > 1.0
+    # 줌 아웃 — angleDelta=-120.
+    ev_out = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50),
+        QPoint(0, 0), QPoint(0, -120),
+        Qt.NoButton, Qt.ControlModifier,
+        Qt.NoScrollPhase, False,
+    )
+    timeline.wheelEvent(ev_out)
+    assert timeline.zoom_factor() == 1.0
+
+
+def test_wheel_without_ctrl_ignored(timeline, qtbot):
+    """Ctrl 없는 휠은 zoom 변경 안 함 (부모로 전달)."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    timeline.resize(800, 200)
+    timeline.show()
+    qtbot.waitExposed(timeline)
+    ev = QWheelEvent(
+        QPointF(100, 50), QPointF(100, 50),
+        QPoint(0, 0), QPoint(0, 120),
+        Qt.NoButton, Qt.NoModifier,
+        Qt.NoScrollPhase, False,
+    )
+    timeline.wheelEvent(ev)
+    assert timeline.zoom_factor() == 1.0

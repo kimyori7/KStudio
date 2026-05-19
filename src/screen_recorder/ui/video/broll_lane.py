@@ -45,6 +45,7 @@ class BrollLane(EffectLane):
         self._drag_start_x: int = 0
         self._drag_orig_in: int = 0
         self._drag_orig_out: int = 0
+        self._drag_last_eff = None
 
     # ---------- public ----------
     def selected_id(self) -> Optional[str]:
@@ -54,17 +55,23 @@ class BrollLane(EffectLane):
     def _bar_rect_for(self, eff: BrollEffect):
         return self._ms_to_x(eff.in_ms), self._ms_to_x(eff.out_ms)
 
-    def _hit_test(self, x: int):
+    def _hit_test(self, x: int, y: int | None = None):
         if x < _HEADER_WIDTH:
             return None, None
         for eff in self._effects:
             x1, x2 = self._bar_rect_for(eff)
-            if x1 <= x <= x2:
-                if x - x1 <= _EDGE_HANDLE_PX:
-                    return eff, "left"
-                if x2 - x <= _EDGE_HANDLE_PX:
-                    return eff, "right"
-                return eff, "move"
+            if not (x1 <= x <= x2):
+                continue
+            if y is not None:
+                ti = int(getattr(eff, "track_idx", 0))
+                row_top = self._row_y_top(ti)
+                if not (row_top <= y < row_top + self.TRACK_ROW_HEIGHT):
+                    continue
+            if x - x1 <= _EDGE_HANDLE_PX:
+                return eff, "left"
+            if x2 - x <= _EDGE_HANDLE_PX:
+                return eff, "right"
+            return eff, "move"
         return None, None
 
     @staticmethod
@@ -84,23 +91,26 @@ class BrollLane(EffectLane):
             x1, x2 = self._bar_rect_for(eff)
             if x2 <= x1:
                 continue
+            ti = int(getattr(eff, "track_idx", 0))
+            row_top = self._row_y_top(ti)
             selected = (eff.id == self._selected_id)
             p.setBrush(_BAR_BG_SELECTED if selected else _BAR_BG)
             pen = QPen(_BAR_BORDER_SELECTED if selected else _BAR_BORDER)
             pen.setWidth(2 if selected else 1)
             p.setPen(pen)
-            p.drawRoundedRect(x1, 2, x2 - x1, self.height() - 4,
+            p.drawRoundedRect(x1, row_top + 2, x2 - x1, self.TRACK_ROW_HEIGHT - 4,
                               _BAR_RADIUS, _BAR_RADIUS)
             if x2 - x1 > 24:
                 p.setPen(_TEXT_COLOR)
-                p.drawText(x1 + 4, 0, x2 - x1 - 8, self.height(),
+                p.drawText(x1 + 4, row_top, x2 - x1 - 8, self.TRACK_ROW_HEIGHT,
                            Qt.AlignVCenter | Qt.AlignLeft, self._label_for(eff))
 
     # ---------- mouse ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:
         x = int(event.position().x())
+        y = int(event.position().y())
         if event.button() == Qt.LeftButton:
-            eff, kind = self._hit_test(x)
+            eff, kind = self._hit_test(x, y)
             if eff is None:
                 if self._selected_id is not None:
                     self._selected_id = None
@@ -121,8 +131,9 @@ class BrollLane(EffectLane):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         x = int(event.position().x())
+        y = int(event.position().y())
         if self._drag_id is None or self._duration_ms <= 0:
-            _, kind = self._hit_test(x)
+            _, kind = self._hit_test(x, y)
             if kind in ("left", "right"):
                 self.setCursor(Qt.SizeHorCursor)
             elif kind == "move":
@@ -136,10 +147,13 @@ class BrollLane(EffectLane):
         if self._drag_kind == "move":
             new_in = self._drag_orig_in + delta_ms
             new_out = self._drag_orig_out + delta_ms
+            new_in, new_out = self._snap_pair_to_playhead(new_in, new_out)
         elif self._drag_kind == "left":
             new_in = max(0, min(self._drag_orig_out - 100, self._drag_orig_in + delta_ms))
+            new_in = self._snap_ms_to_playhead(new_in)
         elif self._drag_kind == "right":
             new_out = max(self._drag_orig_in + 100, self._drag_orig_out + delta_ms)
+            new_out = self._snap_ms_to_playhead(new_out)
         new_in = max(0, min(self._duration_ms, new_in))
         new_out = max(0, min(self._duration_ms, new_out))
         if new_out <= new_in:
@@ -149,10 +163,13 @@ class BrollLane(EffectLane):
             return
         new_eff = replace(eff, in_ms=int(new_in), out_ms=int(new_out))
         self._effects = [new_eff if e.id == self._drag_id else e for e in self._effects]
+        self._drag_last_eff = new_eff
         self.update()
-        self.effect_changed.emit(new_eff)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._drag_last_eff is not None:
+            self.effect_changed.emit(self._drag_last_eff)
+            self._drag_last_eff = None
         self._drag_id = None
         self._drag_kind = None
 

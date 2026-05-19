@@ -93,6 +93,10 @@ class EditController(QObject):
     def sidecar(self) -> Sidecar:
         return self._sidecar
 
+    def sidecar_dir(self) -> Path:
+        """사이드카 파일이 저장되는 디렉터리 경로."""
+        return self._store.root
+
     def is_edit_mode_on(self) -> bool:
         return self._edit_mode_on
 
@@ -103,7 +107,15 @@ class EditController(QObject):
         self.edit_mode_toggled.emit(on)
 
     def update_sidecar(self, new_sidecar: Sidecar) -> None:
-        """효과 추가/삭제/수정 후 호출. History push + autosave 트리거."""
+        """효과 추가/삭제/수정 후 호출. History push + autosave 트리거.
+
+        track 변경 (cut/trim/segment delete 등) 으로 combined duration 이 줄어들면
+        끝점을 넘는 effect 가 trailing zone 에 남아 효과 라인이 어긋남 + export 시
+        엉뚱한 시각에 표시. update_sidecar 가 단일 funnel 이라 여기서 한 번 clamp 하면
+        모든 진입점이 자동 처리. clamp 는 idempotent — track 안 변한 경우 no-op.
+        """
+        from ...effects.sidecar import clamp_effects_to_track
+        new_sidecar.effects = clamp_effects_to_track(new_sidecar)
         self._history.push(new_sidecar)
         self._sidecar = self._history.current()
         self.sidecar_replaced.emit(self._sidecar)
@@ -126,12 +138,21 @@ class EditController(QObject):
             self._history = History(initial=self._sidecar)
 
     def add_effect(self, effect) -> bool:
-        """효과 추가 — 같은 type 의 시간 겹침 검사 후 push.
+        """효과 추가. 시간 겹침 시 다음 빈 track_idx (sub-lane) 자동 할당 (Phase 21).
 
-        반환값: 추가 성공이면 True, 겹쳐서 거부면 False.
+        반환값: 항상 True — track_idx 끝까지 다 차도 0..N 마지막 + 1 로 새 lane.
+        같은 type 의 시간 겹침을 거부하지 않음 — 동시에 여러 caption/arrow 등 허용.
         """
         if overlaps_existing(self._sidecar.effects, effect):
-            return False
+            from dataclasses import replace
+            # 같은 type 의 track_idx 중 candidate.in_ms~out_ms 겹치지 않는 가장 작은 값.
+            ti = 0
+            while True:
+                ti += 1
+                trial = replace(effect, track_idx=ti)
+                if not overlaps_existing(self._sidecar.effects, trial):
+                    effect = trial
+                    break
         new_sc = copy.deepcopy(self._sidecar)
         new_sc.effects.append(effect)
         self.update_sidecar(new_sc)

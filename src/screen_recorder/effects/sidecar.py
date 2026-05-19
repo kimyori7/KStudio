@@ -165,30 +165,86 @@ def _from_plain(cls: type, d: dict[str, Any]) -> Any:
             init_kwargs[f.name] = _from_plain(f.type, raw) if raw is not None else None
         else:
             # f.type 이 string 또는 generic — 단순화: dict 면 자식 dataclass 추정 안 함, 그대로 전달
-            init_kwargs[f.name] = _coerce_nested(f, raw)
+            init_kwargs[f.name] = _coerce_nested(cls, f, raw)
     return cls(**init_kwargs)
 
 
-def _coerce_nested(f, raw: Any) -> Any:
-    """필드 type 힌트가 dataclass 인 경우 dict → dataclass 변환. 그 외는 raw 그대로."""
-    # f.type 이 future annotation 으로 string 인 경우가 많음 → 클래스 객체 얻기 어려움.
-    # 단순화: raw 가 dict 이고 cls.__annotations__ 의 해당 이름이 dataclass 면 변환.
-    # 여기선 raw 가 dict 면 effect 의 알려진 자식 dataclass 풀에서 매칭 시도.
+def _coerce_nested(parent_cls: type, f, raw: Any) -> Any:
+    """필드 type 힌트가 dataclass 인 경우 dict → dataclass 변환. 그 외는 raw 그대로.
+
+    같은 필드 이름 (예: start/end/fade) 가 effect 종류에 따라 다른 dataclass 를
+    가리키므로 parent_cls 별로 매핑 분기.
+    """
     if isinstance(raw, dict):
-        # 캡션의 Font/Stroke/Background/Position/Fade, 줌의 ZoomPoint, broll 의 PipConfig
-        from .types.caption import Font, Stroke, Background, Position, Fade
-        from .types.zoom import ZoomPoint
+        from .types.caption import Font, Stroke, Background, Position, Fade as CapFade
+        from .types.zoom import ZoomPoint, ZoomEffect
         from .types.broll import PipConfig
-        nested_pool: dict[str, type] = {
+        from .types.arrow import Point as ArrowPoint, Fade as ArrowFade, ArrowEffect
+        # Effect 종류별 nested 필드 → 자식 dataclass 매핑.
+        pool: dict[str, type] = {
             "font": Font, "stroke": Stroke, "background": Background,
-            "position": Position, "fade": Fade,
-            "start": ZoomPoint, "end": ZoomPoint,
+            "position": Position,
             "pip": PipConfig,
         }
-        target_cls = nested_pool.get(f.name)
+        # fade — caption.Fade 와 arrow.Fade 가 같은 shape 라 어느 쪽으로 가도 동작
+        # 하나, type annotation 정확성 위해 parent 에 맞춤.
+        if f.name == "fade":
+            pool["fade"] = ArrowFade if parent_cls is ArrowEffect else CapFade
+        # start/end — ZoomEffect 는 ZoomPoint (cx,cy,scale), ArrowEffect 는 Point (x,y).
+        if f.name in ("start", "end"):
+            if parent_cls is ArrowEffect:
+                pool[f.name] = ArrowPoint
+            elif parent_cls is ZoomEffect:
+                pool[f.name] = ZoomPoint
+        target_cls = pool.get(f.name)
         if target_cls is not None:
             return _from_plain(target_cls, raw)
     return raw
+
+
+_EFFECT_MIN_DURATION_MS = 100   # 클램프 후 폭이 이보다 짧으면 효과 제거.
+
+
+def combined_duration_ms(video_track: list[VideoSegment]) -> int:
+    """video_track 의 끝점 (= max(start_ms + duration_ms)). 빈 트랙은 0.
+
+    Gap-aware 끝 — segment 가 시간상 분산되어 있으면 가장 늦은 끝점이 곧 사용자
+    combined timeline 의 끝.
+    """
+    if not video_track:
+        return 0
+    return max(s.start_ms + s.duration_ms for s in video_track)
+
+
+def clamp_effects_to_track(sidecar: Sidecar) -> list[Effect]:
+    """sidecar.effects 의 in_ms/out_ms 를 video_track 끝점에 맞춰 clamp.
+
+    규칙:
+    - effect.in_ms >= combined_end_ms → 제거 (시작이 트랙 끝 이후).
+    - effect.out_ms > combined_end_ms → out_ms 를 combined_end_ms 로 clamp.
+    - clamp 후 out_ms - in_ms < _EFFECT_MIN_DURATION_MS → 제거 (너무 짧음).
+
+    pure 함수 — 새 list 반환. 호출자가 sidecar.effects 에 대입.
+    cut/trim/segment delete 등으로 트랙 끝이 줄어들 때 효과가 trailing zone 에
+    남는 것을 자동 정리. 빈 트랙 (첫 segment 생성 전) 이면 clamp 건너뜀 — 효과
+    보존. 트랙 생기면 그때 정리됨.
+    """
+    from dataclasses import replace
+    end_ms = combined_duration_ms(sidecar.video_track)
+    if end_ms <= 0:
+        return list(sidecar.effects)
+    out: list[Effect] = []
+    for eff in sidecar.effects:
+        if eff.in_ms >= end_ms:
+            continue
+        if eff.out_ms <= end_ms:
+            out.append(eff)
+            continue
+        new_out = end_ms
+        if new_out - eff.in_ms < _EFFECT_MIN_DURATION_MS:
+            continue
+        out.append(replace(eff, out_ms=int(new_out)))
+    return out
 
 
 def ensure_default_track(sidecar: Sidecar, source_duration_ms: int) -> None:

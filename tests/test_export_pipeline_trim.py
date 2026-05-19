@@ -8,6 +8,27 @@ from screen_recorder.effects import Sidecar, Trim
 from screen_recorder.encode.export_pipeline import build_export_args
 
 
+@pytest.fixture(autouse=True)
+def _autostub_qt_render(monkeypatch):
+    from screen_recorder.encode import export_pipeline as ep
+    def stub_cap(c, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path as _P
+        _P(dst).parent.mkdir(parents=True, exist_ok=True)
+        _P(dst).write_bytes(b"")
+    def stub_hud(eff, *, font_pt, dst):
+        from pathlib import Path as _P
+        _P(dst).parent.mkdir(parents=True, exist_ok=True)
+        _P(dst).write_bytes(b"")
+        return (200, 40)
+    def stub_arrow(a, *, surface_w, surface_h, dst, sample_ms=None):
+        from pathlib import Path as _P
+        _P(dst).parent.mkdir(parents=True, exist_ok=True)
+        _P(dst).write_bytes(b"")
+    monkeypatch.setattr(ep, "render_caption_png", stub_cap)
+    monkeypatch.setattr(ep, "render_speed_hud_png", stub_hud)
+    monkeypatch.setattr(ep, "render_arrow_png", stub_arrow)
+
+
 def test_no_trim_main_segment_uses_full_range(tmp_path):
     """trim 없으면 [0:v]trim=0:5 (전체)."""
     sc = Sidecar(trim=Trim(in_ms=0, out_ms=0))

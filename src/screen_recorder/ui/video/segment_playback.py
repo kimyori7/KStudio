@@ -137,18 +137,29 @@ class SegmentPlaybackController(QObject):
         return None, 0
 
     def _activate_segment(self, idx: int, *, seek_local_ms: int = 0) -> None:
-        """segment 를 활성화 — source 가 다르면 load, 같으면 seek 만."""
+        """segment 를 활성화 — source 가 다르면 load, 같으면 seek 만.
+
+        다음 segment 진입 시 player.load() 가 새 미디어를 비동기 로딩 — 그 직후
+        play() 호출 안 하면 새 segment 가 paused 상태로 멈춤. 이전 상태 (재생 중)
+        를 기억해 load 후 자동 재개. seek_ms 의 mediaStatus 확인이 비동기라 즉시
+        play() 가 무시될 수 있어 mediaStatus signal 한 번 받으면 재개.
+        """
         if not (0 <= idx < len(self._segments)):
             return
         seg = self._segments[idx]
         target_src = seg.src
         target_seek_ms = int(seg.src_in_ms) + max(0, seek_local_ms)
-        if self._loaded_src != target_src:
+        was_playing = bool(getattr(self._player, "is_playing", lambda: False)())
+        src_changed = (self._loaded_src != target_src)
+        if src_changed:
             self._player.load(Path(target_src))
             self._loaded_src = target_src
         self._player.seek_ms(int(target_seek_ms))
         self._active_idx = idx
         self.active_segment_changed.emit(seg.id)
+        # src 가 바뀌면 load 후 paused 상태가 됨. 이전 재생 중이었으면 재개.
+        if was_playing and src_changed:
+            self._player.play()
 
     # ---------- gap 처리 ----------
     def _enter_gap(self, combined_ms: int) -> None:
