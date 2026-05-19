@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from ...agent.chat_history import (
     MAX_MESSAGES, PERSISTABLE_ROLES, load_history, save_history,
 )
+from ...agent.plan_gate import PlanGate
 from ...agent.runtime import AgentMessage, AgentEvent
 
 
@@ -889,6 +890,7 @@ class ChatPanel(QDockWidget):
         parent: Optional[QWidget] = None,
         initial_model_id: Optional[str] = None,
         initial_show_thinking: bool = True,
+        plan_gate: Optional[PlanGate] = None,
     ) -> None:
         super().__init__("Claude 에이전트", parent)
         self.setObjectName("AgentChatPanel")
@@ -1102,6 +1104,11 @@ class ChatPanel(QDockWidget):
         self._pending_images: list[bytes] = []
         # 입력 위젯의 image_pasted 시그널 연결 — pending 에 추가 + 첨부 표시 갱신.
         self._input.image_pasted.connect(self._on_image_pasted)
+
+        # PlanGate 연결 — plan_submitted 시그널 → _PlanCard 삽입.
+        self._plan_gate: Optional[PlanGate] = plan_gate
+        if self._plan_gate is not None:
+            self._plan_gate.plan_submitted.connect(self._on_plan_submitted)
 
     # ---- 외부 진입점 ----
     def append_message(self, msg: AgentMessage) -> None:
@@ -1536,6 +1543,16 @@ class ChatPanel(QDockWidget):
         # stretch 가 *맨 위* (index 0) 에 있으니, 그 *뒤*에 차례로 append.
         # 결과: stretch / oldest_bubble / ... / newest_bubble — 콘텐츠는 아래로 쌓임.
         self._messages_lay.addWidget(bubble)
+
+    @Slot(str, str, str)
+    def _on_plan_submitted(self, plan_id: str, summary: str, markdown: str) -> None:
+        """PlanGate.plan_submitted → 새 _PlanCard 생성 + 메시지 영역에 삽입."""
+        card = _PlanCard(plan_id=plan_id, summary=summary, markdown=markdown)
+        # plan_id 를 lambda 에 capture — 여러 plan 동시 처리 시 섞이지 않음.
+        card.approved.connect(lambda pid=plan_id: self._plan_gate.approve(pid))
+        card.rejected.connect(lambda reason, pid=plan_id: self._plan_gate.reject(pid, reason))
+        self._messages_lay.addWidget(card)
+        self._scroll_to_bottom()
 
     def _scroll_to_bottom(self) -> None:
         """즉시 한 번 — 이후 rangeChanged 가 layout 후 다시 호출해 정확히 정렬."""

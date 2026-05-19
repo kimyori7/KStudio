@@ -127,8 +127,18 @@ class PlanGate(QObject):
         fut: asyncio.Future,
         decision: PlanDecision,
     ) -> None:
-        """asyncio.Future 는 loop 의 thread 에서만 set 가능 → call_soon_threadsafe."""
+        """asyncio.Future 는 loop 의 thread 에서만 set 가능 → call_soon_threadsafe.
+
+        loop 가 닫혀 있으면 (테스트 teardown 또는 앱 종료 시) RuntimeError 를 무시.
+        approve/reject 의 상태 갱신은 이미 lock 안에서 완료된 후이므로 future
+        resolution 실패는 기능에 영향 없음.
+        """
         def _set():
             if not fut.done():
                 fut.set_result(decision)
-        loop.call_soon_threadsafe(_set)
+        try:
+            loop.call_soon_threadsafe(_set)
+        except RuntimeError:
+            # loop 닫힘 — 테스트 teardown(asyncio.run) 또는 앱 종료 시 발생.
+            # 상태는 이미 커밋됐으므로 무시.
+            pass

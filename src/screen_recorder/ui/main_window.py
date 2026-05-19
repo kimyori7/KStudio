@@ -475,6 +475,7 @@ class MainWindow(QMainWindow):
             self,
             initial_model_id=saved_model_id,
             initial_show_thinking=saved_show_thinking,
+            plan_gate=self.agent_runtime.plan_gate(),
         )
         self.addDockWidget(Qt.RightDockWidgetArea, self.agent_chat_panel)
         self.agent_chat_panel.user_submitted.connect(self.agent_runtime.send)

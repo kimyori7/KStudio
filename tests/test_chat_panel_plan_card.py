@@ -70,3 +70,87 @@ def test_mark_externally_resolved_cancelled(card) -> None:
     card.mark_externally_resolved("cancelled")
     assert not card._approve_btn.isEnabled()
     assert not card._reject_btn.isEnabled()
+
+
+# ============================================================
+# ChatPanel ↔ PlanGate 통합 — plan_submitted 시그널 → PlanCard 삽입 → ✓/✗ → gate 호출
+# ============================================================
+def test_chat_panel_creates_plan_card_on_plan_submitted(qtbot) -> None:
+    """plan_gate.plan_submitted emit → ChatPanel 의 message 영역에 _PlanCard 1개 추가."""
+    import asyncio as _asyncio
+    from screen_recorder.agent.plan_gate import PlanGate
+    from screen_recorder.ui.agent.chat_panel import ChatPanel, _PlanCard
+
+    gate = PlanGate()
+    panel = ChatPanel(initial_model_id="claude-sonnet-4-6", initial_show_thinking=False,
+                       plan_gate=gate)
+    qtbot.addWidget(panel)
+
+    before = panel.message_count()
+
+    async def submit():
+        return gate.submit("필러 cut", "1. cut\n2. cut")
+    _asyncio.run(submit())
+
+    # plan_submitted 는 DirectConnection (same thread) — emit 직후 슬롯 도착.
+    assert panel.message_count() == before + 1
+    last_idx = panel._messages_lay.count() - 1
+    bubble = panel._messages_lay.itemAt(last_idx).widget()
+    assert isinstance(bubble, _PlanCard)
+    assert bubble.plan_id().startswith("plan_")
+
+
+def test_plan_card_approve_calls_gate_approve(qtbot) -> None:
+    import asyncio as _asyncio
+    from screen_recorder.agent.plan_gate import PlanGate
+    from screen_recorder.ui.agent.chat_panel import ChatPanel, _PlanCard
+
+    gate = PlanGate()
+    panel = ChatPanel(initial_model_id="claude-sonnet-4-6", initial_show_thinking=False,
+                       plan_gate=gate)
+    qtbot.addWidget(panel)
+
+    async def submit():
+        return gate.submit("s", "m")
+    _asyncio.run(submit())
+
+    last_idx = panel._messages_lay.count() - 1
+    card = panel._messages_lay.itemAt(last_idx).widget()
+    assert isinstance(card, _PlanCard)
+
+    # 사전 require_approval 은 실패해야 (승인 전).
+    with pytest.raises(ValueError):
+        gate.require_approval()
+
+    card._approve_btn.click()
+
+    # 게이트가 승인 상태가 됐어야.
+    gate.require_approval()   # 예외 없으면 OK.
+
+
+def test_plan_card_reject_with_reason_calls_gate_reject(qtbot) -> None:
+    import asyncio as _asyncio
+    from screen_recorder.agent.plan_gate import PlanGate
+    from screen_recorder.ui.agent.chat_panel import ChatPanel, _PlanCard
+
+    gate = PlanGate()
+    panel = ChatPanel(initial_model_id="claude-sonnet-4-6", initial_show_thinking=False,
+                       plan_gate=gate)
+    qtbot.addWidget(panel)
+
+    async def submit():
+        return gate.submit("s", "m")
+    _asyncio.run(submit())
+
+    last_idx = panel._messages_lay.count() - 1
+    card = panel._messages_lay.itemAt(last_idx).widget()
+    assert isinstance(card, _PlanCard)
+
+    # Reject 흐름.
+    card._reject_btn.click()
+    card._reason_input.setPlainText("필러는 빼지마")
+    card._send_reason_btn.click()
+
+    # 게이트는 승인 안 됐어야.
+    with pytest.raises(ValueError):
+        gate.require_approval()
