@@ -7,7 +7,7 @@ worker(asyncio) ↔ UI(Qt) future bridge:
 승인 상태: last_approved_plan_id 가 set 되어 있으면 propose_* 통과.
 새 사용자 메시지가 들어오면 invalidate_approval() — 다음 propose 는 새 plan 필요.
 
-Phase 1 (이 파일): 순수 도메인 로직. Qt Signal 통합은 다음 task 에서.
+Phase 3 (이 파일): QObject 로 전환 + plan_submitted Signal 추가.
 """
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ import asyncio
 import threading
 import uuid
 from dataclasses import dataclass
+
+from PySide6.QtCore import QObject, Signal
 
 
 @dataclass(frozen=True)
@@ -24,18 +26,24 @@ class PlanDecision:
     reason: str = ""   # reject 시 사용자 입력 (빈 문자열 허용)
 
 
-class PlanGate:
+class PlanGate(QObject):
     """worker ↔ UI bridge + 승인 상태."""
 
-    def __init__(self) -> None:
+    # UI 가 PlanCard 생성하는 트리거 — (plan_id, summary, markdown).
+    plan_submitted = Signal(str, str, str)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
         self._lock = threading.Lock()
         # plan_id → (loop, asyncio.Future). loop 는 await_decision 호출한 loop.
         self._pending: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Future]] = {}
+        # plan_id → (summary, markdown). UI 가 시각화에 사용. submit() 에서 register.
+        self._submitted_meta: dict[str, tuple[str, str]] = {}
         self._last_approved_plan_id: str | None = None
 
     # ---------- worker side ----------
     def submit(self, summary: str, markdown: str) -> str:
-        """worker 측. plan_id 발급 + future 등록 (race-free).
+        """worker 측. plan_id 발급 + future 등록 (race-free) + UI Signal emit.
 
         호출자는 worker 의 asyncio loop 안에 있어야 — submit_plan tool handler 의 async def
         안에서 호출되므로 get_running_loop() 가 항상 성공. UI 가 submit 직후 approve 해도
@@ -46,6 +54,10 @@ class PlanGate:
         fut: asyncio.Future = loop.create_future()
         with self._lock:
             self._pending[plan_id] = (loop, fut)
+            self._submitted_meta[plan_id] = (summary, markdown)
+        # UI 스레드로 자동 큐잉 (QueuedConnection — worker→UI 크로스 스레드).
+        # Direct connection (same thread) 면 동기적으로 슬롯 실행.
+        self.plan_submitted.emit(plan_id, summary, markdown)
         return plan_id
 
     async def await_decision(self, plan_id: str) -> PlanDecision:

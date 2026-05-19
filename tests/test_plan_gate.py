@@ -236,3 +236,71 @@ def test_await_decision_unknown_plan_id_raises() -> None:
 
     with pytest.raises(ValueError):
         asyncio.run(waiter())
+
+
+# ============================================================
+# Qt Signal — submit() 이 plan_submitted emit
+# ============================================================
+def test_submit_emits_plan_submitted_signal(qtbot) -> None:
+    """submit() 호출 시 plan_submitted(plan_id, summary, markdown) Signal 발화."""
+    import asyncio as _asyncio
+    g = PlanGate()
+    received: list[tuple] = []
+    g.plan_submitted.connect(lambda pid, s, m: received.append((pid, s, m)))
+
+    async def go():
+        return g.submit("필러 cut", "1. cut\n2. cut")
+    pid = _asyncio.run(go())
+
+    # Qt direct connection — emit 은 동기적이라 호출 직후 도착.
+    assert len(received) == 1
+    r_pid, r_summary, r_markdown = received[0]
+    assert r_pid == pid
+    assert r_summary == "필러 cut"
+    assert r_markdown == "1. cut\n2. cut"
+
+
+# ============================================================
+# AgentRuntime 연결 — send/cancel/clear 시 cancel_all + invalidate
+# ============================================================
+def test_agent_runtime_creates_plan_gate(qtbot) -> None:
+    """AgentRuntime 이 VideoTools 의 PlanGate 인스턴스를 사용."""
+    from screen_recorder.agent.runtime import AgentRuntime
+    from screen_recorder.agent.tools import VideoTools
+
+    class _Stub:
+        def has_active_video(self): return False
+
+    vt = VideoTools(adapter=_Stub())
+    rt = AgentRuntime(video_tools=vt)
+    # PlanGate 가 VideoTools 와 AgentRuntime 모두에서 동일 인스턴스여야.
+    assert rt.plan_gate() is vt.plan_gate()
+
+
+def test_agent_runtime_invalidates_approval_on_outgoing_hook(qtbot) -> None:
+    """_on_user_message_outgoing 가 cancel_all + invalidate_approval.
+
+    asyncio worker 시작 X — invalidate 동작만 검증.
+    """
+    import asyncio as _asyncio
+    from screen_recorder.agent.runtime import AgentRuntime
+    from screen_recorder.agent.tools import VideoTools
+
+    class _Stub:
+        def has_active_video(self): return False
+
+    vt = VideoTools(adapter=_Stub())
+    rt = AgentRuntime(video_tools=vt)
+    g = rt.plan_gate()
+
+    async def setup():
+        pid = g.submit("s", "m")
+        g.approve(pid)
+    _asyncio.run(setup())
+
+    g.require_approval()   # OK.
+
+    rt._on_user_message_outgoing()
+
+    with pytest.raises(ValueError):
+        g.require_approval()

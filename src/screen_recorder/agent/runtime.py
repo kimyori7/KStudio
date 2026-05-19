@@ -29,6 +29,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from .tools_video import VideoTools, VideoSessionAdapter
 from .proposals import EffectProposal, ProposalQueue
+from .plan_gate import PlanGate
 
 
 _log = logging.getLogger(__name__)
@@ -227,6 +228,13 @@ class AgentRuntime(QObject):
                  parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._video_tools = video_tools
+        # PlanGate 는 VideoTools 가 보유 — propose_* 도구와 같은 인스턴스 사용 필요.
+        # 구버전 VideoTools (plan_gate accessor 없는 stub) 호환은 hasattr 로.
+        self._plan_gate = (
+            video_tools.plan_gate()
+            if hasattr(video_tools, "plan_gate")
+            else PlanGate()
+        )
         self._cwd = cwd
         self._model = model or "claude-sonnet-4-6"   # 기본 Sonnet — Pro 정액제 친화적.
         self._thread = _AgentThread(self)
@@ -254,6 +262,17 @@ class AgentRuntime(QObject):
         """Phase D — worker → UI 마샬링. UI 가 동의 카드 + 다운로드 후 future 해결."""
         self.whisper_download_requested.emit(model_size, future)
 
+    def plan_gate(self) -> PlanGate:
+        return self._plan_gate
+
+    def _on_user_message_outgoing(self) -> None:
+        """새 사용자 메시지 / 취소 / 세션 초기화. 이전 plan 승인 무효 + pending plan 거부.
+
+        이 hook 이 있어야 Claude 가 이전 사용자 메시지의 ✓ 를 다음 메시지에 재사용 못 함.
+        """
+        self._plan_gate.cancel_all()
+        self._plan_gate.invalidate_approval()
+
     # ---- 수명 관리 ----
     def start(self) -> None:
         if self._started:
@@ -266,6 +285,7 @@ class AgentRuntime(QObject):
     def stop(self) -> None:
         if not self._started:
             return
+        self._on_user_message_outgoing()
         # 클라이언트 정리는 worker 스레드의 asyncio 루프 안에서 수행.
         loop = self._thread._loop
         if loop is not None and self._client is not None:
@@ -296,6 +316,7 @@ class AgentRuntime(QObject):
         images: PNG/JPEG bytes 리스트 — Ctrl+V 로 붙여넣은 스크린샷 등. Claude 가
         vision content block 으로 받아 분석 가능. None 이면 텍스트만.
         """
+        self._on_user_message_outgoing()
         if not self._started:
             self.start()
         loop = self._thread.loop()
@@ -307,6 +328,7 @@ class AgentRuntime(QObject):
         SDK 의 receive_response() 가 CancelledError 로 풀리고 done 이벤트로 종료.
         새 send 후 정상 동작 복원.
         """
+        self._on_user_message_outgoing()
         loop = self._thread._loop
         task = self._current_task
         if loop is None or task is None or task.done():
@@ -331,6 +353,7 @@ class AgentRuntime(QObject):
 
         UI 의 말풍선/토큰 카운터 초기화는 ChatPanel 측이 이미 수행.
         """
+        self._on_user_message_outgoing()
         # 진행 중 task 가 있으면 취소.
         self.cancel()
         loop = self._thread._loop
