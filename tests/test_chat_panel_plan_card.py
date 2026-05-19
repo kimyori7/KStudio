@@ -154,3 +154,37 @@ def test_plan_card_reject_with_reason_calls_gate_reject(qtbot) -> None:
     # 게이트는 승인 안 됐어야.
     with pytest.raises(ValueError):
         gate.require_approval()
+
+
+def test_cancel_all_locks_stale_plan_card(qtbot) -> None:
+    """새 사용자 메시지 / Claude cancel 시 PlanGate.cancel_all 호출 → 화면의 stale
+    PlanCard 가 자동으로 '취소됨' 으로 잠겨 사용자가 무의미한 ✓ 클릭하지 않게 보호.
+    """
+    import asyncio as _asyncio
+    from screen_recorder.agent.plan_gate import PlanGate
+    from screen_recorder.ui.agent.chat_panel import ChatPanel, _PlanCard
+
+    gate = PlanGate()
+    panel = ChatPanel(initial_model_id="claude-sonnet-4-6", initial_show_thinking=False,
+                       plan_gate=gate)
+    qtbot.addWidget(panel)
+
+    async def submit():
+        return gate.submit("s", "m")
+    pid = _asyncio.run(submit())
+
+    last_idx = panel._messages_lay.count() - 1
+    card = panel._messages_lay.itemAt(last_idx).widget()
+    assert isinstance(card, _PlanCard)
+    # 아직 pending — ✓/✗ 활성.
+    assert card._approve_btn.isEnabled()
+    assert card._reject_btn.isEnabled()
+
+    # 외부 cancel — AgentRuntime._on_user_message_outgoing 동등.
+    gate.cancel_all()
+
+    # 카드의 ✓/✗ 가 비활성화돼야.
+    assert not card._approve_btn.isEnabled()
+    assert not card._reject_btn.isEnabled()
+    # registry 에서 제거됐어야.
+    assert pid not in panel._plan_cards

@@ -1106,9 +1106,12 @@ class ChatPanel(QDockWidget):
         self._input.image_pasted.connect(self._on_image_pasted)
 
         # PlanGate 연결 — plan_submitted 시그널 → _PlanCard 삽입.
+        # plan_id → _PlanCard registry — plan_resolved 시 stale card 갱신용.
+        self._plan_cards: dict[str, "_PlanCard"] = {}
         self._plan_gate: Optional[PlanGate] = plan_gate
         if self._plan_gate is not None:
             self._plan_gate.plan_submitted.connect(self._on_plan_submitted)
+            self._plan_gate.plan_resolved.connect(self._on_plan_resolved)
 
     # ---- 외부 진입점 ----
     def append_message(self, msg: AgentMessage) -> None:
@@ -1551,8 +1554,22 @@ class ChatPanel(QDockWidget):
         # plan_id 를 lambda 에 capture — 여러 plan 동시 처리 시 섞이지 않음.
         card.approved.connect(lambda pid=plan_id: self._plan_gate.approve(pid))
         card.rejected.connect(lambda reason, pid=plan_id: self._plan_gate.reject(pid, reason))
+        self._plan_cards[plan_id] = card
         self._messages_lay.addWidget(card)
         self._scroll_to_bottom()
+
+    @Slot(str, str)
+    def _on_plan_resolved(self, plan_id: str, outcome: str) -> None:
+        """PlanGate.plan_resolved → 기존 PlanCard 의 버튼 잠금 + 헤더 갱신.
+
+        cancel_all 이 외부 트리거 (새 메시지 / cancel) 로 발생한 경우 stale card 가
+        클릭 가능한 채로 남는 UX 갭 fix. approve/reject 도 emit 하지만 그 경로는
+        이미 card 가 self._decided=True 라 동작 noop.
+        """
+        card = self._plan_cards.pop(plan_id, None)
+        if card is None:
+            return
+        card.mark_externally_resolved(outcome)
 
     def _scroll_to_bottom(self) -> None:
         """즉시 한 번 — 이후 rangeChanged 가 layout 후 다시 호출해 정확히 정렬."""

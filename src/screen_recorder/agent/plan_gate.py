@@ -31,6 +31,10 @@ class PlanGate(QObject):
 
     # UI 가 PlanCard 생성하는 트리거 — (plan_id, summary, markdown).
     plan_submitted = Signal(str, str, str)
+    # UI 가 기존 PlanCard 상태 갱신하는 트리거 — (plan_id, outcome).
+    # outcome: 'approved' / 'rejected' / 'cancelled'.
+    # cancel_all 이 외부에서 발생할 때 stale card 의 ✓/✗ 버튼을 비활성화하려면 필요.
+    plan_resolved = Signal(str, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -93,27 +97,38 @@ class PlanGate(QObject):
             entry = self._pending.pop(plan_id, None)
             if entry is not None:
                 self._last_approved_plan_id = plan_id
+                self._submitted_meta.pop(plan_id, None)
         if entry is None:
             return   # unknown plan_id — race 방어.
         loop, fut = entry
         self._resolve(loop, fut, PlanDecision(approved=True, reason=""))
+        self.plan_resolved.emit(plan_id, "approved")
 
     def reject(self, plan_id: str, reason: str) -> None:
         """UI 측. future approved=False, reason 전달. last_approved 변경 X."""
         with self._lock:
             entry = self._pending.pop(plan_id, None)
+            self._submitted_meta.pop(plan_id, None)
         if entry is None:
             return
         loop, fut = entry
         self._resolve(loop, fut, PlanDecision(approved=False, reason=reason))
+        self.plan_resolved.emit(plan_id, "rejected")
 
     def cancel_all(self) -> None:
-        """앱 종료 / Claude cancel / 새 사용자 메시지. 모든 pending reject."""
+        """앱 종료 / Claude cancel / 새 사용자 메시지. 모든 pending reject.
+
+        UI 의 stale PlanCard 들이 'cancelled' 표시로 잠기도록 각 plan_id 에 대해
+        plan_resolved emit — _on_user_message_outgoing 흐름 (Task 3) 에서 호출 시
+        화면에 남은 카드들이 '취소됨' 으로 갱신.
+        """
         with self._lock:
-            entries = list(self._pending.values())
+            ids_entries = list(self._pending.items())
             self._pending.clear()
-        for loop, fut in entries:
+            self._submitted_meta.clear()
+        for plan_id, (loop, fut) in ids_entries:
             self._resolve(loop, fut, PlanDecision(approved=False, reason="cancelled"))
+            self.plan_resolved.emit(plan_id, "cancelled")
 
     def invalidate_approval(self) -> None:
         """새 사용자 메시지 도착 시 호출. last_approved_plan_id None 으로."""
