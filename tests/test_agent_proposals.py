@@ -532,3 +532,128 @@ def test_arrow_missing_point_rejected() -> None:
     })
     assert err is not None
     assert "y" in err
+
+
+# ============================================================
+# Dedup — 2026-05-19 사용자 보고. Claude 가 같은 cut 효과를 3번 propose →
+# 사이드카에 중복으로 박혀 의미 없는 노이즈. propose 시점에 차단.
+# ============================================================
+def test_is_duplicate_cut_same_range() -> None:
+    """같은 in_ms/out_ms cut 은 큐 추가 전 dup 으로 인식."""
+    q = ProposalQueue()
+    p1 = EffectProposal(action="add", type="cut", payload={"in_ms": 1000, "out_ms": 2000})
+    assert q.is_duplicate(p1) is False, "빈 큐엔 dup 없음"
+    q.add(p1)
+    p2 = EffectProposal(action="add", type="cut", payload={"in_ms": 1000, "out_ms": 2000})
+    assert q.is_duplicate(p2) is True, "같은 범위 cut 은 dup"
+
+
+def test_is_duplicate_cut_different_range_not_dup() -> None:
+    """다른 in_ms/out_ms cut 은 dup 아님."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="cut", payload={"in_ms": 1000, "out_ms": 2000}))
+    p2 = EffectProposal(action="add", type="cut", payload={"in_ms": 1500, "out_ms": 2500})
+    assert q.is_duplicate(p2) is False
+
+
+def test_is_duplicate_caption_same_range_same_text() -> None:
+    """같은 in_ms/out_ms + 같은 text caption 은 dup (눈에 보이는 차이 0)."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="caption",
+                          payload={"in_ms": 0, "out_ms": 1000, "text": "안녕"}))
+    p2 = EffectProposal(action="add", type="caption",
+                         payload={"in_ms": 0, "out_ms": 1000, "text": "안녕"})
+    assert q.is_duplicate(p2) is True
+
+
+def test_is_duplicate_caption_same_range_different_text_not_dup() -> None:
+    """같은 범위 + 다른 text 는 dup 아님 (의도적 overlay 가능)."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="caption",
+                          payload={"in_ms": 0, "out_ms": 1000, "text": "안녕"}))
+    p2 = EffectProposal(action="add", type="caption",
+                         payload={"in_ms": 0, "out_ms": 1000, "text": "다른 자막"})
+    assert q.is_duplicate(p2) is False
+
+
+def test_is_duplicate_speed_same_rate() -> None:
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="speed",
+                          payload={"in_ms": 0, "out_ms": 2000, "rate": 2.0}))
+    p2 = EffectProposal(action="add", type="speed",
+                         payload={"in_ms": 0, "out_ms": 2000, "rate": 2.0})
+    assert q.is_duplicate(p2) is True
+
+
+def test_is_duplicate_speed_different_rate_not_dup() -> None:
+    """같은 범위 + 다른 rate — conflict 일 수 있지만 dup 아님 (apply 가 처리)."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="speed",
+                          payload={"in_ms": 0, "out_ms": 2000, "rate": 2.0}))
+    p2 = EffectProposal(action="add", type="speed",
+                         payload={"in_ms": 0, "out_ms": 2000, "rate": 0.5})
+    assert q.is_duplicate(p2) is False
+
+
+def test_is_duplicate_broll_same_src() -> None:
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="broll",
+                          payload={"in_ms": 0, "out_ms": 5000, "src": "C:/a.mp4"}))
+    p2 = EffectProposal(action="add", type="broll",
+                         payload={"in_ms": 0, "out_ms": 5000, "src": "C:/a.mp4"})
+    assert q.is_duplicate(p2) is True
+
+
+def test_is_duplicate_broll_different_src_not_dup() -> None:
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="broll",
+                          payload={"in_ms": 0, "out_ms": 5000, "src": "C:/a.mp4"}))
+    p2 = EffectProposal(action="add", type="broll",
+                         payload={"in_ms": 0, "out_ms": 5000, "src": "C:/b.mp4"})
+    assert q.is_duplicate(p2) is False
+
+
+def test_is_duplicate_zoom_not_deduped() -> None:
+    """zoom 은 좌표/scale 미세 조정 가능성 — false positive 위험 → dedup 제외."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="zoom", payload={
+        "in_ms": 0, "out_ms": 2000,
+        "start": {"x": 0.5, "y": 0.5, "scale": 1.0},
+        "end": {"x": 0.5, "y": 0.5, "scale": 2.0},
+    }))
+    p2 = EffectProposal(action="add", type="zoom", payload={
+        "in_ms": 0, "out_ms": 2000,
+        "start": {"x": 0.5, "y": 0.5, "scale": 1.0},
+        "end": {"x": 0.5, "y": 0.5, "scale": 2.0},
+    })
+    assert q.is_duplicate(p2) is False
+
+
+def test_is_duplicate_arrow_not_deduped() -> None:
+    """arrow 도 마찬가지 — 같은 위치 화살표 2개 의도 가능성 있음."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="add", type="arrow", payload={
+        "in_ms": 0, "out_ms": 1000,
+        "start": {"x": 0.3, "y": 0.5}, "end": {"x": 0.7, "y": 0.5},
+    }))
+    p2 = EffectProposal(action="add", type="arrow", payload={
+        "in_ms": 0, "out_ms": 1000,
+        "start": {"x": 0.3, "y": 0.5}, "end": {"x": 0.7, "y": 0.5},
+    })
+    assert q.is_duplicate(p2) is False
+
+
+def test_is_duplicate_remove_action_never_dup() -> None:
+    """remove proposal 은 dedup 대상 아님 — 같은 effect_id 2번 remove 하면 apply 시점 처리."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="remove", payload={"effect_id": "cap_x"}))
+    p2 = EffectProposal(action="remove", payload={"effect_id": "cap_x"})
+    assert q.is_duplicate(p2) is False
+
+
+def test_is_duplicate_modify_action_never_dup() -> None:
+    """modify proposal 도 dedup 안 함 — 같은 effect_id 다른 override 의도일 수 있음."""
+    q = ProposalQueue()
+    q.add(EffectProposal(action="modify", payload={"effect_id": "cap_x", "text": "a"}))
+    p2 = EffectProposal(action="modify", payload={"effect_id": "cap_x", "text": "b"})
+    assert q.is_duplicate(p2) is False

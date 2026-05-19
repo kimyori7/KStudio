@@ -154,6 +154,15 @@ def make_mutation_tools(
         if err is not None:
             return error_result(f"제안 거부: {err}")
         proposal = EffectProposal(action="add", type=eff_type, payload=payload, note=note)
+        # 2026-05-19 사용자 보고: Claude 가 같은 cut 효과 (in_ms=104280, out_ms=105240) 를
+        # 3번 propose → 사이드카에 의미 없는 중복. 큐 적재 시점에 차단해 즉시 자기 교정.
+        if queue.is_duplicate(proposal):
+            return error_result(
+                f"중복 제안 거부: 같은 효과 ({eff_type}, in_ms={payload.get('in_ms')}, "
+                f"out_ms={payload.get('out_ms')}) 가 큐에 이미 있습니다. "
+                f"같은 구간에 여러 효과 의도면 시간 또는 식별 필드 (caption.text, "
+                f"speed.rate, broll.src) 를 다르게. 단일 propose 의도면 중복 호출 중단."
+            )
         queue.add(proposal)
         # 시각 효과면 자기 검증 (preview) 안내 — 좌표 어긋남을 apply 전에 잡기.
         if eff_type in ("zoom", "arrow", "caption"):

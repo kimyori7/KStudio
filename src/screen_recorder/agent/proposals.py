@@ -321,6 +321,45 @@ def validate_payload(eff_type: str, payload: dict) -> Optional[str]:
     return None
 
 
+def _dedup_signature(proposal: EffectProposal) -> Optional[tuple]:
+    """add proposal 의 '동일성 식별 튜플'. None 이면 dedup 대상 아님.
+
+    2026-05-19 사용자 보고: Claude 가 같은 cut 효과 (in_ms=104280, out_ms=105240) 를
+    3번 propose → 사이드카에 의미 없는 중복. propose 시점에 차단해 Claude 가 즉시 자기
+    교정하도록.
+
+    설계 — type 별 '식별 필드' 정의:
+    - cut: (in_ms, out_ms) 만. 같은 구간 자르기는 정확히 1번이 의미.
+    - caption: + text. 같은 범위 + 다른 text 는 의도적 overlay 가능 → dup 아님.
+    - speed: + rate. 같은 범위 + 다른 rate 는 conflict 지만 dup 아님 (apply 가 처리).
+    - broll: + src. 같은 범위 + 다른 src 는 2개 곁들임 overlay 가능.
+    - zoom/arrow: 좌표 미세 조정 가능성 + false positive 위험 → dedup 안 함.
+    - remove/modify: 동일 effect_id 다중 호출이 의도일 수 있음 → dedup 안 함.
+    """
+    if proposal.action != "add":
+        return None
+    p = proposal.payload
+    try:
+        in_ms = int(p.get("in_ms", 0))
+        out_ms = int(p.get("out_ms", 0))
+    except (TypeError, ValueError):
+        return None
+    t = proposal.type
+    if t == "cut":
+        return ("cut", in_ms, out_ms)
+    if t == "caption":
+        return ("caption", in_ms, out_ms, str(p.get("text", "")))
+    if t == "speed":
+        try:
+            rate = float(p.get("rate", 1.0))
+        except (TypeError, ValueError):
+            return None
+        return ("speed", in_ms, out_ms, rate)
+    if t == "broll":
+        return ("broll", in_ms, out_ms, str(p.get("src", "")))
+    return None
+
+
 class ProposalQueue:
     """Thread-safe 제안 큐. add/list 는 worker(asyncio) 에서, take_all 은 UI 에서."""
 
@@ -331,6 +370,22 @@ class ProposalQueue:
     def add(self, proposal: EffectProposal) -> None:
         with self._lock:
             self._items.append(proposal)
+
+    def is_duplicate(self, proposal: EffectProposal) -> bool:
+        """proposal 이 큐의 기존 항목과 식별 튜플이 일치하는지.
+
+        action != 'add' 거나 type 이 dedup 대상 아니면 항상 False.
+        호출자(propose_effect)는 add() 전에 이 함수를 검사하여 중복이면 Claude 에게
+        error_result 로 자기 교정 유도.
+        """
+        sig = _dedup_signature(proposal)
+        if sig is None:
+            return False
+        with self._lock:
+            for existing in self._items:
+                if _dedup_signature(existing) == sig:
+                    return True
+        return False
 
     def list(self) -> list[EffectProposal]:
         """현재 큐 스냅샷. 외부 변경 영향 없도록 copy."""

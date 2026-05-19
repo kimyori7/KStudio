@@ -162,6 +162,68 @@ def test_submit_plan_tool_returns_approved_after_user_approve() -> None:
     assert "true" in text.lower()
 
 
+def test_propose_effect_dedup_cut_returns_error() -> None:
+    """2026-05-19 사용자 보고 회귀 보호: 같은 cut 두 번 propose → 두 번째는 error_result.
+
+    Claude 가 같은 (in_ms, out_ms) cut 을 반복 호출하면 사이드카에 의미 없는 중복.
+    propose 시점에 차단해 Claude 가 자기 교정하도록.
+    """
+    g = PlanGate()
+    tools, queue = _make_tools(g)
+    async def go():
+        pid = g.submit("s", "m")
+        g.approve(pid)
+    asyncio.run(go())
+
+    r1 = _invoke(tools["propose_effect"], {
+        "type": "cut", "payload": {"in_ms": 104280, "out_ms": 105240},
+    })
+    assert "queued" in r1["content"][0]["text"].lower()
+    assert queue.count() == 1
+
+    r2 = _invoke(tools["propose_effect"], {
+        "type": "cut", "payload": {"in_ms": 104280, "out_ms": 105240},
+    })
+    text2 = r2["content"][0]["text"]
+    assert "중복" in text2 or "duplicate" in text2.lower(), \
+        f"중복 거부 메시지 기대, got: {text2}"
+    assert queue.count() == 1, "중복은 큐에 추가되면 안 됨"
+
+
+def test_propose_effect_dedup_caption_same_text() -> None:
+    g = PlanGate()
+    tools, queue = _make_tools(g)
+    async def go():
+        pid = g.submit("s", "m")
+        g.approve(pid)
+    asyncio.run(go())
+
+    payload = {"in_ms": 0, "out_ms": 1000, "text": "안녕"}
+    _invoke(tools["propose_effect"], {"type": "caption", "payload": payload})
+    r2 = _invoke(tools["propose_effect"], {"type": "caption", "payload": payload})
+    assert "중복" in r2["content"][0]["text"]
+    assert queue.count() == 1
+
+
+def test_propose_effect_caption_different_text_not_blocked() -> None:
+    """같은 범위 + 다른 text 는 통과 — 의도적 overlay 가능."""
+    g = PlanGate()
+    tools, queue = _make_tools(g)
+    async def go():
+        pid = g.submit("s", "m")
+        g.approve(pid)
+    asyncio.run(go())
+
+    _invoke(tools["propose_effect"], {
+        "type": "caption", "payload": {"in_ms": 0, "out_ms": 1000, "text": "a"},
+    })
+    r2 = _invoke(tools["propose_effect"], {
+        "type": "caption", "payload": {"in_ms": 0, "out_ms": 1000, "text": "b"},
+    })
+    assert "queued" in r2["content"][0]["text"].lower()
+    assert queue.count() == 2
+
+
 def test_submit_plan_tool_returns_reason_after_user_reject() -> None:
     g = PlanGate()
     tools, _q = _make_tools(g)

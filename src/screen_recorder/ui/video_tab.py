@@ -320,6 +320,11 @@ class VideoTab(QWidget):
         # ZoomEffect.preview=True 인 효과만 활성 구간에서 화면 zoom transform 적용.
         self._segment_ctrl.combined_position_changed.connect(self._on_position_for_zoom)
         # 사이드카 변경 후 평가는 다음 combined_position_changed emit 시 자동 — 별도 트리거 불필요.
+        # ---- Cut skip (2026-05-19) ----
+        # 사용자 보고: cut 효과가 사이드카 마커만이라 preview 에서 cut 콘텐츠가 그대로
+        # 재생됨 → 사용자가 export 결과와 다른 화면을 봄. preview_skip=True (기본) 인
+        # cut 구간 진입 시 out_ms 로 자동 점프해 export 결과를 미리 체감.
+        self._segment_ctrl.combined_position_changed.connect(self._on_position_for_cut_skip)
 
         # ---- Broll PIP 실시간 재생 (Phase 20) ----
         # main 과 별도의 QMediaPlayer 로 broll src 재생 → frame 을 PreviewOverlay
@@ -1096,6 +1101,25 @@ class VideoTab(QWidget):
             return 1.0 - (1.0 - t) ** 2
         # in-out (기본) — smoothstep.
         return t * t * (3.0 - 2.0 * t)
+
+    # ---------- Cut skip (2026-05-19) ----------
+    def _on_position_for_cut_skip(self, ms: int) -> None:
+        """playhead 가 preview_skip=True 인 cut 구간 진입 시 out_ms 로 점프.
+
+        사용자 보고: cut 효과는 사이드카 마커만이라 preview 재생에서 잘려야 할 콘텐츠가
+        그대로 보임 → export 결과와 화면 불일치. 자동 skip 으로 WYSIWYG 회복.
+
+        seek loop 방지: out_ms 도 같은 cut 안이라면 다음 tick 에 또 점프하지만,
+        find_cut_skip_target 가 in_ms <= ms < out_ms 만 매치하므로 out_ms 정확
+        도달 시점에 다시 매치되지 않음 — 안전.
+        """
+        from ..effects.types.cut import find_cut_skip_target
+        target = find_cut_skip_target(self.sidecar().effects, ms)
+        if target is None:
+            return
+        # 자기 자신을 다시 트리거 안 하도록 seek 만 — 정상 재생 흐름은 SegmentPlaybackController
+        # 가 알아서.
+        self._segment_ctrl.seek_combined_ms(int(target))
 
     # ---------- Speed preview (Stage 5) ----------
     def _on_speed_effects_toggled(self, enabled: bool) -> None:

@@ -9,7 +9,7 @@ CutEffect 는 super().__post_init__() 을 호출하지 않고 자체 검증한�
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Literal
+from typing import Iterable, Literal, Optional
 
 from ..model import Effect
 
@@ -26,6 +26,11 @@ class CutEffect(Effect):
     src_out_ms: int = 0
     src_duration_ms: int = 0
     scale_mode: str = "fit"
+    # 2026-05-19: 재생 시 이 cut 구간을 자동 skip 할지. True (기본) 면 playhead 가
+    # in_ms 도달 시 out_ms 로 점프 → 사용자가 export 결과를 미리 체감. False 면 원본
+    # 콘텐츠가 그대로 재생 (cut 마커는 timeline 에 남고 export 시점에만 적용).
+    # Inspector 체크박스 "미리보기에 적용" 으로 토글.
+    preview_skip: bool = True
 
     def __post_init__(self) -> None:
         if self.in_ms < 0:
@@ -71,3 +76,28 @@ class CutEffect(Effect):
             return 0
         end = self.src_out_ms or self.src_duration_ms
         return max(0, end - self.src_in_ms)
+
+
+def find_cut_skip_target(effects: Iterable[Effect], ms: int) -> Optional[int]:
+    """playhead 가 ms 위치일 때 자동 skip 해야 할 목적지 ms.
+
+    None 반환 → 현재 위치 skip 불필요 (일반 재생 진행).
+    int 반환 → 그 ms 로 seek (해당 cut 의 out_ms).
+
+    조건:
+    - effect.type == 'cut' 이고 in_ms < out_ms (splice 아님)
+    - in_ms <= ms < out_ms (구간 안)
+    - preview_skip is True (Inspector 토글로 끄지 않음)
+    """
+    for eff in effects:
+        if eff.type != "cut":
+            continue
+        if not isinstance(eff, CutEffect):
+            continue
+        if eff.in_ms == eff.out_ms:
+            continue   # splice — skip 의미 없음.
+        if not eff.preview_skip:
+            continue
+        if eff.in_ms <= ms < eff.out_ms:
+            return int(eff.out_ms)
+    return None
