@@ -187,6 +187,9 @@ class CutLane(EffectLane):
         if self._drag_kind == "move":
             new_in = self._drag_orig_in + delta_ms
             new_out = self._drag_orig_out + delta_ms
+            # 평행 클램프 — in/out 한 쌍을 [0, duration] 안으로 폭 보존 이동.
+            # splice (in==out) 도 width=0 이라 그대로 평행 이동, 이후 splice 보존 코드가 처리.
+            new_in, new_out = self._clamp_move_to_bounds(new_in, new_out)
         elif self._drag_kind == "left" and not eff.is_splice:
             # 구간만 left 핸들 의미. 최소 100ms 폭 유지.
             new_in = max(0, min(self._drag_orig_out - 100, self._drag_orig_in + delta_ms))

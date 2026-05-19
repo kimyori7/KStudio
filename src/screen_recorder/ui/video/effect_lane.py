@@ -166,6 +166,33 @@ class EffectLane(QWidget):
             return in_ms + shift, out_ms + shift
         return in_ms, out_ms
 
+    def _clamp_move_to_bounds(self, new_in: int, new_out: int) -> tuple[int, int]:
+        """평행 이동(move) 드래그용 — (in, out) 한 쌍을 [0, duration] 안으로 *평행* 이동.
+
+        2026-05-19 사용자 보고 회귀 fix: 기존 코드는 in 과 out 을 독립 클램프 →
+        in 이 0 에 막히면 out 만 계속 줄어 효과 폭이 좁아짐 ("왼쪽 끝 도달했는데
+        오른쪽이 줄어드는" 증상).
+
+        새 규칙:
+        - new_in < 0 이면 그만큼 *함께* 우측 shift → 폭 보존
+        - new_out > duration 이면 그만큼 *함께* 좌측 shift → 폭 보존
+        - 효과 폭이 영상 길이보다 크면 (드문 경우) 전체 [0, duration] 으로 클램프
+        - left/right edge 드래그(폭 조정) 에는 사용 금지 — 그 쪽은 독립 클램프가 정답
+        """
+        width = new_out - new_in
+        # 폭이 영상보다 크면 평행 이동 불가능 — 전체 클램프.
+        if width >= self._duration_ms:
+            return 0, max(0, int(self._duration_ms))
+        if new_in < 0:
+            shift = -new_in
+            new_in += shift
+            new_out += shift
+        if new_out > self._duration_ms:
+            shift = new_out - self._duration_ms
+            new_in -= shift
+            new_out -= shift
+        return int(new_in), int(new_out)
+
     def _ms_to_x(self, ms: int) -> int:
         if self._duration_ms <= 0:
             return _HEADER_WIDTH

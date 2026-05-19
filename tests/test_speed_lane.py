@@ -90,6 +90,50 @@ def test_drag_bar_emits_effect_changed_with_new_time(qtbot):
     assert last.out_ms - last.in_ms == 2000   # 길이 보존
 
 
+def test_drag_left_past_zero_preserves_width(qtbot):
+    """2026-05-19 사용자 보고 회귀: 막대 왼쪽으로 끌어 in_ms 가 0 도달 후에도 더 끌면
+    out_ms 가 줄어 폭이 좁아짐. fix 후엔 0 에서 멈추고 폭(2000ms) 보존.
+    """
+    lane, eff = _lane_with_one_speed(qtbot, in_ms=2000, out_ms=4000)
+    start_x = 56 + int(344 * 3000 / 10_000)
+    # 영상 길이 10초 안에서 5000ms 왼쪽으로 끌기 (in 이 -3000 까지 가는 시도).
+    delta_px = -int(344 * 5000 / 10_000)
+
+    received: list = []
+    lane.effect_changed.connect(received.append)
+
+    qtbot.mousePress(lane, Qt.LeftButton, pos=QPoint(start_x, 10))
+    qtbot.mouseMove(lane, QPoint(start_x + delta_px, 10))
+    qtbot.mouseRelease(lane, Qt.LeftButton, pos=QPoint(start_x + delta_px, 10))
+
+    assert len(received) >= 1
+    last = received[-1]
+    assert last.in_ms == 0, f"왼쪽 끝 도달 후 in_ms 는 0 이어야 함 (got {last.in_ms})"
+    assert last.out_ms - last.in_ms == 2000, \
+        f"폭은 원본 2000ms 보존되어야 함 (got width={last.out_ms - last.in_ms})"
+
+
+def test_drag_right_past_duration_preserves_width(qtbot):
+    """대칭 — 오른쪽 끝 너머로 끌어도 폭 보존."""
+    lane, eff = _lane_with_one_speed(qtbot, in_ms=2000, out_ms=4000)
+    start_x = 56 + int(344 * 3000 / 10_000)
+    # 영상 끝 10000 너머 8000ms 까지 끌기.
+    delta_px = int(344 * 8000 / 10_000)
+
+    received: list = []
+    lane.effect_changed.connect(received.append)
+
+    qtbot.mousePress(lane, Qt.LeftButton, pos=QPoint(start_x, 10))
+    qtbot.mouseMove(lane, QPoint(start_x + delta_px, 10))
+    qtbot.mouseRelease(lane, Qt.LeftButton, pos=QPoint(start_x + delta_px, 10))
+
+    assert len(received) >= 1
+    last = received[-1]
+    assert last.out_ms == 10_000, f"오른쪽 끝 도달 후 out_ms 는 duration (got {last.out_ms})"
+    assert last.out_ms - last.in_ms == 2000, \
+        f"폭은 원본 2000ms 보존되어야 함 (got width={last.out_ms - last.in_ms})"
+
+
 def test_delete_key_emits_effect_deleted(qtbot):
     lane, eff = _lane_with_one_speed(qtbot)
     bar_x = 56 + int(344 * 3000 / 10_000)
