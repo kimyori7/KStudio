@@ -160,3 +160,21 @@ def test_prompt_distinguishes_three_durations() -> None:
         or "export 시점" in SYSTEM_PROMPT
     )
     assert has_kstudio_behavior
+
+
+# ============================================================
+# Plan-Gate (2026-05-19) — 원칙 0: 편집 전 submit_plan 의무
+# ============================================================
+def test_prompt_requires_submit_plan_before_mutation() -> None:
+    """원칙 0 — propose_* 호출 전 반드시 submit_plan."""
+    assert "submit_plan" in SYSTEM_PROMPT
+    # mutation 도구 명시 (실수로 누락되면 Claude 가 게이트 우회 시도).
+    assert "propose_effect" in SYSTEM_PROMPT
+    # 사용자 ✓/✗ 흐름 안내.
+    assert "approved" in SYSTEM_PROMPT
+
+
+def test_prompt_clarifies_read_only_tools_free() -> None:
+    """단순 조회는 plan 없이 자유 — 사용자가 영상 분석만 부탁할 때 plan 없이 답할 수 있어야."""
+    # get_* 또는 정보 조회 자유 문구.
+    assert "plan 없이" in SYSTEM_PROMPT or "정보 조회" in SYSTEM_PROMPT
