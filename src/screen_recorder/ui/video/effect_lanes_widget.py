@@ -34,8 +34,12 @@ _TYPE_COLOR = {
     "cut":     "#ef4444",   # 빨강
 }
 
-# 효과 lane 의 표시 순서 (위 → 아래). cut 은 트랙 lane 으로 흡수돼 제거 (Stage D).
-_LANE_ORDER = ["caption", "speed", "zoom", "broll", "arrow"]
+# 효과 lane 의 표시 순서 (위 → 아래).
+# 2026-05-19 회귀 fix: cut 이 빠져있어서 사이드카에 cut 효과 있어도 화면에 안 보이던 버그.
+# Stage D 의 의도 (cut → 트랙 lane 흡수) 는 video_track_lane.py 에 cut 표시 코드 미구현 상태라
+# 사용자가 자동편집/Claude 로 cut 추가해도 시각 피드백 0 → 의도 복구. video_track_lane 에
+# cut 흡수 완성되면 그때 다시 제거.
+_LANE_ORDER = ["cut", "caption", "speed", "zoom", "broll", "arrow"]
 
 # type → lane 클래스 dispatch. 누락된 type 은 base EffectLane 으로 fallback.
 EFFECT_LANE_CLASSES: dict[str, type] = {

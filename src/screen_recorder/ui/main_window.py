@@ -1777,14 +1777,15 @@ class MainWindow(QMainWindow):
                 self._proposal_queue.add(p)
             return
         if not widget.is_edit_mode_on():
-            future.set_result({
-                "applied": 0,
-                "errors": ["편집 모드 OFF — 영상 탭에서 편집 모드를 켠 뒤 다시 시도하세요."],
-                "queue_restored": True,
-            })
-            for p in proposals:
-                self._proposal_queue.add(p)
-            return
+            # 2026-05-19: 편집 모드 OFF 면 효과 lane 이 안 보여 사용자가 "왜 안 됐지" 혼동.
+            # 자동 ON + 안내 메시지로 침묵 거부보다 친절하게. set_edit_mode 는 전역 토글
+            # (모든 탭 + AppSettings 영속) — Claude 가 의도적으로 편집을 시작한 컨텍스트이므로
+            # 전역 활성도 합리적 (사용자가 "필러 빼줘" 한 자체가 편집 의도 표명).
+            self._on_global_edit_mode_change(True)
+            self.agent_chat_panel.append_message(AgentMessage(
+                role="system",
+                text="ℹ 편집 모드를 자동으로 켰습니다 — 타임라인에서 효과를 확인할 수 있습니다.",
+            ))
         # 즉시 적용 — 사용자 확인 카드 우회.
         result = self._apply_proposals_now(list(proposals))
         try:
