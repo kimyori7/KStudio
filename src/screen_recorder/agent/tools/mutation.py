@@ -1,14 +1,18 @@
-"""편집 제안 도구 6개 — Phase B.
+"""편집 제안 도구 7개 — Phase B + Plan-Gate (2026-05-19).
 
+- `submit_plan(summary, markdown)`            — 사용자 ✓/✗ 게이트 (mutation 전 필수)
 - `propose_effect(type, payload, note?)`      — 추가 제안
 - `propose_remove_effect(effect_id, note?)`   — 삭제 제안
 - `propose_modify_effect(effect_id, payload)` — 부분 갱신 제안
-- `list_proposals()`                          — 큐 스냅샷
-- `discard_proposals()`                       — 큐 비우기
+- `list_proposals()`                          — 큐 스냅샷 (게이트 없음)
+- `discard_proposals()`                       — 큐 비우기 (게이트 없음)
 - `apply_proposals()`                         — UI 스레드 마샬링하여 일괄 적용
 
 직접 sidecar mutation 금지 — 모두 ProposalQueue 에 쌓고 apply 시 콜백으로 UI 스레드
 에서 EditController 위임. undo/redo/autosave 자동.
+
+Plan-Gate: propose_* + apply_proposals 는 시작 시 PlanGate.require_approval() 호출
+→ 승인된 plan 없으면 'submit_plan 부터' 에러로 Claude 자기 교정 유도.
 """
 from __future__ import annotations
 
