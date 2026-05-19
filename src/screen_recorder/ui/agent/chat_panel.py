@@ -107,13 +107,15 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
 ]
 
 
-# tool_use / tool_result 는 log-line 스타일 — 배경/테두리 제거, 한 줄 짜리 작은 글자.
-# 채팅 한 턴에 보통 4~10개씩 생기는데 각각이 박스 모양이면 빈 공간 누적이 심함.
+# "채팅 앱" 같은 말풍선 느낌을 빼고 평문(터미널 로그) 스타일로 — 사용자 요청 2026-05-19.
+# 일반 대화 (user / assistant / thinking / system) 는 배경/테두리/radius/padding 없이
+# 텍스트 색만으로 role 구분. tool_use / tool_result 는 기존대로 한 줄 로그.
+# 액션이 필요한 카드 (error, proposals_preview) 는 시각 강조 유지.
 _BUBBLE_STYLES = {
-    "user":              "background:#1e293b;color:#f1f5f9;border-radius:8px;padding:8px 10px;",
-    "assistant":         "background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:8px 10px;",
-    "thinking":          "background:#0a0f1e;color:#94a3b8;border-left:3px solid #64748b;border-radius:4px;padding:6px 10px;font-style:italic;font-size:11px;",
-    "system":            "background:#1e1b4b;color:#a5b4fc;border-radius:6px;padding:6px 8px;font-style:italic;",
+    "user":              "color:#f1f5f9;font-weight:600;",
+    "assistant":         "color:#e2e8f0;",
+    "thinking":          "color:#64748b;font-style:italic;font-size:11px;",
+    "system":            "color:#94a3b8;font-style:italic;font-size:11px;",
     "tool_use":          "color:#fcd34d;padding:0px 2px;font-family:Consolas,monospace;font-size:10px;",
     "tool_result":       "color:#86efac;padding:0px 2px;font-family:Consolas,monospace;font-size:10px;",
     "error":             "background:#3f1d1d;color:#fca5a5;border:1px solid #7f1d1d;border-radius:6px;padding:6px 10px;",
@@ -756,7 +758,7 @@ class ChatPanel(QDockWidget):
         # widgetResizable=True 와 결합해 inner widget 폭 = viewport 폭 → wrap 작동.
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setWidget(self._messages_host)
-        self._scroll.setStyleSheet("QScrollArea{background:#0a0f1e;border:1px solid #1e293b;}")
+        self._scroll.setStyleSheet("QScrollArea{background:#0a0f1e;border:none;}")
         # viewport resize 가 일어날 때 inner widget 의 maxWidth 를 viewport 폭으로 명시 강제.
         # widgetResizable=True 만으로는 안전하지 않음 — tool_result 같이 wordWrap 무시하는
         # 단일라인 sizeHint 가 wide 일 때 inner widget 이 sizeHint 따라 wide 해질 수 있음.

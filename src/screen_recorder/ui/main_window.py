@@ -517,10 +517,6 @@ class MainWindow(QMainWindow):
             self.agent_chat_panel.set_history_path(default_history_path())
         except Exception:
             logging.exception("chat history wiring failed")
-        self.agent_chat_panel.append_message(AgentMessage(
-            role="system",
-            text="Claude 에이전트 대기 중. 영상을 연 뒤 '이 영상 뭐 있어?' 같은 질문을 시도해 보세요.",
-        ))
         # 인스펙터 효과 변경 → 현재 활성 VideoTab 에만 전달 (단일 연결).
         # per-tab 연결 방식은 탭 N 개 열면 N 번 발화해 비활성 탭 사이드카도 덮어쓰는
         # 데이터 무결성 버그를 일으킴 (Stage 2 에서 도입, Stage 3a 에서 최초 노출).
