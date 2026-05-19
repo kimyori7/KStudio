@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class PlanDecision:
     """사용자의 plan 결정."""
     approved: bool
@@ -35,21 +35,31 @@ class PlanGate:
 
     # ---------- worker side ----------
     def submit(self, summary: str, markdown: str) -> str:
-        """worker 측. plan_id 발급. (UI 시그널 emit 은 다음 task — 여기선 등록만.)"""
-        plan_id = f"plan_{uuid.uuid4().hex[:8]}"
-        return plan_id
+        """worker 측. plan_id 발급 + future 등록 (race-free).
 
-    async def await_decision(self, plan_id: str) -> PlanDecision:
-        """worker 측. 사용자 결정까지 await.
-
-        Future 가 cancel_all / approve / reject 중 하나로 해결됨.
-        같은 plan_id 가 await_decision 호출 *직후* 에 등록 — UI 가 그 사이에 resolve
-        호출해도 lock 으로 race 차단.
+        호출자는 worker 의 asyncio loop 안에 있어야 — submit_plan tool handler 의 async def
+        안에서 호출되므로 get_running_loop() 가 항상 성공. UI 가 submit 직후 approve 해도
+        이미 등록된 future 가 받아 resolve.
         """
-        loop = asyncio.get_event_loop()
+        plan_id = f"plan_{uuid.uuid4().hex[:8]}"
+        loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         with self._lock:
             self._pending[plan_id] = (loop, fut)
+        return plan_id
+
+    async def await_decision(self, plan_id: str) -> PlanDecision:
+        """worker 측. submit() 에서 등록한 future 를 await.
+
+        submit/await_decision 사이 race 는 submit() 의 등록 시점에 해결 — 여기선 단순 lookup.
+        """
+        with self._lock:
+            entry = self._pending.get(plan_id)
+        if entry is None:
+            raise ValueError(
+                f"plan_id={plan_id!r} not registered — submit() 부터 호출해야 합니다."
+            )
+        _loop, fut = entry
         return await fut
 
     def require_approval(self) -> None:
@@ -68,8 +78,9 @@ class PlanGate:
     def approve(self, plan_id: str) -> None:
         """UI 측. last_approved_plan_id 설정 + 해당 future approved=True."""
         with self._lock:
-            self._last_approved_plan_id = plan_id
             entry = self._pending.pop(plan_id, None)
+            if entry is not None:
+                self._last_approved_plan_id = plan_id
         if entry is None:
             return   # unknown plan_id — race 방어.
         loop, fut = entry
