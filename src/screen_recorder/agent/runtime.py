@@ -228,13 +228,10 @@ class AgentRuntime(QObject):
                  parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._video_tools = video_tools
-        # PlanGate 는 VideoTools 가 보유 — propose_* 도구와 같은 인스턴스 사용 필요.
-        # 구버전 VideoTools (plan_gate accessor 없는 stub) 호환은 hasattr 로.
-        self._plan_gate = (
-            video_tools.plan_gate()
-            if hasattr(video_tools, "plan_gate")
-            else PlanGate()
-        )
+        # PlanGate 는 VideoTools 가 보유 — propose_* 도구와 같은 인스턴스 *반드시* 공유.
+        # 두 인스턴스로 갈리면 UI 의 ✓ 가 mutation 도구 측에 전달 안 됨 → 게이트 영원히 닫힘.
+        # AttributeError 면 wiring 회귀 — 즉시 노출되어야 silent split 방지.
+        self._plan_gate = video_tools.plan_gate()
         self._cwd = cwd
         self._model = model or "claude-sonnet-4-6"   # 기본 Sonnet — Pro 정액제 친화적.
         self._thread = _AgentThread(self)
