@@ -96,13 +96,14 @@ def test_tool_names_prefix_correct() -> None:
 
 
 def test_tool_count_includes_visual() -> None:
-    """read 8 + visual 2 + mutation 6 + preview 1 = 17 도구 (transcript ctx 제외).
+    """read 8 + visual 2 + mutation 7 + preview 1 = 18 도구 (transcript ctx 제외).
 
     2026-05-13: list_broll_sources 추가 → read 7 → 8.
+    2026-05-19: submit_plan 추가 → mutation 6 → 7.
     """
     vt = VideoTools(_FakeAdapter())
     names = vt.tool_names()
-    assert len(names) == 17
+    assert len(names) == 18
     assert any("get_frame_at" in n for n in names)
     assert any("get_timeline_strip" in n for n in names)
     assert any("propose_effect" in n for n in names)

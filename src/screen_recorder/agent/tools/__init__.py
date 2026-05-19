@@ -17,6 +17,7 @@ from typing import Callable, Optional
 from claude_agent_sdk import create_sdk_mcp_server
 
 from ..adapter import VideoSessionAdapter
+from ..plan_gate import PlanGate
 from ..proposals import EffectProposal, ProposalQueue
 from .mutation import make_mutation_tools, MUTATION_TOOL_NAMES
 from .preview import make_preview_tools, PREVIEW_TOOL_NAMES
@@ -51,6 +52,7 @@ class VideoTools:
         on_apply: Optional[ApplyCallback] = None,
         transcript_ctx: Optional[TranscriptContext] = None,
         on_download_whisper: Optional[DownloadCallback] = None,
+        plan_gate: Optional[PlanGate] = None,
     ) -> None:
         self._adapter = adapter
         self._ffmpeg_path = ffmpeg_path
@@ -58,16 +60,20 @@ class VideoTools:
         self._on_apply = on_apply
         self._transcript_ctx = transcript_ctx
         self._on_download_whisper = on_download_whisper
+        self._plan_gate = plan_gate or PlanGate()
 
     def proposal_queue(self) -> ProposalQueue:
         return self._queue
+
+    def plan_gate(self) -> PlanGate:
+        return self._plan_gate
 
     def mcp_server(self):
         """SDK 가 인식하는 in-process MCP 서버. ClaudeAgentOptions.mcp_servers 에 등록."""
         tools = (
             make_read_tools(self._adapter)
             + make_visual_tools(self._adapter, self._ffmpeg_path)
-            + make_mutation_tools(self._adapter, self._queue, self._on_apply)
+            + make_mutation_tools(self._adapter, self._queue, self._on_apply, self._plan_gate)
             + make_preview_tools(self._adapter, self._queue, self._ffmpeg_path)
         )
         if self._transcript_ctx is not None:

@@ -232,7 +232,7 @@ def test_build_unknown_raises() -> None:
 # 도구 surface — Phase B 추가
 # ============================================================
 def test_tool_count_phase_b() -> None:
-    """read 8 + visual 2 + mutation 6 + preview 1 = 17 (2026-05-13: list_broll_sources 추가)."""
+    """read 8 + visual 2 + mutation 7 + preview 1 = 18 (2026-05-19: submit_plan 추가)."""
     from screen_recorder.agent.tools_video import VideoTools
     class _Fake:
         def has_active_video(self): return False
@@ -242,7 +242,7 @@ def test_tool_count_phase_b() -> None:
         def sidecar(self): return None
     vt = VideoTools(_Fake())
     names = vt.tool_names()
-    assert len(names) == 17
+    assert len(names) == 18
     for required in (
         "propose_effect", "propose_remove_effect", "propose_modify_effect",
         "list_proposals", "apply_proposals", "discard_proposals",

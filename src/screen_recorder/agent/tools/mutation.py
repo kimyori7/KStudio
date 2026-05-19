@@ -20,6 +20,7 @@ from typing import Callable, Optional
 from claude_agent_sdk import tool
 
 from ..adapter import VideoSessionAdapter
+from ..plan_gate import PlanGate
 from ..proposals import (
     EffectProposal, ProposalQueue,
     validate_modify_payload, validate_payload, validate_remove_payload,
@@ -30,6 +31,7 @@ _log = logging.getLogger(__name__)
 
 
 MUTATION_TOOL_NAMES = (
+    "submit_plan",
     "propose_effect",
     "propose_remove_effect",
     "propose_modify_effect",
@@ -46,7 +48,32 @@ def make_mutation_tools(
     adapter: VideoSessionAdapter,
     queue: ProposalQueue,
     on_apply: Optional[ApplyCallback],
+    plan_gate: PlanGate,
 ) -> list:
+    @tool(
+        "submit_plan",
+        "편집 의도를 한국어 markdown 으로 사용자에게 제출. "
+        "propose_effect / propose_remove_effect / propose_modify_effect / apply_proposals "
+        "호출 전 반드시 먼저. 사용자가 ✓ 하면 도구가 approved=true 응답 → 그때 propose_*. "
+        "✗ 면 approved=false 와 reason 응답 → reason 보고 새 plan 수정해 submit_plan 재호출. "
+        "단순 정보 조회 (get_*, list_proposals, preview_proposal) 는 plan 없이 자유.\n"
+        "\n"
+        "summary: PlanCard 헤더 1줄 — 예 '필러 단어 12곳 cut + 자막 5개 추가'.\n"
+        "markdown: 본문 3~10줄 — 각 효과 종류 + ms 구간 + 이유. "
+        "좌표 결정 (zoom/arrow/caption) 은 plan 작성 *이전* 에 5단계 (get_frame_at → "
+        "픽셀 위치 묘사 → 정규화 → 자기 검증) 끝내고 plan 본문에 결과 좌표 포함.",
+        {"summary": str, "markdown": str},
+    )
+    async def submit_plan(args: dict) -> dict:
+        summary = str(args.get("summary", ""))
+        markdown = str(args.get("markdown", ""))
+        plan_id = plan_gate.submit(summary, markdown)
+        decision = await plan_gate.await_decision(plan_id)
+        return text_result({
+            "approved": decision.approved,
+            "reason": decision.reason,
+        })
+
     @tool(
         "propose_effect",
         "영상에 새 효과 하나를 추가 제안 (큐에 쌓임 — 실제 적용은 apply_proposals). "
@@ -110,6 +137,10 @@ def make_mutation_tools(
         {"type": str, "payload": dict, "note": str},
     )
     async def propose_effect(args: dict) -> dict:
+        try:
+            plan_gate.require_approval()
+        except ValueError as e:
+            return error_result(str(e))
         if not adapter.has_active_video():
             return no_active_video()
         eff_type = str(args.get("type", ""))
@@ -145,6 +176,10 @@ def make_mutation_tools(
         {"effect_id": str, "note": str},
     )
     async def propose_remove_effect(args: dict) -> dict:
+        try:
+            plan_gate.require_approval()
+        except ValueError as e:
+            return error_result(str(e))
         if not adapter.has_active_video():
             return no_active_video()
         payload = {"effect_id": str(args.get("effect_id", ""))}
@@ -171,6 +206,10 @@ def make_mutation_tools(
         {"effect_id": str, "payload": dict, "note": str},
     )
     async def propose_modify_effect(args: dict) -> dict:
+        try:
+            plan_gate.require_approval()
+        except ValueError as e:
+            return error_result(str(e))
         if not adapter.has_active_video():
             return no_active_video()
         effect_id = str(args.get("effect_id", ""))
@@ -223,6 +262,10 @@ def make_mutation_tools(
         {},
     )
     async def apply_proposals(args: dict) -> dict:
+        try:
+            plan_gate.require_approval()
+        except ValueError as e:
+            return error_result(str(e))
         if not adapter.has_active_video():
             return no_active_video()
         items = queue.take_all()
@@ -250,6 +293,7 @@ def make_mutation_tools(
         return text_result(result)
 
     return [
+        submit_plan,
         propose_effect,
         propose_remove_effect,
         propose_modify_effect,
