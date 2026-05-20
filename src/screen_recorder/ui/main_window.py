@@ -3366,38 +3366,20 @@ class MainWindow(QMainWindow):
         except AttributeError:
             pass   # AgentSettings 에 필드 없으면 무시 (방어적).
 
-        # 4) 진행 다이얼로그 (indeterminate). Whisper 는 중간 progress 어려워 spinner 만.
-        progress = QProgressDialog(
-            f"Whisper 전사 중… ({settings.model_size})\n"
-            "처음 사용하는 모델은 다운로드까지 포함되어 수 분 걸릴 수 있습니다.",
-            None, 0, 0, self,
+        # 4) 진행 별창 (비모달) — 사용자가 메인 앱 병행 사용 가능 (2026-05-20 명시).
+        from .subtitle_export_progress import (
+            SubtitleExportProgressWindow, wire_job_to_window,
         )
-        progress.setWindowTitle("자막 내보내기")
-        progress.setWindowModality(Qt.ApplicationModal)
-        progress.setCancelButton(None)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.show()
-
-        # 5) 백그라운드 job — finished/error 시 다이얼로그 닫고 결과 처리.
-        # sidecar 넘기면 cut 적용해 편집본 시간축으로 SRT timecode 재배치 (사용자 결정 2026-05-20).
+        window = SubtitleExportProgressWindow(model_size=settings.model_size, parent=self)
+        # 5) 백그라운드 job — 시그널 4개 (download/transcribe/segment/phase) 로 진행.
         sidecar = tab._edit_controller.sidecar()
         job = SubtitleExportJob(
             media_path=src_path, settings=settings, dst_path=dst, sidecar=sidecar,
         )
-
-        def _on_done(saved_dst):
-            progress.close()
-            self._open_in_explorer(saved_dst)
-
-        def _on_err(msg):
-            progress.close()
-            QMessageBox.warning(self, "자막 내보내기", msg)
-
-        job.finished.connect(_on_done)
-        job.error.connect(_on_err)
+        wire_job_to_window(job, window, open_folder_cb=self._open_in_explorer)
         self._subtitle_job = job   # GC 방지
+        self._subtitle_window = window
+        window.show()   # 비모달 — exec() 가 아닌 show()
         job.start()
 
     def _open_in_explorer(self, path) -> None:

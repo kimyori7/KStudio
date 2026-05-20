@@ -149,9 +149,18 @@ class SubtitleExportJob(QObject):
     """백그라운드 Whisper 전사 + 파일 쓰기.
 
     audio_export 의 ExportJob 과 같은 패턴 — QObject + daemon thread + Signal.
-    Whisper 는 in-process Python 호출이라 ffmpeg subprocess 가 아니고, progress
-    중간 보고 어려움 → indeterminate. finished/error 만 emit.
+
+    2026-05-20: progress 시그널 확장 (사용자 요청).
+    Phase 흐름: "downloading" (필요 시) → "loading" → "transcribing" → finished.
     """
+    # 다운로드 phase — received_bytes, total_bytes. total=0 이면 알 수 없음.
+    download_progress = Signal(int, int)
+    # 전사 phase — 0~100 % (영상 길이 대비 처리된 segment 끝점).
+    transcribe_progress = Signal(int)
+    # 새 segment 도착 — start_ms, end_ms, text. UI 가 실시간으로 자막 누적 표시.
+    segment_ready = Signal(int, int, str)
+    # 현재 phase 라벨 — "downloading" / "loading" / "transcribing" / "writing".
+    phase_changed = Signal(str)
     finished = Signal(object)   # dst Path
     error = Signal(str)
 
@@ -170,6 +179,7 @@ class SubtitleExportJob(QObject):
         self._dst = Path(dst_path)
         self._sidecar = sidecar   # None 이면 cut 미적용 (raw 전사 — 단위 테스트용)
         self._thread: Optional[threading.Thread] = None
+        self._watcher_stop: Optional[threading.Event] = None
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -179,13 +189,50 @@ class SubtitleExportJob(QObject):
 
     def _run(self) -> None:
         try:
-            from ..agent.transcript import get_transcriber
+            from ..agent.transcript import get_transcriber, WHISPER_SIZE_MB
             t = get_transcriber()
-            result = t.transcribe(
-                str(self._media), model_size=self._settings.model_size,
-            )
-            # 사이드카가 있으면 cut 적용해 편집본 시간축으로 remap.
-            # 2026-05-20 사용자 결정: SRT timecode 는 편집 결과 영상 기준 (audio_export 와 일관).
+
+            # ---- Phase 1: 다운로드 (이미 캐시되어 있으면 빠르게 통과) ----
+            cache_dir = t.cache_dir_for(self._settings.model_size)
+            already_cached = bool(cache_dir and cache_dir.exists())
+            expected_mb = WHISPER_SIZE_MB.get(self._settings.model_size, 0)
+            expected_bytes = expected_mb * 1024 * 1024
+
+            if not already_cached and cache_dir is not None and expected_bytes > 0:
+                self.phase_changed.emit("downloading")
+                self._start_download_watcher(cache_dir, expected_bytes)
+
+            # ---- Phase 2: 모델 로딩 (메모리 적재) — indeterminate ----
+            # _ensure_model 안에서 다운로드도 발생할 수 있어 watcher 가 그동안 emit.
+            self.phase_changed.emit("loading")
+            # _ensure_model 직접 노출 안 되니 transcribe 안에서 일어남. 명시 트리거 안 함.
+
+            # ---- Phase 3: 전사 ----
+            # transcribe 호출 시점에 _ensure_model + 다운로드까지 일어남 (lazy).
+            # 따라서 watcher 는 transcribe 직전에 켜고, on_segment 첫 호출 시점에 끄기.
+            self.phase_changed.emit("transcribing")
+            transcribe_started = threading.Event()
+
+            def _on_segment(seg, duration_s: float) -> None:
+                # 첫 segment 도착 = 다운로드 + 모델 로딩 끝 → watcher 정리.
+                if not transcribe_started.is_set():
+                    transcribe_started.set()
+                    self._stop_download_watcher()
+                self.segment_ready.emit(int(seg.start_ms), int(seg.end_ms), seg.text)
+                if duration_s > 0:
+                    pct = int(min(100.0, (seg.end_ms / 1000.0) / duration_s * 100.0))
+                    self.transcribe_progress.emit(pct)
+
+            try:
+                result = t.transcribe(
+                    str(self._media), model_size=self._settings.model_size,
+                    on_segment=_on_segment,
+                )
+            finally:
+                self._stop_download_watcher()
+
+            # ---- Phase 4: cut remap + 파일 쓰기 ----
+            self.phase_changed.emit("writing")
             segments = result.segments
             if self._sidecar is not None:
                 from .audio_export import compute_audio_keep_intervals
@@ -194,12 +241,10 @@ class SubtitleExportJob(QObject):
                     segments = remap_segments_for_cuts(segments, keep)
                 except (ValueError, NotImplementedError) as e:
                     _log.warning("cut 적용 실패 — raw segments 사용: %s", e)
-                    # multi-source 등은 raw timeline 으로 fallback (사용자에게 안내).
             if self._settings.format == "txt":
                 content = segments_to_txt(segments)
             else:
                 content = segments_to_srt(segments)
-            # 빈 결과 — 음성 없음 / Whisper 실패.
             if not content:
                 self.error.emit(
                     "전사 결과가 비어 있습니다. 영상에 음성이 없거나 모델이 텍스트를 "
@@ -208,7 +253,54 @@ class SubtitleExportJob(QObject):
                 return
             self._dst.parent.mkdir(parents=True, exist_ok=True)
             self._dst.write_text(content, encoding="utf-8")
+            self.transcribe_progress.emit(100)
             self.finished.emit(self._dst)
         except Exception as exc:
             _log.exception("SubtitleExportJob: transcribe/write failed")
             self.error.emit(f"자막 생성 실패: {exc}")
+        finally:
+            self._stop_download_watcher()
+
+    # ---- 다운로드 progress watcher (HF 캐시 디렉토리 polling) ----
+    def _start_download_watcher(self, cache_dir: Path, expected_bytes: int) -> None:
+        """별도 thread — 0.5초마다 cache_dir 크기 polling → download_progress emit.
+
+        HF Hub 가 tqdm 으로 직접 콜백 줄 방법이 라이브러리 버전마다 불안정. 디스크
+        polling 은 정확도 약간 떨어지나 안정적 — 사용자 만족 OK.
+        """
+        stop = threading.Event()
+        self._watcher_stop = stop
+
+        def _watch():
+            size_before = _dir_size(cache_dir)
+            while not stop.wait(0.5):
+                current = _dir_size(cache_dir) - size_before
+                if current < 0:
+                    current = 0
+                self.download_progress.emit(int(current), int(expected_bytes))
+
+        threading.Thread(
+            target=_watch, daemon=True, name="WhisperDownloadWatcher",
+        ).start()
+
+    def _stop_download_watcher(self) -> None:
+        if self._watcher_stop is not None:
+            self._watcher_stop.set()
+            self._watcher_stop = None
+
+
+def _dir_size(d: Path) -> int:
+    """디렉토리 안 모든 파일 크기 합 — 다운로드 progress 추정용."""
+    total = 0
+    if not d.exists():
+        return 0
+    try:
+        for f in d.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total

@@ -166,11 +166,16 @@ class Transcriber:
         video_path: str,
         model_size: str = "base",
         language: Optional[str] = "ko",
+        on_segment: Optional[Any] = None,
     ) -> Transcript:
         """전사 실행. 동기 차단 — 1시간 영상 base 기준 ~1~2분.
 
         language=None 이면 자동 감지. default 'ko' 는 사용자 영상이 한국어 위주일
         가능성이 높아 정확도를 위해 명시.
+
+        on_segment(seg, duration_s) — segment 받을 때마다 호출 (스트리밍 progress + 자막
+        UI 업데이트용). seg 는 TranscriptSegment, duration_s 는 전체 영상 길이(초).
+        예외 던지면 무시 (전사 중단 방지). None 이면 기존 동작 (collect 후 반환).
         """
         model = self._ensure_model(model_size)
         segments_iter, info = model.transcribe(
@@ -179,14 +184,21 @@ class Transcriber:
             vad_filter=True,          # 침묵 구간 자동 스킵 — 토큰 절약.
             beam_size=5,              # 정확도/속도 trade-off — 5 가 기본 권장.
         )
+        duration_s = float(info.duration) if info.duration else 0.0
         segments: list[TranscriptSegment] = []
         for seg in segments_iter:
-            segments.append(TranscriptSegment(
+            ts = TranscriptSegment(
                 start_ms=int(round(seg.start * 1000)),
                 end_ms=int(round(seg.end * 1000)),
                 text=seg.text.strip(),
-            ))
-        duration_ms = int(round(info.duration * 1000)) if info.duration else 0
+            )
+            segments.append(ts)
+            if on_segment is not None:
+                try:
+                    on_segment(ts, duration_s)
+                except Exception:
+                    _log.exception("transcribe on_segment callback raised")
+        duration_ms = int(round(duration_s * 1000))
         detected_lang = info.language or language or "unknown"
         return Transcript(
             source_hash="",       # 호출자가 채움.
@@ -195,6 +207,19 @@ class Transcriber:
             duration_ms=duration_ms,
             segments=segments,
         )
+
+    @staticmethod
+    def cache_dir_for(model_size: str) -> Optional[Path]:
+        """faster-whisper 모델의 HF 캐시 디렉토리 (다운로드 watcher 용).
+
+        실패 시 None — 디스크 크기 polling 비활성. 동작에 영향 없음.
+        """
+        try:
+            from huggingface_hub import constants
+            return (Path(constants.HF_HUB_CACHE)
+                    / f"models--Systran--faster-whisper-{model_size}")
+        except Exception:
+            return None
 
 
 # 프로세스 단일 Transcriber — 모델 한 번만 로드.

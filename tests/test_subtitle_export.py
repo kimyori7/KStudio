@@ -211,3 +211,107 @@ def test_remap_preserves_text():
     segs = [TranscriptSegment(start_ms=6000, end_ms=7000, text="안녕하세요")]
     out = remap_segments_for_cuts(segs, [(0, 2000), (5000, 10_000)])
     assert out[0].text == "안녕하세요"
+
+
+# ============================================================
+# SubtitleExportJob 진행 시그널 — Transcriber mock 으로 흐름 검증
+# 2026-05-20 사용자 요청: 다운로드 progress + 전사 progress + 실시간 자막.
+# ============================================================
+def _install_mock_transcriber(monkeypatch, segments_to_emit, duration_s=10.0):
+    """Transcriber.get_transcriber() 가 반환하는 인스턴스를 mock — 외부 Whisper 호출 없이
+    on_segment 콜백을 segments_to_emit 으로 시뮬레이션.
+    """
+    from screen_recorder.agent import transcript as transcript_mod
+    from screen_recorder.agent.transcript import Transcript
+
+    class _MockTranscriber:
+        def transcribe(self, video_path, model_size="base", language="ko",
+                       on_segment=None):
+            if on_segment is not None:
+                for seg in segments_to_emit:
+                    on_segment(seg, duration_s)
+            return Transcript(
+                source_hash="", model_size=model_size, language="ko",
+                duration_ms=int(duration_s * 1000), segments=list(segments_to_emit),
+            )
+
+        @staticmethod
+        def cache_dir_for(model_size):
+            return None   # 다운로드 watcher 비활성 — 캐시 검사 skip.
+
+    mock = _MockTranscriber()
+    monkeypatch.setattr(transcript_mod, "get_transcriber", lambda: mock)
+
+
+def test_job_emits_segment_ready_for_each_segment(qtbot, tmp_path, monkeypatch):
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    segs = [
+        TranscriptSegment(start_ms=0, end_ms=2000, text="안녕"),
+        TranscriptSegment(start_ms=2000, end_ms=4000, text="반갑"),
+    ]
+    _install_mock_transcriber(monkeypatch, segs, duration_s=4.0)
+
+    dst = tmp_path / "out.txt"
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(format="txt"),
+        dst_path=dst,
+    )
+    received: list = []
+    job.segment_ready.connect(lambda s, e, t: received.append((s, e, t)))
+    with qtbot.waitSignal(job.finished, timeout=2000):
+        job.start()
+    assert received == [(0, 2000, "안녕"), (2000, 4000, "반갑")]
+    assert dst.exists()
+
+
+def test_job_emits_transcribe_progress_per_segment(qtbot, tmp_path, monkeypatch):
+    """segment 끝점 / duration → % 계산."""
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    segs = [
+        TranscriptSegment(start_ms=0, end_ms=2500, text="a"),    # 25%
+        TranscriptSegment(start_ms=2500, end_ms=5000, text="b"),  # 50%
+        TranscriptSegment(start_ms=5000, end_ms=10_000, text="c"),  # 100%
+    ]
+    _install_mock_transcriber(monkeypatch, segs, duration_s=10.0)
+
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(format="srt"),
+        dst_path=tmp_path / "out.srt",
+    )
+    pcts: list = []
+    job.transcribe_progress.connect(pcts.append)
+    with qtbot.waitSignal(job.finished, timeout=2000):
+        job.start()
+    # 마지막은 finished 전에 100 한 번 더 emit (job._run 의 명시 emit).
+    assert pcts[:3] == [25, 50, 100]
+    assert pcts[-1] == 100
+
+
+def test_job_emits_phase_changes(qtbot, tmp_path, monkeypatch):
+    """모델 캐시되어 있으면 (cache_dir_for=None) downloading phase skip — transcribing/writing 만."""
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    segs = [TranscriptSegment(start_ms=0, end_ms=1000, text="x")]
+    _install_mock_transcriber(monkeypatch, segs, duration_s=1.0)
+
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(),
+        dst_path=tmp_path / "out.txt",
+    )
+    phases: list = []
+    job.phase_changed.connect(phases.append)
+    with qtbot.waitSignal(job.finished, timeout=2000):
+        job.start()
+    # cache_dir_for=None → downloading skip. loading + transcribing + writing 만.
+    assert "loading" in phases
+    assert "transcribing" in phases
+    assert "writing" in phases
+    assert "downloading" not in phases
