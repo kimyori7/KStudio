@@ -832,6 +832,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.save_as_requested.connect(self._on_file_save_as)
         self.menu_bar.export_requested.connect(self._on_export)
         self.menu_bar.export_video_requested.connect(self._on_export_video)
+        self.menu_bar.export_audio_requested.connect(self._on_export_audio)
         self.menu_bar.open_save_folder_requested.connect(self._open_save_folder)
         self.menu_bar.quit_requested.connect(self.close)
         self.menu_bar.preferences_requested.connect(self._open_preferences)
@@ -3186,6 +3187,99 @@ class MainWindow(QMainWindow):
         dialog.open_folder_requested.connect(self._open_in_explorer)
 
         # 오른쪽 하단 미니 진행 위젯 — 비모달이라 편집 계속 가능.
+        overlay = ExportProgressOverlay(self)
+        job.progress.connect(overlay.set_progress)
+        job.finished.connect(overlay.set_finished)
+        job.error.connect(overlay.set_error)
+        overlay.cancel_clicked.connect(job.cancel)
+        overlay.cancel_clicked.connect(dialog.close)
+        overlay.show_export()
+        self._export_overlay = overlay   # GC 방지
+
+        job.start()
+        dialog.show()
+
+    def _on_export_audio(self) -> None:
+        """현재 활성 영상 탭의 음성만 추출 — MP3/WAV + 채널/샘플링 설정 (2026-05-20).
+
+        흐름:
+        1. 활성 영상 탭 확인
+        2. AudioExportSettingsDialog 로 형식·채널·샘플링·비트레이트 입력
+        3. QFileDialog 로 저장 경로 — 확장자는 형식에 따라 자동
+        4. build_audio_export_args 로 ffmpeg argv 생성 (cut 적용)
+        5. ExportJob 으로 백그라운드 실행 + ExportDialog 진행 표시
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from .audio_export_dialog import AudioExportSettingsDialog
+        from .export_dialog import ExportDialog, ExportProgressOverlay
+        from ..encode.audio_export import (
+            build_audio_export_args, compute_audio_keep_intervals,
+        )
+        from ..encode.export_job import ExportJob
+
+        tab = self.tab_area.current_video_tab() if hasattr(self.tab_area, "current_video_tab") else None
+        if tab is None:
+            return
+        sidecar = tab._edit_controller.sidecar()
+        src_path = tab._source_path
+        main_duration = tab.player.duration_ms()
+        if main_duration <= 0:
+            QMessageBox.warning(self, "음성 내보내기", "영상 길이가 확정되지 않았습니다.")
+            return
+
+        # 1) 사이드카 → keep 구간 (cut 적용).
+        try:
+            audio_src, keep = compute_audio_keep_intervals(sidecar)
+        except (ValueError, NotImplementedError) as e:
+            QMessageBox.warning(self, "음성 내보내기", str(e))
+            return
+        # 결과 총 길이 — progress 분모.
+        total_ms = sum(e - s for s, e in keep)
+        if total_ms <= 0:
+            QMessageBox.warning(
+                self, "음성 내보내기",
+                "남는 음성 구간이 없습니다 (모든 구간이 cut 처리됨).",
+            )
+            return
+
+        # 2) 설정 다이얼로그.
+        settings_dlg = AudioExportSettingsDialog(parent=self)
+        if settings_dlg.exec() != QDialog.Accepted:
+            return
+        settings = settings_dlg.current_settings()
+        ext = settings_dlg.suggested_extension()
+
+        # 3) 저장 경로 — 기본은 원본 폴더의 _audio.{ext}.
+        default = Path(src_path).with_name(Path(src_path).stem + "_audio" + ext)
+        filter_label = "MP3 (*.mp3)" if ext == ".mp3" else "WAV (*.wav)"
+        dst, _ = QFileDialog.getSaveFileName(
+            self, "음성 파일 저장", str(default), filter_label,
+        )
+        if not dst:
+            return
+        dst = Path(dst)
+
+        # 4) ffmpeg argv.
+        argv = build_audio_export_args(
+            src_path=str(audio_src), keep_intervals=keep,
+            settings=settings, dst_path=str(dst),
+            ffmpeg_path=str(self.ffmpeg_path),
+        )
+
+        # 5) 백그라운드 실행 + 진행 표시 (영상 export 와 동일 패턴).
+        dialog = ExportDialog(total_duration_ms=total_ms, parent=self)
+        dialog.setWindowTitle("음성 내보내기")
+        job = ExportJob(
+            ffmpeg_path=self.ffmpeg_path,
+            argv=argv, png_paths=[], dst_path=dst,
+            total_duration_ms=total_ms,
+        )
+        job.progress.connect(dialog.set_progress)
+        job.finished.connect(dialog.set_finished)
+        job.error.connect(dialog.set_error)
+        dialog.cancel_requested.connect(job.cancel)
+        dialog.open_folder_requested.connect(self._open_in_explorer)
+
         overlay = ExportProgressOverlay(self)
         job.progress.connect(overlay.set_progress)
         job.finished.connect(overlay.set_finished)
