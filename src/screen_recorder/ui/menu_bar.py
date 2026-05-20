@@ -17,6 +17,7 @@ class KStudioMenuBar(QMenuBar):
     export_requested = Signal(str)        # "png" | "jpg" | "webp"
     export_video_requested = Signal()     # 영상 내보내기 (영상 모드 전용)
     export_audio_requested = Signal()     # 음성만 내보내기 (영상 모드 전용 — 2026-05-20)
+    export_subtitle_requested = Signal()  # 자막 내보내기 (Whisper, 영상 모드 전용 — 2026-05-20)
     open_save_folder_requested = Signal()
     quit_requested = Signal()
     # 편집
@@ -98,6 +99,12 @@ class KStudioMenuBar(QMenuBar):
         self.export_audio_action.setShortcut(QKeySequence("Ctrl+Alt+E"))
         self.export_audio_action.triggered.connect(self.export_audio_requested.emit)
         m_file.addAction(self.export_audio_action)
+
+        # 자막 내보내기 (2026-05-20) — Whisper 전사 → TXT/SRT.
+        self.export_subtitle_action = QAction(tr("자막 내보내기…"), self)
+        self.export_subtitle_action.setShortcut(QKeySequence("Ctrl+Alt+S"))
+        self.export_subtitle_action.triggered.connect(self.export_subtitle_requested.emit)
+        m_file.addAction(self.export_subtitle_action)
 
         m_file.addSeparator()
         self.open_folder_action = QAction(tr("저장 폴더 열기"), self)
@@ -222,6 +229,7 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
             mb.export_webp_action,
             mb.export_video_action,
             mb.export_audio_action,
+            mb.export_subtitle_action,
             mb.open_folder_action,
             mb.quit_action,
         ],

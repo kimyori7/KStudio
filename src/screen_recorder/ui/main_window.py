@@ -833,6 +833,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.export_requested.connect(self._on_export)
         self.menu_bar.export_video_requested.connect(self._on_export_video)
         self.menu_bar.export_audio_requested.connect(self._on_export_audio)
+        self.menu_bar.export_subtitle_requested.connect(self._on_export_subtitle)
         self.menu_bar.open_save_folder_requested.connect(self._open_save_folder)
         self.menu_bar.quit_requested.connect(self.close)
         self.menu_bar.preferences_requested.connect(self._open_preferences)
@@ -3291,6 +3292,83 @@ class MainWindow(QMainWindow):
 
         job.start()
         dialog.show()
+
+    def _on_export_subtitle(self) -> None:
+        """현재 활성 영상 탭의 음성을 Whisper 로 전사 → TXT/SRT 저장 (2026-05-20).
+
+        흐름:
+        1. 활성 영상 탭 확인
+        2. SubtitleExportSettingsDialog — 형식 (TXT/SRT) + Whisper 모델
+        3. 저장 경로 선택
+        4. SubtitleExportJob 백그라운드 실행 — Whisper 전사 + 파일 쓰기
+        5. 진행 표시 (indeterminate — Whisper 는 중간 progress 어려움)
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+        from .subtitle_export_dialog import SubtitleExportSettingsDialog
+        from ..encode.subtitle_export import SubtitleExportJob
+
+        tab = self.tab_area.current_video_tab() if hasattr(self.tab_area, "current_video_tab") else None
+        if tab is None:
+            return
+        src_path = tab._source_path
+
+        # 1) 다이얼로그 — 사용자 settings 의 모델 기본값 사용.
+        initial_model = getattr(self.app_settings.agent, "whisper_model_size", "base")
+        dlg = SubtitleExportSettingsDialog(initial_model=initial_model, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        settings = dlg.current_settings()
+        ext = dlg.suggested_extension()
+
+        # 2) 저장 경로 — 원본 옆 <basename>.txt|.srt.
+        default = Path(src_path).with_name(Path(src_path).stem + ext)
+        filter_label = "텍스트 (*.txt)" if ext == ".txt" else "SRT 자막 (*.srt)"
+        dst, _ = QFileDialog.getSaveFileName(
+            self, "자막 파일 저장", str(default), filter_label,
+        )
+        if not dst:
+            return
+        dst = Path(dst)
+
+        # 3) 사용자 settings 의 마지막 사용 모델 업데이트 (다음 호출 기본값).
+        try:
+            self.app_settings.agent.whisper_model_size = settings.model_size
+        except AttributeError:
+            pass   # AgentSettings 에 필드 없으면 무시 (방어적).
+
+        # 4) 진행 다이얼로그 (indeterminate). Whisper 는 중간 progress 어려워 spinner 만.
+        progress = QProgressDialog(
+            f"Whisper 전사 중… ({settings.model_size})\n"
+            "처음 사용하는 모델은 다운로드까지 포함되어 수 분 걸릴 수 있습니다.",
+            None, 0, 0, self,
+        )
+        progress.setWindowTitle("자막 내보내기")
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+
+        # 5) 백그라운드 job — finished/error 시 다이얼로그 닫고 결과 처리.
+        # sidecar 넘기면 cut 적용해 편집본 시간축으로 SRT timecode 재배치 (사용자 결정 2026-05-20).
+        sidecar = tab._edit_controller.sidecar()
+        job = SubtitleExportJob(
+            media_path=src_path, settings=settings, dst_path=dst, sidecar=sidecar,
+        )
+
+        def _on_done(saved_dst):
+            progress.close()
+            self._open_in_explorer(saved_dst)
+
+        def _on_err(msg):
+            progress.close()
+            QMessageBox.warning(self, "자막 내보내기", msg)
+
+        job.finished.connect(_on_done)
+        job.error.connect(_on_err)
+        self._subtitle_job = job   # GC 방지
+        job.start()
 
     def _open_in_explorer(self, path) -> None:
         """결과 파일을 탐색기에서 선택된 채로 열기."""
