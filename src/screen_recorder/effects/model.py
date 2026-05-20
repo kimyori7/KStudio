@@ -29,6 +29,10 @@ class Effect:
     out_ms: int
     id: str = field(default_factory=_new_id)
     track_idx: int = 0
+    # 2026-05-20 (사용자 요청): 개별 효과 ON/OFF — preview + export 모두 영향.
+    # False 면 그리지도 적용하지도 않음. UI 토글은 lane row 우클릭 메뉴 (같은 row 의
+    # 모든 효과를 일괄 변경) + 전체 토글은 Sidecar.effects_enabled.
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.in_ms < 0:

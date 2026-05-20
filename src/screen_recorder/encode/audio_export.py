@@ -86,8 +86,9 @@ def compute_audio_keep_intervals(sidecar: Sidecar) -> tuple[str, list[tuple[int,
 
     # 사이드카 cut 효과 — combined timeline ms 기준. single-source 면 combined ms ≈ src ms.
     # splice (in==out) 는 0폭이라 무시.
+    # 2026-05-20: active_effects() — 전체/개별 토글 OFF 인 cut 은 음성에도 적용 안 함.
     cuts = sorted(
-        ((int(e.in_ms), int(e.out_ms)) for e in sidecar.effects
+        ((int(e.in_ms), int(e.out_ms)) for e in sidecar.active_effects()
          if e.type == "cut" and e.out_ms > e.in_ms),
         key=lambda x: x[0],
     )

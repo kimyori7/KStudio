@@ -104,6 +104,8 @@ class BrollLane(EffectLane):
                 p.setPen(_TEXT_COLOR)
                 p.drawText(x1 + 4, row_top, x2 - x1 - 8, self.TRACK_ROW_HEIGHT,
                            Qt.AlignVCenter | Qt.AlignLeft, self._label_for(eff))
+        # 2026-05-20: 비활성 row dim overlay.
+        self._paint_disabled_overlay(p)
 
     # ---------- mouse ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:

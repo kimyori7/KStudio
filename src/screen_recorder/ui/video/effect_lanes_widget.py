@@ -60,6 +60,9 @@ class EffectLanesWidget(QWidget):
     """
 
     request_add = Signal(str, int, int)    # (effect_type, ms, track_idx) — lane 우클릭 add
+    # 2026-05-20 (사용자 요청): lane row 의 모든 효과의 enabled 일괄 토글.
+    # (effect_type, track_idx, new_enabled) — main_window 가 받아 edit_controller 위임.
+    request_toggle_row_enabled = Signal(str, int, bool)
     effect_selected = Signal(object)       # Effect | None — Stage 3+
     effect_changed = Signal(object)        # Effect — Stage 3+
     effect_deleted = Signal(str)           # effect_id — Stage 3+
@@ -214,6 +217,8 @@ class EffectLanesWidget(QWidget):
             lambda track_idx, t=effect_type:
             self._on_remove_lane_requested(t, track_idx)
         )
+        # 2026-05-20: row 별 활성/비활성 토글 — widget 가 자체 시그널로 다시 emit (외부 wiring).
+        lane.request_toggle_row_enabled.connect(self.request_toggle_row_enabled.emit)
         lane.effect_selected.connect(self.effect_selected.emit)
         lane.effect_changed.connect(self.effect_changed.emit)
         lane.effect_deleted.connect(self.effect_deleted.emit)

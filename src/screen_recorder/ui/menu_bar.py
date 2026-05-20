@@ -26,6 +26,8 @@ class KStudioMenuBar(QMenuBar):
     preferences_requested = Signal()
     toggle_edit_mode_requested = Signal()
     open_sidecar_dir_requested = Signal()
+    # 2026-05-20 (사용자 요청): 사이드카의 effects_enabled 토글 — 전체 효과 ON/OFF.
+    toggle_effects_enabled_requested = Signal(bool)
     # 이미지
     background_remove_requested = Signal()
     image_scale_requested = Signal()
@@ -133,6 +135,16 @@ class KStudioMenuBar(QMenuBar):
         self.toggle_edit_mode_action.triggered.connect(self.toggle_edit_mode_requested.emit)
         m_edit.addAction(self.toggle_edit_mode_action)
 
+        # 2026-05-20 (사용자 요청): 전체 효과 ON/OFF 체크 메뉴.
+        # 체크 상태는 main_window 가 활성 영상 탭의 사이드카에 따라 동기화.
+        self.toggle_effects_enabled_action = QAction(tr("효과 적용"), self)
+        self.toggle_effects_enabled_action.setCheckable(True)
+        self.toggle_effects_enabled_action.setChecked(True)
+        self.toggle_effects_enabled_action.toggled.connect(
+            self.toggle_effects_enabled_requested.emit
+        )
+        m_edit.addAction(self.toggle_effects_enabled_action)
+
         self.open_sidecar_dir_action = QAction(tr("사이드카 폴더 열기"), self)
         self.open_sidecar_dir_action.triggered.connect(self.open_sidecar_dir_requested.emit)
         m_edit.addAction(self.open_sidecar_dir_action)
@@ -237,6 +249,7 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
             mb.undo_action,
             mb.redo_action,
             mb.toggle_edit_mode_action,
+            mb.toggle_effects_enabled_action,
             mb.open_sidecar_dir_action,
             mb.preferences_action,
         ],

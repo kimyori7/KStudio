@@ -163,7 +163,8 @@ class BrollPipPlayer(QObject):
     def _find_active_broll(self, combined_ms: int) -> Optional[BrollEffect]:
         if self._sidecar is None:
             return None
-        for eff in self._sidecar.effects:
+        # 2026-05-20: 전체/개별 토글 OFF 면 broll PIP 재생 안 함.
+        for eff in self._sidecar.active_effects():
             if not isinstance(eff, BrollEffect):
                 continue
             if eff.placement != "pip" or eff.pip is None:

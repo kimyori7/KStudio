@@ -91,6 +91,8 @@ class SpeedLane(EffectLane):
                 p.drawText(x1 + 4, 0, x2 - x1 - 8, self.height(),
                            Qt.AlignVCenter | Qt.AlignLeft, label)
                 p.setClipping(False)
+        # 2026-05-20: 비활성 row 위에 어두운 overlay (전체 lane 공통 헬퍼).
+        self._paint_disabled_overlay(p)
 
     # ---------- mouse ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:

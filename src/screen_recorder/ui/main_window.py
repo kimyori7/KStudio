@@ -840,6 +840,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.undo_requested.connect(self._on_undo)
         self.menu_bar.redo_requested.connect(self._on_redo)
         self.menu_bar.toggle_edit_mode_requested.connect(self._toggle_edit_mode_via_menu)
+        self.menu_bar.toggle_effects_enabled_requested.connect(self._on_toggle_effects_enabled)
         self.menu_bar.open_sidecar_dir_requested.connect(self._open_sidecar_dir)
         self.menu_bar.background_remove_requested.connect(self._on_remove_background)
         self.menu_bar.image_scale_requested.connect(self._on_image_scale)
@@ -3293,6 +3294,35 @@ class MainWindow(QMainWindow):
         job.start()
         dialog.show()
 
+    def _sync_effects_enabled_menu(self) -> None:
+        """활성 영상 탭의 사이드카 effects_enabled → 메뉴 체크 상태 (2026-05-20).
+
+        탭 전환 / 사이드카 갱신 후 호출. 시그널 발화 방지를 위해 blockSignals.
+        """
+        tab = self.tab_area.current_video_tab() if hasattr(self.tab_area, "current_video_tab") else None
+        if tab is None:
+            return
+        action = getattr(self.menu_bar, "toggle_effects_enabled_action", None)
+        if action is None:
+            return
+        enabled = bool(tab._edit_controller.sidecar().effects_enabled)
+        action.blockSignals(True)
+        try:
+            action.setChecked(enabled)
+        finally:
+            action.blockSignals(False)
+
+    def _on_toggle_effects_enabled(self, checked: bool) -> None:
+        """편집 → '효과 적용' 체크 토글 — 활성 영상 탭의 사이드카에 반영 (2026-05-20).
+
+        사용자가 체크 해제 → 사이드카.effects_enabled=False → preview/export 모두 효과 무시.
+        체크 → 다시 ON. 체크 상태 동기화는 활성 탭 전환 시 _sync_effects_enabled_menu 에서.
+        """
+        tab = self.tab_area.current_video_tab() if hasattr(self.tab_area, "current_video_tab") else None
+        if tab is None:
+            return
+        tab._edit_controller.set_effects_enabled(bool(checked))
+
     def _on_export_subtitle(self) -> None:
         """현재 활성 영상 탭의 음성을 Whisper 로 전사 → TXT/SRT 저장 (2026-05-20).
 
@@ -3969,6 +3999,8 @@ class MainWindow(QMainWindow):
         cur_mode = self.mode_controller.mode()
         if eid is not None and cur_mode is not None:
             self._last_entry_per_mode[cur_mode] = eid
+        # 2026-05-20: 활성 영상 탭의 사이드카에 맞춰 '효과 적용' 체크 메뉴 동기화.
+        self._sync_effects_enabled_menu()
 
         tab = self._current_screenshot_tab()
         if tab is None:

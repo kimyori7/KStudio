@@ -252,13 +252,16 @@ class PreviewOverlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
-        for eff in self._sidecar.effects:
+        # 2026-05-20: 전체 토글 (sidecar.effects_enabled) + 개별 토글 (eff.enabled) 둘 다
+        # 통과한 효과만 그림. 사이드카 한 곳에서 필터링 — preview/export 일관성 보장.
+        active = self._sidecar.active_effects()
+        for eff in active:
             if eff.type != "caption":
                 continue
             self._draw_caption(p, eff)
 
         # 화살표 — caption 과 같은 painter scale 패턴 (source 좌표계).
-        for eff in self._sidecar.effects:
+        for eff in active:
             if eff.type != "arrow":
                 continue
             self._draw_arrow_effect(p, eff)
@@ -267,7 +270,7 @@ class PreviewOverlay(QWidget):
         # v1: 실제 픽셀 줌은 export 에서만 적용. 미리보기는 사각형으로 영역 표시.
         # Phase 19.4: preview=True (실제 화면 줌인 적용) 이면 가이드 박스 자체는 숨김 —
         # 화면이 이미 줌인되어 있어 외곽선이 보이면 시각적 혼동.
-        for eff in self._sidecar.effects:
+        for eff in active:
             if not isinstance(eff, ZoomEffect):
                 continue
             if not (eff.in_ms <= self._position_ms < eff.out_ms):
@@ -280,7 +283,7 @@ class PreviewOverlay(QWidget):
         # 이전 Stage 4 (항상 미리보기) 결정은 뒤집힘 — 사용자가 "곁들임 영상이 없는 구간에서도
         # 테두리가 떠 있다" 며 반전 요구. 시간 범위 안에 들어가면 가이드 외곽선이 더 진한
         # 강조 색으로 바뀌어 "지금 재생 중" 임을 시각화 (강조 처리는 _draw_broll_guide 내부).
-        for eff in self._sidecar.effects:
+        for eff in active:
             if not isinstance(eff, BrollEffect):
                 continue
             if eff.placement != "pip" or eff.pip is None:

@@ -195,6 +195,8 @@ class VideoTimeline(QWidget):
     seek_request = Signal(int)              # ms — slider/trim 어디서든 시크
     trim_changed = Signal(int, int)         # (in_ms, out_ms) — drag 후 (swap 적용)
     request_add = Signal(str, int, int)     # (effect_type, ms, track_idx)
+    # 2026-05-20: (effect_type, track_idx, new_enabled) — row 별 활성/비활성 토글.
+    request_toggle_row_enabled = Signal(str, int, bool)
     effect_selected = Signal(object)        # Effect | None
     effect_changed = Signal(object)         # Effect
     effect_deleted = Signal(str)            # effect_id
@@ -289,6 +291,9 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.in_changed.connect(self._on_trim_in_changed)
         self.trim_marker_lane.out_changed.connect(self._on_trim_out_changed)
         self.effect_lanes.request_add.connect(self.request_add.emit)
+        self.effect_lanes.request_toggle_row_enabled.connect(
+            self.request_toggle_row_enabled.emit
+        )
         self.effect_lanes.effect_selected.connect(self.effect_selected.emit)
         self.effect_lanes.effect_changed.connect(self.effect_changed.emit)
         self.effect_lanes.effect_deleted.connect(self.effect_deleted.emit)

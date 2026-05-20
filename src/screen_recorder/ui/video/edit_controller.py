@@ -143,20 +143,43 @@ class EditController(QObject):
         반환값: 항상 True — track_idx 끝까지 다 차도 0..N 마지막 + 1 로 새 lane.
         같은 type 의 시간 겹침을 거부하지 않음 — 동시에 여러 caption/arrow 등 허용.
         """
-        if overlaps_existing(self._sidecar.effects, effect):
+        effect = self._assign_free_track_idx(self._sidecar.effects, effect)
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.effects.append(effect)
+        self.update_sidecar(new_sc)
+        return True
+
+    def add_effects(self, effects) -> int:
+        """효과 여러 개를 한 history entry 로 추가.
+
+        자동편집처럼 수십 개 효과를 한 번에 추가하는 경로에서 Ctrl+Z 한 번으로
+        전체를 되돌릴 수 있게 한다. 각 효과의 track_idx 자동 분리는 add_effect 와
+        같은 규칙을 순차 적용한다.
+        """
+        if not effects:
+            return 0
+        new_sc = copy.deepcopy(self._sidecar)
+        added = 0
+        for effect in effects:
+            placed = self._assign_free_track_idx(new_sc.effects, effect)
+            new_sc.effects.append(placed)
+            added += 1
+        self.update_sidecar(new_sc)
+        return added
+
+    @staticmethod
+    def _assign_free_track_idx(existing, effect):
+        if overlaps_existing(existing, effect):
             from dataclasses import replace
             # 같은 type 의 track_idx 중 candidate.in_ms~out_ms 겹치지 않는 가장 작은 값.
             ti = 0
             while True:
                 ti += 1
                 trial = replace(effect, track_idx=ti)
-                if not overlaps_existing(self._sidecar.effects, trial):
+                if not overlaps_existing(existing, trial):
                     effect = trial
                     break
-        new_sc = copy.deepcopy(self._sidecar)
-        new_sc.effects.append(effect)
-        self.update_sidecar(new_sc)
-        return True
+        return effect
 
     def update_effect(self, effect) -> bool:
         """기존 효과를 같은 id 로 교체. 없으면 no-op.
@@ -184,6 +207,46 @@ class EditController(QObject):
             return False
         new_sc = copy.deepcopy(self._sidecar)
         new_sc.effects = new_effects
+        self.update_sidecar(new_sc)
+        return True
+
+    # ---------- 2026-05-20: 효과 활성/비활성 토글 ----------
+    def set_effects_enabled(self, enabled: bool) -> bool:
+        """전체 효과 ON/OFF — Sidecar.effects_enabled 변경 + history + autosave.
+
+        사용자가 메뉴에서 '효과 적용' 체크 토글했을 때 호출. False 면 preview / export
+        모두 효과 무시 (active_effects() 가 빈 리스트 반환). 반환: 실제로 바뀌었으면
+        True, no-op 이면 False.
+        """
+        if bool(self._sidecar.effects_enabled) == bool(enabled):
+            return False
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.effects_enabled = bool(enabled)
+        self.update_sidecar(new_sc)
+        return True
+
+    def set_row_enabled(self, effect_type: str, track_idx: int, enabled: bool) -> bool:
+        """특정 lane row (effect_type + track_idx) 의 모든 효과의 enabled 일괄 변경.
+
+        사용자가 lane 우클릭 메뉴 '이 라인 활성/비활성' 클릭했을 때. 같은 type + 같은
+        track_idx 의 효과들을 한 번에 변경 — undo 1번으로 되돌릴 수 있도록 단일 history.
+        반환: 실제로 바뀐 효과가 있었으면 True.
+        """
+        from dataclasses import replace
+        new_effs = []
+        changed = False
+        for e in self._sidecar.effects:
+            if (e.type == effect_type
+                    and int(getattr(e, "track_idx", 0)) == int(track_idx)
+                    and bool(getattr(e, "enabled", True)) != bool(enabled)):
+                new_effs.append(replace(e, enabled=bool(enabled)))
+                changed = True
+            else:
+                new_effs.append(e)
+        if not changed:
+            return False
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.effects = new_effs
         self.update_sidecar(new_sc)
         return True
 

@@ -37,6 +37,22 @@ class Sidecar:
     # 레거시 (v1) — Stage D 에서 제거.
     trim: Trim = field(default_factory=Trim)
     effects: list[Effect] = field(default_factory=list)
+    # 2026-05-20 (사용자 요청): 전체 효과 ON/OFF 토글.
+    # False 면 모든 effect 의 enabled 값과 무관하게 preview + export 무시.
+    # 영상별 (사이드카) 영속화 — 영상 다시 열어도 OFF 상태 유지.
+    effects_enabled: bool = True
+
+    def active_effects(self) -> list[Effect]:
+        """전체 + 개별 토글 둘 다 통과한 효과들. preview / export 의 단일 진입점.
+
+        2026-05-20: 사용자가 effects_enabled=False 로 전체 OFF 했거나 특정 효과의
+        enabled=False 면 그 효과는 *어디서도* (preview overlay / playback skip /
+        export pipeline / audio / subtitle) 나타나지 않아야. 단일 헬퍼로 일관성 보장 —
+        새 preview/export 코드는 self.effects 대신 self.active_effects() 사용.
+        """
+        if not self.effects_enabled:
+            return []
+        return [e for e in self.effects if getattr(e, "enabled", True)]
 
     # ---- serialize ----
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +66,7 @@ class Sidecar:
             # "재시작 후 편집 사라짐" 회귀의 진짜 원인.
             "trim": _to_plain(self.trim),
             "effects": [_effect_to_dict(e) for e in self.effects],
+            "effects_enabled": bool(self.effects_enabled),
         }
 
     @classmethod
@@ -85,6 +102,8 @@ class Sidecar:
             trim = Trim(in_ms=0, out_ms=0)
         eff_raw = d.get("effects") or []
         effects = [_effect_from_dict(e) for e in eff_raw if isinstance(e, dict)]
+        # 2026-05-20: 신규 필드 effects_enabled (전체 토글). 누락 = True (이전 사이드카 호환).
+        effects_enabled = bool(d.get("effects_enabled", True))
         return cls(
             version=CURRENT_VERSION,
             source_path=str(d.get("source_path", "")),
@@ -92,6 +111,7 @@ class Sidecar:
             video_track=track,
             trim=trim,
             effects=effects,
+            effects_enabled=effects_enabled,
         )
 
 

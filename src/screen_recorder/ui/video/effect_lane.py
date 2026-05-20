@@ -37,6 +37,9 @@ class EffectLane(QWidget):
     # "이 라인 지우기" — track_idx 함께 emit. 효과가 있는 row 면 그 row 의 효과들도
     # 삭제 (effect_lanes_widget이 effect_deleted 로 전파). 빈 row 면 row 자체만 줄임.
     request_remove_lane = Signal(int)
+    # 2026-05-20 (사용자 요청): lane row 의 모든 효과의 enabled 일괄 토글.
+    # (effect_type, track_idx, new_enabled) — effect_lanes_widget 이 받아 edit_controller 위임.
+    request_toggle_row_enabled = Signal(str, int, bool)
     effect_selected = Signal(object)    # Effect | None — 막대 클릭 (Stage 3+ 에서 사용)
     effect_changed = Signal(object)     # Effect — 막대 드래그/길이 조정 (Stage 3+)
     effect_deleted = Signal(str)        # effect_id — Delete 키 (Stage 3+)
@@ -274,6 +277,22 @@ class EffectLane(QWidget):
             parent.populate_add_submenu(other_menu, ms=ms, exclude_type=None)
 
         menu.addSeparator()
+        # 2026-05-20 (사용자 요청): 이 row 의 모든 효과 활성/비활성 토글.
+        # 효과가 있는 row 에서만 표시 — 빈 row 면 의미 없음.
+        row_effects = [
+            e for e in self._effects
+            if int(getattr(e, "track_idx", 0)) == int(track_idx)
+        ]
+        if row_effects:
+            all_disabled = all(not bool(getattr(e, "enabled", True)) for e in row_effects)
+            toggle_label = "이 라인 활성화" if all_disabled else "이 라인 비활성화"
+            toggle_action = QAction(toggle_label, menu)
+            toggle_action.triggered.connect(
+                lambda _checked=False, ti=track_idx, new_on=all_disabled:
+                self.request_toggle_row_enabled.emit(self._effect_type, ti, new_on)
+            )
+            menu.addAction(toggle_action)
+
         # 3. 라인 지우기 — type 라벨 명시해 어떤 lane 인지 한눈에 (사용자 보고 2026-05-13).
         # header_label 우선, 없으면 effect_type 그대로.
         type_label = self._header_label or self._effect_type
@@ -283,6 +302,33 @@ class EffectLane(QWidget):
         )
         menu.addAction(remove_action)
         menu.popup(global_pos)
+
+    # ---------- 2026-05-20: 비활성 row 시각 dim ----------
+    def _paint_disabled_overlay(self, p: QPainter) -> None:
+        """비활성 row 위에 반투명 어두운 overlay — 사용자가 OFF 인지 한눈에 식별.
+
+        같은 track_idx 의 모든 효과가 enabled=False 면 그 row 전체를 dim.
+        각 자식 lane 의 paintEvent 끝에 호출.
+        """
+        # row 별 효과 묶음.
+        by_row: dict[int, list] = {}
+        for e in self._effects:
+            ti = int(getattr(e, "track_idx", 0))
+            by_row.setdefault(ti, []).append(e)
+        if not by_row:
+            return
+        disabled_rows = [
+            ti for ti, effs in by_row.items()
+            if effs and all(not bool(getattr(e, "enabled", True)) for e in effs)
+        ]
+        if not disabled_rows:
+            return
+        body_x = _HEADER_WIDTH
+        body_w = self.width() - _HEADER_WIDTH
+        overlay = QColor(0, 0, 0, 130)   # 검은 반투명 — 효과 막대 위에 덮어 dim.
+        for ti in disabled_rows:
+            y = self._row_y_top(ti)
+            p.fillRect(body_x, y, body_w, _TRACK_ROW_HEIGHT, overlay)
 
     # ---------- public helpers (페인트/hit 외부 노출) ----------
     TRACK_ROW_HEIGHT = _TRACK_ROW_HEIGHT

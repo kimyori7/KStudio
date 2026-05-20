@@ -91,6 +91,8 @@ class ZoomLane(EffectLane):
                 label = f"⊕ {eff.start.scale:g}×"
                 p.drawText(x1 + 4, 0, x2 - x1 - 8, self.height(),
                            Qt.AlignVCenter | Qt.AlignLeft, label)
+        # 2026-05-20: 비활성 row dim overlay.
+        self._paint_disabled_overlay(p)
 
     # ---------- mouse ----------
     def mousePressEvent(self, event: QMouseEvent) -> None:

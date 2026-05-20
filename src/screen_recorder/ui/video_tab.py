@@ -244,6 +244,10 @@ class VideoTab(QWidget):
         self.timeline.effect_selected.connect(self._on_effect_selected)
         self.timeline.effect_changed.connect(self._edit_controller.update_effect)
         self.timeline.effect_deleted.connect(self._edit_controller.remove_effect)
+        # 2026-05-20 (사용자 요청): row 별 활성/비활성 토글 — edit_controller 가 history + autosave 처리.
+        self.timeline.request_toggle_row_enabled.connect(
+            self._edit_controller.set_row_enabled
+        )
         # Stage B: VideoTrackLane 시그널들.
         track = self.timeline.video_track_lane
         track.request_split.connect(self._edit_controller.split_segment)
@@ -1045,7 +1049,8 @@ class VideoTab(QWidget):
         Phase 19.5 hotfix6: 고배속 (5×) 에서 이 핸들러가 매 position tick 마다 발화함.
         zoom 효과가 없으면 즉시 종료해 import + 전체 effects 순회를 회피.
         """
-        effects = self.sidecar().effects
+        # 2026-05-20: active_effects() — 전체/개별 토글 OFF 면 zoom transform 해제.
+        effects = self.sidecar().active_effects()
         if not any(getattr(e, "type", "") == "zoom" for e in effects):
             self.player.set_zoom_preview(None)
             return
@@ -1114,7 +1119,8 @@ class VideoTab(QWidget):
         도달 시점에 다시 매치되지 않음 — 안전.
         """
         from ..effects.types.cut import find_cut_skip_target
-        target = find_cut_skip_target(self.sidecar().effects, ms)
+        # 2026-05-20: active_effects() — 전체/개별 토글 OFF 면 skip 안 함.
+        target = find_cut_skip_target(self.sidecar().active_effects(), ms)
         if target is None:
             return
         # 자기 자신을 다시 트리거 안 하도록 seek 만 — 정상 재생 흐름은 SegmentPlaybackController
@@ -1157,7 +1163,8 @@ class VideoTab(QWidget):
         """
         if not self._speed_effects_enabled:
             return
-        effects = self.sidecar().effects
+        # 2026-05-20: active_effects() — 전체/개별 토글 OFF 면 rate 1.0 으로 복원.
+        effects = self.sidecar().active_effects()
         if not any(getattr(e, "type", "") == "speed" for e in effects):
             if self._active_speed_id is not None:
                 self.player.set_playback_rate(1.0)

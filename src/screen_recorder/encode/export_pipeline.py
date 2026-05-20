@@ -240,16 +240,19 @@ def build_export_args(
             )
 
     # 0) 미지원 효과 검증
-    for e in sidecar.effects:
+    # 2026-05-20: active_effects() — 사용자가 OFF 한 효과는 export 도 제외.
+    # 비활성 효과의 미지원 type 도 검사 skip (어차피 export 안 함).
+    effects_active = sidecar.active_effects()
+    for e in effects_active:
         if e.type not in _SUPPORTED_TYPES:
             raise NotImplementedError(f"{e.type!r} effect export not implemented yet")
 
-    cuts = [e for e in sidecar.effects if isinstance(e, CutEffect)]
-    captions = [e for e in sidecar.effects if isinstance(e, CaptionEffect)]
-    speeds = [e for e in sidecar.effects if isinstance(e, SpeedEffect)]
-    zooms = [e for e in sidecar.effects if isinstance(e, ZoomEffect)]
-    brolls = [e for e in sidecar.effects if isinstance(e, BrollEffect)]
-    arrows = [e for e in sidecar.effects if isinstance(e, ArrowEffect)]
+    cuts = [e for e in effects_active if isinstance(e, CutEffect)]
+    captions = [e for e in effects_active if isinstance(e, CaptionEffect)]
+    speeds = [e for e in effects_active if isinstance(e, SpeedEffect)]
+    zooms = [e for e in effects_active if isinstance(e, ZoomEffect)]
+    brolls = [e for e in effects_active if isinstance(e, BrollEffect)]
+    arrows = [e for e in effects_active if isinstance(e, ArrowEffect)]
 
     # 0.7) broll v1 제약 — placement / audio_mix / 다른 효과와의 결합 검증.
     if brolls:

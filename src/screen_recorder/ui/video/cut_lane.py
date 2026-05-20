@@ -102,6 +102,8 @@ class CutLane(EffectLane):
                 self._paint_range_with_insert(p, x1, x2, eff, selected)
             else:
                 self._paint_range_no_insert(p, x1, x2, selected)
+        # 2026-05-20: 비활성 row dim overlay.
+        self._paint_disabled_overlay(p)
 
     def _paint_splice(self, p: QPainter, x: int, selected: bool) -> None:
         pen = QPen(_SPLICE_BORDER)
