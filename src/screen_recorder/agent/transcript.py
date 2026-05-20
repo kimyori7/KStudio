@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -37,6 +38,136 @@ from typing import Any, Optional
 from ..effects.sidecar_store import _safe_filename, compute_video_hash
 
 _log = logging.getLogger(__name__)
+
+
+def _register_nvidia_pip_dll_dirs() -> list[str]:
+    """`pip install nvidia-cublas-cu12 nvidia-cudnn-cu12` 로 깔린 DLL 을 Windows 가
+    찾을 수 있게 검색 경로에 추가.
+
+    pip 패키지의 DLL 은 site-packages/nvidia/<lib>/bin/ 에 깔리는데, Windows 의
+    LoadLibrary 는 site-packages 를 자동 검색하지 않음. PyTorch 는 import 시
+    자동으로 등록하지만 ctranslate2 는 안 함. KStudio 부팅 시 한 번 등록해
+    `pip install` 만으로 GPU 가속이 동작하도록.
+
+    *어떻게 nvidia 폴더를 찾는가:*
+    1차 — `import nvidia` 후 `Path(nvidia.__file__).parent` (가장 견고: 실제 import
+    가능한 위치를 OS sys.path 가 알려줌).
+    2차 폴백 — `sysconfig.get_paths()['purelib']/nvidia` (1차 실패 시 — namespace
+    pkg `__init__.py` 부재 등의 케이스 대비).
+
+    Returns: 등록된 디렉토리 경로 list (테스트/디버그 용).
+    """
+    if sys.platform != "win32":
+        _log.debug("Transcriber: non-Windows — DLL 등록 skip")
+        return []
+
+    nvidia_root: Optional[Path] = None
+    # 1차: import nvidia
+    try:
+        import nvidia  # type: ignore[import-not-found]
+        f = getattr(nvidia, "__file__", None)
+        if f:
+            nvidia_root = Path(f).parent
+        else:
+            # namespace pkg — __path__ 첫 항목 사용.
+            paths = getattr(nvidia, "__path__", None)
+            if paths:
+                nvidia_root = Path(list(paths)[0])
+    except ImportError as e:
+        _log.info("Transcriber: nvidia 패키지 import 실패 (%s) — GPU 가속 미설치", e)
+    except Exception:
+        _log.exception("Transcriber: nvidia 패키지 위치 감지 실패")
+
+    # 2차 폴백: sysconfig
+    if nvidia_root is None or not nvidia_root.exists():
+        try:
+            import sysconfig
+            purelib = sysconfig.get_paths().get("purelib")
+            if purelib:
+                cand = Path(purelib) / "nvidia"
+                if cand.exists():
+                    nvidia_root = cand
+        except Exception:
+            _log.exception("Transcriber: sysconfig 폴백 실패")
+
+    if nvidia_root is None or not nvidia_root.exists():
+        _log.info("Transcriber: nvidia 폴더 못 찾음 — GPU 가속 미설치 가정")
+        return []
+
+    _log.info("Transcriber: nvidia 패키지 루트 = %s", nvidia_root)
+
+    registered: list[str] = []
+    for sub in nvidia_root.iterdir():
+        if not sub.is_dir():
+            continue
+        bin_dir = sub / "bin"
+        if bin_dir.exists():
+            try:
+                os.add_dll_directory(str(bin_dir))
+                registered.append(str(bin_dir))
+            except (OSError, AttributeError) as e:
+                _log.warning("Transcriber: add_dll_directory(%s) 실패: %s", bin_dir, e)
+    _log.info(
+        "Transcriber: NVIDIA pip 패키지 DLL 경로 등록 — %d 개: %s",
+        len(registered), registered,
+    )
+    return registered
+
+
+# 모듈 import 시 한 번만 — faster_whisper / ctranslate2 가 DLL 로딩 시도 전.
+_NVIDIA_DLL_DIRS = _register_nvidia_pip_dll_dirs()
+
+
+# pip 패키지 이름 — 1-클릭 설치 다이얼로그 + 상태 판정에서 공통 사용.
+NVIDIA_PIP_PACKAGES = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
+
+
+def nvidia_pip_packages_installed() -> bool:
+    """nvidia-cublas-cu12 / nvidia-cudnn-cu12 가 site-packages 에 깔려 있는지.
+
+    설치 후 KStudio 재시작 안 한 상태에서도 True 반환 — 디스크 검사. ctypes 로
+    `cublas64_12.dll` 로딩 가능한지는 `_cuda_runtime_available()` 가 별도 판정.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import sysconfig
+        purelib = sysconfig.get_paths().get("purelib")
+    except Exception:
+        return False
+    if not purelib:
+        return False
+    nvidia = Path(purelib) / "nvidia"
+    if not nvidia.exists():
+        return False
+    # 두 패키지 모두의 bin/ 디렉토리 존재 + 안에 DLL 한 개 이상.
+    cublas_bin = nvidia / "cublas" / "bin"
+    cudnn_bin = nvidia / "cudnn" / "bin"
+    return (cublas_bin.exists() and any(cublas_bin.glob("*.dll"))
+            and cudnn_bin.exists() and any(cudnn_bin.glob("*.dll")))
+
+
+def gpu_acceleration_status() -> str:
+    """현재 GPU 가속 상태 — UI 메뉴 라벨 + 설치 다이얼로그 분기 용.
+
+    반환값:
+    - 'active': cuBLAS DLL 로딩 OK → 자막 export 가 GPU 사용 가능.
+    - 'installed_pending_restart': nvidia pip 패키지는 깔려 있지만 DLL 검색은 아직
+       못 잡음 (모듈 import 후 add_dll_directory 가 효과 없는 경우 — 재시작 필요).
+    - 'not_installed': nvidia pip 패키지도 NVIDIA Toolkit 도 없음.
+    - 'no_gpu': NVIDIA GPU 자체가 없음 (ctranslate2.get_cuda_device_count() == 0).
+    """
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() <= 0:
+            return "no_gpu"
+    except Exception:
+        return "no_gpu"
+    if _cuda_runtime_available():
+        return "active"
+    if nvidia_pip_packages_installed():
+        return "installed_pending_restart"
+    return "not_installed"
 
 
 TRANSCRIPT_EXT = ".transcript.json"
@@ -136,6 +267,39 @@ def save_transcript(path: Path, t: Transcript) -> None:
     os.replace(tmp, path)
 
 
+# CUDA 추론 실패 메시지에서 찾을 키워드 — 발견 시 CPU 폴백.
+_CUDA_ERROR_KEYWORDS = ("cublas", "cudnn", "cuda", "gpu", "cu_")
+
+
+def _cuda_runtime_available() -> bool:
+    """faster-whisper / ctranslate2 가 필요로 하는 cuBLAS DLL 로딩 가능 여부.
+
+    Windows: cublas64_12.dll (CUDA 12) 또는 cublas64_11.dll (CUDA 11).
+    Linux: libcublas.so.12 / .11. cuDNN 까지는 사전 검사 어려움 (DLL 이름 다양) —
+    cuBLAS 만 확인해도 흔한 케이스(런타임 미설치) 거의 차단.
+    """
+    import ctypes
+    import sys
+    candidates = (("cublas64_12.dll", "cublas64_11.dll")
+                  if sys.platform == "win32"
+                  else ("libcublas.so.12", "libcublas.so.11", "libcublas.so"))
+    for name in candidates:
+        try:
+            ctypes.CDLL(name)
+            return True
+        except OSError:
+            continue
+        except Exception:
+            return False
+    return False
+
+
+def _is_cuda_runtime_error(exc: BaseException) -> bool:
+    """예외 메시지에 CUDA/cuBLAS/cuDNN 키워드 포함 여부."""
+    msg = str(exc).lower()
+    return any(k in msg for k in _CUDA_ERROR_KEYWORDS)
+
+
 class Transcriber:
     """faster-whisper 래퍼 — 모델 lazy load + 캐시.
 
@@ -145,8 +309,31 @@ class Transcriber:
     def __init__(self) -> None:
         self._model: Any = None
         self._model_size: Optional[str] = None
-        self._device: str = "cpu"             # GPU 지원은 별도 결정 거리.
-        self._compute_type: str = "int8"      # CPU int8 양자화 — 빠르고 정확도 양호.
+        # 2026-05-20: CUDA 자동 감지. large-v3 등 큰 모델에서 CPU 만 쓰면 매우 느림.
+        self._device, self._compute_type = self._detect_best_device()
+
+    @staticmethod
+    def _detect_best_device() -> tuple[str, str]:
+        """가용 가속기 자동 감지.
+
+        - CUDA GPU **+ cuBLAS DLL 로딩 가능** → ('cuda', 'float16').
+        - 아니면 ('cpu', 'int8') — 양자화로 CPU 에서 그나마 빠름.
+
+        ctranslate2 의 lazy load 특성상 cuBLAS/cuDNN 누락은 모델 생성/추론 시점에야
+        드러남. 사전 ctypes 시도로 미리 판정해 사용자 첫 시도가 실패하는 것을 막음.
+        """
+        try:
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() <= 0:
+                return "cpu", "int8"
+        except Exception as e:
+            _log.debug("Transcriber: CUDA 감지 실패, CPU 사용 (%s)", e)
+            return "cpu", "int8"
+        if not _cuda_runtime_available():
+            _log.info("Transcriber: CUDA 디바이스 있지만 cuBLAS 런타임 없음 — CPU 사용")
+            return "cpu", "int8"
+        _log.info("Transcriber: CUDA + cuBLAS 감지 — GPU(float16) 사용")
+        return "cuda", "float16"
 
     def _ensure_model(self, model_size: str) -> Any:
         if model_size not in VALID_MODEL_SIZES:
@@ -154,10 +341,24 @@ class Transcriber:
                               f"valid: {', '.join(VALID_MODEL_SIZES)}")
         if self._model is None or self._model_size != model_size:
             from faster_whisper import WhisperModel
-            _log.info("Transcriber: loading whisper model %r (first call may download)", model_size)
-            self._model = WhisperModel(
-                model_size, device=self._device, compute_type=self._compute_type,
-            )
+            _log.info("Transcriber: loading whisper model %r on %s/%s "
+                      "(first call may download)",
+                      model_size, self._device, self._compute_type)
+            try:
+                self._model = WhisperModel(
+                    model_size, device=self._device, compute_type=self._compute_type,
+                )
+            except Exception as e:
+                # CUDA 런타임 (cuBLAS/cuDNN) 누락 등 — CPU 폴백.
+                if self._device != "cpu":
+                    _log.warning("Transcriber: %s/%s 로딩 실패 (%s) — CPU 폴백",
+                                 self._device, self._compute_type, e)
+                    self._device, self._compute_type = "cpu", "int8"
+                    self._model = WhisperModel(
+                        model_size, device="cpu", compute_type="int8",
+                    )
+                else:
+                    raise
             self._model_size = model_size
         return self._model
 
@@ -176,7 +377,29 @@ class Transcriber:
         on_segment(seg, duration_s) — segment 받을 때마다 호출 (스트리밍 progress + 자막
         UI 업데이트용). seg 는 TranscriptSegment, duration_s 는 전체 영상 길이(초).
         예외 던지면 무시 (전사 중단 방지). None 이면 기존 동작 (collect 후 반환).
+
+        CUDA 추론 실패 (cuBLAS/cuDNN 누락 등) 시 자동으로 CPU 폴백 후 재시도.
         """
+        try:
+            return self._do_transcribe(video_path, model_size, language, on_segment)
+        except Exception as e:
+            if self._device != "cpu" and _is_cuda_runtime_error(e):
+                _log.warning("Transcriber: CUDA 추론 실패 (%s) — CPU 폴백 후 재시도", e)
+                # 모델/디바이스 리셋 — 다음 _ensure_model 이 CPU 로 재로드.
+                self._model = None
+                self._model_size = None
+                self._device, self._compute_type = "cpu", "int8"
+                return self._do_transcribe(video_path, model_size, language, on_segment)
+            raise
+
+    def _do_transcribe(
+        self,
+        video_path: str,
+        model_size: str,
+        language: Optional[str],
+        on_segment: Optional[Any],
+    ) -> Transcript:
+        """단일 시도 — transcribe 의 폴백 없는 내부 구현."""
         model = self._ensure_model(model_size)
         segments_iter, info = model.transcribe(
             video_path,
@@ -207,6 +430,24 @@ class Transcriber:
             duration_ms=duration_ms,
             segments=segments,
         )
+
+    def unload(self) -> None:
+        """로드된 Whisper 모델을 메모리에서 해제.
+
+        large-v3 ~3GB / medium ~1.5GB VRAM 또는 RAM 차지. export 끝나면 회수해야
+        다른 작업 + 다른 앱이 자원 쓸 수 있음. ctranslate2 는 객체 소멸 시 자동으로
+        GPU 메모리 free — `self._model = None` + gc 만으로 충분.
+
+        다음 transcribe 호출 시 _ensure_model 이 재로드 (디스크 캐시는 유지 — 다운로드는
+        다시 안 함, 메모리 적재만 다시 ~3-5초).
+        """
+        if self._model is None:
+            return
+        _log.info("Transcriber: 모델 메모리 해제 (%r)", self._model_size)
+        self._model = None
+        self._model_size = None
+        import gc
+        gc.collect()
 
     @staticmethod
     def cache_dir_for(model_size: str) -> Optional[Path]:

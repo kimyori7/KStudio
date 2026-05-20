@@ -161,6 +161,9 @@ class SubtitleExportJob(QObject):
     segment_ready = Signal(int, int, str)
     # 현재 phase 라벨 — "downloading" / "loading" / "transcribing" / "writing".
     phase_changed = Signal(str)
+    # 사용 디바이스 — "GPU (float16)" / "CPU (int8)". 첫 segment 도착 시점에
+    # 확정 (CUDA 폴백 이후 결과 반영). UI 에 표시해 사용자가 가속 여부 인지.
+    device_info = Signal(str)
     finished = Signal(object)   # dst Path
     error = Signal(str)
 
@@ -215,9 +218,11 @@ class SubtitleExportJob(QObject):
 
             def _on_segment(seg, duration_s: float) -> None:
                 # 첫 segment 도착 = 다운로드 + 모델 로딩 끝 → watcher 정리.
+                # 이 시점에 transcriber._device 가 확정됨 (CUDA 폴백 반영 후).
                 if not transcribe_started.is_set():
                     transcribe_started.set()
                     self._stop_download_watcher()
+                    self.device_info.emit(_format_device_label(t))
                 self.segment_ready.emit(int(seg.start_ms), int(seg.end_ms), seg.text)
                 if duration_s > 0:
                     pct = int(min(100.0, (seg.end_ms / 1000.0) / duration_s * 100.0))
@@ -260,6 +265,12 @@ class SubtitleExportJob(QObject):
             self.error.emit(f"자막 생성 실패: {exc}")
         finally:
             self._stop_download_watcher()
+            # large-v3 등 큰 모델이 메모리 점유한 채 남는 것 방지 — export 끝나면 해제.
+            try:
+                from ..agent.transcript import get_transcriber
+                get_transcriber().unload()
+            except Exception:
+                _log.exception("transcriber unload 중 예외 — 무시")
 
     # ---- 다운로드 progress watcher (HF 캐시 디렉토리 polling) ----
     def _start_download_watcher(self, cache_dir: Path, expected_bytes: int) -> None:
@@ -287,6 +298,18 @@ class SubtitleExportJob(QObject):
         if self._watcher_stop is not None:
             self._watcher_stop.set()
             self._watcher_stop = None
+
+
+def _format_device_label(transcriber) -> str:
+    """현재 Transcriber 가 쓰는 디바이스 → 사용자 친화 라벨.
+
+    'cuda/float16' → 'GPU (float16)', 'cpu/int8' → 'CPU (int8)'.
+    """
+    device = getattr(transcriber, "_device", "cpu")
+    compute_type = getattr(transcriber, "_compute_type", "int8")
+    if device == "cuda":
+        return f"GPU ({compute_type})"
+    return f"CPU ({compute_type})"
 
 
 def _dir_size(d: Path) -> int:

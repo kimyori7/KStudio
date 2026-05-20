@@ -841,6 +841,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.redo_requested.connect(self._on_redo)
         self.menu_bar.toggle_edit_mode_requested.connect(self._toggle_edit_mode_via_menu)
         self.menu_bar.toggle_effects_enabled_requested.connect(self._on_toggle_effects_enabled)
+        self.menu_bar.gpu_acceleration_setup_requested.connect(self._on_gpu_acceleration_setup)
         self.menu_bar.open_sidecar_dir_requested.connect(self._open_sidecar_dir)
         self.menu_bar.background_remove_requested.connect(self._on_remove_background)
         self.menu_bar.image_scale_requested.connect(self._on_image_scale)
@@ -3312,6 +3313,64 @@ class MainWindow(QMainWindow):
         finally:
             action.blockSignals(False)
 
+    def _on_gpu_acceleration_setup(self) -> None:
+        """편집 → 'GPU 가속 활성화…' — 상태에 따라 분기 (2026-05-20 사용자 요청 1-클릭 설치).
+
+        - active: 이미 활성 — 안내 모달만.
+        - installed_pending_restart: pip 패키지 깔려 있지만 재시작 필요 — 안내.
+        - not_installed: 확인 다이얼로그 → 진행 다이얼로그 (별창, 비모달).
+        - no_gpu: NVIDIA GPU 자체 없음 — 안내 모달.
+        """
+        from PySide6.QtWidgets import QMessageBox
+        from ..agent.transcript import gpu_acceleration_status
+
+        status = gpu_acceleration_status()
+        if status == "active":
+            QMessageBox.information(
+                self, "GPU 가속 활성화됨",
+                "이미 GPU 가속이 활성화되어 있습니다.\n"
+                "자막 내보내기는 NVIDIA GPU 를 사용합니다.",
+            )
+            return
+        if status == "no_gpu":
+            QMessageBox.information(
+                self, "NVIDIA GPU 미감지",
+                "이 PC 에서 NVIDIA GPU 를 찾을 수 없습니다.\n"
+                "자막 내보내기는 CPU 모드로 동작합니다.\n\n"
+                "(다른 GPU 가속은 추후 지원 검토 중)",
+            )
+            return
+        if status == "installed_pending_restart":
+            QMessageBox.information(
+                self, "재시작 필요",
+                "GPU 가속 라이브러리는 이미 설치되어 있습니다.\n"
+                "KStudio 를 재시작하면 활성화됩니다.",
+            )
+            return
+        # not_installed — 확인 후 진행 다이얼로그 열기.
+        ans = QMessageBox.question(
+            self, "GPU 가속 설치",
+            "NVIDIA cuBLAS / cuDNN 라이브러리를 자동 설치합니다.\n"
+            "약 1.5GB 다운로드 — 인터넷 속도에 따라 수 분 ~ 십수 분 소요.\n\n"
+            "계속하시겠어요?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if ans != QMessageBox.Yes:
+            return
+        from .gpu_install_dialog import GpuInstallDialog
+        dlg = GpuInstallDialog(self)
+        dlg.finished_ok.connect(self._on_gpu_install_finished_ok)
+        dlg.show()
+        self._gpu_install_dialog = dlg   # GC 방지 — 비모달이라 강한 참조 필요.
+
+    def _on_gpu_install_finished_ok(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self, "설치 완료",
+            "GPU 가속 라이브러리 설치 완료.\n"
+            "변경 사항은 KStudio 를 재시작해야 적용됩니다.",
+        )
+
     def _on_toggle_effects_enabled(self, checked: bool) -> None:
         """편집 → '효과 적용' 체크 토글 — 활성 영상 탭의 사이드카에 반영 (2026-05-20).
 
@@ -3339,8 +3398,21 @@ class MainWindow(QMainWindow):
 
         tab = self.tab_area.current_video_tab() if hasattr(self.tab_area, "current_video_tab") else None
         if tab is None:
+            # 2026-05-20: 사용자 보고 — 영상 안 열고 메뉴 누르면 silent return 으로
+            # "창이 안 뜬다" 인지. 명시 안내로 가시화.
+            QMessageBox.information(
+                self, "자막 내보내기",
+                "자막을 추출할 영상을 먼저 열거나 활성 탭으로 전환해주세요.\n"
+                "(자막 내보내기는 영상 모드 전용)",
+            )
             return
-        src_path = tab._source_path
+        src_path = getattr(tab, "_source_path", None)
+        if not src_path:
+            QMessageBox.warning(
+                self, "자막 내보내기",
+                "활성 탭의 영상 경로를 찾을 수 없습니다.",
+            )
+            return
 
         # 1) 다이얼로그 — 사용자 settings 의 모델 기본값 사용.
         initial_model = getattr(self.app_settings.agent, "whisper_model_size", "base")
@@ -3376,7 +3448,11 @@ class MainWindow(QMainWindow):
         job = SubtitleExportJob(
             media_path=src_path, settings=settings, dst_path=dst, sidecar=sidecar,
         )
-        wire_job_to_window(job, window, open_folder_cb=self._open_in_explorer)
+        wire_job_to_window(
+            job, window,
+            open_folder_cb=self._open_in_explorer,
+            gpu_install_cb=self._on_gpu_acceleration_setup,
+        )
         self._subtitle_job = job   # GC 방지
         self._subtitle_window = window
         window.show()   # 비모달 — exec() 가 아닌 show()

@@ -54,6 +54,46 @@ def test_on_download_progress_zero_total_shows_received_only(win):
     assert "10" in win.detail_label.text()
 
 
+def test_on_device_info_gpu_shows_green(win):
+    win.on_device_info("GPU (float16)")
+    assert "GPU" in win.device_label.text()
+    assert "float16" in win.device_label.text()
+    # 초록 색 (가속 ON 알림).
+    assert "#16a34a" in win.device_label.styleSheet()
+
+
+def test_on_device_info_cpu_shows_orange(win):
+    win.on_device_info("CPU (int8)")
+    assert "CPU" in win.device_label.text()
+    # 주황 — 사용자가 GPU 미사용 인지.
+    assert "#d97706" in win.device_label.styleSheet()
+
+
+def test_initial_device_label_is_pending(win):
+    assert "확인 중" in win.device_label.text()
+
+
+def test_gpu_install_button_hidden_initially(win):
+    """device_info 받기 전엔 GPU 활성화 버튼 숨김."""
+    assert not win.gpu_install_btn.isVisible()
+
+
+def test_gpu_install_button_shown_on_cpu_mode(win):
+    win.on_device_info("CPU (int8)")
+    assert win.gpu_install_btn.isVisible()
+
+
+def test_gpu_install_button_hidden_on_gpu_mode(win):
+    win.on_device_info("GPU (float16)")
+    assert not win.gpu_install_btn.isVisible()
+
+
+def test_gpu_install_button_click_emits_signal(win, qtbot):
+    win.on_device_info("CPU (int8)")
+    with qtbot.waitSignal(win.gpu_install_requested, timeout=500):
+        win.gpu_install_btn.click()
+
+
 def test_on_transcribe_progress_updates_bar(win):
     win.on_phase_changed("transcribing")
     win.on_transcribe_progress(42)

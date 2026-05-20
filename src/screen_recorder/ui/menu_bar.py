@@ -28,6 +28,8 @@ class KStudioMenuBar(QMenuBar):
     open_sidecar_dir_requested = Signal()
     # 2026-05-20 (사용자 요청): 사이드카의 effects_enabled 토글 — 전체 효과 ON/OFF.
     toggle_effects_enabled_requested = Signal(bool)
+    # 2026-05-20: GPU 가속 1-클릭 설치 (nvidia-cublas-cu12 + nvidia-cudnn-cu12).
+    gpu_acceleration_setup_requested = Signal()
     # 이미지
     background_remove_requested = Signal()
     image_scale_requested = Signal()
@@ -148,6 +150,14 @@ class KStudioMenuBar(QMenuBar):
         self.open_sidecar_dir_action = QAction(tr("사이드카 폴더 열기"), self)
         self.open_sidecar_dir_action.triggered.connect(self.open_sidecar_dir_requested.emit)
         m_edit.addAction(self.open_sidecar_dir_action)
+
+        m_edit.addSeparator()
+        # 2026-05-20: 자막 내보내기 GPU 가속 1-클릭 설치 — 상태에 따라 라벨 동적 갱신.
+        self.gpu_acceleration_action = QAction(tr("GPU 가속 활성화…"), self)
+        self.gpu_acceleration_action.triggered.connect(
+            self.gpu_acceleration_setup_requested.emit
+        )
+        m_edit.addAction(self.gpu_acceleration_action)
 
         m_edit.addSeparator()
         self.preferences_action = QAction(tr("환경설정…"), self)

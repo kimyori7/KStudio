@@ -48,6 +48,8 @@ class SubtitleExportProgressWindow(QDialog):
 
     # 사용자가 '폴더 열기' 누름 — main_window 가 받아 explorer 열기.
     open_folder_requested = Signal(object)   # Path
+    # 2026-05-20: 사용자가 CPU 모드 라벨 옆 'GPU 활성화…' 누름 — GpuInstallDialog 열기.
+    gpu_install_requested = Signal()
 
     def __init__(self, *, model_size: str, parent=None) -> None:
         # 비모달 — parent 가 메인 윈도우면 above 에 떠 있지만 입력 안 막음.
@@ -66,6 +68,26 @@ class SubtitleExportProgressWindow(QDialog):
         self.phase_label = QLabel("준비 중…")
         self.phase_label.setStyleSheet("font-weight: bold; font-size: 13px;")
         layout.addWidget(self.phase_label)
+
+        # 디바이스 표시 — 첫 segment 도착 시점에 "GPU (float16)" / "CPU (int8)" 갱신.
+        # CPU 모드면 옆에 'GPU 활성화…' 버튼 노출 — 사용자가 메뉴 안 찾아도 됨.
+        device_row = QHBoxLayout()
+        device_row.setContentsMargins(0, 0, 0, 0)
+        self.device_label = QLabel("디바이스: 확인 중…")
+        self.device_label.setStyleSheet("color: #2563eb; font-size: 11px;")
+        device_row.addWidget(self.device_label)
+        self.gpu_install_btn = QPushButton("GPU 활성화…")
+        self.gpu_install_btn.setStyleSheet(
+            "font-size: 11px; padding: 1px 8px; color: #d97706;"
+        )
+        self.gpu_install_btn.setToolTip(
+            "NVIDIA cuBLAS/cuDNN 라이브러리를 설치해 다음 자막 export 부터 GPU 가속 사용"
+        )
+        self.gpu_install_btn.clicked.connect(self.gpu_install_requested.emit)
+        self.gpu_install_btn.hide()   # 초기엔 숨김 — device_info 받으면 결정.
+        device_row.addWidget(self.gpu_install_btn)
+        device_row.addStretch(1)
+        layout.addLayout(device_row)
 
         self.detail_label = QLabel("")
         self.detail_label.setStyleSheet("color: #888;")
@@ -131,6 +153,23 @@ class SubtitleExportProgressWindow(QDialog):
             f"{_format_mb(received_bytes)} / {_format_mb(total_bytes)}  ({pct}%)"
         )
 
+    def on_device_info(self, info: str) -> None:
+        """SubtitleExportJob.device_info — 'GPU (float16)' / 'CPU (int8)' 등.
+
+        GPU 모드면 인라인 'GPU 활성화…' 버튼 숨김. CPU 모드면 노출 (사용자가
+        다음 export 부터 GPU 쓰려면 라이브러리 설치).
+        """
+        self.device_label.setText(f"디바이스: {info}")
+        is_gpu = info.lower().startswith("gpu")
+        if is_gpu:
+            self.device_label.setStyleSheet("color: #16a34a; font-size: 11px;")   # 초록
+            self.gpu_install_btn.hide()
+        else:
+            self.device_label.setStyleSheet("color: #d97706; font-size: 11px;")   # 주황
+            # gpu_acceleration_status() 가 'no_gpu' 면 버튼 무의미 — 호출자(main_window)가
+            # 환경 보고 버튼 활성 여부 별도 제어 가능하지만, 일단 보여주고 클릭 시 안내.
+            self.gpu_install_btn.show()
+
     def on_transcribe_progress(self, percent: int) -> None:
         self.progress_bar.setValue(int(max(0, min(100, percent))))
 
@@ -171,16 +210,21 @@ class SubtitleExportProgressWindow(QDialog):
 
 
 def wire_job_to_window(job, window: SubtitleExportProgressWindow,
-                          open_folder_cb: Optional[Callable] = None) -> None:
-    """job 의 시그널 5개를 window 슬롯에 연결.
+                          open_folder_cb: Optional[Callable] = None,
+                          gpu_install_cb: Optional[Callable] = None) -> None:
+    """job 의 시그널 6개 + finished/error 를 window 슬롯에 연결.
 
-    main_window 의 _on_export_subtitle 에서 한 줄로 wiring 가능 — 시그널 5개 + 폴더 열기.
+    main_window 의 _on_export_subtitle 에서 한 줄로 wiring 가능 — 시그널 + 폴더 열기
+    + GPU 활성화 콜백.
     """
     job.phase_changed.connect(window.on_phase_changed)
     job.download_progress.connect(window.on_download_progress)
     job.transcribe_progress.connect(window.on_transcribe_progress)
     job.segment_ready.connect(window.on_segment_ready)
+    job.device_info.connect(window.on_device_info)
     job.finished.connect(window.on_finished)
     job.error.connect(window.on_error)
     if open_folder_cb is not None:
         window.open_folder_requested.connect(open_folder_cb)
+    if gpu_install_cb is not None:
+        window.gpu_install_requested.connect(gpu_install_cb)

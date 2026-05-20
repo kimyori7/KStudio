@@ -217,14 +217,23 @@ def test_remap_preserves_text():
 # SubtitleExportJob 진행 시그널 — Transcriber mock 으로 흐름 검증
 # 2026-05-20 사용자 요청: 다운로드 progress + 전사 progress + 실시간 자막.
 # ============================================================
-def _install_mock_transcriber(monkeypatch, segments_to_emit, duration_s=10.0):
+def _install_mock_transcriber(monkeypatch, segments_to_emit, duration_s=10.0,
+                                 device="cpu", compute_type="int8"):
     """Transcriber.get_transcriber() 가 반환하는 인스턴스를 mock — 외부 Whisper 호출 없이
     on_segment 콜백을 segments_to_emit 으로 시뮬레이션.
+
+    device/compute_type — _format_device_label 이 읽음. 반환된 mock 의 `unload_calls`
+    리스트로 호출 검증 가능.
     """
     from screen_recorder.agent import transcript as transcript_mod
     from screen_recorder.agent.transcript import Transcript
 
     class _MockTranscriber:
+        def __init__(self):
+            self._device = device
+            self._compute_type = compute_type
+            self.unload_calls = 0
+
         def transcribe(self, video_path, model_size="base", language="ko",
                        on_segment=None):
             if on_segment is not None:
@@ -239,8 +248,12 @@ def _install_mock_transcriber(monkeypatch, segments_to_emit, duration_s=10.0):
         def cache_dir_for(model_size):
             return None   # 다운로드 watcher 비활성 — 캐시 검사 skip.
 
+        def unload(self):
+            self.unload_calls += 1
+
     mock = _MockTranscriber()
     monkeypatch.setattr(transcript_mod, "get_transcriber", lambda: mock)
+    return mock
 
 
 def test_job_emits_segment_ready_for_each_segment(qtbot, tmp_path, monkeypatch):
@@ -315,3 +328,133 @@ def test_job_emits_phase_changes(qtbot, tmp_path, monkeypatch):
     assert "transcribing" in phases
     assert "writing" in phases
     assert "downloading" not in phases
+
+
+# ============================================================
+# device_info 시그널 — CPU/GPU 사용자 표시
+# 2026-05-20 사용자 요청: "CPU 로 하는건지 GPU 로 하는건지 팝업에 알려줄 수 있어?"
+# ============================================================
+def test_job_emits_device_info_on_gpu(qtbot, tmp_path, monkeypatch):
+    """CUDA 모드 → 'GPU (float16)' 한 번 emit."""
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    segs = [TranscriptSegment(start_ms=0, end_ms=1000, text="x")]
+    _install_mock_transcriber(
+        monkeypatch, segs, duration_s=1.0,
+        device="cuda", compute_type="float16",
+    )
+
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(),
+        dst_path=tmp_path / "out.txt",
+    )
+    infos: list[str] = []
+    job.device_info.connect(infos.append)
+    with qtbot.waitSignal(job.finished, timeout=2000):
+        job.start()
+    assert infos == ["GPU (float16)"]
+
+
+def test_job_emits_device_info_on_cpu(qtbot, tmp_path, monkeypatch):
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    segs = [TranscriptSegment(start_ms=0, end_ms=1000, text="x")]
+    _install_mock_transcriber(
+        monkeypatch, segs, duration_s=1.0,
+        device="cpu", compute_type="int8",
+    )
+
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(),
+        dst_path=tmp_path / "out.txt",
+    )
+    infos: list[str] = []
+    job.device_info.connect(infos.append)
+    with qtbot.waitSignal(job.finished, timeout=2000):
+        job.start()
+    assert infos == ["CPU (int8)"]
+
+
+def test_job_emits_device_info_only_once(qtbot, tmp_path, monkeypatch):
+    """여러 segment 가 와도 device_info 는 첫 segment 시점에 한 번만."""
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    segs = [
+        TranscriptSegment(start_ms=0, end_ms=1000, text="a"),
+        TranscriptSegment(start_ms=1000, end_ms=2000, text="b"),
+        TranscriptSegment(start_ms=2000, end_ms=3000, text="c"),
+    ]
+    _install_mock_transcriber(monkeypatch, segs, duration_s=3.0)
+
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(),
+        dst_path=tmp_path / "out.txt",
+    )
+    infos: list[str] = []
+    job.device_info.connect(infos.append)
+    with qtbot.waitSignal(job.finished, timeout=2000):
+        job.start()
+    assert len(infos) == 1
+
+
+# ============================================================
+# Transcriber.unload() 호출 — export 끝나면 메모리 해제
+# 2026-05-20 사용자 요청: "자막 편집 끝내면 로드된 메모리 내놔야지"
+# ============================================================
+def test_job_calls_transcriber_unload_on_success(qtbot, tmp_path, monkeypatch):
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    segs = [TranscriptSegment(start_ms=0, end_ms=1000, text="x")]
+    mock = _install_mock_transcriber(monkeypatch, segs, duration_s=1.0)
+
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(),
+        dst_path=tmp_path / "out.txt",
+    )
+    with qtbot.waitSignal(job.finished, timeout=2000):
+        job.start()
+    assert mock.unload_calls == 1
+
+
+def test_job_calls_transcriber_unload_on_error(qtbot, tmp_path, monkeypatch):
+    """전사 실패 시에도 unload 호출 — finally 보장."""
+    from screen_recorder.encode.subtitle_export import (
+        SubtitleExportJob, SubtitleExportSettings,
+    )
+    from screen_recorder.agent import transcript as transcript_mod
+
+    class _FailingTranscriber:
+        def __init__(self):
+            self._device = "cpu"
+            self._compute_type = "int8"
+            self.unload_calls = 0
+
+        def transcribe(self, *a, **k):
+            raise RuntimeError("disk full")
+
+        @staticmethod
+        def cache_dir_for(model_size):
+            return None
+
+        def unload(self):
+            self.unload_calls += 1
+
+    mock = _FailingTranscriber()
+    monkeypatch.setattr(transcript_mod, "get_transcriber", lambda: mock)
+
+    job = SubtitleExportJob(
+        media_path=tmp_path / "src.mp4",
+        settings=SubtitleExportSettings(),
+        dst_path=tmp_path / "out.txt",
+    )
+    with qtbot.waitSignal(job.error, timeout=2000):
+        job.start()
+    assert mock.unload_calls == 1
