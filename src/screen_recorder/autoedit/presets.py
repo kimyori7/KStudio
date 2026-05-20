@@ -14,7 +14,7 @@ class AutoEditSettings:
     caption_enabled: bool = True
     caption_max_chars: int = 30
     caption_split: str = "sentence"     # "sentence" | "fixed_3s"
-    scene_enabled: bool = True
+    scene_enabled: bool = False
     scene_sensitivity: int = 30
     scene_zoom_strength: float = 1.3
     bpm_enabled: bool = False

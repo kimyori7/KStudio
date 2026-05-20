@@ -1,11 +1,11 @@
 from screen_recorder.autoedit.presets import AutoEditSettings, default_settings
 
 
-def test_default_settings_all_enabled_except_bpm():
+def test_default_settings_focuses_on_practical_edits():
     s = default_settings()
     assert s.silence_enabled is True
     assert s.caption_enabled is True
-    assert s.scene_enabled is True
+    assert s.scene_enabled is False
     assert s.bpm_enabled is False
 
 

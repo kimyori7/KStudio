@@ -96,6 +96,24 @@ def test_add_effect_three_overlapping_use_tracks_0_1_2(video, tmp_path):
     assert [e.track_idx for e in effs] == [0, 1, 2]
 
 
+def test_add_effects_bulk_pushes_one_history_entry(video, tmp_path):
+    """자동편집 결과는 한 번에 추가되고 Ctrl+Z 한 번으로 전부 되돌아가야 한다."""
+    ec = EditController(video, tmp_path / "sidecars")
+    effects = [
+        CaptionEffect(in_ms=0, out_ms=5000, text="a"),
+        CaptionEffect(in_ms=1000, out_ms=6000, text="b"),
+        CaptionEffect(in_ms=2000, out_ms=7000, text="c"),
+    ]
+
+    added = ec.add_effects(effects)
+
+    assert added == 3
+    assert len(ec.sidecar().effects) == 3
+    assert [e.track_idx for e in sorted(ec.sidecar().effects, key=lambda e: e.text)] == [0, 1, 2]
+    assert ec.undo() is True
+    assert ec.sidecar().effects == []
+
+
 def test_different_track_idx_no_overlap_check(video, tmp_path):
     """track_idx 다르면 같은 type 이라도 시간 겹쳐도 OK — overlaps_existing 가
     같은 track 안에서만 검사."""
