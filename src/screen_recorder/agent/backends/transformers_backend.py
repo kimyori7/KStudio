@@ -113,6 +113,19 @@ class TransformersBackend:
         """대화 누적 초기화 — runtime.clear_session() / set_model() 진입점에서 호출."""
         self._history = []
 
+    def _effective_system_prompt(self) -> str:
+        """tool_strategy 별 system prompt 구성.
+
+        - "none" / "official": 기본 _QWEN_SYSTEM_PROMPT 그대로 ("official" 은 chat_template
+          의 tools= 인자가 도구 안내를 자동 추가하므로 system prompt 손대지 않음).
+        - "prompted": 기본 prompt + build_prompted_tool_catalog 추가 — 모델이 도구 알게.
+        """
+        if self._tool_strategy == "prompted" and self._openai_tools:
+            from .tool_adapter import build_prompted_tool_catalog
+            catalog = build_prompted_tool_catalog(self._openai_tools)
+            return self._system_prompt + catalog
+        return self._system_prompt
+
     def _build_conversation(self, msg: ChatInput) -> list[dict]:
         """ChatInput → Qwen2.5-Omni conversation list (HF 모델카드 형식).
 
@@ -132,7 +145,7 @@ class TransformersBackend:
         # system + 누적된 history (이전 turn 의 user/assistant) 부터.
         conv: list[dict] = [
             {"role": "system",
-             "content": [{"type": "text", "text": self._system_prompt}]},
+             "content": [{"type": "text", "text": self._effective_system_prompt()}]},
         ]
         conv.extend(self._history)
 

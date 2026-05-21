@@ -46,3 +46,52 @@ def test_start_session_defaults_when_tools_dict_empty():
     assert backend._openai_tools == []
     assert backend._tool_handlers == {}
     assert backend._tool_strategy == "none"
+
+
+def test_effective_system_prompt_appends_catalog_in_prompted_mode():
+    """prompted 모드 — system prompt 끝에 build_prompted_tool_catalog 결과 합쳐짐."""
+    from screen_recorder.agent.backends.transformers_backend import (
+        TransformersBackend, _QWEN_SYSTEM_PROMPT,
+    )
+    backend = TransformersBackend(repo_id="Qwen/test")
+    tools_dict = {
+        "openai_tools": [
+            {"type": "function", "function": {"name": "get_video_state",
+                                              "description": "현재 영상",
+                                              "parameters": {}}},
+        ],
+        "tool_handlers": {"get_video_state": lambda a: {}},
+        "tool_strategy": "prompted",
+    }
+    asyncio.run(backend.start_session(system_prompt="ignored", tools=tools_dict, model="x"))
+
+    eff = backend._effective_system_prompt()
+    # 기본 Qwen system prompt 유지 + 카탈로그 추가.
+    assert _QWEN_SYSTEM_PROMPT in eff
+    assert "<tool_call>" in eff
+    assert "get_video_state" in eff
+
+
+def test_effective_system_prompt_unchanged_for_none_strategy():
+    """tool_strategy='none' 면 기본 system prompt 그대로 — 카탈로그 미주입."""
+    from screen_recorder.agent.backends.transformers_backend import (
+        TransformersBackend, _QWEN_SYSTEM_PROMPT,
+    )
+    backend = TransformersBackend(repo_id="Qwen/test")
+    asyncio.run(backend.start_session(system_prompt="ignored", tools={}, model="x"))
+    assert backend._effective_system_prompt() == _QWEN_SYSTEM_PROMPT
+
+
+def test_effective_system_prompt_unchanged_for_official_strategy():
+    """tool_strategy='official' 면 카탈로그 미주입 — chat_template 의 tools= 가 처리."""
+    from screen_recorder.agent.backends.transformers_backend import (
+        TransformersBackend, _QWEN_SYSTEM_PROMPT,
+    )
+    backend = TransformersBackend(repo_id="Qwen/test")
+    tools_dict = {
+        "openai_tools": [{"type": "function", "function": {"name": "foo"}}],
+        "tool_handlers": {"foo": lambda a: {}},
+        "tool_strategy": "official",
+    }
+    asyncio.run(backend.start_session(system_prompt="ignored", tools=tools_dict, model="x"))
+    assert backend._effective_system_prompt() == _QWEN_SYSTEM_PROMPT
