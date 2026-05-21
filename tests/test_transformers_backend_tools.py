@@ -224,12 +224,18 @@ def test_send_message_emits_tool_use_event_when_model_outputs_tool_call(transfor
     """모델 출력에 <tool_call> 있으면 AgentEvent(kind='tool_use') + AgentMessage(role='tool_use') emit.
 
     회귀 보호: Claude 의 ToolUseBlock 처리 패턴 (chat_panel 의 role='tool_use' 표시) 동등성.
+
+    Note: multi-round 루프 도입 후 stateless _FakeStreamer 를 쓰면 매 라운드마다 같은
+    tool_call 을 emit → 무한 루프 (_MAX_TOOL_ROUNDS 까지). generate_count 로 라운드를
+    구분해 1차 = tool_call, 2차 = 최종 텍스트.
     """
     from screen_recorder.agent.backends.base import ChatInput, AgentEvent, AgentMessage
     from screen_recorder.agent.backends.transformers_backend import TransformersBackend
 
     # 모델이 한 chunk 로 tool_call 전체 출력하는 시나리오.
     tool_call_text = '<tool_call>{"name": "get_video_state", "arguments": {}}</tool_call>'
+    generate_count = {"n": 0}
+    outputs = [tool_call_text, "완료되었습니다."]
 
     class _FakeProcessor:
         def apply_chat_template(self, conv, tools=None, **kw): return "p"
@@ -242,13 +248,14 @@ def test_send_message_emits_tool_use_event_when_model_outputs_tool_call(transfor
     class _FakeModel:
         device = "cpu"; dtype = None
         def generate(self, **kw):
+            generate_count["n"] += 1
             kw["streamer"].end()
             return None
 
-    # streamer iter 가 위 텍스트 1개 chunk 로 emit.
+    # streamer iter — 라운드별로 다른 출력. 1차 = tool_call, 2차 = 최종 텍스트.
     class _FakeStreamer:
         def __init__(self, *a, **kw):
-            self._fed = [tool_call_text]
+            self._fed = [outputs[min(generate_count["n"], len(outputs) - 1)]]
         def __iter__(self): return iter(self._fed)
         def end(self): pass
 
@@ -287,3 +294,79 @@ def test_send_message_emits_tool_use_event_when_model_outputs_tool_call(transfor
     tool_use_msgs = [m for m in events if isinstance(m, AgentMessage) and m.role == "tool_use"]
     assert len(tool_use_msgs) == 1
     assert tool_use_msgs[0].tool_name == "get_video_state"
+
+
+def test_send_message_invokes_handler_and_emits_final_assistant_text(transformers_mock):
+    """tool_call → handler 호출 → conversation 에 결과 append → 재 generate → 최종 답변 emit.
+
+    회귀: Claude 의 tool_use + tool_result 흐름을 transformers 도 재현해야 chat_panel UI 가 동일.
+    """
+    from screen_recorder.agent.backends.base import ChatInput, AgentMessage, AgentEvent
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    # 1차 generate: tool_call. 2차 generate: 최종 답변.
+    generate_count = {"n": 0}
+    outputs = [
+        '<tool_call>{"name": "get_video_state", "arguments": {}}</tool_call>',
+        "영상 길이는 1초입니다.",
+    ]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conv, tools=None, **kw): return "p"
+        def __call__(self, **kw):
+            class _Inputs(dict):
+                def to(self, *_a, **_kw): return self
+            return _Inputs()
+        def batch_decode(self, ids, **kw): return [""]
+
+    class _FakeStreamer:
+        def __init__(self, *a, **kw):
+            self._fed = [outputs[generate_count["n"]]]
+        def __iter__(self): return iter(self._fed)
+        def end(self): pass
+
+    class _FakeModel:
+        device = "cpu"; dtype = None
+        def generate(self, **kw):
+            generate_count["n"] += 1
+            kw["streamer"].end()
+            return None
+
+    transformers_mock["transformers"].TextIteratorStreamer = _FakeStreamer
+    transformers_mock["transformers"].StoppingCriteria = object
+    transformers_mock["transformers"].StoppingCriteriaList = lambda x: x
+    transformers_mock["qwen_omni_utils"].process_mm_info.return_value = (None, None, None)
+
+    backend = TransformersBackend(repo_id="Qwen/test")
+    backend._model = _FakeModel()
+    backend._processor = _FakeProcessor()
+
+    handler_calls: list = []
+    def _handler(args):
+        handler_calls.append(args)
+        return {"duration_ms": 1000}
+
+    tools_dict = {
+        "openai_tools": [{"type": "function", "function": {"name": "get_video_state",
+                                                            "description": "x", "parameters": {}}}],
+        "tool_handlers": {"get_video_state": _handler},
+        "tool_strategy": "prompted",
+    }
+    asyncio.run(backend.start_session("ignored", tools_dict, "x"))
+
+    events: list = []
+    async def _run():
+        await backend.send_message(ChatInput(text="영상 상태?"), events.append)
+    asyncio.run(_run())
+
+    # handler 호출됨.
+    assert len(handler_calls) == 1
+    # generate 2회 — 1차 (tool_call) + 2차 (최종 답변).
+    assert generate_count["n"] == 2
+    # 최종 assistant 메시지에 답변 포함.
+    asst = [m for m in events if isinstance(m, AgentMessage) and m.role == "assistant"]
+    final = "".join(m.text for m in asst)
+    assert "영상 길이" in final
+    # tool_result AgentMessage 도 emit (Claude 와 같은 UI).
+    tool_results = [m for m in events if isinstance(m, AgentMessage) and m.role == "tool_result"]
+    assert len(tool_results) == 1

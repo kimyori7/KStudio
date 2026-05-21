@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import logging
 import threading
 from pathlib import Path
@@ -33,6 +34,9 @@ _log = logging.getLogger(__name__)
 # Streaming sentinel — executor 에서 StopIteration 잡고 이걸 반환해서
 # 메인 코루틴에서 단순 비교 (is _STREAM_SENTINEL) 로 종료 판정.
 _STREAM_SENTINEL = object()
+
+# tool use 최대 라운드 — 무한 루프 방지 안전망. 5 라운드면 일반 작업에 충분.
+_MAX_TOOL_ROUNDS = 5
 
 
 def _next_or_sentinel(it):
@@ -207,105 +211,36 @@ class TransformersBackend:
         return modality == "image"
 
     async def send_message(self, msg: ChatInput, emit_fn: EmitFn) -> None:
-        """텍스트/이미지 메시지 처리 — TextIteratorStreamer 로 token streaming.
+        """텍스트/이미지 + tool use 통합 처리.
 
         흐름:
-        1. 모델 로드 + conversation 빌드 + processor inputs.
-        2. TextIteratorStreamer 생성 (skip_prompt=True — 입력 토큰 제외).
-        3. generate 를 별도 thread 에서 실행 (blocking + GIL).
-        4. streamer iterate → chunk 마다 AgentMessage emit (loop.run_in_executor 로
-           한 chunk 씩 받음 — asyncio loop 블록 안 함).
-        5. thread join + done emit.
-
-        에러는 emit_fn(AgentEvent(kind='error', ...)) 로만 전달.
+        1. 모델 로드 + conversation 빌드.
+        2. _run_one_generate — 한 번 generate (streaming + tool_call 파싱).
+           반환: (full_text, tool_calls).
+        3. tool_calls 있으면 각 handler 호출 + tool_result 메시지 conversation 에 append
+           → 다시 _run_one_generate. 이 turn 의 tool_calls 가 빌 때까지 반복 (최대 _MAX_TOOL_ROUNDS).
+        4. 최종 텍스트 → emit + history 에 append.
         """
         try:
             await self._ensure_model_loaded()
             emit_fn(AgentEvent(kind="started"))
 
-            from transformers import TextIteratorStreamer
-            from qwen_omni_utils import process_mm_info
+            from .tool_adapter import build_tool_result_message
 
             conversation = self._build_conversation(msg)
-            tools_arg = self._openai_tools if self._tool_strategy == "official" else None
-            text = self._processor.apply_chat_template(
-                conversation,
-                tools=tools_arg,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            audios, images, videos = process_mm_info(
-                conversation, use_audio_in_video=False,
-            )
-            inputs = self._processor(
-                text=text,
-                audio=audios, images=images, videos=videos,
-                return_tensors="pt", padding=True,
-                use_audio_in_video=False,
-            )
-            inputs = inputs.to(self._model.device).to(self._model.dtype)
+            # _build_conversation 가 새 user 를 self._history 에 append 했음.
+            # tool 루프 도중에도 self._history 와 conversation 양쪽에 결과 append.
 
-            streamer = TextIteratorStreamer(
-                self._processor,
-                skip_prompt=True,
-                skip_special_tokens=True,
-            )
-            self._stop_flag = threading.Event()
-            stopping = self._make_stopping_criteria(self._stop_flag)
+            for _round in range(_MAX_TOOL_ROUNDS):
+                full_text, tool_calls = await self._run_one_generate(conversation, emit_fn)
 
-            gen_kwargs = dict(
-                **inputs,
-                streamer=streamer,
-                return_audio=False,
-                use_audio_in_video=False,
-                stopping_criteria=stopping,
-                # 무한 generate 방지 — 기본값(8192 등)이 너무 커서 모델이 끝없이 생성.
-                # 512 면 한국어 ~700자 = 일반 답변 충분. 코드 같이 긴 응답 필요 시 후속 조정.
-                max_new_tokens=512,
-                # greedy 대신 약한 sampling — 약간 빠르고 자연스러움.
-                do_sample=False,
-            )
+                if not tool_calls:
+                    # 최종 답변 — history 에 누적 + done emit.
+                    self._commit_assistant_to_history(full_text)
+                    emit_fn(AgentEvent(kind="done"))
+                    return
 
-            # generate thread 안에서 raise 된 예외는 main coroutine 에 자동
-            # 전파되지 않음 → 박스에 담아 두고 thread.join 후 재발생시켜 외부
-            # except 블록에서 error event emit.
-            gen_error: dict[str, BaseException] = {}
-
-            def _run_generate():
-                try:
-                    self._model.generate(**gen_kwargs)
-                except BaseException as e:  # noqa: BLE001 — propagate to main
-                    _log.exception("TransformersBackend: generate thread 실패")
-                    gen_error["exc"] = e
-                    streamer.end()   # iterate 풀어주기
-
-            thread = threading.Thread(target=_run_generate, daemon=True)
-            thread.start()
-
-            # streamer iterate — blocking. loop.run_in_executor 로 한 chunk 씩.
-            # chunks 누적 → 끝나면 풀텍스트를 history 에 append (다음 turn 컨텍스트).
-            loop = asyncio.get_running_loop()
-            iter_streamer = iter(streamer)
-            assistant_chunks: list[str] = []
-            while True:
-                chunk = await loop.run_in_executor(None, _next_or_sentinel, iter_streamer)
-                if chunk is _STREAM_SENTINEL:
-                    break
-                if chunk:
-                    assistant_chunks.append(chunk)
-                    emit_fn(AgentMessage(role="assistant", text=chunk))
-
-            await asyncio.to_thread(thread.join)
-            if "exc" in gen_error:
-                raise gen_error["exc"]
-            full_text = "".join(assistant_chunks)
-            # 응답에 tool_call 있는지 검사 — Hermes / prompted 모두 같은 형식.
-            from .tool_adapter import parse_tool_calls, strip_tool_call_tags
-            tool_calls = parse_tool_calls(full_text) if self._openai_tools else []
-
-            if tool_calls:
-                # tool_use 이벤트 + 핸들러 호출 + 결과 append + 재 generate 는 Task 10.
-                # 여기선 emit 만.
+                # tool_use UI emit.
                 for call in tool_calls:
                     emit_fn(AgentEvent(
                         kind="tool_use",
@@ -316,10 +251,43 @@ class TransformersBackend:
                         text=f"🔧 {call['name']}({call['arguments']})",
                         tool_name=call["name"],
                     ))
-                # assistant 텍스트는 strip 후 history 에 — tool_call 태그는 컨텍스트에 불필요.
-                self._commit_assistant_to_history(strip_tool_call_tags(full_text))
-            else:
-                self._commit_assistant_to_history(full_text)
+
+                # tool_call 한 assistant turn 도 history 에 누적 (텍스트 + 태그 모두).
+                # Qwen 이 다음 generate 에서 자기가 어떤 호출했는지 알도록.
+                conversation.append({"role": "assistant", "content": full_text})
+                self._history.append({"role": "assistant", "content": full_text})
+
+                # 핸들러 실행 + 결과 메시지 conversation/history 에 append.
+                for call in tool_calls:
+                    handler = self._tool_handlers.get(call["name"])
+                    if handler is None:
+                        result_val: Any = {"error": f"unknown tool: {call['name']}"}
+                    else:
+                        try:
+                            ret = handler(call["arguments"])
+                            if asyncio.iscoroutine(ret):
+                                ret = await ret
+                            result_val = ret
+                        except Exception as exc:
+                            _log.exception("tool handler 실패: %s", call["name"])
+                            result_val = {"error": str(exc)}
+                    # tool_result UI emit — Claude 패턴 (chat_panel 의 role='tool_result' 표시).
+                    preview = json.dumps(result_val, ensure_ascii=False, default=str)[:200]
+                    emit_fn(AgentMessage(
+                        role="tool_result",
+                        text=f"← {preview}",
+                        tool_name=call["name"],
+                    ))
+                    # 다음 generate 의 context.
+                    result_msg = build_tool_result_message(call["id"], result_val)
+                    conversation.append(result_msg)
+                    self._history.append(result_msg)
+
+            # 루프 한계 초과 — 안전망.
+            emit_fn(AgentMessage(
+                role="system",
+                text=f"⚠ 도구 호출 루프 한계 ({_MAX_TOOL_ROUNDS} 라운드) 초과 — 중단.",
+            ))
             emit_fn(AgentEvent(kind="done"))
         except Exception as exc:
             _log.exception("TransformersBackend: send_message 실패")
@@ -327,6 +295,88 @@ class TransformersBackend:
         finally:
             self._stop_flag = None
             self._cleanup_temp_files()
+
+    async def _run_one_generate(
+        self, conversation: list[dict], emit_fn: EmitFn,
+    ) -> tuple[str, list[dict]]:
+        """한 번 generate 실행 — streaming 으로 텍스트 emit + 끝나면 (full_text, tool_calls) 반환.
+
+        tool_call 태그가 있으면 그건 emit 하지 않음 (UI 잡음 방지) — strip 후 빈 텍스트면
+        assistant chunk 도 emit 안 함. 호출자가 tool_calls 받아 처리.
+
+        Note: <tool_call> 감지는 누적 텍스트 단위로 하므로 청크 경계에서 태그가 분리된 경우
+        (예: '<tool_' + 'call>...') 에는 앞 부분이 emit 될 수 있음. 실제 Qwen streaming 에서
+        발생 가능하나 현재 테스트 범위 밖 — 향후 정밀 prefix 감지로 개선 가능.
+        """
+        from transformers import TextIteratorStreamer
+        from qwen_omni_utils import process_mm_info
+        from .tool_adapter import parse_tool_calls
+
+        tools_arg = self._openai_tools if self._tool_strategy == "official" else None
+        text = self._processor.apply_chat_template(
+            conversation, tools=tools_arg,
+            add_generation_prompt=True, tokenize=False,
+        )
+        audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
+        inputs = self._processor(
+            text=text, audio=audios, images=images, videos=videos,
+            return_tensors="pt", padding=True, use_audio_in_video=False,
+        )
+        inputs = inputs.to(self._model.device).to(self._model.dtype)
+
+        streamer = TextIteratorStreamer(
+            self._processor, skip_prompt=True, skip_special_tokens=True,
+        )
+        self._stop_flag = threading.Event()
+        stopping = self._make_stopping_criteria(self._stop_flag)
+        gen_kwargs = dict(
+            **inputs, streamer=streamer,
+            return_audio=False, use_audio_in_video=False,
+            stopping_criteria=stopping,
+            max_new_tokens=512, do_sample=False,
+        )
+
+        gen_error: dict[str, BaseException] = {}
+
+        def _run_generate():
+            try:
+                self._model.generate(**gen_kwargs)
+            except BaseException as e:  # noqa: BLE001 — propagate to main
+                _log.exception("TransformersBackend: generate thread 실패")
+                gen_error["exc"] = e
+                streamer.end()
+
+        thread = threading.Thread(target=_run_generate, daemon=True)
+        thread.start()
+
+        loop = asyncio.get_running_loop()
+        iter_streamer = iter(streamer)
+        chunks: list[str] = []
+        # 누적 텍스트에서 <tool_call> 보이면 그 시점부터 emit 중단 — UI 잡음 방지.
+        # 정밀 분리 (태그 일부가 chunk 경계에 걸린 경우) 는 단순화 위해 strip_tool_call_tags
+        # 가 끝에서 한 번에 처리. emit 은 보수적으로: <tool_call> 첫 발견 시 멈춤.
+        emitted_so_far = ""
+        tool_call_seen = False
+        while True:
+            chunk = await loop.run_in_executor(None, _next_or_sentinel, iter_streamer)
+            if chunk is _STREAM_SENTINEL:
+                break
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            if not tool_call_seen:
+                if "<tool_call>" in (emitted_so_far + chunk):
+                    tool_call_seen = True
+                else:
+                    emit_fn(AgentMessage(role="assistant", text=chunk))
+                    emitted_so_far += chunk
+
+        await asyncio.to_thread(thread.join)
+        if "exc" in gen_error:
+            raise gen_error["exc"]
+        full_text = "".join(chunks)
+        tool_calls = parse_tool_calls(full_text) if self._openai_tools else []
+        return full_text, tool_calls
 
     def _make_stopping_criteria(self, flag: threading.Event):
         """flag 가 set 되면 stop. cancel() 진입점.
