@@ -231,8 +231,36 @@ class TransformersBackend:
             # _build_conversation 가 새 user 를 self._history 에 append 했음.
             # tool 루프 도중에도 self._history 와 conversation 양쪽에 결과 append.
 
+            retry_used = False
             for _round in range(_MAX_TOOL_ROUNDS):
                 full_text, tool_calls = await self._run_one_generate(conversation, emit_fn)
+
+                # tool_call 태그는 보이는데 parse 가 0개 → schema 위반.
+                # 모델이 호출 의도였지만 형식 망친 케이스 — 한 번 재시도, 두 번째도 망치면 skip.
+                if "<tool_call>" in full_text and not tool_calls:
+                    if not retry_used:
+                        retry_used = True
+                        emit_fn(AgentMessage(
+                            role="system",
+                            text="⚠ 도구 호출 형식 오류 — 한 번 재시도합니다.",
+                        ))
+                        # 재시도 hint 를 conversation 에 user 로 append.
+                        hint_msg = {
+                            "role": "user",
+                            "content": "이전 응답의 <tool_call> JSON 형식이 잘못되었습니다. "
+                                       "정확한 JSON 으로 다시 호출하거나 일반 텍스트로 답하세요.",
+                        }
+                        conversation.append(hint_msg)
+                        self._history.append(hint_msg)
+                        continue
+                    else:
+                        emit_fn(AgentMessage(
+                            role="system",
+                            text="⚠ 도구 호출 형식 재시도 후에도 오류 — 이번 도구 호출은 건너뜁니다.",
+                        ))
+                        self._commit_assistant_to_history(full_text)
+                        emit_fn(AgentEvent(kind="done"))
+                        return
 
                 if not tool_calls:
                     # 최종 답변 — history 에 누적 + done emit.

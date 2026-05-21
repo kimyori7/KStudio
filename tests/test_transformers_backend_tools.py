@@ -370,3 +370,65 @@ def test_send_message_invokes_handler_and_emits_final_assistant_text(transformer
     # tool_result AgentMessage 도 emit (Claude 와 같은 UI).
     tool_results = [m for m in events if isinstance(m, AgentMessage) and m.role == "tool_result"]
     assert len(tool_results) == 1
+
+
+def test_malformed_tool_call_triggers_one_retry(transformers_mock):
+    """첫 응답에 broken <tool_call> → retry 한 번 → 두 번째도 broken 이면 skip + 시스템 메시지."""
+    from screen_recorder.agent.backends.base import ChatInput, AgentMessage
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    outputs = [
+        '<tool_call>{"name": broken json}</tool_call>',           # 1회 — broken
+        '<tool_call>{"still": "broken"}</tool_call>',             # 재시도도 broken (name 없음)
+    ]
+    call_idx = {"n": 0}
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conv, tools=None, **kw): return "p"
+        def __call__(self, **kw):
+            class _Inputs(dict):
+                def to(self, *_a, **_kw): return self
+            return _Inputs()
+        def batch_decode(self, ids, **kw): return [""]
+
+    class _FakeStreamer:
+        def __init__(self, *a, **kw):
+            self._fed = [outputs[call_idx["n"]]]
+        def __iter__(self): return iter(self._fed)
+        def end(self): pass
+
+    class _FakeModel:
+        device = "cpu"; dtype = None
+        def generate(self, **kw):
+            call_idx["n"] += 1
+            kw["streamer"].end()
+            return None
+
+    transformers_mock["transformers"].TextIteratorStreamer = _FakeStreamer
+    transformers_mock["transformers"].StoppingCriteria = object
+    transformers_mock["transformers"].StoppingCriteriaList = lambda x: x
+    transformers_mock["qwen_omni_utils"].process_mm_info.return_value = (None, None, None)
+
+    backend = TransformersBackend(repo_id="Qwen/test")
+    backend._model = _FakeModel()
+    backend._processor = _FakeProcessor()
+    tools_dict = {
+        "openai_tools": [{"type": "function", "function": {"name": "foo",
+                                                            "description": "x", "parameters": {}}}],
+        "tool_handlers": {"foo": lambda a: {"ok": True}},
+        "tool_strategy": "prompted",
+    }
+    asyncio.run(backend.start_session("ignored", tools_dict, "x"))
+
+    events: list = []
+    async def _run():
+        await backend.send_message(ChatInput(text="hi"), events.append)
+    asyncio.run(_run())
+
+    # generate 2회 (1차 broken + 재시도 1번).
+    assert call_idx["n"] == 2
+    # 두 번째도 망친 → system 메시지로 사용자에게 알림 + skip.
+    sys_msgs = [m for m in events if isinstance(m, AgentMessage) and m.role == "system"]
+    assert any("도구 호출 형식" in m.text or "스키마" in m.text for m in sys_msgs), (
+        f"형식 위반 안내 메시지 없음. system msgs: {[m.text for m in sys_msgs]}"
+    )
