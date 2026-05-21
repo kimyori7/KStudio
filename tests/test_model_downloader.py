@@ -47,6 +47,52 @@ def test_download_emits_error_on_failure(qtbot, monkeypatch):
     assert "network fail" in error_calls[0]
 
 
+def test_download_emits_immediate_progress_for_resume_scenario(qtbot, monkeypatch, tmp_path):
+    """캐시에 이미 일부 파일이 있을 때 — start() 직후 즉시 progress emit.
+
+    2026-05-21 사용자 보고 시나리오: KStudio 재시작 후 Qwen 클릭 → snapshot_download
+    가 빠르게 끝남 (대부분 캐시 hit) → 폴링이 늦으면 사용자에게 "안 움직임" 으로 보임.
+    start() 가 첫 poll 을 즉시 실행해 받은 바이트 수 (이미 캐시된 부분 포함) 가
+    표시되도록 한다.
+    """
+    import sys
+    cache_dir = tmp_path / "models--Qwen--Qwen2.5-Omni-7B"
+    cache_dir.mkdir()
+    # 이미 캐시된 파일 — start() 전 디스크에 존재.
+    (cache_dir / "existing.bin").write_bytes(b"z" * 5000)
+
+    fake_hub = MagicMock()
+    # snapshot_download 은 즉시 끝남 (할 일 없음 — 캐시 완료 시나리오).
+    fake_hub.snapshot_download = MagicMock(return_value=str(cache_dir))
+    fake_constants = MagicMock()
+    fake_constants.HF_HUB_CACHE = str(tmp_path)
+    fake_hub.constants = fake_constants
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake_constants)
+
+    from screen_recorder.agent.models.downloader import ModelDownloadJob
+
+    job = ModelDownloadJob(
+        repo_id="Qwen/Qwen2.5-Omni-7B",
+        estimated_size_bytes=10000,
+        poll_interval_ms=2000,  # 큰 간격 — 즉시 emit 안 하면 finished 전에 progress 0건.
+    )
+    progress_calls: list = []
+    job.download_progress.connect(lambda r, t: progress_calls.append((r, t)))
+
+    with qtbot.waitSignal(job.finished, timeout=3000):
+        job.start()
+
+    # start() 가 즉시 poll → 캐시된 5000 byte 가 보고됨.
+    assert len(progress_calls) >= 1, "start() 직후 progress 가 한 번도 안 emit 됨"
+    # 첫 emit 이 5000 byte 표시 (캐시 hit 반영).
+    first_received, first_total = progress_calls[0]
+    assert first_received >= 5000, (
+        f"첫 progress 가 캐시된 양 반영 못함: received={first_received}"
+    )
+    assert first_total == 10000
+
+
 def test_download_emits_progress_when_polling(qtbot, monkeypatch, tmp_path):
     """cache dir 크기 polling — progress Signal 발행."""
     import sys, time, threading

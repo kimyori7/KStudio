@@ -85,16 +85,33 @@ class ModelDownloadJob(QObject):
         self._worker = worker
         self._thread.start()
 
+        self._poll_count = 0
+        # 첫 polling 즉시 — 사용자가 "안 움직임" 으로 오해할 0초 갭 단축. 캐시에 이미
+        # 일부 파일이 있으면 (resume) 첫 emit 만으로도 실제 진행률 표시.
+        self._poll_progress()
         self._timer = QTimer(self)
         self._timer.setInterval(self._poll_interval)
         self._timer.timeout.connect(self._poll_progress)
         self._timer.start()
+        _log.info(
+            "ModelDownloadJob started: repo=%s interval=%dms estimate=%dMB",
+            self._repo_id, self._poll_interval,
+            self._estimated_size // (1024 * 1024) if self._estimated_size else 0,
+        )
 
     def _poll_progress(self) -> None:
         cache_dir = _cache_dir_for_repo(self._repo_id)
         if cache_dir is None:
             return
         received = _dir_size_bytes(cache_dir)
+        self._poll_count = getattr(self, "_poll_count", 0) + 1
+        # 첫 5회 + 이후 매 20회 만 로깅 — log 폭주 방지 + 사용자 보고 시 디버그용.
+        if self._poll_count <= 5 or self._poll_count % 20 == 0:
+            mb = received // (1024 * 1024)
+            _log.info(
+                "ModelDownloadJob poll #%d: cache=%s received=%dMB",
+                self._poll_count, cache_dir.name, mb,
+            )
         self.download_progress.emit(received, self._estimated_size)
 
     def _on_worker_done(self, repo_id: str) -> None:
@@ -102,11 +119,14 @@ class ModelDownloadJob(QObject):
             self._timer.stop()
         # 마지막 progress 한 번 더 — 100% 도달 표시.
         self._poll_progress()
+        _log.info("ModelDownloadJob finished: repo=%s polls=%d",
+                  repo_id, getattr(self, "_poll_count", 0))
         self.finished.emit(repo_id)
 
     def _on_worker_failed(self, msg: str) -> None:
         if self._timer:
             self._timer.stop()
+        _log.warning("ModelDownloadJob failed: %s", msg)
         self.error.emit(msg)
 
 
