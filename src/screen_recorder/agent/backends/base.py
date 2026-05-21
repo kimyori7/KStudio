@@ -6,12 +6,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol
 
-
-# emit 콜백 — runtime.py 의 Qt Signal emit 으로 연결됨.
-# msg: AgentMessage / event: AgentEvent (runtime.py 정의)
-EmitFn = Callable[[Any], None]
+if TYPE_CHECKING:
+    # 순환 임포트 회피 — 런타임 import 가 아니라 타입 체커 전용.
+    from ..runtime import AgentEvent, AgentMessage
+    EmitFn = Callable[["AgentMessage | AgentEvent"], None]
+else:
+    # emit 콜백 — runtime.py 의 Qt Signal emit 으로 연결됨.
+    # msg: AgentMessage / event: AgentEvent (runtime.py 정의)
+    EmitFn = Callable[[Any], None]
 
 
 @dataclass
@@ -43,7 +47,7 @@ class ChatBackend(Protocol):
     async def start_session(
         self,
         system_prompt: str,
-        tools: dict,
+        tools: dict[str, Any],
         model: str,
     ) -> None: ...
 
