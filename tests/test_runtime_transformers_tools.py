@@ -60,3 +60,59 @@ def test_runtime_transformers_tools_dict_for_omni_uses_prompted_strategy(tmp_pat
     rt = AgentRuntime(video_tools=vt, model="qwen25-omni-7b", cwd=tmp_path)
     rt._build_tools_dict()
     assert rt._tools_dict["tool_strategy"] == "prompted"
+
+
+def test_runtime_creates_transformers_backend_with_modalities_for_qwen_instruct(tmp_path, monkeypatch):
+    """qwen25-7b-instruct → TransformersBackend(modalities=frozenset({'text'})) 전달 확인.
+
+    runtime.py 는 TransformersBackend 를 직접 import 하므로 runtime 모듈 내 이름을 patch.
+    """
+    import screen_recorder.agent.runtime as runtime_mod
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    captured: dict = {}
+
+    class _Spy(TransformersBackend):
+        def __init__(self, repo_id, modalities=None):
+            captured["repo_id"] = repo_id
+            captured["modalities"] = modalities
+            super().__init__(repo_id, modalities)
+
+    monkeypatch.setattr(runtime_mod, "TransformersBackend", _Spy)
+
+    vt = MagicMock()
+    vt.plan_gate = MagicMock(return_value=MagicMock())
+    vt.mcp_server = MagicMock(return_value=MagicMock())
+    vt.tool_names = MagicMock(return_value=[])
+    vt.openai_tools_and_handlers = MagicMock(return_value=([], {}))
+
+    from screen_recorder.agent.runtime import AgentRuntime
+    AgentRuntime(video_tools=vt, model="qwen25-7b-instruct", cwd=tmp_path)
+    assert captured.get("repo_id") == "Qwen/Qwen2.5-7B-Instruct"
+    assert captured.get("modalities") == frozenset({"text"})
+
+
+def test_runtime_creates_transformers_backend_with_modalities_for_qwen_omni(tmp_path, monkeypatch):
+    """qwen25-omni-7b → TransformersBackend(modalities=frozenset({'text','image','audio','video'}))."""
+    import screen_recorder.agent.runtime as runtime_mod
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    captured: dict = {}
+
+    class _Spy(TransformersBackend):
+        def __init__(self, repo_id, modalities=None):
+            captured["repo_id"] = repo_id
+            captured["modalities"] = modalities
+            super().__init__(repo_id, modalities)
+
+    monkeypatch.setattr(runtime_mod, "TransformersBackend", _Spy)
+
+    vt = MagicMock()
+    vt.plan_gate = MagicMock(return_value=MagicMock())
+    vt.mcp_server = MagicMock(return_value=MagicMock())
+    vt.tool_names = MagicMock(return_value=[])
+    vt.openai_tools_and_handlers = MagicMock(return_value=([], {}))
+
+    from screen_recorder.agent.runtime import AgentRuntime
+    AgentRuntime(video_tools=vt, model="qwen25-omni-7b", cwd=tmp_path)
+    assert captured.get("modalities") == frozenset({"text", "image", "audio", "video"})

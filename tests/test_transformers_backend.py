@@ -522,3 +522,128 @@ def test_stopping_criteria_returns_true_when_flag_set(transformers_mock):
     # flag set 후: True.
     flag.set()
     assert cb(None, None) is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 15: text-only / Omni 모델 분기 테스트
+# Critical fix: Qwen2.5-7B-Instruct(text-only) 로드 시 arch mismatch 방지.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_ensure_model_loaded_uses_text_only_classes_for_text_only_model(transformers_mock):
+    """text-only modalities → AutoModelForCausalLM + AutoTokenizer 호출 (Omni 클래스 X)."""
+    backend = TransformersBackend(
+        repo_id="Qwen/Qwen2.5-7B-Instruct",
+        modalities=frozenset({"text"}),
+    )
+    asyncio.run(backend._ensure_model_loaded())
+
+    # AutoModelForCausalLM.from_pretrained 가 호출되어야 (Omni 아님).
+    assert transformers_mock["transformers"].AutoModelForCausalLM.from_pretrained.called, (
+        "text-only 모델인데 AutoModelForCausalLM 안 쓰임"
+    )
+    assert transformers_mock["transformers"].AutoTokenizer.from_pretrained.called, (
+        "text-only 모델인데 AutoTokenizer 안 쓰임"
+    )
+    # Omni 클래스는 호출 안 됨.
+    assert not transformers_mock["transformers"].Qwen2_5OmniForConditionalGeneration.from_pretrained.called, (
+        "text-only 모델인데 Omni 클래스 호출됨"
+    )
+    assert not transformers_mock["transformers"].Qwen2_5OmniProcessor.from_pretrained.called, (
+        "text-only 모델인데 Omni Processor 호출됨"
+    )
+
+
+def test_ensure_model_loaded_uses_omni_classes_for_multimodal_model(transformers_mock):
+    """multimodal modalities → Qwen2_5OmniForConditionalGeneration 호출 (회귀 보호)."""
+    backend = TransformersBackend(
+        repo_id="Qwen/Qwen2.5-Omni-7B",
+        modalities=frozenset({"text", "image", "audio", "video"}),
+    )
+    asyncio.run(backend._ensure_model_loaded())
+
+    assert transformers_mock["transformers"].Qwen2_5OmniForConditionalGeneration.from_pretrained.called
+    assert transformers_mock["transformers"].Qwen2_5OmniProcessor.from_pretrained.called
+    assert not transformers_mock["transformers"].AutoModelForCausalLM.from_pretrained.called
+
+
+def test_default_modalities_is_omni_for_backward_compatibility(transformers_mock):
+    """modalities 인자 안 주면 Omni 가정 (기존 동작 유지)."""
+    backend = TransformersBackend(repo_id="Qwen/test")
+    asyncio.run(backend._ensure_model_loaded())
+
+    assert transformers_mock["transformers"].Qwen2_5OmniForConditionalGeneration.from_pretrained.called
+
+
+@pytest.mark.asyncio
+async def test_run_one_generate_text_only_does_not_call_process_mm_info(transformers_mock):
+    """text-only _run_one_generate → process_mm_info 미호출 + return_audio/use_audio_in_video 인자 없음.
+
+    회귀 보호: Omni 전용 kwargs 가 AutoModelForCausalLM.generate 에 넘어가면 TypeError.
+
+    text-only path 는 AutoModelForCausalLM.from_pretrained 가 반환하는 인스턴스에서
+    generate 를 호출 — 그 인스턴스를 직접 참조해서 검증.
+    """
+    from screen_recorder.agent.backends import ChatInput
+
+    # text-only path 의 model 인스턴스 — AutoModelForCausalLM.from_pretrained 반환값.
+    text_model_inst = MagicMock()
+    text_model_inst.device = "cpu"
+    text_model_inst.dtype = "float32"
+    text_model_inst.generate = MagicMock(return_value=None)
+    transformers_mock["transformers"].AutoModelForCausalLM.from_pretrained = MagicMock(
+        return_value=text_model_inst,
+    )
+
+    # text-only tokenizer 인스턴스.
+    text_tokenizer_inst = MagicMock()
+    text_tokenizer_inst.apply_chat_template = MagicMock(return_value="<prompt>")
+    fake_text_inputs = MagicMock()
+    fake_text_inputs.to = MagicMock(return_value=fake_text_inputs)
+    text_tokenizer_inst.return_value = fake_text_inputs
+    transformers_mock["transformers"].AutoTokenizer.from_pretrained = MagicMock(
+        return_value=text_tokenizer_inst,
+    )
+
+    _setup_streamer_mock(transformers_mock, ["안녕"])
+    # streamer 는 processor_inst 기준으로 만들어지므로 text_tokenizer_inst 에도 등록.
+    # TextIteratorStreamer 는 이미 mock — streamer 는 transformers_mock 의 TextIteratorStreamer.
+
+    backend = TransformersBackend(
+        repo_id="Qwen/Qwen2.5-7B-Instruct",
+        modalities=frozenset({"text"}),
+    )
+    await backend.start_session(system_prompt="sys", tools={}, model="qwen25-7b-instruct")
+    await backend.send_message(ChatInput(text="안녕"), lambda _: None)
+
+    # process_mm_info 호출 안 됨.
+    assert transformers_mock["process_mm_info"].call_count == 0, (
+        "text-only 모델인데 process_mm_info 호출됨"
+    )
+
+    # text-only model 의 generate 호출 확인.
+    assert text_model_inst.generate.call_count == 1
+    _, gen_kwargs = text_model_inst.generate.call_args
+    assert "return_audio" not in gen_kwargs, "text-only generate 에 return_audio 가 있음"
+    assert "use_audio_in_video" not in gen_kwargs, "text-only generate 에 use_audio_in_video 가 있음"
+
+
+@pytest.mark.asyncio
+async def test_run_one_generate_omni_calls_process_mm_info(transformers_mock):
+    """Omni _run_one_generate → process_mm_info 호출 + return_audio/use_audio_in_video 전달 (회귀 보호)."""
+    from screen_recorder.agent.backends import ChatInput
+
+    _setup_streamer_mock(transformers_mock, ["응답"])
+
+    backend = TransformersBackend(
+        repo_id="Qwen/Qwen2.5-Omni-7B",
+        modalities=frozenset({"text", "image", "audio", "video"}),
+    )
+    await backend.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+    await backend.send_message(ChatInput(text="안녕"), lambda _: None)
+
+    assert transformers_mock["process_mm_info"].call_count == 1
+    assert transformers_mock["model_inst"].generate.call_count == 1
+    _, gen_kwargs = transformers_mock["model_inst"].generate.call_args
+    assert gen_kwargs.get("return_audio") is False
+    assert gen_kwargs.get("use_audio_in_video") is False

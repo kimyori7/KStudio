@@ -75,8 +75,15 @@ _QWEN_SYSTEM_PROMPT = (
 class TransformersBackend:
     """transformers 기반 백엔드. 현 PoC: Qwen2.5-Omni 7B text + image."""
 
-    def __init__(self, repo_id: str) -> None:
+    def __init__(self, repo_id: str, modalities: "frozenset[str] | None" = None) -> None:
+        """repo_id + modalities (text/image/audio/video 중 어느 것 지원하는지).
+
+        modalities=None (기본) → 하위호환: Omni 가정 (기존 동작 유지).
+        text 만 있으면 text-only path (AutoModelForCausalLM + AutoTokenizer).
+        image/audio/video 중 하나라도 있으면 Omni path (Qwen2_5OmniForConditionalGeneration).
+        """
         self._repo_id = repo_id
+        self._modalities: frozenset = modalities if modalities is not None else frozenset({"text", "image", "audio", "video"})
         self._system_prompt: str = _QWEN_SYSTEM_PROMPT
         self._model: Optional[Any] = None
         self._processor: Optional[Any] = None
@@ -91,6 +98,10 @@ class TransformersBackend:
         self._openai_tools: list[dict] = []
         self._tool_handlers: dict[str, Any] = {}
         self._tool_strategy: str = "none"
+
+    def _is_text_only(self) -> bool:
+        """text 만 지원하는 모델 (Qwen2.5-7B-Instruct 등) → AutoModel/AutoTokenizer 경로."""
+        return self._modalities == frozenset({"text"})
 
     async def start_session(
         self, system_prompt: str, tools: dict[str, Any], model: str,
@@ -337,7 +348,6 @@ class TransformersBackend:
         발생 가능하나 현재 테스트 범위 밖 — 향후 정밀 prefix 감지로 개선 가능.
         """
         from transformers import TextIteratorStreamer
-        from qwen_omni_utils import process_mm_info
         from .tool_adapter import parse_tool_calls
 
         tools_arg = self._openai_tools if self._tool_strategy == "official" else None
@@ -345,24 +355,38 @@ class TransformersBackend:
             conversation, tools=tools_arg,
             add_generation_prompt=True, tokenize=False,
         )
-        audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
-        inputs = self._processor(
-            text=text, audio=audios, images=images, videos=videos,
-            return_tensors="pt", padding=True, use_audio_in_video=False,
-        )
-        inputs = inputs.to(self._model.device).to(self._model.dtype)
 
         streamer = TextIteratorStreamer(
             self._processor, skip_prompt=True, skip_special_tokens=True,
         )
         self._stop_flag = threading.Event()
         stopping = self._make_stopping_criteria(self._stop_flag)
-        gen_kwargs = dict(
-            **inputs, streamer=streamer,
-            return_audio=False, use_audio_in_video=False,
-            stopping_criteria=stopping,
-            max_new_tokens=512, do_sample=False,
-        )
+
+        if self._is_text_only():
+            # text-only 경로 — tokenizer 만 사용. Omni 전용 인자 제거.
+            inputs = self._processor(text, return_tensors="pt", padding=True)
+            inputs = inputs.to(self._model.device)
+            # Long tensor (input_ids) 는 dtype 변환 불필요 — .to(dtype) 생략.
+            gen_kwargs = dict(
+                **inputs, streamer=streamer,
+                stopping_criteria=stopping,
+                max_new_tokens=512, do_sample=False,
+            )
+        else:
+            # Omni 경로 — process_mm_info + Omni 전용 kwargs.
+            from qwen_omni_utils import process_mm_info
+            audios, images, videos = process_mm_info(conversation, use_audio_in_video=False)
+            inputs = self._processor(
+                text=text, audio=audios, images=images, videos=videos,
+                return_tensors="pt", padding=True, use_audio_in_video=False,
+            )
+            inputs = inputs.to(self._model.device).to(self._model.dtype)
+            gen_kwargs = dict(
+                **inputs, streamer=streamer,
+                return_audio=False, use_audio_in_video=False,
+                stopping_criteria=stopping,
+                max_new_tokens=512, do_sample=False,
+            )
 
         gen_error: dict[str, BaseException] = {}
 
@@ -432,11 +456,30 @@ class TransformersBackend:
         속도/메모리 최적화:
         - attn_implementation="sdpa" — PyTorch built-in scaled_dot_product_attention.
           기본 eager 보다 2-3배 빠름. flash-attn 별도 설치 없이 즉시 적용.
-        - 모델 로드 후 disable_talker() — Qwen2.5-Omni 의 speech 생성 모듈 (~2GB
+        - Omni: 모델 로드 후 disable_talker() — Qwen2.5-Omni 의 speech 생성 모듈 (~2GB
           VRAM) 해제. text/image 만 쓰므로 불필요.
+
+        분기:
+        - text-only (_is_text_only()): AutoModelForCausalLM + AutoTokenizer.
+        - 멀티모달 (기본): Qwen2_5OmniForConditionalGeneration + Qwen2_5OmniProcessor.
         """
         if self._model is not None and self._processor is not None:
             return
+        if self._is_text_only():
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self._model = await asyncio.to_thread(
+                AutoModelForCausalLM.from_pretrained,
+                self._repo_id,
+                torch_dtype="auto",
+                device_map="auto",
+                attn_implementation="sdpa",
+            )
+            self._processor = await asyncio.to_thread(
+                AutoTokenizer.from_pretrained,
+                self._repo_id,
+            )
+            return
+        # Omni 경로 — 멀티모달 (image/audio/video 포함).
         from transformers import (
             Qwen2_5OmniForConditionalGeneration,
             Qwen2_5OmniProcessor,
