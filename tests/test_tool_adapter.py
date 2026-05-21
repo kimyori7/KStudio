@@ -144,3 +144,74 @@ def test_parse_tool_calls_strips_tool_call_tags_from_text():
     assert "</tool_call>" not in stripped
     assert "도구를 호출하겠습니다." in stripped
     assert "결과를 보고 답변드릴게요." in stripped
+
+
+def test_build_prompted_tool_catalog_lists_each_tool():
+    """prompted 모드 system prompt 카탈로그 — 도구 이름/설명/스키마 줄별 정리.
+
+    Qwen2.5-Omni 처럼 chat_template 가 tools= 미지원인 모델용. 시스템 프롬프트에
+    텍스트로 도구 정의 주입 → 모델이 Hermes 형식 `<tool_call>{...}</tool_call>` 으로
+    출력하도록 강제.
+    """
+    from screen_recorder.agent.backends.tool_adapter import build_prompted_tool_catalog
+    openai_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_video_state",
+                "description": "현재 영상 상태",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "propose_effect",
+                "description": "효과 제안",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"type": {"type": "string"}, "payload": {"type": "object"}},
+                    "required": ["type", "payload"],
+                },
+            },
+        },
+    ]
+    catalog = build_prompted_tool_catalog(openai_tools)
+
+    # 호출 형식 명시 — Hermes 태그.
+    assert "<tool_call>" in catalog
+    assert "</tool_call>" in catalog
+    # 각 도구의 이름 + 설명 포함.
+    assert "get_video_state" in catalog
+    assert "현재 영상 상태" in catalog
+    assert "propose_effect" in catalog
+    assert "효과 제안" in catalog
+    # 스키마도 (간단히 JSON 으로 보임).
+    assert "payload" in catalog
+
+
+def test_build_tool_result_message_returns_user_role_with_tool_response_block():
+    """tool result → conversation 메시지 (다음 generate 의 context).
+
+    Qwen 의 Hermes 컨벤션: tool result 는 user role 의 <tool_response>...</tool_response>
+    태그로 들어감 (assistant 의 다음 turn 이 result 보고 응답 생성).
+    """
+    from screen_recorder.agent.backends.tool_adapter import build_tool_result_message
+    msg = build_tool_result_message(
+        tool_use_id="tu_0",
+        result={"status": "ok", "duration_ms": 12345},
+    )
+    assert msg["role"] == "user"
+    # content 는 단순 string (Qwen processor 가 받음).
+    assert isinstance(msg["content"], str)
+    assert "tool_response" in msg["content"]
+    assert "</tool_response>" in msg["content"]
+    assert "duration_ms" in msg["content"]
+    assert "12345" in msg["content"]
+
+
+def test_build_tool_result_message_handles_string_result():
+    """result 가 dict 가 아닌 string 인 경우도 처리 (raw 출력 / MCP error_text 등)."""
+    from screen_recorder.agent.backends.tool_adapter import build_tool_result_message
+    msg = build_tool_result_message(tool_use_id="tu_0", result="some plain string")
+    assert "some plain string" in msg["content"]

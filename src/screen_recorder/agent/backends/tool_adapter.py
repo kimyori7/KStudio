@@ -88,3 +88,54 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
 def strip_tool_call_tags(text: str) -> str:
     """<tool_call>...</tool_call> 태그를 텍스트에서 제거 — UI 표시용 (사용자에겐 JSON 가림)."""
     return _TOOL_CALL_RE.sub("", text).strip()
+
+
+def build_prompted_tool_catalog(openai_tools: list[dict[str, Any]]) -> str:
+    """OpenAI tools list → system prompt 추가용 카탈로그 텍스트.
+
+    chat_template 이 tools= 미지원인 모델 (Qwen2.5-Omni 등) 에서 사용 — 시스템 프롬프트에
+    이 텍스트를 합쳐 모델이 도구 알게 + Hermes 형식 출력 강제. parse_tool_calls 가
+    같은 출력 형식 파싱.
+    """
+    if not openai_tools:
+        return ""
+    lines: list[str] = [
+        "",
+        "## 사용 가능한 도구",
+        "",
+        "다음 도구들을 호출할 수 있습니다. 도구가 필요하면 응답 안에 정확히 다음 형식으로 출력하세요:",
+        "",
+        '<tool_call>{"name": "도구이름", "arguments": {"인자": "값"}}</tool_call>',
+        "",
+        "도구 정의:",
+    ]
+    for t in openai_tools:
+        fn = t.get("function") or {}
+        name = fn.get("name", "?")
+        desc = fn.get("description", "")
+        params = fn.get("parameters", {})
+        lines.append(f"- **{name}**: {desc}")
+        # 파라미터 스키마는 한 줄 JSON 으로 — 컨텍스트 절약.
+        lines.append(f"  parameters: {json.dumps(params, ensure_ascii=False)}")
+    lines.append("")
+    lines.append("도구 호출이 불필요하면 일반 텍스트로 답하세요.")
+    return "\n".join(lines)
+
+
+def build_tool_result_message(tool_use_id: str, result: Any) -> dict[str, Any]:
+    """tool result → conversation 의 한 메시지 (Qwen 컨벤션: user role + <tool_response>).
+
+    Hermes 정식 + prompted 시뮬레이션 양쪽 동일 — Qwen 이 다음 generate 에서 이
+    텍스트 보고 최종 응답 생성. result 가 dict 면 JSON 문자열화, string 이면 그대로.
+    """
+    if isinstance(result, str):
+        body = result
+    else:
+        try:
+            body = json.dumps(result, ensure_ascii=False, default=str)
+        except Exception:
+            body = str(result)
+    return {
+        "role": "user",
+        "content": f"<tool_response id=\"{tool_use_id}\">\n{body}\n</tool_response>",
+    }
