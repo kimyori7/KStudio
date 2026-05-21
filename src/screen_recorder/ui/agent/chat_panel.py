@@ -17,6 +17,7 @@ UI 갱신 검증 가능.
 from __future__ import annotations
 
 import logging
+import subprocess
 from typing import Optional
 
 from pathlib import Path
@@ -53,6 +54,54 @@ PYTORCH_PACKAGES: tuple[str, ...] = (
     "qwen-omni-utils[decord]",
     "soundfile",
 )
+
+
+# PyTorch CUDA wheel 인덱스. CUDA 13.0 은 sm_75 (Turing) ~ sm_120 (Blackwell, RTX 50xx)
+# 모두 지원하므로 NVIDIA GPU 가 감지되면 무조건 이 인덱스 사용 — 사용자별 GPU 세대 분기
+# 없음. (사용자 RTX 5060 Ti = sm_120, cu126 에는 해당 binary 없음.)
+_PYTORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu130"
+
+
+def _detect_nvidia_gpu() -> bool:
+    """nvidia-smi 호출로 NVIDIA GPU 존재 여부 판정.
+
+    True = GPU 있음 (CUDA wheel 설치 권장). False = GPU 없음 / 드라이버 문제 /
+    nvidia-smi 미설치. 어떤 예외도 False 로 처리해 GPU 미지원 환경에서 깨지지 않음.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _is_torch_cuda_available() -> bool:
+    """이미 CUDA torch 가 설치되어 동작 가능한지 — installer skip 판정.
+
+    torch import 실패 / CUDA 미빌드 / 드라이버 mismatch → False (재설치 후보).
+    """
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def _pytorch_index_url_for_install() -> Optional[str]:
+    """PyTorch 설치에 사용할 pip --index-url. None 이면 default (CPU wheel).
+
+    - GPU 없음 → None (CPU 로 진행, 사용자에게 후술 시스템 메시지로 한계 안내).
+    - GPU 있음 + 이미 CUDA torch OK → None (재설치 불필요, 호출자가 installer skip).
+    - GPU 있음 + torch 없음 / CPU torch → cu130 wheel URL.
+    """
+    if not _detect_nvidia_gpu():
+        return None
+    if _is_torch_cuda_available():
+        return None
+    return _PYTORCH_CUDA_INDEX
 
 
 # 채팅 디버그 로그 — 사용자가 보고할 때 ~/AppData/Local/KStudio/logs/chat_debug.log 를
@@ -1561,9 +1610,23 @@ class ChatPanel(QDockWidget):
             existing.activateWindow()
             return
 
+        # NVIDIA GPU 감지 → CUDA wheel 인덱스 자동 선택. None 이면 default CPU wheel.
+        index_url = _pytorch_index_url_for_install()
+        has_gpu = _detect_nvidia_gpu()
+        if index_url:
+            gpu_note = (
+                f"✓ NVIDIA GPU 감지됨 — CUDA 13.0 wheel (~3GB) 설치 (GPU 가속)."
+            )
+        elif has_gpu:
+            # GPU 있는데 이미 CUDA torch 동작 — 보통 여기 못 옴 (체크가 위에서 잡힘).
+            gpu_note = "✓ NVIDIA GPU + CUDA torch 동작 중."
+        else:
+            gpu_note = (
+                "⚠ NVIDIA GPU 미감지 — CPU wheel 설치 (Qwen 동작은 가능하나 매우 느립니다)."
+            )
         info = (
             f"{meta.display_name} 사용에 필요한 PyTorch 패키지를 venv 안에 설치합니다.\n"
-            f"약 6GB 다운로드 — 인터넷 속도에 따라 수 분 ~ 십수 분 소요.\n"
+            f"{gpu_note}\n"
             f"설치 후 자동으로 모델 다운로드 단계로 진행됩니다.\n"
             f"(설치 완료 후 import 가 안 되면 KStudio 재시작이 필요할 수 있습니다.)"
         )
@@ -1572,6 +1635,7 @@ class ChatPanel(QDockWidget):
             packages=PYTORCH_PACKAGES,
             title="PyTorch 설치",
             info_text=info,
+            index_url=index_url,
         )
 
         # GpuInstallDialog 의 close_btn → QDialog.close() → rejected emit (accept() 안 부름).

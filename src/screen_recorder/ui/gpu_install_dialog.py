@@ -41,11 +41,16 @@ class GpuInstallDialog(QDialog):
         packages: tuple[str, ...] | None = None,
         title: str | None = None,
         info_text: str | None = None,
+        index_url: str | None = None,
     ) -> None:
         super().__init__(parent)
         # 기본값 = 기존 cuBLAS/cuDNN 동작 (호환성 100%).
         # packages 인자로 PyTorch 등 다른 패키지 세트도 동일 UI 로 설치 가능.
         self._packages = list(packages) if packages else list(NVIDIA_PIP_PACKAGES)
+        # index_url 설정 시 pip 가 별도 인덱스에서 wheel 찾음 (PyTorch CUDA wheel
+        # 예: https://download.pytorch.org/whl/cu130). 또한 --force-reinstall 추가 —
+        # CPU torch 가 이미 설치되어 있으면 동일 버전이라 그냥 install 로는 교체 안 됨.
+        self._index_url = index_url
 
         self.setWindowTitle(title or "GPU 가속 활성화")
         self.setModal(False)
@@ -132,8 +137,13 @@ class GpuInstallDialog(QDialog):
             "-u", "-m", "pip", "install",
             "--no-input", "--disable-pip-version-check",
             "--progress-bar", "off",
-            "--upgrade", *self._packages,
+            "--upgrade",
         ]
+        if self._index_url:
+            # CPU torch → CUDA torch 교체용. --force-reinstall 없으면 같은 버전 wheel
+            # 이라 pip 가 "Requirement already satisfied" 로 끝내고 교체 안 됨.
+            args += ["--force-reinstall", "--index-url", self._index_url]
+        args += list(self._packages)
         self._append_log(f"$ {program} {' '.join(args)}\n")
         self._append_log("(pip 응답 대기 중… 첫 출력까지 몇 초 걸릴 수 있습니다)\n")
         self._process.start(program, args)

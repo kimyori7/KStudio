@@ -17,6 +17,32 @@ from unittest.mock import MagicMock
 from PySide6.QtCore import QObject, Signal
 
 
+# 의존성 "없음" 시뮬레이션 헬퍼 — builtins.__import__ patch 는 venv 에 실제 torch 가
+# 설치된 환경에서 sys.modules 캐시 우회 못 함. check_runtime_available 을 직접 patch
+# 하는 게 안전 + 의도 표현이 명확.
+def _block_transformers_runtime(monkeypatch) -> None:
+    def _no_transformers(runtime):
+        return runtime == "claude"
+    for path in (
+        "screen_recorder.agent.models.registry.check_runtime_available",
+        "screen_recorder.agent.models.check_runtime_available",
+        "screen_recorder.ui.agent.chat_panel.check_runtime_available",
+    ):
+        monkeypatch.setattr(path, _no_transformers)
+
+
+def _unblock_transformers_runtime(monkeypatch) -> None:
+    """deps_present 토글용 — 설치 성공 시뮬레이션 후 호출."""
+    def _all_ok(_runtime):
+        return True
+    for path in (
+        "screen_recorder.agent.models.registry.check_runtime_available",
+        "screen_recorder.agent.models.check_runtime_available",
+        "screen_recorder.ui.agent.chat_panel.check_runtime_available",
+    ):
+        monkeypatch.setattr(path, _all_ok)
+
+
 # ============================================================
 # Fake ModelDownloadJob — QObject 기반이라 .connect(...) 가 실제로 동작.
 # MagicMock 으로 대체하면 connect 호출이 silent no-op 이라 후속 슬롯이
@@ -61,18 +87,11 @@ def test_qwen_click_without_deps_opens_installer_dialog(
     chat_panel_with_agent, monkeypatch, qtbot,
 ):
     """transformers 미설치 → Qwen 클릭 → installer 다이얼로그 호출."""
-    import builtins
     panel, rt = chat_panel_with_agent
     rt.start()
     try:
-        # 의존성 import 차단 — check_runtime_available 가 False 반환하도록.
-        original_import = builtins.__import__
-
-        def _no_torch(name, *args, **kwargs):
-            if name in ("torch", "qwen_omni_utils", "transformers"):
-                raise ImportError(f"mock — {name} not available")
-            return original_import(name, *args, **kwargs)
-        monkeypatch.setattr(builtins, "__import__", _no_torch)
+        # 의존성 차단 — check_runtime_available 가 False 반환하도록.
+        _block_transformers_runtime(monkeypatch)
 
         # GpuInstallDialog 호출 추적 — show() 만 하고 실제 pip 실행 안 함.
         opened_dialogs: list = []
@@ -184,25 +203,11 @@ def test_installer_rejected_after_success_does_not_fallback(
     GpuInstallDialog 의 close_btn 은 accept() 가 아닌 close() — 항상 rejected 발화.
     finished_ok 이후의 rejected 를 fallback 으로 처리하면 모델/UI 불일치 발생.
     """
-    import builtins
-    import sys
     panel, rt = chat_panel_with_agent
     rt.start()
     try:
-        original_import = builtins.__import__
-        deps_present = {"value": False}
-
-        # importlib.import_module 가 builtins.__import__ 를 거침 — 처음엔 ImportError,
-        # 설치 성공 후엔 sys.modules 의 stub 으로 통과시키게.
-        def _conditional(name, *args, **kwargs):
-            if name in ("torch", "qwen_omni_utils", "transformers"):
-                if deps_present["value"] and name in sys.modules:
-                    return sys.modules[name]
-                if deps_present["value"]:
-                    return original_import(name, *args, **kwargs)
-                raise ImportError(f"mock — {name} not available")
-            return original_import(name, *args, **kwargs)
-        monkeypatch.setattr(builtins, "__import__", _conditional)
+        # 초기 = 의존성 없음. dlg.finished_ok 후엔 unblock 해서 chain 통과시킴.
+        _block_transformers_runtime(monkeypatch)
 
         opened: list = []
         from screen_recorder.ui import gpu_install_dialog as gid_mod
@@ -241,11 +246,8 @@ def test_installer_rejected_after_success_does_not_fallback(
         assert len(opened) == 1
         dlg = opened[0]
 
-        # 설치 성공 시나리오 — sys.modules 에 stub 주입 후 finished_ok 발화.
-        monkeypatch.setitem(sys.modules, "transformers", object())
-        monkeypatch.setitem(sys.modules, "torch", object())
-        monkeypatch.setitem(sys.modules, "qwen_omni_utils", object())
-        deps_present["value"] = True
+        # 설치 성공 시나리오 — 의존성 가능 상태로 전환 후 finished_ok 발화.
+        _unblock_transformers_runtime(monkeypatch)
         dlg.finished_ok.emit()
         qtbot.wait(50)
 
@@ -336,16 +338,11 @@ def test_installer_finished_ok_but_import_still_fails_shows_restart_and_no_chain
 
     회귀 보호: 무한 chain (다이얼로그 여러 개 뜸) 방지.
     """
-    import builtins
     panel, rt = chat_panel_with_agent
     rt.start()
     try:
-        original_import = builtins.__import__
-        def _no_torch(name, *args, **kwargs):
-            if name in ("torch", "qwen_omni_utils", "transformers"):
-                raise ImportError(f"mock — {name} not available")
-            return original_import(name, *args, **kwargs)
-        monkeypatch.setattr(builtins, "__import__", _no_torch)
+        # 의존성 차단 — finished_ok 후에도 unblock 안 함 (시뮬레이션: import 여전히 실패).
+        _block_transformers_runtime(monkeypatch)
 
         opened_dialogs: list = []
         from screen_recorder.ui import gpu_install_dialog as gid_mod
@@ -406,16 +403,10 @@ def test_startup_demotes_qwen_to_default_when_deps_missing(qtbot, tmp_path, monk
     원인: settings 에 Qwen 저장 → 다음 실행 시 콤보가 Qwen 으로 → 자동 트리거.
     Fix: __init__ 시점에 의존성 체크 → 없으면 default 로 강등.
     """
-    import builtins
     from screen_recorder.ui.agent.chat_panel import ChatPanel, DEFAULT_MODEL_ID
     from screen_recorder.agent.runtime import AgentRuntime
 
-    original_import = builtins.__import__
-    def _no_torch(name, *args, **kwargs):
-        if name in ("torch", "qwen_omni_utils", "transformers"):
-            raise ImportError("mock")
-        return original_import(name, *args, **kwargs)
-    monkeypatch.setattr(builtins, "__import__", _no_torch)
+    _block_transformers_runtime(monkeypatch)
 
     vt = MagicMock()
     vt.plan_gate = MagicMock(return_value=MagicMock())
@@ -435,16 +426,10 @@ def test_startup_demotes_qwen_to_default_when_deps_missing(qtbot, tmp_path, monk
 
 def test_emit_startup_warnings_emits_demotion_message_once(qtbot, tmp_path, monkeypatch):
     """emit_startup_warnings 호출 시 강등 사실 시스템 메시지로 사용자에게 알림."""
-    import builtins
     from screen_recorder.ui.agent.chat_panel import ChatPanel
     from screen_recorder.agent.runtime import AgentRuntime
 
-    original_import = builtins.__import__
-    def _no_torch(name, *args, **kwargs):
-        if name in ("torch", "qwen_omni_utils", "transformers"):
-            raise ImportError("mock")
-        return original_import(name, *args, **kwargs)
-    monkeypatch.setattr(builtins, "__import__", _no_torch)
+    _block_transformers_runtime(monkeypatch)
 
     vt = MagicMock()
     vt.plan_gate = MagicMock(return_value=MagicMock())
@@ -506,16 +491,10 @@ def test_open_installer_twice_does_not_create_second_dialog(
     회귀 보호: 사용자가 Qwen 클릭 (dialog 뜸) → 닫지 않고 콤보에서 다른 클릭 →
     또 새 dialog 뜨는 현상 방지.
     """
-    import builtins
     panel, rt = chat_panel_with_agent
     rt.start()
     try:
-        original_import = builtins.__import__
-        def _no_torch(name, *args, **kwargs):
-            if name in ("torch", "qwen_omni_utils", "transformers"):
-                raise ImportError("mock")
-            return original_import(name, *args, **kwargs)
-        monkeypatch.setattr(builtins, "__import__", _no_torch)
+        _block_transformers_runtime(monkeypatch)
 
         opened_dialogs: list = []
         from screen_recorder.ui import gpu_install_dialog as gid_mod

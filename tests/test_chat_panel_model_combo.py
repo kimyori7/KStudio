@@ -66,16 +66,20 @@ def test_selecting_qwen_without_deps_opens_installer_keeps_model(
     cancel/실패 시 fallback). 정밀 다이얼로그 검증은 test_chat_panel_phase_3b_flow.py.
     여기서는 runtime model 이 변경되지 않는다는 점만 확인.
     """
-    import builtins
     panel, rt = chat_panel
     rt.start()
     try:
-        original_import = builtins.__import__
-        def _no_torch(name, *args, **kwargs):
-            if name in ("torch", "qwen_omni_utils"):
-                raise ImportError(f"mock — {name} not available")
-            return original_import(name, *args, **kwargs)
-        monkeypatch.setattr(builtins, "__import__", _no_torch)
+        # torch / qwen_omni_utils 가 실제 venv 에 있어도 (테스트 환경) "없는 것처럼"
+        # 처리 — check_runtime_available 을 직접 patch (builtins.__import__ patch 는
+        # sys.modules 캐시 때문에 안 통함).
+        def _no_transformers(runtime):
+            return runtime == "claude"
+        for path in (
+            "screen_recorder.agent.models.registry.check_runtime_available",
+            "screen_recorder.agent.models.check_runtime_available",
+            "screen_recorder.ui.agent.chat_panel.check_runtime_available",
+        ):
+            monkeypatch.setattr(path, _no_transformers)
 
         # GpuInstallDialog 가 실제로 뜨지 않게 — show() 만 no-op.
         from screen_recorder.ui import gpu_install_dialog as gid_mod
