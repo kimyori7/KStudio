@@ -115,8 +115,58 @@ class TransformersBackend:
         return modality == "image"
 
     async def send_message(self, msg: ChatInput, emit_fn: EmitFn) -> None:
-        """Task 3-5 에서 채워짐."""
-        raise NotImplementedError
+        """텍스트/이미지 메시지 처리 (Task 3: non-streaming first — Task 5 에서 streaming).
+
+        흐름:
+        1. 모델 로드 → conversation 빌드.
+        2. processor.apply_chat_template + qwen_omni_utils.process_mm_info.
+        3. processor(...) → inputs → .to(device).to(dtype).
+        4. model.generate(**inputs, return_audio=False, use_audio_in_video=False).
+        5. processor.batch_decode → emit AgentMessage(role='assistant').
+
+        에러는 emit_fn(AgentEvent(kind='error', ...)) 로만 전달 — 호출자에게 raise 안 함.
+        """
+        try:
+            await self._ensure_model_loaded()
+            emit_fn(AgentEvent(kind="started"))
+
+            from qwen_omni_utils import process_mm_info
+
+            conversation = self._build_conversation(msg)
+            text = self._processor.apply_chat_template(
+                conversation, add_generation_prompt=True, tokenize=False,
+            )
+            audios, images, videos = process_mm_info(
+                conversation, use_audio_in_video=False,
+            )
+            inputs = self._processor(
+                text=text,
+                audio=audios, images=images, videos=videos,
+                return_tensors="pt", padding=True,
+                use_audio_in_video=False,
+            )
+            inputs = inputs.to(self._model.device).to(self._model.dtype)
+
+            # generate — blocking, GIL 보유. 별도 thread.
+            text_ids = await asyncio.to_thread(
+                self._model.generate,
+                **inputs,
+                return_audio=False,
+                use_audio_in_video=False,
+            )
+            decoded = self._processor.batch_decode(
+                text_ids, skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            result_text = decoded[0] if decoded else ""
+
+            emit_fn(AgentMessage(role="assistant", text=result_text))
+            emit_fn(AgentEvent(kind="done"))
+        except Exception as exc:
+            _log.exception("TransformersBackend: send_message 실패")
+            emit_fn(AgentEvent(kind="error", detail=str(exc)))
+        finally:
+            self._cleanup_temp_files()
 
     async def send_tool_result(
         self, tool_use_id: str, result: Any, emit_fn: EmitFn,
