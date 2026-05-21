@@ -187,6 +187,19 @@ class ClaudeBackend:
                                 text=f"🔧 {name}({_short_args(input_dict)})",
                                 tool_name=name,
                             ))
+                elif isinstance(sdk_msg, UserMessage):
+                    for block in getattr(sdk_msg, "content", []) or []:
+                        if isinstance(block, ToolResultBlock):
+                            tool_id = getattr(block, "tool_use_id", "")
+                            content = getattr(block, "content", None)
+                            img_bytes, img_mime, preview = _extract_image_and_preview(content)
+                            emit_fn(AgentMessage(
+                                role="tool_result",
+                                text=f"← {preview}",
+                                tool_name=tool_id,
+                                image_bytes=img_bytes,
+                                image_mime=img_mime,
+                            ))
                 elif isinstance(sdk_msg, ResultMessage):
                     usage = getattr(sdk_msg, "usage", None) or {}
                     detail_parts = []
@@ -223,3 +236,45 @@ def _short_args(d: dict) -> str:
             sv = sv[:37] + "..."
         parts.append(f"{k}={sv}")
     return ", ".join(parts)
+
+
+def _extract_image_and_preview(content: Any) -> tuple[Optional[bytes], Optional[str], str]:
+    """tool_result content 에서 (image_bytes, mime, text_preview) 추출.
+
+    content 가 list[dict] 일 때 (MCP 표준):
+    - text 블록 → preview 누적
+    - image 블록 → base64 → bytes 디코드, mime 저장 (한 장만 처리)
+    문자열이면 그대로 preview.
+
+    runtime.py 에서 이동 (Task 6). Task 9 에서 runtime.py 원본 삭제.
+    """
+    import base64
+    if content is None:
+        return None, None, "(없음)"
+    if isinstance(content, str):
+        return None, None, content[:120] + ("…" if len(content) > 120 else "")
+    img_bytes: Optional[bytes] = None
+    img_mime: Optional[str] = None
+    text_parts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "image" and img_bytes is None:
+                data = block.get("data")
+                mime = block.get("mimeType") or block.get("mime_type") or "image/png"
+                if isinstance(data, str) and data:
+                    try:
+                        img_bytes = base64.b64decode(data)
+                        img_mime = str(mime)
+                    except Exception:
+                        pass
+            elif btype == "text":
+                text_parts.append(str(block.get("text", "")))
+    preview = " ".join(text_parts).strip()
+    if not preview:
+        preview = "[이미지]" if img_bytes else "(빈 결과)"
+    elif len(preview) > 120:
+        preview = preview[:117] + "…"
+    return img_bytes, img_mime, preview

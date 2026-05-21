@@ -525,3 +525,125 @@ async def test_send_message_tool_use_block_emits_tool_use(sdk_mock):
                       if isinstance(r, AgentMessage) and r.role == "tool_use"]
     assert len(tool_use_msgs) == 1
     assert "get_video_state" in tool_use_msgs[0].text
+    # Task 5 review 후속: tool_name 보존 확인.
+    assert tool_use_msgs[0].tool_name == "mcp__kstudio_video__get_video_state"
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool_result_text_only(sdk_mock):
+    """UserMessage ToolResultBlock content=str → AgentMessage(role='tool_result')."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _TRB:
+        tool_use_id = "toolu_123"
+        content = "결과 텍스트"
+
+    class _UM:
+        content = [_TRB()]
+
+    async def _r():
+        yield _UM()
+        class _R:
+            usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.UserMessage = _UM
+    mock_sdk.ToolResultBlock = _TRB
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    tool_results = [r for r in received
+                     if isinstance(r, AgentMessage) and r.role == "tool_result"]
+    assert len(tool_results) == 1
+    assert "결과 텍스트" in tool_results[0].text
+    # tool_use_id 보존 — UI 가 어느 tool_use 의 결과인지 매칭 가능.
+    assert tool_results[0].tool_name == "toolu_123"
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool_result_with_image(sdk_mock):
+    """tool_result content 안에 image dict → image_bytes 추출."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+    import base64
+
+    mock_sdk, mock_client = sdk_mock
+
+    fake_png = b"\x89PNG\r\n\x1a\nfake"
+    b64 = base64.b64encode(fake_png).decode("ascii")
+
+    class _TRB:
+        tool_use_id = "toolu_456"
+        content = [
+            {"type": "image", "data": b64, "mimeType": "image/png"},
+            {"type": "text", "text": "이건 프레임이야"},
+        ]
+
+    class _UM:
+        content = [_TRB()]
+
+    async def _r():
+        yield _UM()
+        class _R:
+            usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.UserMessage = _UM
+    mock_sdk.ToolResultBlock = _TRB
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    tool_results = [r for r in received
+                     if isinstance(r, AgentMessage) and r.role == "tool_result"]
+    assert len(tool_results) == 1
+    assert tool_results[0].image_bytes == fake_png
+    assert tool_results[0].image_mime == "image/png"
+    assert "프레임" in tool_results[0].text
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool_result_empty_content(sdk_mock):
+    """content=None / [] 일 때도 안전 — '(빈 결과)' 같은 placeholder."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _TRB:
+        tool_use_id = "toolu_789"
+        content = None
+
+    class _UM:
+        content = [_TRB()]
+
+    async def _r():
+        yield _UM()
+        class _R:
+            usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.UserMessage = _UM
+    mock_sdk.ToolResultBlock = _TRB
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    tool_results = [r for r in received
+                     if isinstance(r, AgentMessage) and r.role == "tool_result"]
+    assert len(tool_results) == 1
+    # image bytes 없음.
+    assert tool_results[0].image_bytes is None
