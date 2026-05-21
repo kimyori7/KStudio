@@ -298,8 +298,28 @@ class TransformersBackend:
             await asyncio.to_thread(thread.join)
             if "exc" in gen_error:
                 raise gen_error["exc"]
-            # 응답 끝 → history 에 누적 → 다음 turn 에서 같이 보냄.
-            self._commit_assistant_to_history("".join(assistant_chunks))
+            full_text = "".join(assistant_chunks)
+            # 응답에 tool_call 있는지 검사 — Hermes / prompted 모두 같은 형식.
+            from .tool_adapter import parse_tool_calls, strip_tool_call_tags
+            tool_calls = parse_tool_calls(full_text) if self._openai_tools else []
+
+            if tool_calls:
+                # tool_use 이벤트 + 핸들러 호출 + 결과 append + 재 generate 는 Task 10.
+                # 여기선 emit 만.
+                for call in tool_calls:
+                    emit_fn(AgentEvent(
+                        kind="tool_use",
+                        detail=f"{call['name']} {call['arguments']}",
+                    ))
+                    emit_fn(AgentMessage(
+                        role="tool_use",
+                        text=f"🔧 {call['name']}({call['arguments']})",
+                        tool_name=call["name"],
+                    ))
+                # assistant 텍스트는 strip 후 history 에 — tool_call 태그는 컨텍스트에 불필요.
+                self._commit_assistant_to_history(strip_tool_call_tags(full_text))
+            else:
+                self._commit_assistant_to_history(full_text)
             emit_fn(AgentEvent(kind="done"))
         except Exception as exc:
             _log.exception("TransformersBackend: send_message 실패")

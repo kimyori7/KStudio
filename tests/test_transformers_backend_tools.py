@@ -218,3 +218,72 @@ def test_send_message_omits_tools_when_prompted(transformers_mock, qtbot):
 
     # prompted 모드 — tools= None.
     assert captured.get("tools") is None
+
+
+def test_send_message_emits_tool_use_event_when_model_outputs_tool_call(transformers_mock):
+    """모델 출력에 <tool_call> 있으면 AgentEvent(kind='tool_use') + AgentMessage(role='tool_use') emit.
+
+    회귀 보호: Claude 의 ToolUseBlock 처리 패턴 (chat_panel 의 role='tool_use' 표시) 동등성.
+    """
+    from screen_recorder.agent.backends.base import ChatInput, AgentEvent, AgentMessage
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    # 모델이 한 chunk 로 tool_call 전체 출력하는 시나리오.
+    tool_call_text = '<tool_call>{"name": "get_video_state", "arguments": {}}</tool_call>'
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conv, tools=None, **kw): return "p"
+        def __call__(self, **kw):
+            class _Inputs(dict):
+                def to(self, *_a, **_kw): return self
+            return _Inputs()
+        def batch_decode(self, ids, **kw): return [""]
+
+    class _FakeModel:
+        device = "cpu"; dtype = None
+        def generate(self, **kw):
+            kw["streamer"].end()
+            return None
+
+    # streamer iter 가 위 텍스트 1개 chunk 로 emit.
+    class _FakeStreamer:
+        def __init__(self, *a, **kw):
+            self._fed = [tool_call_text]
+        def __iter__(self): return iter(self._fed)
+        def end(self): pass
+
+    transformers_mock["transformers"].TextIteratorStreamer = _FakeStreamer
+    transformers_mock["transformers"].StoppingCriteria = object
+    transformers_mock["transformers"].StoppingCriteriaList = lambda x: x
+    transformers_mock["qwen_omni_utils"].process_mm_info.return_value = (None, None, None)
+
+    backend = TransformersBackend(repo_id="Qwen/test")
+    backend._model = _FakeModel()
+    backend._processor = _FakeProcessor()
+
+    handler_calls: list = []
+    def _handler(args):
+        handler_calls.append(args)
+        return {"duration_ms": 1000}
+
+    tools_dict = {
+        "openai_tools": [{"type": "function", "function": {"name": "get_video_state",
+                                                            "description": "x", "parameters": {}}}],
+        "tool_handlers": {"get_video_state": _handler},
+        "tool_strategy": "prompted",
+    }
+    asyncio.run(backend.start_session("ignored", tools_dict, "x"))
+
+    events: list = []
+    async def _run():
+        await backend.send_message(ChatInput(text="영상 상태 알려줘"), events.append)
+    asyncio.run(_run())
+
+    # tool_use event 1개 emit (handler 도 호출).
+    tool_use_events = [e for e in events if isinstance(e, AgentEvent) and e.kind == "tool_use"]
+    assert len(tool_use_events) == 1
+    assert "get_video_state" in tool_use_events[0].detail
+    # tool_use AgentMessage 도 1개 (Claude 와 동등한 UI 표현).
+    tool_use_msgs = [m for m in events if isinstance(m, AgentMessage) and m.role == "tool_use"]
+    assert len(tool_use_msgs) == 1
+    assert tool_use_msgs[0].tool_name == "get_video_state"
