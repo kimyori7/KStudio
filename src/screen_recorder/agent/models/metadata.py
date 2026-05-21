@@ -30,3 +30,8 @@ class ModelMetadata:
     description: str
     source: str = "builtin"
     quantization: Optional[str] = None
+    # tool use 처리 방식 — "none" (도구 불가), "official" (chat_template 의 tools=
+    # 인자 정식 지원, Hermes 형식 자동 출력), "prompted" (chat_template 미지원 →
+    # KStudio 가 system prompt 에 도구 카탈로그 주입 + 출력에서 <tool_call> 태그
+    # 수동 파싱). 출력 파싱은 두 경우 동일 — 차이는 prompt 구성뿐.
+    tool_strategy: str = "none"

@@ -83,3 +83,27 @@ def test_check_runtime_available_unknown_runtime_false():
     from screen_recorder.agent.models import check_runtime_available
     assert check_runtime_available("llama-cpp") is False
     assert check_runtime_available("unknown") is False
+
+
+def test_metadata_has_tool_strategy_field():
+    """ModelMetadata 는 tool_strategy 필드를 갖는다 ('none' / 'official' / 'prompted')."""
+    m = ModelMetadata(
+        id="x", display_name="x", runtime="transformers", repo_id="org/x",
+        modalities=frozenset({"text"}), supports_korean=True,
+        estimated_size_gb=1.0, estimated_vram_gb=1.0,
+        context_window=1024, supports_tools=True,
+        description="x",
+        tool_strategy="official",
+    )
+    assert m.tool_strategy == "official"
+
+
+def test_metadata_tool_strategy_defaults_to_none():
+    m = ModelMetadata(
+        id="x", display_name="x", runtime="claude", repo_id=None,
+        modalities=frozenset({"text"}), supports_korean=True,
+        estimated_size_gb=0, estimated_vram_gb=0,
+        context_window=1000, supports_tools=False,
+        description="x",
+    )
+    assert m.tool_strategy == "none"
