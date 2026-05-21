@@ -30,6 +30,19 @@ from .base import AgentEvent, AgentMessage, ChatInput, EmitFn
 _log = logging.getLogger(__name__)
 
 
+# Streaming sentinel — executor 에서 StopIteration 잡고 이걸 반환해서
+# 메인 코루틴에서 단순 비교 (is _STREAM_SENTINEL) 로 종료 판정.
+_STREAM_SENTINEL = object()
+
+
+def _next_or_sentinel(it):
+    """next(it) — StopIteration 시 sentinel 반환 (executor 에서 예외 처리 단순화)."""
+    try:
+        return next(it)
+    except StopIteration:
+        return _STREAM_SENTINEL
+
+
 class TransformersBackend:
     """transformers 기반 백엔드. 현 PoC: Qwen2.5-Omni 7B text + image."""
 
@@ -115,21 +128,23 @@ class TransformersBackend:
         return modality == "image"
 
     async def send_message(self, msg: ChatInput, emit_fn: EmitFn) -> None:
-        """텍스트/이미지 메시지 처리 (Task 3: non-streaming first — Task 5 에서 streaming).
+        """텍스트/이미지 메시지 처리 — TextIteratorStreamer 로 token streaming.
 
         흐름:
-        1. 모델 로드 → conversation 빌드.
-        2. processor.apply_chat_template + qwen_omni_utils.process_mm_info.
-        3. processor(...) → inputs → .to(device).to(dtype).
-        4. model.generate(**inputs, return_audio=False, use_audio_in_video=False).
-        5. processor.batch_decode → emit AgentMessage(role='assistant').
+        1. 모델 로드 + conversation 빌드 + processor inputs.
+        2. TextIteratorStreamer 생성 (skip_prompt=True — 입력 토큰 제외).
+        3. generate 를 별도 thread 에서 실행 (blocking + GIL).
+        4. streamer iterate → chunk 마다 AgentMessage emit (loop.run_in_executor 로
+           한 chunk 씩 받음 — asyncio loop 블록 안 함).
+        5. thread join + done emit.
 
-        에러는 emit_fn(AgentEvent(kind='error', ...)) 로만 전달 — 호출자에게 raise 안 함.
+        에러는 emit_fn(AgentEvent(kind='error', ...)) 로만 전달.
         """
         try:
             await self._ensure_model_loaded()
             emit_fn(AgentEvent(kind="started"))
 
+            from transformers import TextIteratorStreamer
             from qwen_omni_utils import process_mm_info
 
             conversation = self._build_conversation(msg)
@@ -147,26 +162,72 @@ class TransformersBackend:
             )
             inputs = inputs.to(self._model.device).to(self._model.dtype)
 
-            # generate — blocking, GIL 보유. 별도 thread.
-            text_ids = await asyncio.to_thread(
-                self._model.generate,
+            streamer = TextIteratorStreamer(
+                self._processor,
+                skip_prompt=True,
+                skip_special_tokens=True,
+            )
+            self._stop_flag = threading.Event()
+            stopping = self._make_stopping_criteria(self._stop_flag)
+
+            gen_kwargs = dict(
                 **inputs,
+                streamer=streamer,
                 return_audio=False,
                 use_audio_in_video=False,
+                stopping_criteria=stopping,
             )
-            decoded = self._processor.batch_decode(
-                text_ids, skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )
-            result_text = decoded[0] if decoded else ""
 
-            emit_fn(AgentMessage(role="assistant", text=result_text))
+            # generate thread 안에서 raise 된 예외는 main coroutine 에 자동
+            # 전파되지 않음 → 박스에 담아 두고 thread.join 후 재발생시켜 외부
+            # except 블록에서 error event emit.
+            gen_error: dict[str, BaseException] = {}
+
+            def _run_generate():
+                try:
+                    self._model.generate(**gen_kwargs)
+                except BaseException as e:  # noqa: BLE001 — propagate to main
+                    _log.exception("TransformersBackend: generate thread 실패")
+                    gen_error["exc"] = e
+                    streamer.end()   # iterate 풀어주기
+
+            thread = threading.Thread(target=_run_generate, daemon=True)
+            thread.start()
+
+            # streamer iterate — blocking. loop.run_in_executor 로 한 chunk 씩.
+            loop = asyncio.get_running_loop()
+            iter_streamer = iter(streamer)
+            while True:
+                chunk = await loop.run_in_executor(None, _next_or_sentinel, iter_streamer)
+                if chunk is _STREAM_SENTINEL:
+                    break
+                if chunk:
+                    emit_fn(AgentMessage(role="assistant", text=chunk))
+
+            await asyncio.to_thread(thread.join)
+            if "exc" in gen_error:
+                raise gen_error["exc"]
             emit_fn(AgentEvent(kind="done"))
         except Exception as exc:
             _log.exception("TransformersBackend: send_message 실패")
             emit_fn(AgentEvent(kind="error", detail=str(exc)))
         finally:
+            self._stop_flag = None
             self._cleanup_temp_files()
+
+    def _make_stopping_criteria(self, flag: threading.Event):
+        """flag 가 set 되면 stop. cancel() 진입점.
+
+        Task 6 에서 실제 cancel 흐름 검증.
+        """
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        class _StopOnFlag(StoppingCriteria):
+            def __init__(self, flag): self.flag = flag
+            def __call__(self, input_ids, scores, **kwargs) -> bool:
+                return self.flag.is_set()
+
+        return StoppingCriteriaList([_StopOnFlag(flag)])
 
     async def send_tool_result(
         self, tool_use_id: str, result: Any, emit_fn: EmitFn,

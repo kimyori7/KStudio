@@ -72,6 +72,23 @@ def transformers_mock(monkeypatch):
     }
 
 
+def _setup_streamer_mock(transformers_mock, chunks: list[str]):
+    """streamer 가 chunks 순서대로 yield 하도록 mock 설정. generate 는 None 반환.
+
+    Task 5 의 streaming 리팩토링 후 — 기존 send_message 테스트들이 batch_decode
+    경로 대신 streamer 경로를 가게 됨. 각 send_message 테스트는 이 헬퍼로 streamer
+    응답 정의.
+    """
+    streamer_inst = MagicMock()
+    streamer_inst.__iter__ = MagicMock(return_value=iter(chunks))
+    streamer_inst.end = MagicMock()
+    transformers_mock["transformers"].TextIteratorStreamer = MagicMock(
+        return_value=streamer_inst,
+    )
+    transformers_mock["model_inst"].generate = MagicMock(return_value=None)
+    return streamer_inst
+
+
 @pytest.mark.asyncio
 async def test_start_session_does_not_load_model(transformers_mock):
     """start_session 만 호출하면 모델 로드 X — lazy 보장.
@@ -186,9 +203,7 @@ async def test_send_message_text_only_emits_started_text_done(transformers_mock)
     """
     from screen_recorder.agent.backends import ChatInput, AgentEvent, AgentMessage
 
-    transformers_mock["processor_inst"].batch_decode = MagicMock(
-        return_value=["안녕하세요, 무엇을 도와드릴까요?"],
-    )
+    _setup_streamer_mock(transformers_mock, ["안녕하세요, 무엇을 도와드릴까요?"])
 
     be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
     await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
@@ -211,6 +226,8 @@ async def test_send_message_calls_apply_chat_template_and_processor(transformers
     """send_message 가 HF API 시퀀스를 정확히 호출 — apply_chat_template +
     process_mm_info + processor(...) + generate + batch_decode."""
     from screen_recorder.agent.backends import ChatInput
+
+    _setup_streamer_mock(transformers_mock, ["응답"])
 
     be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
     await be.start_session(system_prompt="너는 한국어 AI.", tools={}, model="qwen25-omni-7b")
@@ -235,9 +252,6 @@ async def test_send_message_calls_apply_chat_template_and_processor(transformers
     _, gen_kwargs = m.generate.call_args
     assert gen_kwargs.get("return_audio") is False
     assert gen_kwargs.get("use_audio_in_video") is False
-
-    # batch_decode 호출.
-    assert p.batch_decode.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -276,6 +290,8 @@ async def test_send_message_with_image_writes_temp_and_cleans_up(
         captured_conv.append(conv)
         return [], ["fake_image_pixel_array"], []
     transformers_mock["process_mm_info"].side_effect = _capture_mm
+
+    _setup_streamer_mock(transformers_mock, ["응답"])
 
     be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
     await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
@@ -323,3 +339,32 @@ async def test_send_message_with_image_cleans_up_on_error(
 
     # 정리됨.
     assert be._temp_files == []
+
+
+@pytest.mark.asyncio
+async def test_send_message_streams_chunks_one_by_one(transformers_mock):
+    """TextIteratorStreamer 가 yield 하는 chunk 마다 AgentMessage emit.
+
+    회귀 보호: streaming 끊기면 Claude UX 와 일관성 깨짐 — 사용자가 응답 끝까지
+    기다려야 첫 글자 보임.
+    """
+    from screen_recorder.agent.backends import ChatInput, AgentMessage
+
+    chunks = ["안녕", "하세요", ", ", "반갑", "습니다."]
+
+    streamer_inst = MagicMock()
+    streamer_inst.__iter__ = MagicMock(return_value=iter(chunks))
+    streamer_inst.end = MagicMock()
+    transformers_mock["transformers"].TextIteratorStreamer = MagicMock(
+        return_value=streamer_inst,
+    )
+    transformers_mock["model_inst"].generate = MagicMock(return_value=None)
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+    received: list = []
+    await be.send_message(ChatInput(text="안녕"), received.append)
+
+    text_chunks = [r.text for r in received
+                    if isinstance(r, AgentMessage) and r.role == "assistant"]
+    assert text_chunks == chunks
