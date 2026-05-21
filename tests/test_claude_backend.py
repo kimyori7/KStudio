@@ -287,3 +287,121 @@ async def test_send_message_clears_current_task_on_cancel(sdk_mock):
         await task
 
     assert be._current_task is None
+
+
+@pytest.mark.asyncio
+async def test_send_message_stream_event_emits_partial_text(sdk_mock):
+    """StreamEvent text_delta → AgentMessage 즉시 emit (token streaming)."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _FakeStreamEvent:
+        def __init__(self, ev_dict):
+            self.event = ev_dict
+
+    async def _fake_receive():
+        # message_start → delta 두 번 → 빈 AM → result.
+        yield _FakeStreamEvent({"type": "message_start"})
+        yield _FakeStreamEvent({"type": "content_block_delta",
+                                 "delta": {"type": "text_delta", "text": "안녕"}})
+        yield _FakeStreamEvent({"type": "content_block_delta",
+                                 "delta": {"type": "text_delta", "text": "하세요"}})
+
+        class _AM:
+            content = []
+            usage = None
+        yield _AM()
+
+        class _Result:
+            usage = {}
+        yield _Result()
+
+    mock_client.receive_response = lambda: _fake_receive()
+    mock_sdk.StreamEvent = _FakeStreamEvent
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    assistant_texts = [r.text for r in received
+                        if isinstance(r, AgentMessage) and r.role == "assistant"]
+    assert assistant_texts == ["안녕", "하세요"]
+
+
+@pytest.mark.asyncio
+async def test_send_message_thinking_delta_emits_thinking(sdk_mock):
+    """StreamEvent thinking_delta → role='thinking'."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _SE:
+        def __init__(self, d): self.event = d
+
+    async def _fake_receive():
+        yield _SE({"type": "message_start"})
+        yield _SE({"type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "흠..."}})
+        class _AM: content = []; usage = None
+        yield _AM()
+        class _R: usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _fake_receive()
+    mock_sdk.StreamEvent = _SE
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    thinking_texts = [r.text for r in received
+                       if isinstance(r, AgentMessage) and r.role == "thinking"]
+    assert thinking_texts == ["흠..."]
+
+
+@pytest.mark.asyncio
+async def test_stream_text_delta_skips_textblock_in_assistant_msg(sdk_mock):
+    """partial 로 텍스트가 흐른 경우 AssistantMessage 의 TextBlock 은 skip (중복 방지)."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _SE:
+        def __init__(self, d): self.event = d
+
+    class _FakeTextBlock:
+        text = "안녕하세요"   # AM 의 풀텍스트 — 중복 emit 되면 안 됨.
+
+    class _FakeAssistantMsg:
+        content = [_FakeTextBlock()]
+        usage = None
+
+    async def _r():
+        yield _SE({"type": "message_start"})
+        yield _SE({"type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "안녕하세요"}})
+        yield _FakeAssistantMsg()
+        class _R: usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.StreamEvent = _SE
+    mock_sdk.TextBlock = _FakeTextBlock
+    mock_sdk.AssistantMessage = _FakeAssistantMsg
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    # delta 1번 + AM 의 TextBlock skip → 총 1개만.
+    assistant_msgs = [r for r in received
+                       if isinstance(r, AgentMessage) and r.role == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0].text == "안녕하세요"

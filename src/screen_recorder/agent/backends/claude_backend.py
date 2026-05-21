@@ -131,11 +131,40 @@ class ClaudeBackend:
             # 텍스트 query 만 (이미지는 task 8).
             await self._client.query(msg.text)
 
+            # 텍스트/thinking 가 partial 로 도착 — 중복 방지 플래그.
+            text_streamed = False
+            thinking_streamed = False
+
             # 응답 루프 — task 4~7 에서 분기 추가.
             async for sdk_msg in self._client.receive_response():
+                if isinstance(sdk_msg, StreamEvent):
+                    ev = sdk_msg.event or {}
+                    ev_type = ev.get("type")
+                    if ev_type == "message_start":
+                        text_streamed = False
+                        thinking_streamed = False
+                    elif ev_type == "content_block_delta":
+                        delta = ev.get("delta") or {}
+                        d_type = delta.get("type")
+                        if d_type == "text_delta":
+                            chunk = delta.get("text") or ""
+                            if chunk:
+                                text_streamed = True
+                                emit_fn(AgentMessage(role="assistant", text=chunk))
+                        elif d_type == "thinking_delta":
+                            chunk = delta.get("thinking") or ""
+                            if chunk:
+                                thinking_streamed = True
+                                emit_fn(AgentMessage(role="thinking", text=chunk))
+                    # 외 stream event (content_block_start/stop, message_delta/stop 등) skip.
+                    continue
+
                 if isinstance(sdk_msg, AssistantMessage):
+                    # Task 5 에서 ThinkingBlock/ToolUse 처리 확장 — 지금은 TextBlock 만 + 중복 방지.
                     for block in getattr(sdk_msg, "content", []) or []:
                         if isinstance(block, TextBlock):
+                            if text_streamed:
+                                continue   # partial 로 이미 그림
                             text = getattr(block, "text", "")
                             if text:
                                 emit_fn(AgentMessage(role="assistant", text=text))
