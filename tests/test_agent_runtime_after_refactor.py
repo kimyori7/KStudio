@@ -48,9 +48,9 @@ def test_agent_holds_claude_backend(agent):
 
 
 def test_set_model_updates_internal_field(agent):
-    """set_model 호출이 _model 갱신."""
-    agent.set_model("claude-opus-4-5")
-    assert agent._model == "claude-opus-4-5"
+    """set_model 호출이 _model 갱신. (등록된 모델 ID 사용 — 미등록 ID 는 무시됨.)"""
+    agent.set_model("claude-opus-4-7")
+    assert agent._model == "claude-opus-4-7"
 
 
 def test_set_model_no_change_when_same_model(agent):
@@ -291,11 +291,11 @@ def test_set_model_triggers_backend_close(mock_video_tools, tmp_path, qtbot):
     qtbot.wait(50)
 
     try:
-        agent.set_model("opus")
+        agent.set_model("claude-opus-4-7")
         qtbot.wait(200)
 
         agent._backend.close.assert_called()
-        assert agent._model == "opus"
+        assert agent._model == "claude-opus-4-7"
         assert agent._session_started is False
     finally:
         if agent._started:

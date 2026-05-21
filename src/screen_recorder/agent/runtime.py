@@ -30,8 +30,10 @@ from .tools_video import VideoTools, VideoSessionAdapter
 from .proposals import EffectProposal, ProposalQueue
 from .plan_gate import PlanGate
 from .backends.claude_backend import ClaudeBackend
+from .backends.transformers_backend import TransformersBackend
 # AgentMessage / AgentEvent 는 backends/base.py 로 이전 — 외부 호환 위해 re-export.
 from .backends import AgentEvent, AgentMessage, ChatInput
+from .models import ModelRegistry
 
 
 _log = logging.getLogger(__name__)
@@ -228,13 +230,39 @@ class AgentRuntime(QObject):
         self._model = model or "claude-sonnet-4-6"   # 기본 Sonnet — Pro 정액제 친화적.
         self._thread = _AgentThread(self)
         self._started = False
-        # backend — SDK 호출 + helpers 모두 위임.
-        self._backend = ClaudeBackend(cwd=cwd)
+        # 모델 레지스트리 — Qwen 등 다른 backend 라우팅.
+        self._registry = ModelRegistry()
+        # backend 는 model_id 에 따라 생성. 의존성 가드는 set_model 진입점에서만
+        # (init 시점에 가드하면 사용자가 claude 로 시작했어도 qwen 의존성 체크해야 — 무관).
+        self._backend = self._create_backend(self._model)
         self._tools_dict = {
             "mcp_server": self._video_tools.mcp_server(),
             "allowed_tools": self._video_tools.tool_names(),
         }
         self._session_started: bool = False
+
+    # ---- backend factory ----
+    def _create_backend(self, model_id: str):
+        """model_id → ChatBackend 인스턴스. ModelMetadata.runtime 으로 분기.
+
+        - "claude": ClaudeBackend(cwd=...)
+        - "transformers": TransformersBackend(repo_id=metadata.repo_id)
+        - "llama-cpp" (sub-plan 5): NotImplementedError.
+
+        의존성 가드는 set_model 진입점에서 — 여기는 단순 factory.
+        """
+        meta = self._registry.get(model_id)
+        if meta is None:
+            raise ValueError(f"unknown model: {model_id}")
+        if meta.runtime == "claude":
+            return ClaudeBackend(cwd=self._cwd)
+        if meta.runtime == "transformers":
+            if not meta.repo_id:
+                raise ValueError(f"transformers 백엔드 모델인데 repo_id 누락: {model_id}")
+            return TransformersBackend(repo_id=meta.repo_id)
+        raise NotImplementedError(
+            f"runtime '{meta.runtime}' (모델 {model_id}) — sub-plan 5 이후 지원"
+        )
 
     # ---- Phase B 콜백 진입점 ----
     def emit_apply_request(
@@ -320,18 +348,30 @@ class AgentRuntime(QObject):
         asyncio.run_coroutine_threadsafe(self._backend.cancel(), loop)
 
     def set_model(self, model_id: str) -> None:
-        """모델 전환 — 다음 send() 부터 새 모델로 재연결. 진행 중 응답은 영향 없음.
+        """모델 전환. 다른 runtime (claude → transformers 등) 이면 backend 자체 교체.
 
-        backend.close() 로 기존 client disconnect. _session_started=False 로 다음
-        send 가 새 session 으로 시작.
+        같은 runtime 안 모델 전환 (sonnet → opus) 은 backend 인스턴스 재사용 + 재연결.
+        의존성 가드는 Task 3 에서 추가.
         """
         if not model_id or model_id == self._model:
             return
+
+        old_meta = self._registry.get(self._model)
+        new_meta = self._registry.get(model_id)
+        if new_meta is None:
+            _log.warning("set_model: unknown model_id %s — 무시", model_id)
+            return
+
         self._model = model_id
-        self._session_started = False   # 다음 send 가 새 session 으로 재시작
+        self._session_started = False
+
         loop = self._thread._loop
+        same_runtime = old_meta and old_meta.runtime == new_meta.runtime
         if loop is not None:
             asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
+        if not same_runtime:
+            # runtime 자체 변경 → 새 backend 생성.
+            self._backend = self._create_backend(model_id)
 
     def clear_session(self) -> None:
         """슬래시 `/clear` — 진행 중 응답 취소 + client disconnect. 다음 send 시 새 세션.
