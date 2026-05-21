@@ -227,8 +227,12 @@ class TransformersBackend:
             from qwen_omni_utils import process_mm_info
 
             conversation = self._build_conversation(msg)
+            tools_arg = self._openai_tools if self._tool_strategy == "official" else None
             text = self._processor.apply_chat_template(
-                conversation, add_generation_prompt=True, tokenize=False,
+                conversation,
+                tools=tools_arg,
+                add_generation_prompt=True,
+                tokenize=False,
             )
             audios, images, videos = process_mm_info(
                 conversation, use_audio_in_video=False,

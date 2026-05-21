@@ -95,3 +95,126 @@ def test_effective_system_prompt_unchanged_for_official_strategy():
     }
     asyncio.run(backend.start_session(system_prompt="ignored", tools=tools_dict, model="x"))
     assert backend._effective_system_prompt() == _QWEN_SYSTEM_PROMPT
+
+
+def test_send_message_passes_tools_to_apply_chat_template_when_official(
+    transformers_mock, qtbot,
+):
+    """official 모드 — apply_chat_template 호출 시 tools= 인자 전달."""
+    from screen_recorder.agent.backends.base import ChatInput
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    captured: dict = {}
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conv, tools=None, add_generation_prompt=True, tokenize=False):
+            captured["conv"] = conv
+            captured["tools"] = tools
+            return "fake-prompt"
+
+        def __call__(self, **kwargs):
+            # processor() 가 inputs dict 처럼 동작 — .to() 체인 가능.
+            class _Inputs:
+                def to(self, *_a, **_kw): return self
+            return _Inputs()
+
+        def batch_decode(self, ids, **kw):
+            return [""]
+
+    class _FakeModel:
+        device = "cpu"
+        dtype = None
+
+        def generate(self, **kw):
+            # streamer.end() 호출해 iterate 끝나도록.
+            kw["streamer"].end()
+            return None
+
+    backend = TransformersBackend(repo_id="Qwen/test")
+    backend._model = _FakeModel()
+    backend._processor = _FakeProcessor()
+
+    tools_dict = {
+        "openai_tools": [
+            {"type": "function", "function": {"name": "get_video_state",
+                                              "description": "x",
+                                              "parameters": {}}},
+        ],
+        "tool_handlers": {"get_video_state": lambda a: {"ok": True}},
+        "tool_strategy": "official",
+    }
+    asyncio.run(backend.start_session("ignored", tools_dict, "x"))
+
+    # qwen_omni_utils.process_mm_info mock 가 (None, None, None) 반환하도록.
+    transformers_mock["qwen_omni_utils"].process_mm_info.return_value = (None, None, None)
+
+    # TextIteratorStreamer mock — iter 가 즉시 끝남 (no chunks).
+    class _FakeStreamer:
+        def __init__(self, *a, **kw): pass
+        def __iter__(self): return iter([])
+        def end(self): pass
+    transformers_mock["transformers"].TextIteratorStreamer = _FakeStreamer
+    transformers_mock["transformers"].StoppingCriteria = object
+    transformers_mock["transformers"].StoppingCriteriaList = lambda x: x
+
+    events: list = []
+    async def _run():
+        await backend.send_message(ChatInput(text="hi"), events.append)
+    asyncio.run(_run())
+
+    # apply_chat_template 호출되었고 tools= 가 openai_tools 와 일치.
+    assert captured.get("tools") is not None, "tools= 인자 안 전달됨"
+    assert captured["tools"] == tools_dict["openai_tools"]
+
+
+def test_send_message_omits_tools_when_prompted(transformers_mock, qtbot):
+    """prompted 모드 — apply_chat_template 에 tools= 안 전달 (system prompt 가 처리)."""
+    from screen_recorder.agent.backends.base import ChatInput
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    captured: dict = {}
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conv, tools=None, add_generation_prompt=True, tokenize=False):
+            captured["tools"] = tools
+            return "fake-prompt"
+        def __call__(self, **kwargs):
+            class _Inputs:
+                def to(self, *_a, **_kw): return self
+            return _Inputs()
+        def batch_decode(self, ids, **kw): return [""]
+
+    class _FakeModel:
+        device = "cpu"
+        dtype = None
+        def generate(self, **kw):
+            kw["streamer"].end()
+            return None
+
+    backend = TransformersBackend(repo_id="Qwen/test")
+    backend._model = _FakeModel()
+    backend._processor = _FakeProcessor()
+
+    tools_dict = {
+        "openai_tools": [{"type": "function", "function": {"name": "foo",
+                                                            "description": "x",
+                                                            "parameters": {}}}],
+        "tool_handlers": {"foo": lambda a: {}},
+        "tool_strategy": "prompted",
+    }
+    asyncio.run(backend.start_session("ignored", tools_dict, "x"))
+    transformers_mock["qwen_omni_utils"].process_mm_info.return_value = (None, None, None)
+    class _FakeStreamer:
+        def __init__(self, *a, **kw): pass
+        def __iter__(self): return iter([])
+        def end(self): pass
+    transformers_mock["transformers"].TextIteratorStreamer = _FakeStreamer
+    transformers_mock["transformers"].StoppingCriteria = object
+    transformers_mock["transformers"].StoppingCriteriaList = lambda x: x
+
+    async def _run():
+        await backend.send_message(ChatInput(text="hi"), lambda _e: None)
+    asyncio.run(_run())
+
+    # prompted 모드 — tools= None.
+    assert captured.get("tools") is None
