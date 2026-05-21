@@ -647,3 +647,43 @@ async def test_send_message_tool_result_empty_content(sdk_mock):
     assert len(tool_results) == 1
     # image bytes 없음.
     assert tool_results[0].image_bytes is None
+    # text 는 helper 의 "(없음)" placeholder 가 "← " 와 합쳐서 도착.
+    assert "없음" in tool_results[0].text
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool_result_empty_list_content(sdk_mock):
+    """content=[] (None 과 다른 코드 경로 — isinstance(list) 통과 후 0번 iterate) 도 안전."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _TRB:
+        tool_use_id = "toolu_999"
+        content = []
+
+    class _UM:
+        content = [_TRB()]
+
+    async def _r():
+        yield _UM()
+        class _R:
+            usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.UserMessage = _UM
+    mock_sdk.ToolResultBlock = _TRB
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    tool_results = [r for r in received
+                     if isinstance(r, AgentMessage) and r.role == "tool_result"]
+    assert len(tool_results) == 1
+    # 빈 결과 placeholder.
+    assert "빈 결과" in tool_results[0].text
+    assert tool_results[0].image_bytes is None

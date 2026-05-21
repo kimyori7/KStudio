@@ -9,6 +9,7 @@ Qt 의존 없음 — emit_fn 콜백으로 이벤트 전달.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from pathlib import Path
 from typing import Any, Optional
@@ -248,7 +249,6 @@ def _extract_image_and_preview(content: Any) -> tuple[Optional[bytes], Optional[
 
     runtime.py 에서 이동 (Task 6). Task 9 에서 runtime.py 원본 삭제.
     """
-    import base64
     if content is None:
         return None, None, "(없음)"
     if isinstance(content, str):
