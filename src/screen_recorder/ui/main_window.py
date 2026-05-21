@@ -476,10 +476,14 @@ class MainWindow(QMainWindow):
             initial_model_id=saved_model_id,
             initial_show_thinking=saved_show_thinking,
             plan_gate=self.agent_runtime.plan_gate(),
+            # agent 주입 — ChatPanel 의 _on_model_changed 가 set_model 을 직접 호출하고
+            # 가드 차단 시 콤보 fallback. signal → set_model 라인은 제거 (double-fire 방지).
+            agent=self.agent_runtime,
         )
         self.addDockWidget(Qt.RightDockWidgetArea, self.agent_chat_panel)
         self.agent_chat_panel.user_submitted.connect(self.agent_runtime.send)
-        self.agent_chat_panel.model_changed.connect(self.agent_runtime.set_model)
+        # NOTE: model_changed → runtime.set_model 직접 연결 제거 — ChatPanel 이 agent.set_model
+        # 을 직접 호출 (가드 결과를 즉시 비교해 fallback 결정해야 하므로). preference 저장만 남김.
         self.agent_chat_panel.model_changed.connect(self._on_agent_model_changed)
         self.agent_chat_panel.cancel_requested.connect(self.agent_runtime.cancel)
         self.agent_chat_panel.show_thinking_changed.connect(self._on_agent_show_thinking_changed)

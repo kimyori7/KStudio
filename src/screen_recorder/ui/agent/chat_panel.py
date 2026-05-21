@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from ...agent.chat_history import (
     MAX_MESSAGES, PERSISTABLE_ROLES, load_history, save_history,
 )
+from ...agent.models import ModelRegistry, check_runtime_available
 from ...agent.plan_gate import PlanGate
 from ...agent.runtime import AgentMessage, AgentEvent
 
@@ -75,10 +76,12 @@ DEFAULT_MODEL_ID = MODEL_OPTIONS[0][1]
 
 # 모델별 컨텍스트 윈도 한계 — 입력 토큰이 이 값에 가까워지면 /compact 권유.
 # 1M 컨텍스트 변형도 있지만 default 200k 가정. 정확한 한계 모르면 200k 폴백.
+# Qwen2.5-Omni 7B 는 native 32k — 훨씬 빨리 가득 차므로 별도 한계.
 _MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "claude-sonnet-4-6":        200_000,
     "claude-opus-4-7":          200_000,
     "claude-haiku-4-5-20251001": 200_000,
+    "qwen25-omni-7b":            32_768,
 }
 _DEFAULT_CONTEXT_LIMIT = 200_000
 
@@ -891,10 +894,17 @@ class ChatPanel(QDockWidget):
         initial_model_id: Optional[str] = None,
         initial_show_thinking: bool = True,
         plan_gate: Optional[PlanGate] = None,
+        agent: Optional["object"] = None,
     ) -> None:
+        # NOTE: agent 파라미터는 의존성 역전 원칙 (docstring 참조) 의 의도적 예외.
+        # set_model 가드가 model 변경을 차단했는지 ChatPanel 이 직접 알아야 콤보 fallback
+        # 가능 → AgentRuntime 의 _model 상태를 즉시 비교해야 함. signal/slot 만으로는
+        # synchronous 결과 회신이 어려움. MainWindow 가 agent=runtime 으로 주입.
         super().__init__("Claude 에이전트", parent)
         self.setObjectName("AgentChatPanel")
         self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        # AgentRuntime 참조 — 콤보 fallback 시 set_model 직접 호출 + _model 비교 용.
+        self._agent = agent
         # 채팅 디버그 로그 활성화 — 첫 ChatPanel 생성 시 한 번만 파일 핸들러 부착.
         _ensure_chat_log_handler()
         _chat_log.info("ChatPanel constructed model=%s show_thinking=%s",
@@ -955,15 +965,28 @@ class ChatPanel(QDockWidget):
         model_row.setSpacing(6)
         model_row.setContentsMargins(0, 0, 0, 0)
         self._model_combo = QComboBox()
-        for display, model_id in MODEL_OPTIONS:
-            self._model_combo.addItem(display, userData=model_id)
-        # 저장된 모델 ID 가 있으면 그 인덱스로 시작, 없으면 0 (기본 Sonnet).
+        # ModelRegistry 기반 — built-in 4개 (Sonnet/Opus/Haiku/Qwen) 자동 표시.
+        # MODEL_OPTIONS 하드코딩 fallback 은 더 이상 사용 안 함 (backward-compat 으로 상수만 유지).
+        self._model_registry = ModelRegistry()
+        for meta in self._model_registry.all_models():
+            display = meta.display_name
+            # claude 외 runtime — 의존성 미설치면 "(설치 필요)" 라벨 + 사용자가 클릭하면
+            # set_model 가드가 차단 → 콤보 fallback. 의존성 표시는 정보용일 뿐 disable 안 함.
+            if meta.runtime != "claude" and not check_runtime_available(meta.runtime):
+                display = f"{display} (설치 필요)"
+            self._model_combo.addItem(display, userData=meta.id)
+        # 초기 인덱스 — initial_model_id (저장된 ID) 매칭, 없으면 agent 의 현재 model,
+        # 그것도 없으면 DEFAULT_MODEL_ID (Sonnet).
+        desired_id = initial_model_id
+        if not desired_id and self._agent is not None:
+            desired_id = getattr(self._agent, "_model", None)
+        if not desired_id:
+            desired_id = DEFAULT_MODEL_ID
         initial_idx = 0
-        if initial_model_id:
-            for i, (_, mid) in enumerate(MODEL_OPTIONS):
-                if mid == initial_model_id:
-                    initial_idx = i
-                    break
+        for i in range(self._model_combo.count()):
+            if self._model_combo.itemData(i) == desired_id:
+                initial_idx = i
+                break
         self._model_combo.setCurrentIndex(initial_idx)
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
         self._model_combo.setStyleSheet(
@@ -1404,7 +1427,23 @@ class ChatPanel(QDockWidget):
         model_id = self._model_combo.itemData(idx)
         if not model_id:
             return
-        # 시스템 메시지로 알림 (사용자 시각 피드백).
+        # agent 가 주입된 경우 — set_model 직접 호출 후 _model 비교로 가드 차단 여부 판단.
+        # 차단 시 콤보 fallback (signal 도 emit 안 함 — preference 저장 슬롯이 잘못된 ID 받지 않도록).
+        if self._agent is not None:
+            before = getattr(self._agent, "_model", None)
+            self._agent.set_model(str(model_id))
+            after = getattr(self._agent, "_model", None)
+            if after != model_id:
+                # 가드가 model 변경을 차단했음 (warning 시스템 메시지는 runtime 이 이미 emit).
+                # 콤보를 이전 모델로 되돌림. signal recursion 방지를 위해 blockSignals.
+                for i in range(self._model_combo.count()):
+                    if self._model_combo.itemData(i) == before:
+                        self._model_combo.blockSignals(True)
+                        self._model_combo.setCurrentIndex(i)
+                        self._model_combo.blockSignals(False)
+                        break
+                return
+        # 변경 성공 (또는 agent 없는 테스트 fixture) — 시스템 메시지 + 시그널 emit.
         self.append_message(AgentMessage(
             role="system",
             text=f"모델 전환: {self._model_combo.itemText(idx)}",
