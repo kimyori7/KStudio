@@ -235,10 +235,8 @@ class AgentRuntime(QObject):
         # backend 는 model_id 에 따라 생성. 의존성 가드는 set_model 진입점에서만
         # (init 시점에 가드하면 사용자가 claude 로 시작했어도 qwen 의존성 체크해야 — 무관).
         self._backend = self._create_backend(self._model)
-        self._tools_dict = {
-            "mcp_server": self._video_tools.mcp_server(),
-            "allowed_tools": self._video_tools.tool_names(),
-        }
+        self._tools_dict: dict[str, Any] = {}
+        self._build_tools_dict()
         self._session_started: bool = False
 
     # ---- backend factory ----
@@ -263,6 +261,30 @@ class AgentRuntime(QObject):
         raise NotImplementedError(
             f"runtime '{meta.runtime}' (모델 {model_id}) — sub-plan 5 이후 지원"
         )
+
+    def _build_tools_dict(self) -> None:
+        """현 모델 metadata.runtime 보고 backend 별 tools dict 빌드.
+
+        - claude: {"mcp_server", "allowed_tools"} — 기존.
+        - transformers: {"openai_tools", "tool_handlers", "tool_strategy"} — sub-plan 6.
+        - llama-cpp (sub-plan 5): transformers 와 동일 shape 재사용.
+        """
+        meta = self._registry.get(self._model)
+        if meta is None or meta.runtime == "claude":
+            self._tools_dict = {
+                "mcp_server": self._video_tools.mcp_server(),
+                "allowed_tools": self._video_tools.tool_names(),
+            }
+            return
+        if meta.runtime in ("transformers", "llama-cpp"):
+            openai_tools, handlers = self._video_tools.openai_tools_and_handlers()
+            self._tools_dict = {
+                "openai_tools": openai_tools,
+                "tool_handlers": handlers,
+                "tool_strategy": meta.tool_strategy,
+            }
+            return
+        self._tools_dict = {}
 
     # ---- Phase B 콜백 진입점 ----
     def emit_apply_request(
@@ -393,6 +415,8 @@ class AgentRuntime(QObject):
         if not same_runtime:
             # runtime 자체 변경 → 새 backend 생성.
             self._backend = self._create_backend(model_id)
+        # 모델(또는 runtime) 변경 시 tools_dict 재빌드 — tool_strategy 등 meta 변경 반영.
+        self._build_tools_dict()
 
     def clear_session(self) -> None:
         """슬래시 `/clear` — 진행 중 응답 취소 + client disconnect. 다음 send 시 새 세션.

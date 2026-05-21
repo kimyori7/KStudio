@@ -27,15 +27,16 @@ def chat_panel(qtbot, tmp_path):
 
 
 def test_combo_lists_all_models_from_registry(chat_panel):
-    """콤보가 ModelRegistry 의 built-in 4개 다 표시."""
+    """콤보가 ModelRegistry 의 built-in 5개 다 표시."""
     panel, _ = chat_panel
     combo = panel._model_combo
     ids = [combo.itemData(i) for i in range(combo.count())]
     assert "claude-sonnet-4-6" in ids
     assert "claude-opus-4-7" in ids
     assert "claude-haiku-4-5-20251001" in ids
+    assert "qwen25-7b-instruct" in ids
     assert "qwen25-omni-7b" in ids
-    assert combo.count() == 4
+    assert combo.count() == 5
 
 
 def test_combo_marks_qwen_as_install_required_or_normal(chat_panel):

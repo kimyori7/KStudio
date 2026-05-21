@@ -70,6 +70,7 @@ def chat_panel_with_agent(qtbot, tmp_path):
     vt.plan_gate = MagicMock(return_value=MagicMock())
     vt.mcp_server = MagicMock(return_value=MagicMock())
     vt.tool_names = MagicMock(return_value=["mcp__kstudio_video__noop"])
+    vt.openai_tools_and_handlers = MagicMock(return_value=([], {}))
     rt = AgentRuntime(video_tools=vt, model="claude-sonnet-4-6", cwd=tmp_path)
     panel = ChatPanel(agent=rt)
     qtbot.addWidget(panel)
