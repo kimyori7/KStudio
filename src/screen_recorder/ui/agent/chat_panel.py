@@ -31,9 +31,25 @@ from PySide6.QtWidgets import (
 from ...agent.chat_history import (
     MAX_MESSAGES, PERSISTABLE_ROLES, load_history, save_history,
 )
+from ...agent import models as _models   # is_model_cached / ModelDownloadJob alias 용 (monkeypatch 친화).
 from ...agent.models import ModelRegistry, check_runtime_available
 from ...agent.plan_gate import PlanGate
 from ...agent.runtime import AgentMessage, AgentEvent
+from ..gpu_install_dialog import GpuInstallDialog
+from ..model_download_window import ModelDownloadWindow
+
+
+# Qwen2.5-Omni 7B 실행에 필요한 PyTorch + 의존성 패키지.
+# GpuInstallDialog(packages=...) 로 전달해 동일 UI 로 설치.
+# bitsandbytes = INT8 양자화, qwen-omni-utils[decord] = 영상 디코더, soundfile = 오디오 I/O.
+PYTORCH_PACKAGES: tuple[str, ...] = (
+    "torch",
+    "transformers",
+    "accelerate",
+    "bitsandbytes",
+    "qwen-omni-utils[decord]",
+    "soundfile",
+)
 
 
 # 채팅 디버그 로그 — 사용자가 보고할 때 ~/AppData/Local/KStudio/logs/chat_debug.log 를
@@ -1424,31 +1440,158 @@ class ChatPanel(QDockWidget):
             self._status.setVisible(False)
 
     def _on_model_changed(self, idx: int) -> None:
+        """콤보 변경 → (Phase 3b) 의존성 + 캐시 단계별 체크 → set_model.
+
+        분기:
+        1) 의존성 미설치 → GpuInstallDialog(packages=PYTORCH_PACKAGES) — 설치 후 chain.
+        2) 의존성 OK + 캐시 미스 → ModelDownloadWindow + ModelDownloadJob — 다운 후 chain.
+        3) 둘 다 OK → 정상 set_model + 가드 fallback (claude→claude 도 안전).
+        """
         model_id = self._model_combo.itemData(idx)
         if not model_id:
             return
-        # agent 가 주입된 경우 — set_model 직접 호출 후 _model 비교로 가드 차단 여부 판단.
-        # 차단 시 콤보 fallback (signal 도 emit 안 함 — preference 저장 슬롯이 잘못된 ID 받지 않도록).
-        if self._agent is not None:
-            before = getattr(self._agent, "_model", None)
-            self._agent.set_model(str(model_id))
-            after = getattr(self._agent, "_model", None)
-            if after != model_id:
-                # 가드가 model 변경을 차단했음 (warning 시스템 메시지는 runtime 이 이미 emit).
-                # 콤보를 이전 모델로 되돌림. signal recursion 방지를 위해 blockSignals.
-                for i in range(self._model_combo.count()):
-                    if self._model_combo.itemData(i) == before:
-                        self._model_combo.blockSignals(True)
-                        self._model_combo.setCurrentIndex(i)
-                        self._model_combo.blockSignals(False)
-                        break
+        if self._agent is None:
+            # 테스트 fixture 등 agent 미주입 — 단순 시스템 메시지만.
+            self.append_message(AgentMessage(
+                role="system",
+                text=f"모델 전환: {self._model_combo.itemText(idx)}",
+            ))
+            self.model_changed.emit(str(model_id))
+            return
+
+        before = getattr(self._agent, "_model", None)
+        if model_id == before:
+            return
+
+        meta = self._model_registry.get(str(model_id))
+        if meta is None:
+            return
+
+        # claude 외 runtime — set_model 호출 *전* 에 의존성 + 캐시 체크.
+        if meta.runtime != "claude":
+            if not check_runtime_available(meta.runtime):
+                self._open_installer_for(meta, before or "")
                 return
-        # 변경 성공 (또는 agent 없는 테스트 fixture) — 시스템 메시지 + 시그널 emit.
+            if meta.repo_id and not _models.is_model_cached(meta.repo_id):
+                self._open_downloader_for(meta, before or "")
+                return
+
+        # 정상 set_model — Phase 3a 의 가드 fallback 동작 유지 (안전망).
+        self._agent.set_model(str(model_id))
+        after = getattr(self._agent, "_model", None)
+        if after != model_id:
+            # 런타임 가드가 차단 (드물지만 — race / 사이드 채널 등).
+            self._fallback_combo_to(before or "")
+            return
         self.append_message(AgentMessage(
             role="system",
             text=f"모델 전환: {self._model_combo.itemText(idx)}",
         ))
         self.model_changed.emit(str(model_id))
+
+    def _fallback_combo_to(self, model_id: str) -> None:
+        """콤보를 model_id 항목으로 되돌림 (signal recursion 방지 blockSignals)."""
+        for i in range(self._model_combo.count()):
+            if self._model_combo.itemData(i) == model_id:
+                self._model_combo.blockSignals(True)
+                self._model_combo.setCurrentIndex(i)
+                self._model_combo.blockSignals(False)
+                return
+
+    def _open_installer_for(self, meta, before: str) -> None:
+        """PyTorch 1-클릭 설치 다이얼로그. 성공 시 set_model 재시도 (chain).
+
+        finished_ok → 동일 idx 로 _on_model_changed 다시 호출 → 의존성 OK 분기로
+        진행 → (캐시 없으면) 다운로드 단계 → 정상 set_model.
+        finished_error / rejected → 시스템 메시지 + 콤보 fallback.
+        """
+        info = (
+            f"{meta.display_name} 사용에 필요한 PyTorch 패키지를 venv 안에 설치합니다.\n"
+            f"약 6GB 다운로드 — 인터넷 속도에 따라 수 분 ~ 십수 분 소요.\n"
+            f"설치 후 자동으로 모델 다운로드 단계로 진행됩니다."
+        )
+        dlg = GpuInstallDialog(
+            parent=self,
+            packages=PYTORCH_PACKAGES,
+            title="PyTorch 설치",
+            info_text=info,
+        )
+
+        # GpuInstallDialog 의 close_btn → QDialog.close() → rejected emit (accept() 안 부름).
+        # 즉, 설치 성공 후에도 닫기 누르면 rejected 가 발화. 따라서 finished_ok/error 가 먼저
+        # 처리되었다면 rejected 는 무시해야 함 — idempotency guard 로 fallback 중복 방지.
+        state = {"handled": False}
+
+        def _on_install_ok() -> None:
+            state["handled"] = True
+            # 설치 완료 → 다시 _on_model_changed 호출 → 다음 단계 (download or set_model).
+            self._on_model_changed(self._model_combo.currentIndex())
+
+        def _on_install_err(msg: str) -> None:
+            state["handled"] = True
+            self._on_install_or_download_failed(before, msg)
+
+        def _on_install_rejected() -> None:
+            # finished_ok 또는 finished_error 가 이미 처리됐으면 rejected 는 단순 닫기 신호.
+            # 처리 안 됐다면 = 설치 시작 전/중에 닫음 → 사용자 취소로 간주 + 콤보 fallback.
+            if not state["handled"]:
+                self._on_install_or_download_failed(before, "사용자 취소")
+
+        dlg.finished_ok.connect(_on_install_ok)
+        dlg.finished_error.connect(_on_install_err)
+        dlg.rejected.connect(_on_install_rejected)
+        dlg.show()
+        # 다이얼로그 참조 유지 — 가비지 컬렉터가 곧바로 destroy 하지 않도록.
+        self._pending_install_dialog = dlg
+
+    def _open_downloader_for(self, meta, before: str) -> None:
+        """모델 다운로드 + ModelDownloadWindow. 완료 시 set_model 재시도 (chain).
+
+        finished → 다시 _on_model_changed → 이번엔 캐시 hit 라 정상 set_model.
+        error → 시스템 메시지 + 콤보 fallback.
+        """
+        win = ModelDownloadWindow(
+            repo_id=meta.repo_id,
+            display_name=meta.display_name,
+            estimated_size_gb=meta.estimated_size_gb,
+            parent=self,
+        )
+        win.set_phase("downloading")
+        win.show()
+
+        job = _models.ModelDownloadJob(
+            repo_id=meta.repo_id,
+            estimated_size_bytes=int(meta.estimated_size_gb * 1024 * 1024 * 1024),
+            poll_interval_ms=500,
+        )
+        job.download_progress.connect(win.update_progress)
+
+        def _on_finished(repo_id: str) -> None:
+            win.set_phase("done")
+            win.append_log(f"다운로드 완료: {repo_id}")
+            # 다시 _on_model_changed — 이번엔 캐시 hit 라 정상 set_model 진행.
+            self._on_model_changed(self._model_combo.currentIndex())
+
+        def _on_error(msg: str) -> None:
+            win.set_phase("error")
+            win.append_log(f"오류: {msg}")
+            self._on_install_or_download_failed(before, msg)
+
+        job.finished.connect(_on_finished)
+        job.error.connect(_on_error)
+        job.start()
+        # 참조 유지 — 윈도우와 잡 모두 GC 방지.
+        self._pending_download_job = job
+        self._pending_download_window = win
+
+    def _on_install_or_download_failed(self, fallback_model_id: str, msg: str) -> None:
+        """설치/다운로드 실패 또는 사용자 취소 시 — 시스템 메시지 + 콤보 fallback."""
+        if fallback_model_id:
+            self.append_message(AgentMessage(
+                role="system",
+                text=f"⚠ 설치/다운로드 중단: {msg}. 모델을 이전 선택으로 되돌립니다.",
+            ))
+            self._fallback_combo_to(fallback_model_id)
 
     def _on_submit(self) -> None:
         text = self._input.toPlainText().strip()

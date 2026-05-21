@@ -57,8 +57,15 @@ def test_combo_marks_qwen_as_install_required_or_normal(chat_panel):
         assert "(설치 필요)" in qwen_text
 
 
-def test_selecting_qwen_without_deps_falls_back(chat_panel, monkeypatch, qtbot):
-    """Qwen 선택 → set_model 가드 → model 유지 → 콤보 fallback."""
+def test_selecting_qwen_without_deps_opens_installer_keeps_model(
+    chat_panel, monkeypatch, qtbot,
+):
+    """Qwen 선택 + 의존성 없음 → installer 다이얼로그 + 모델 유지.
+
+    Phase 3a 동작 (즉시 fallback) → Phase 3b 동작 (다이얼로그 띄움 + 콤보는 Qwen 유지,
+    cancel/실패 시 fallback). 정밀 다이얼로그 검증은 test_chat_panel_phase_3b_flow.py.
+    여기서는 runtime model 이 변경되지 않는다는 점만 확인.
+    """
     import builtins
     panel, rt = chat_panel
     rt.start()
@@ -69,6 +76,19 @@ def test_selecting_qwen_without_deps_falls_back(chat_panel, monkeypatch, qtbot):
                 raise ImportError(f"mock — {name} not available")
             return original_import(name, *args, **kwargs)
         monkeypatch.setattr(builtins, "__import__", _no_torch)
+
+        # GpuInstallDialog 가 실제로 뜨지 않게 — show() 만 no-op.
+        from screen_recorder.ui import gpu_install_dialog as gid_mod
+        original_dlg = gid_mod.GpuInstallDialog
+
+        class _SilentDlg(original_dlg):
+            def show(self):
+                pass
+
+        monkeypatch.setattr(gid_mod, "GpuInstallDialog", _SilentDlg)
+        from screen_recorder.ui.agent import chat_panel as cp_mod
+        if hasattr(cp_mod, "GpuInstallDialog"):
+            monkeypatch.setattr(cp_mod, "GpuInstallDialog", _SilentDlg)
 
         combo = panel._model_combo
         initial_id = combo.currentData()
@@ -83,9 +103,9 @@ def test_selecting_qwen_without_deps_falls_back(chat_panel, monkeypatch, qtbot):
         combo.setCurrentIndex(qwen_idx)
         qtbot.wait(50)
 
-        # runtime model 변경 안 됨 (가드).
+        # runtime model 변경 안 됨 — set_model 자체가 호출 안 됨 (installer 단계).
         assert rt._model == "claude-sonnet-4-6"
-        # 콤보 fallback — sonnet 으로 복원.
-        assert combo.currentData() == "claude-sonnet-4-6"
+        # 콤보는 Qwen 유지 — 사용자가 다이얼로그 cancel 누르기 전까지.
+        assert combo.currentData() == "qwen25-omni-7b"
     finally:
         rt.stop()
