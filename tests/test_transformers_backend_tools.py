@@ -432,3 +432,69 @@ def test_malformed_tool_call_triggers_one_retry(transformers_mock):
     assert any("도구 호출 형식" in m.text or "스키마" in m.text for m in sys_msgs), (
         f"형식 위반 안내 메시지 없음. system msgs: {[m.text for m in sys_msgs]}"
     )
+
+
+def test_malformed_retry_preserves_role_alternation(transformers_mock):
+    """retry 경로: broken assistant turn + hint user 가 순서대로 conversation 에 append.
+
+    회귀 보호: 사용자 → assistant(broken) → user(hint) 순서 유지 — strict
+    alternation 요구하는 chat_template 에서 apply_chat_template 안 깨지도록.
+    """
+    from screen_recorder.agent.backends.base import ChatInput, AgentMessage
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    outputs = [
+        '<tool_call>{"name": broken json}</tool_call>',
+        "정상 텍스트 답변입니다.",
+    ]
+    call_idx = {"n": 0}
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conv, tools=None, **kw): return "p"
+        def __call__(self, **kw):
+            class _Inputs(dict):
+                def to(self, *_a, **_kw): return self
+            return _Inputs()
+        def batch_decode(self, ids, **kw): return [""]
+
+    class _FakeStreamer:
+        def __init__(self, *a, **kw):
+            self._fed = [outputs[call_idx["n"]]]
+        def __iter__(self): return iter(self._fed)
+        def end(self): pass
+
+    class _FakeModel:
+        device = "cpu"; dtype = None
+        def generate(self, **kw):
+            call_idx["n"] += 1
+            kw["streamer"].end()
+            return None
+
+    transformers_mock["transformers"].TextIteratorStreamer = _FakeStreamer
+    transformers_mock["transformers"].StoppingCriteria = object
+    transformers_mock["transformers"].StoppingCriteriaList = lambda x: x
+    transformers_mock["qwen_omni_utils"].process_mm_info.return_value = (None, None, None)
+
+    backend = TransformersBackend(repo_id="Qwen/test")
+    backend._model = _FakeModel()
+    backend._processor = _FakeProcessor()
+    tools_dict = {
+        "openai_tools": [{"type": "function", "function": {"name": "foo",
+                                                            "description": "x", "parameters": {}}}],
+        "tool_handlers": {"foo": lambda a: {"ok": True}},
+        "tool_strategy": "prompted",
+    }
+    asyncio.run(backend.start_session("ignored", tools_dict, "x"))
+
+    async def _run():
+        await backend.send_message(ChatInput(text="hi"), lambda _e: None)
+    asyncio.run(_run())
+
+    # history 안에 user(원본) → assistant(broken) → user(hint) → assistant(정상) 순.
+    roles = [m["role"] for m in backend._history]
+    # role 시퀀스 검증 — 첫 user 다음에 assistant 가 와야 (user-user 연속 X).
+    for i in range(len(roles) - 1):
+        if roles[i] == "user":
+            assert roles[i + 1] != "user", (
+                f"user-user 연속 발견 at index {i}: {roles}"
+            )

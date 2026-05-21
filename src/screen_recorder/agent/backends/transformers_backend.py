@@ -255,6 +255,11 @@ class TransformersBackend:
                             role="system",
                             text="⚠ 도구 호출 형식 오류 — 한 번 재시도합니다.",
                         ))
+                        # broken assistant turn 도 conversation/history 에 append —
+                        # strict alternation 요구하는 chat_template 가 user-user 연속에서
+                        # 에러 안 내도록. 다음 hint user 가 그 다음에 정상 추가됨.
+                        conversation.append({"role": "assistant", "content": full_text})
+                        self._history.append({"role": "assistant", "content": full_text})
                         # 재시도 hint 를 conversation 에 user 로 append.
                         hint_msg = {
                             "role": "user",
