@@ -945,3 +945,145 @@ def test_sniff_image_mime_unknown_falls_back_to_png():
     from screen_recorder.agent.backends.claude_backend import _sniff_image_mime
     assert _sniff_image_mime(b"\x00\x01\x02\x03random") == "image/png"
     assert _sniff_image_mime(b"") == "image/png"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gap 1 — Concurrent send 회귀 보호 (asyncio.Lock).
+# Gap 2 — Connect-failure 회귀 보호 (commit feeb058 의 fix).
+# Sub-plan 2 진입 전 (2026-05-21) 보강.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_concurrent_send_creates_single_client(sdk_mock):
+    """동시 두 send_message → ClaudeSDKClient 한 번만 생성 (asyncio.Lock 회귀 보호).
+
+    회귀 위험: lock 없으면 두 코루틴 모두 `if self._client is None` True → 두 client
+    인스턴스 생성, 첫 인스턴스 leak (disconnect 호출 안 되고 GC 만 의지).
+    """
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    # connect 가 즉시 끝나지 않고 cooperative yield — 두 번째 task 가 lock 대기에
+    # 들어갈 시간 확보. 즉시 반환이면 첫 send 가 lock 잡고 풀기 전에 두번째가
+    # acquire 시도조차 안 할 수 있어 lock 동작이 의미 없는 테스트가 됨.
+    connect_count = 0
+    async def _slow_connect():
+        nonlocal connect_count
+        connect_count += 1
+        await asyncio.sleep(0.05)
+    mock_client.connect = _slow_connect
+
+    # 응답은 즉시 끝.
+    async def _quick():
+        class _R: usage = {}
+        yield _R()
+    mock_client.receive_response = lambda: _quick()
+
+    # ClaudeSDKClient 인스턴스화 횟수도 추적 — lock 깨지면 2 회 생성됨.
+    instantiate_count = 0
+    def _make_client(options):
+        nonlocal instantiate_count
+        instantiate_count += 1
+        return mock_client
+    mock_sdk.ClaudeSDKClient = _make_client
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+
+    # 동시 두 send — gather 로 동시 시작.
+    await asyncio.gather(
+        be.send_message(ChatInput(text="첫번째"), lambda _: None),
+        be.send_message(ChatInput(text="두번째"), lambda _: None),
+    )
+
+    # 핵심 검증: ClaudeSDKClient 한 번만 생성 + connect 한 번만 호출.
+    assert instantiate_count == 1, (
+        f"lock 회귀: ClaudeSDKClient {instantiate_count}번 생성됨 (1이어야 함)"
+    )
+    assert connect_count == 1, (
+        f"lock 회귀: connect {connect_count}번 호출됨 (1이어야 함)"
+    )
+    assert be._client is mock_client
+
+
+@pytest.mark.asyncio
+async def test_connect_failure_clears_client_and_emits_error(sdk_mock):
+    """client.connect() raise → emit error 이벤트 + _client 정리.
+
+    회귀 보호 (commit feeb058): connect 실패 후 self._client 에 broken 객체 남으면
+    다음 send 가 그 stale 객체로 query → 영원히 실패.
+    """
+    from screen_recorder.agent.runtime import AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+    mock_client.connect = AsyncMock(side_effect=RuntimeError("network down"))
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+
+    received: list = []
+    # outer except 가 잡으므로 send_message 자체는 raise 안 함.
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    # 1) _client 정리됨 — 다음 send 가 재연결 시도 가능.
+    assert be._client is None
+
+    # 2) error 이벤트 emit.
+    error_evs = [r for r in received
+                  if isinstance(r, AgentEvent) and r.kind == "error"]
+    assert len(error_evs) == 1
+    assert "network down" in error_evs[0].detail
+
+    # 3) started 이벤트는 emit 안 됨 (connect 통과 못 했으니까).
+    started_evs = [r for r in received
+                    if isinstance(r, AgentEvent) and r.kind == "started"]
+    assert started_evs == []
+
+
+@pytest.mark.asyncio
+async def test_connect_failure_then_next_send_succeeds(sdk_mock):
+    """connect 실패 후 다음 send 가 새 connect 시도 → 성공 시 정상 진행.
+
+    회귀 보호: _client 가 None 으로 정리되어야 다음 send 의 `if self._client is None`
+    이 True 가 되어 재연결 진입.
+    """
+    from screen_recorder.agent.runtime import AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    # 첫 connect 실패, 두 번째 성공.
+    call_count = 0
+    async def _flaky_connect():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("network down")
+    mock_client.connect = _flaky_connect
+
+    # ResultMessage isinstance 매칭되도록 mock_sdk 에 명시 등록.
+    class _R:
+        usage = {}
+    async def _quick():
+        yield _R()
+    mock_client.receive_response = lambda: _quick()
+    mock_sdk.ResultMessage = _R
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+
+    # 1차 send: 실패.
+    received1: list = []
+    await be.send_message(ChatInput(text="first"), received1.append)
+    assert be._client is None
+
+    # 2차 send: 새 connect 호출 → 성공.
+    received2: list = []
+    await be.send_message(ChatInput(text="second"), received2.append)
+    assert call_count == 2
+    assert be._client is mock_client
+    done_evs = [r for r in received2 if isinstance(r, AgentEvent) and r.kind == "done"]
+    assert len(done_evs) == 1
