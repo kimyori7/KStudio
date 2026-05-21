@@ -368,3 +368,50 @@ async def test_send_message_streams_chunks_one_by_one(transformers_mock):
     text_chunks = [r.text for r in received
                     if isinstance(r, AgentMessage) and r.role == "assistant"]
     assert text_chunks == chunks
+
+
+@pytest.mark.asyncio
+async def test_cancel_sets_stop_flag_mid_generation(transformers_mock):
+    """cancel() 호출 → stop_flag.set() → 다음 토큰에서 StoppingCriteria True.
+
+    회귀 보호: cancel 안 되면 사용자가 잘못된 응답 끝까지 봐야 함.
+    """
+    from screen_recorder.agent.backends import ChatInput
+
+    # streamer 가 두 chunk yield (헬퍼 사용).
+    _setup_streamer_mock(transformers_mock, ["chunk1", "chunk2"])
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+
+    async def _runner():
+        await be.send_message(ChatInput(text="hi"), lambda _: None)
+
+    task = asyncio.create_task(_runner())
+    await asyncio.sleep(0.01)   # send_message 가 stop_flag 만들 시간.
+    await be.cancel()           # 예외 없이 끝나야 함.
+    await task
+
+    # 후처리: finally 에서 None 복원.
+    assert be._stop_flag is None
+
+
+def test_stopping_criteria_returns_true_when_flag_set(transformers_mock):
+    """_make_stopping_criteria 의 콜백이 flag 상태 반영."""
+    import threading
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    flag = threading.Event()
+    be._make_stopping_criteria(flag)
+
+    # StoppingCriteriaList 가 (callbacks,) 로 호출됐는지 확인.
+    transformers_mock["transformers"].StoppingCriteriaList.assert_called_once()
+    args, _ = transformers_mock["transformers"].StoppingCriteriaList.call_args
+    callbacks = list(args[0])
+    assert len(callbacks) == 1
+
+    cb = callbacks[0]
+    # flag set 전: False.
+    assert cb(None, None) is False
+    # flag set 후: True.
+    flag.set()
+    assert cb(None, None) is True
