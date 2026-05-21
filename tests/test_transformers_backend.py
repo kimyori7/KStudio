@@ -396,6 +396,113 @@ async def test_cancel_sets_stop_flag_mid_generation(transformers_mock):
     assert be._stop_flag is None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-05-21 사용자 보고 회귀 보호:
+# - "Qwen 이 1234567 ms 같은 가짜 데이터 생성" — Claude SYSTEM_PROMPT 가 잘못
+#   전달돼 학습 데이터 모방. Qwen 전용 prompt 사용 회귀 보호.
+# - "직전 대화도 기억 못함" — history 누적 안 됨. _history + commit 회귀 보호.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_start_session_ignores_caller_prompt_and_uses_qwen_specific(
+    transformers_mock,
+):
+    """start_session 의 system_prompt 는 무시 — Qwen 전용 prompt 사용."""
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(
+        system_prompt="당신은 도구를 호출하는 Claude 입니다. propose_effect 사용...",
+        tools={"mcp_server": object(), "allowed_tools": ["propose_effect"]},
+        model="qwen25-omni-7b",
+    )
+    # 호출자 prompt (Claude impersonation + 도구 호출 강요) 가 그대로 들어가면 안 됨.
+    assert "당신은 도구를 호출하는 Claude" not in be._system_prompt
+    assert "propose_effect 사용" not in be._system_prompt
+    # Qwen prompt 핵심: "도구 사용 불가" + "가짜 데이터 금지" 안내 포함.
+    assert "도구" in be._system_prompt
+    assert ("가상" in be._system_prompt
+            or "거짓" in be._system_prompt
+            or "추측" in be._system_prompt)
+
+
+@pytest.mark.asyncio
+async def test_history_accumulates_across_send_messages(transformers_mock):
+    """매 send_message 가 history 에 user/assistant 누적 — 다음 turn 의 conversation 에 포함."""
+    from screen_recorder.agent.backends import ChatInput
+
+    streamer_inst = MagicMock()
+    streamer_inst.__iter__ = MagicMock(return_value=iter(["응답1"]))
+    streamer_inst.end = MagicMock()
+    transformers_mock["transformers"].TextIteratorStreamer = MagicMock(
+        return_value=streamer_inst,
+    )
+    transformers_mock["model_inst"].generate = MagicMock(return_value=None)
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+    assert be._history == []
+
+    await be.send_message(ChatInput(text="첫번째"), lambda _: None)
+    # user + assistant 누적.
+    assert len(be._history) == 2
+    assert be._history[0]["role"] == "user"
+    assert be._history[0]["content"] == "첫번째"
+    assert be._history[1]["role"] == "assistant"
+    assert be._history[1]["content"] == "응답1"
+
+    # 두 번째 send — apply_chat_template 가 받은 conversation 에 첫 turn 포함됨.
+    streamer2 = MagicMock()
+    streamer2.__iter__ = MagicMock(return_value=iter(["응답2"]))
+    streamer2.end = MagicMock()
+    transformers_mock["transformers"].TextIteratorStreamer = MagicMock(
+        return_value=streamer2,
+    )
+
+    captured_conv = []
+    def _capture_template(conv, **kwargs):
+        captured_conv.append(list(conv))
+        return "<prompt>"
+    transformers_mock["processor_inst"].apply_chat_template = MagicMock(
+        side_effect=_capture_template,
+    )
+
+    await be.send_message(ChatInput(text="두번째"), lambda _: None)
+    conv = captured_conv[0]
+    # system + 첫 user + 첫 assistant + 두 번째 user = 4.
+    assert len(conv) == 4
+    assert conv[0]["role"] == "system"
+    assert conv[1]["role"] == "user" and conv[1]["content"] == "첫번째"
+    assert conv[2]["role"] == "assistant" and conv[2]["content"] == "응답1"
+    assert conv[3]["role"] == "user" and conv[3]["content"] == "두번째"
+
+
+@pytest.mark.asyncio
+async def test_close_and_clear_history_reset_accumulation(transformers_mock):
+    """close() / clear_history() 가 history 비움."""
+    from screen_recorder.agent.backends import ChatInput
+
+    streamer_inst = MagicMock()
+    streamer_inst.__iter__ = MagicMock(return_value=iter(["응답"]))
+    streamer_inst.end = MagicMock()
+    transformers_mock["transformers"].TextIteratorStreamer = MagicMock(
+        return_value=streamer_inst,
+    )
+    transformers_mock["model_inst"].generate = MagicMock(return_value=None)
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+    await be.send_message(ChatInput(text="x"), lambda _: None)
+    assert len(be._history) == 2
+
+    be.clear_history()
+    assert be._history == []
+
+    # close() 도 reset.
+    be._history = [{"role": "user", "content": "y"}]
+    await be.close()
+    assert be._history == []
+
+
 def test_stopping_criteria_returns_true_when_flag_set(transformers_mock):
     """_make_stopping_criteria 의 콜백이 flag 상태 반영."""
     import threading
