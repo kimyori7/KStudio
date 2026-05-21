@@ -73,7 +73,7 @@ _BUILTIN: list[ModelMetadata] = [
         estimated_size_gb=22.4, estimated_vram_gb=14.0,
         context_window=32_768,
         supports_tools=True,
-        description="영상/오디오 native. ~22GB 다운로드, bf16 로드 (VRAM ~14GB, talker 해제 후).",
+        description="영상/오디오 native. ~22GB 다운로드, bf16 로드. 도구 호출은 prompt 시뮬레이션 (정식 미지원).",
         tool_strategy="prompted",
     ),
 ]
