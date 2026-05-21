@@ -874,6 +874,8 @@ async def test_send_message_with_images_uses_multipart(sdk_mock):
     decoded = base64.b64decode(img_blocks[0]["source"]["data"])
     assert decoded == png_bytes
     assert img_blocks[0]["source"]["media_type"] == "image/png"
+    # SDK 스레딩 컨트랙트 — top-level 메시지는 parent_tool_use_id=None.
+    assert payload.get("parent_tool_use_id") is None
 
 
 @pytest.mark.asyncio
@@ -916,3 +918,30 @@ async def test_send_tool_result_is_noop_for_in_process_mcp(sdk_mock):
     received = []
     await be.send_tool_result("toolu_123", "결과", received.append)
     assert received == []   # emit 안 함.
+
+
+def test_sniff_image_mime_png():
+    from screen_recorder.agent.backends.claude_backend import _sniff_image_mime
+    assert _sniff_image_mime(b"\x89PNG\r\n\x1a\nfoo") == "image/png"
+
+
+def test_sniff_image_mime_jpeg():
+    from screen_recorder.agent.backends.claude_backend import _sniff_image_mime
+    assert _sniff_image_mime(b"\xff\xd8\xff\xe0_jpeg_body") == "image/jpeg"
+
+
+def test_sniff_image_mime_gif():
+    from screen_recorder.agent.backends.claude_backend import _sniff_image_mime
+    assert _sniff_image_mime(b"GIF89a_body") == "image/gif"
+    assert _sniff_image_mime(b"GIF87a_body") == "image/gif"
+
+
+def test_sniff_image_mime_webp():
+    from screen_recorder.agent.backends.claude_backend import _sniff_image_mime
+    assert _sniff_image_mime(b"RIFF\x00\x00\x00\x00WEBP_body") == "image/webp"
+
+
+def test_sniff_image_mime_unknown_falls_back_to_png():
+    from screen_recorder.agent.backends.claude_backend import _sniff_image_mime
+    assert _sniff_image_mime(b"\x00\x01\x02\x03random") == "image/png"
+    assert _sniff_image_mime(b"") == "image/png"

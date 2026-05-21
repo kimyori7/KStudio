@@ -137,7 +137,7 @@ class ClaudeBackend:
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            "media_type": _sniff_image_mime(img_bytes),
                             "data": base64.b64encode(img_bytes).decode("ascii"),
                         },
                     })
@@ -268,8 +268,26 @@ class ClaudeBackend:
         """
         # SDK 의 in-process MCP 도구는 자체 응답하므로 별도 동작 없음.
         # 비-MCP 외부 도구 추가될 때 (sub-plan 6 tool adapter) 채워질 예정.
-        _log.debug("send_tool_result called (no-op for in-process MCP): tool_use_id=%s",
-                    tool_use_id)
+        _log.debug("send_tool_result called (no-op for in-process MCP): tool_use_id=%s result=%r",
+                    tool_use_id, result)
+
+
+def _sniff_image_mime(data: bytes) -> str:
+    """이미지 bytes 의 magic number 보고 MIME 추정.
+
+    Anthropic API 가 image content block 의 media_type 을 검사 — 잘못된 선언이면
+    reject. 현재 chat_panel 은 항상 PNG 로 저장하지만 향후 file-attach 같은 경로에서
+    JPEG 가 들어올 수 있음. fallback 은 PNG (가장 흔한 케이스).
+    """
+    if len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if len(data) >= 2 and data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if len(data) >= 6 and data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"   # safe default
 
 
 def _short_args(d: dict) -> str:
