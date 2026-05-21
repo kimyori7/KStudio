@@ -129,8 +129,30 @@ class ClaudeBackend:
 
             emit_fn(AgentEvent(kind="started"))
 
-            # 텍스트 query 만 (이미지는 task 8).
-            await self._client.query(msg.text)
+            # 이미지 첨부 있으면 multipart 메시지 형식.
+            if msg.images:
+                content_blocks: list[dict] = []
+                for img_bytes in msg.images:
+                    content_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": base64.b64encode(img_bytes).decode("ascii"),
+                        },
+                    })
+                content_blocks.append({"type": "text", "text": msg.text or "(첨부 이미지 참고)"})
+
+                async def _multipart_iter():
+                    yield {
+                        "type": "user",
+                        "message": {"role": "user", "content": content_blocks},
+                        "parent_tool_use_id": None,
+                    }
+
+                await self._client.query(_multipart_iter())
+            else:
+                await self._client.query(msg.text)
 
             # 텍스트/thinking 가 partial 로 도착 — 중복 방지 플래그.
             text_streamed = False
@@ -238,8 +260,16 @@ class ClaudeBackend:
     async def send_tool_result(
         self, tool_use_id: str, result: Any, emit_fn: EmitFn,
     ) -> None:
-        """다음 task 에서 구현 — 지금은 미완성."""
-        raise NotImplementedError("Task 6 에서 구현")
+        """도구 결과를 Claude 에 회신 — runtime.py 의 in-process MCP 도구가 자체 응답하는
+        경우와 별개로, 사용자 ✓ 게이트 같이 외부 동기화 필요한 도구를 위한 경로.
+
+        현재 KStudio 의 모든 MCP 도구는 in-process 라 SDK 가 자동 회신 → 이 메서드는
+        향후 비-MCP 도구 (예: plan_gate 의 비동기 응답) 추가 시 사용. 지금은 단순 stub.
+        """
+        # SDK 의 in-process MCP 도구는 자체 응답하므로 별도 동작 없음.
+        # 비-MCP 외부 도구 추가될 때 (sub-plan 6 tool adapter) 채워질 예정.
+        _log.debug("send_tool_result called (no-op for in-process MCP): tool_use_id=%s",
+                    tool_use_id)
 
 
 def _short_args(d: dict) -> str:

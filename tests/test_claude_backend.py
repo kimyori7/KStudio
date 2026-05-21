@@ -826,3 +826,93 @@ async def test_send_message_last_in_uses_last_assistant_message(sdk_mock):
     assert "last_in=5000" in done_evs[0].detail
     # 첫 AM 의 1000 은 *없어야* — 덮어쓰기 확인.
     assert "last_in=1000" not in done_evs[0].detail
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_images_uses_multipart(sdk_mock):
+    """images 전달 시 client.query 가 async iterable 받음 — multipart content."""
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    sent_payload = []
+
+    async def _query_capture(arg):
+        # arg 가 async generator 면 yield 한 dict 모음. 그 외 (str) 도 받음.
+        if hasattr(arg, "__aiter__"):
+            async for d in arg:
+                sent_payload.append(d)
+        else:
+            sent_payload.append(arg)
+    mock_client.query = _query_capture
+
+    # 빈 응답 (text/이미지 검증 만, 응답 흐름은 무관).
+    async def _r():
+        class _R: usage = {}
+        yield _R()
+    mock_client.receive_response = lambda: _r()
+
+    png_bytes = b"\x89PNG\r\n\x1a\nfake_png"
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    await be.send_message(
+        ChatInput(text="이 사진 봐", images=[png_bytes]),
+        lambda _ev: None,
+    )
+
+    assert len(sent_payload) == 1
+    payload = sent_payload[0]
+    assert payload["type"] == "user"
+    content = payload["message"]["content"]
+    img_blocks = [b for b in content if b.get("type") == "image"]
+    text_blocks = [b for b in content if b.get("type") == "text"]
+    assert len(img_blocks) == 1
+    assert len(text_blocks) == 1
+    assert text_blocks[0]["text"] == "이 사진 봐"
+    # 이미지 base64 디코드해서 원본 일치.
+    import base64
+    decoded = base64.b64decode(img_blocks[0]["source"]["data"])
+    assert decoded == png_bytes
+    assert img_blocks[0]["source"]["media_type"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_images_empty_text_uses_placeholder(sdk_mock):
+    """text='' + images=[...] → placeholder '(첨부 이미지 참고)' 가 들어감."""
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    sent_payload = []
+    async def _query_capture(arg):
+        if hasattr(arg, "__aiter__"):
+            async for d in arg:
+                sent_payload.append(d)
+        else:
+            sent_payload.append(arg)
+    mock_client.query = _query_capture
+
+    async def _r():
+        class _R: usage = {}
+        yield _R()
+    mock_client.receive_response = lambda: _r()
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    await be.send_message(ChatInput(text="", images=[b"png"]),
+                          lambda _: None)
+
+    content = sent_payload[0]["message"]["content"]
+    text_blocks = [b for b in content if b.get("type") == "text"]
+    assert text_blocks[0]["text"] == "(첨부 이미지 참고)"
+
+
+@pytest.mark.asyncio
+async def test_send_tool_result_is_noop_for_in_process_mcp(sdk_mock):
+    """현재 KStudio 의 모든 MCP 도구는 in-process — send_tool_result 는 no-op stub."""
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    # 예외 없이 그냥 끝나야 함.
+    received = []
+    await be.send_tool_result("toolu_123", "결과", received.append)
+    assert received == []   # emit 안 함.
