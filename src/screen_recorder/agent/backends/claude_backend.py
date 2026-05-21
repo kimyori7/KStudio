@@ -30,6 +30,7 @@ class ClaudeBackend:
     """
 
     def __init__(self, cwd: Optional[str | Path] = None) -> None:
+        # SDK 가 도구 실행 / 파일 접근 시 사용할 working directory. Task 3 의 connect 에 전달.
         self._cwd = Path(cwd) if cwd else None
         self._client: Optional[Any] = None     # ClaudeSDKClient — lazy import
         self._system_prompt: str = ""
