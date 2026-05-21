@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -114,18 +114,51 @@ async def test_cancel_noop_when_task_already_done():
     await be.cancel()   # 예외 없어야 함
 
 
+@pytest.fixture
+def sdk_mock(monkeypatch):
+    """claude_agent_sdk 를 mock 으로 교체.
+
+    반환: (mock_sdk_module, mock_client). 호출자는 mock_client.receive_response 를
+    원하는 async generator 함수로 교체해 응답 시퀀스 정의.
+
+    isinstance 검사 우회 — runtime 코드의 모든 SDK 타입 체크가 동작하도록 type
+    객체들도 mock_sdk 에 attribute 로 세팅.
+    """
+    mock_client = MagicMock()
+    mock_client.connect = AsyncMock()
+    mock_client.disconnect = AsyncMock()
+    mock_client.query = AsyncMock()
+    # default: 빈 응답 — 호출자가 receive_response 를 교체해서 사용.
+    async def _empty_receive():
+        if False:
+            yield None   # generator 형태 보장.
+    mock_client.receive_response = lambda: _empty_receive()
+
+    mock_sdk = MagicMock()
+    mock_sdk.ClaudeSDKClient = lambda options: mock_client
+    mock_sdk.ClaudeAgentOptions = MagicMock(return_value=MagicMock())
+    # isinstance() 검사용 — 각 테스트가 실제 데이터 클래스를 덮어쓰기도 함.
+    mock_sdk.AssistantMessage = type("AssistantMessage", (), {"content": [], "usage": None})
+    mock_sdk.ResultMessage = type("ResultMessage", (), {"usage": {}})
+    mock_sdk.UserMessage = type("UserMessage", (), {})
+    mock_sdk.StreamEvent = type("StreamEvent", (), {})
+    mock_sdk.TextBlock = type("TextBlock", (), {})
+    mock_sdk.ThinkingBlock = type("ThinkingBlock", (), {})
+    mock_sdk.ToolUseBlock = type("ToolUseBlock", (), {})
+    mock_sdk.ToolResultBlock = type("ToolResultBlock", (), {})
+
+    monkeypatch.setitem(__import__("sys").modules, "claude_agent_sdk", mock_sdk)
+    yield mock_sdk, mock_client
+
+
 @pytest.mark.asyncio
-async def test_send_message_text_emits_text_block(monkeypatch):
+async def test_send_message_text_emits_text_block(sdk_mock):
     """텍스트 query → AssistantMessage TextBlock → emit AgentMessage(role='assistant')."""
     from screen_recorder.agent.runtime import AgentMessage, AgentEvent
     from screen_recorder.agent.backends import ChatInput
 
-    # SDK mock — connect/query/receive_response.
-    mock_client = MagicMock()
-    mock_client.connect = AsyncMock()
-    mock_client.query = AsyncMock()
+    mock_sdk, mock_client = sdk_mock
 
-    # AssistantMessage 한 개 + ResultMessage 한 개 yield.
     class _FakeTextBlock:
         text = "안녕하세요"
 
@@ -141,36 +174,116 @@ async def test_send_message_text_emits_text_block(monkeypatch):
         yield _FakeResultMsg()
 
     mock_client.receive_response = lambda: _fake_receive()
-
-    # ClaudeSDKClient mock — 호출 시 mock_client 반환.
-    mock_sdk = MagicMock()
-    mock_sdk.ClaudeSDKClient = lambda options: mock_client
-    mock_sdk.ClaudeAgentOptions = MagicMock(return_value=MagicMock())
-
-    # SDK 의 isinstance() 검사 우회 — runtime 의 type check 들이 다 mock 클래스 통과하게.
+    # isinstance 검사가 _FakeAssistantMsg / _FakeResultMsg 통과하도록.
     mock_sdk.AssistantMessage = _FakeAssistantMsg
     mock_sdk.ResultMessage = _FakeResultMsg
-    mock_sdk.UserMessage = type("UserMessage", (), {})
-    mock_sdk.StreamEvent = type("StreamEvent", (), {})
     mock_sdk.TextBlock = _FakeTextBlock
-    mock_sdk.ThinkingBlock = type("ThinkingBlock", (), {})
-    mock_sdk.ToolUseBlock = type("ToolUseBlock", (), {})
-    mock_sdk.ToolResultBlock = type("ToolResultBlock", (), {})
 
-    with patch.dict("sys.modules", {"claude_agent_sdk": mock_sdk}):
-        be = ClaudeBackend(cwd="/tmp")
-        await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="안녕"), received.append)
 
-        received: list = []
-        await be.send_message(ChatInput(text="안녕"), received.append)
-
-    # 첫 emit: started 이벤트.
     assert any(isinstance(r, AgentEvent) and r.kind == "started" for r in received)
-    # AssistantMessage TextBlock → AgentMessage(role="assistant", text="안녕하세요").
     text_msgs = [r for r in received
                   if isinstance(r, AgentMessage) and r.role == "assistant"]
     assert len(text_msgs) == 1
     assert text_msgs[0].text == "안녕하세요"
-    # 마지막: done.
     done_evs = [r for r in received if isinstance(r, AgentEvent) and r.kind == "done"]
     assert len(done_evs) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_message_cancel_emits_error_and_closes_client(sdk_mock):
+    """진행 중 send_message 에 CancelledError → 'error' 이벤트 emit + client close + re-raise."""
+    from screen_recorder.agent.runtime import AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    # receive_response 가 무한 대기 — 외부에서 cancel 대상.
+    async def _slow_receive():
+        await asyncio.sleep(1.0)
+        yield None  # 도달 안 함
+
+    mock_client.receive_response = lambda: _slow_receive()
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+
+    received: list = []
+    async def _runner():
+        await be.send_message(ChatInput(text="hi"), received.append)
+
+    task = asyncio.create_task(_runner())
+    # send_message 가 receive 루프 진입할 시간.
+    await asyncio.sleep(0.05)
+    await be.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # error 이벤트 + 한국어 메시지.
+    error_evs = [r for r in received
+                  if isinstance(r, AgentEvent) and r.kind == "error"]
+    assert any("취소" in e.detail for e in error_evs)
+    # close() 가 호출돼 _client = None.
+    assert be._client is None
+    mock_client.disconnect.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_message_clears_current_task_on_success(sdk_mock):
+    """정상 종료 후 _current_task = None — 다음 cancel 이 stale task 가리키지 않음."""
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _AM:
+        content = []
+        usage = None
+
+    class _Result:
+        usage = {}
+
+    async def _r():
+        yield _AM()
+        yield _Result()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.AssistantMessage = _AM
+    mock_sdk.ResultMessage = _Result
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    await be.send_message(ChatInput(text="hi"), lambda _: None)
+
+    assert be._current_task is None
+
+
+@pytest.mark.asyncio
+async def test_send_message_clears_current_task_on_cancel(sdk_mock):
+    """cancel 경로 후에도 _current_task = None — finally 블록 보장."""
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    async def _slow():
+        await asyncio.sleep(1.0)
+        yield None
+
+    mock_client.receive_response = lambda: _slow()
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+
+    async def _runner():
+        await be.send_message(ChatInput(text="hi"), lambda _: None)
+
+    task = asyncio.create_task(_runner())
+    await asyncio.sleep(0.05)
+    await be.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert be._current_task is None

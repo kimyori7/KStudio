@@ -117,8 +117,14 @@ class ClaudeBackend:
                     include_partial_messages=True,
                     system_prompt=self._system_prompt,
                 )
-                self._client = ClaudeSDKClient(options=opts)
-                await self._client.connect()
+                # connect 실패 시 self._client 에 broken 객체 남기지 않기 — 다음 호출이 재연결 시도.
+                client = ClaudeSDKClient(options=opts)
+                try:
+                    await client.connect()
+                except Exception:
+                    self._client = None
+                    raise
+                self._client = client
 
             emit_fn(AgentEvent(kind="started"))
 
