@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from .base import ChatInput, EmitFn
+from .base import AgentEvent, AgentMessage, ChatInput, EmitFn
 
 
 _log = logging.getLogger(__name__)
@@ -82,7 +82,6 @@ class ClaudeBackend:
         try:
             await self._send_message_impl(msg, emit_fn)
         except asyncio.CancelledError:
-            from ..runtime import AgentEvent
             emit_fn(AgentEvent(kind="error", detail="사용자가 취소함"))
             await self.close()
             raise
@@ -90,7 +89,6 @@ class ClaudeBackend:
             self._current_task = None
 
     async def _send_message_impl(self, msg: ChatInput, emit_fn: EmitFn) -> None:
-        from ..runtime import AgentMessage, AgentEvent
         try:
             from claude_agent_sdk import (
                 ClaudeAgentOptions, ClaudeSDKClient,

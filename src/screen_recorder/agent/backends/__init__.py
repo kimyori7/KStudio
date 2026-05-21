@@ -3,7 +3,10 @@
 각 백엔드는 ChatBackend Protocol 을 구현하고 사용자 메시지를 받아 SDK/모델별 호출 후
 AgentMessage/AgentEvent emit. runtime.py 의 Agent 가 backend 한 개를 보유하고 위임.
 """
-from .base import ChatBackend, ChatInput, EmitFn
+from .base import AgentEvent, AgentMessage, ChatBackend, ChatInput, EmitFn
 from .claude_backend import ClaudeBackend
 
-__all__ = ["ChatBackend", "ChatInput", "EmitFn", "ClaudeBackend"]
+__all__ = [
+    "AgentEvent", "AgentMessage",
+    "ChatBackend", "ChatInput", "EmitFn", "ClaudeBackend",
+]

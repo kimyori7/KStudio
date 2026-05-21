@@ -21,7 +21,6 @@ import asyncio
 import concurrent.futures
 import logging
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,7 +30,8 @@ from .tools_video import VideoTools, VideoSessionAdapter
 from .proposals import EffectProposal, ProposalQueue
 from .plan_gate import PlanGate
 from .backends.claude_backend import ClaudeBackend
-from .backends import ChatInput
+# AgentMessage / AgentEvent 는 backends/base.py 로 이전 — 외부 호환 위해 re-export.
+from .backends import AgentEvent, AgentMessage, ChatInput
 
 
 _log = logging.getLogger(__name__)
@@ -157,29 +157,6 @@ SYSTEM_PROMPT = (
     "추측한 좌표 때문. 반드시 위 5단계 (get_frame_at width=960~1280 → 픽셀 위치 묘사 → "
     "정규화 → propose → preview_proposal 검증) 거칠 것.\n"
 )
-
-
-@dataclass
-class AgentMessage:
-    """채팅 패널이 표시하는 한 줄.
-
-    role: user / assistant / thinking / system / tool_use / tool_result / error / proposals_preview
-    image_bytes / image_mime: tool_result 중 이미지 (frame_at / timeline_strip) 인라인 표시용.
-    proposals: proposals_preview role 의 카드 표시용. 각 dict 는 action/type/payload 포함.
-    """
-    role: str
-    text: str
-    tool_name: Optional[str] = None
-    image_bytes: Optional[bytes] = None
-    image_mime: Optional[str] = None
-    proposals: Optional[list[dict]] = None
-
-
-@dataclass
-class AgentEvent:
-    """진행 상황 — UI 가 진행률/상태 표시할 때."""
-    kind: str   # "started" / "tool_use" / "tool_result" / "done" / "error"
-    detail: str = ""
 
 
 class _AgentThread(QThread):

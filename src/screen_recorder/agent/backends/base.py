@@ -1,21 +1,43 @@
-"""ChatBackend Protocol 정의.
+"""ChatBackend Protocol + 정규화된 이벤트 dataclass.
 
-기존 AgentMessage/AgentEvent (runtime.py) 를 그대로 사용 — 정규화된 이벤트 역할 이미
-함. 새 타입 추가 안 함 (YAGNI). 백엔드는 emit_fn 콜백으로 이벤트 발행.
+AgentMessage / AgentEvent 는 모든 백엔드가 공통으로 emit 하는 타입 — 백엔드별
+SDK 차이를 흡수해서 UI 가 동일한 형태로 받음. (Sub-plan 1 까지는 runtime.py 에
+있었지만 sub-plan 2 의 두 번째 백엔드 (transformers) 가 같은 타입 emit 해야 하므로
+backends/base.py 로 이전. runtime.py 는 외부 호환 위해 re-export 만 유지.)
+
+EmitFn 은 backend → UI 콜백 — runtime.py 의 Qt Signal emit 에 연결됨. Qt 의존 없음.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
-if TYPE_CHECKING:
-    # 순환 임포트 회피 — 런타임 import 가 아니라 타입 체커 전용.
-    from ..runtime import AgentEvent, AgentMessage
-    EmitFn = Callable[["AgentMessage | AgentEvent"], None]
-else:
-    # emit 콜백 — runtime.py 의 Qt Signal emit 으로 연결됨.
-    # msg: AgentMessage / event: AgentEvent (runtime.py 정의)
-    EmitFn = Callable[[Any], None]
+
+@dataclass
+class AgentMessage:
+    """채팅 패널이 표시하는 한 줄.
+
+    role: user / assistant / thinking / system / tool_use / tool_result / error / proposals_preview
+    image_bytes / image_mime: tool_result 중 이미지 (frame_at / timeline_strip) 인라인 표시용.
+    proposals: proposals_preview role 의 카드 표시용. 각 dict 는 action/type/payload 포함.
+    """
+    role: str
+    text: str
+    tool_name: Optional[str] = None
+    image_bytes: Optional[bytes] = None
+    image_mime: Optional[str] = None
+    proposals: Optional[list[dict]] = None
+
+
+@dataclass
+class AgentEvent:
+    """진행 상황 — UI 가 진행률/상태 표시할 때."""
+    kind: str   # "started" / "tool_use" / "tool_result" / "done" / "error"
+    detail: str = ""
+
+
+# emit 콜백 — runtime.py 의 Qt Signal emit 으로 연결됨.
+EmitFn = Callable[[Any], None]   # 실제로는 Callable[[AgentMessage | AgentEvent], None]
 
 
 @dataclass
@@ -49,7 +71,23 @@ class ChatBackend(Protocol):
         system_prompt: str,
         tools: dict[str, Any],
         model: str,
-    ) -> None: ...
+    ) -> None:
+        """백엔드 초기화. 첫 send_message 전에 정확히 한 번 호출.
+
+        tools dict shape (백엔드별 — 각 백엔드는 자기 키만 꺼내고 모르는 키는 무시):
+        - ClaudeBackend:
+          `{"mcp_server": <MCPServer>, "allowed_tools": list[str]}`
+          MCP server 인스턴스 + 허용할 도구 이름 (prefix 포함, 예 "mcp__kstudio_video__get_video_state").
+        - TransformersBackend (sub-plan 2 예정):
+          `{"openai_tools": list[dict], "tool_handlers": dict[str, Callable]}`
+          OpenAI function calling schema list + name → 핸들러 (in-process 실행).
+          tool_adapter.py 가 MCP → OpenAI 변환.
+        - LlamaCppBackend (sub-plan 5 예정):
+          TransformersBackend 와 동일 shape 재사용.
+
+        빈 dict 면 도구 없는 채팅 (PoC / 테스트).
+        """
+        ...
 
     async def send_message(self, msg: ChatInput, emit_fn: EmitFn) -> None: ...
 
