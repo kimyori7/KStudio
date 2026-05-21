@@ -257,3 +257,69 @@ async def test_send_message_error_emits_error_event(transformers_mock):
     errs = [r for r in received if isinstance(r, AgentEvent) and r.kind == "error"]
     assert len(errs) == 1
     assert "CUDA OOM" in errs[0].detail
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_image_writes_temp_and_cleans_up(
+    transformers_mock, tmp_path, monkeypatch,
+):
+    """image bytes → temp PNG → conversation 에 path → send_message 끝나면 unlink."""
+    import tempfile
+    from pathlib import Path
+    from screen_recorder.agent.backends import ChatInput
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    # process_mm_info 가 conversation 에서 image path 를 받았는지 검증.
+    captured_conv = []
+    def _capture_mm(conv, use_audio_in_video=False):
+        captured_conv.append(conv)
+        return [], ["fake_image_pixel_array"], []
+    transformers_mock["process_mm_info"].side_effect = _capture_mm
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+
+    png = b"\x89PNG\r\n\x1a\nfake_image"
+    received: list = []
+    await be.send_message(
+        ChatInput(text="이거 뭐야?", images=[png]),
+        received.append,
+    )
+
+    # process_mm_info 가 image block 포함된 conversation 받음.
+    assert len(captured_conv) == 1
+    user_msg = captured_conv[0][1]
+    user_content = user_msg["content"]
+    img_blocks = [b for b in user_content if b.get("type") == "image"]
+    assert len(img_blocks) == 1
+
+    # temp 파일은 send_message finally 에서 unlink — 흔적 없음.
+    assert be._temp_files == []
+    # 실제로 path 가 사라졌는지.
+    img_path = Path(img_blocks[0]["image"])
+    assert not img_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_image_cleans_up_on_error(
+    transformers_mock, tmp_path, monkeypatch,
+):
+    """generate 실패해도 temp 파일 정리 — finally 보장."""
+    import tempfile
+    from screen_recorder.agent.backends import ChatInput
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    transformers_mock["model_inst"].generate = MagicMock(
+        side_effect=RuntimeError("boom"),
+    )
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+    await be.send_message(
+        ChatInput(text="x", images=[b"\x89PNG..."]),
+        lambda _: None,
+    )
+
+    # 정리됨.
+    assert be._temp_files == []
