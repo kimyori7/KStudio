@@ -53,13 +53,13 @@ _BUILTIN: list[ModelMetadata] = [
         display_name="Qwen2.5-Omni 7B (로컬, 멀티모달)",
         runtime="transformers",
         repo_id="Qwen/Qwen2.5-Omni-7B",
-        quantization="INT8 (bitsandbytes)",
+        quantization="bf16 (원본)",
         modalities=frozenset({"text", "image", "audio", "video"}),
         supports_korean=True,
-        estimated_size_gb=8.0, estimated_vram_gb=9.5,
+        estimated_size_gb=22.4, estimated_vram_gb=14.0,
         context_window=32_768,
         supports_tools=True,
-        description="영상/오디오 native. Phase 3b 에서 자동 다운로드 + 채팅.",
+        description="영상/오디오 native. ~22GB 다운로드, bf16 로드 (VRAM ~14GB, talker 해제 후).",
     ),
 ]
 
