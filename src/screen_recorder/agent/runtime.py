@@ -30,6 +30,8 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from .tools_video import VideoTools, VideoSessionAdapter
 from .proposals import EffectProposal, ProposalQueue
 from .plan_gate import PlanGate
+from .backends.claude_backend import ClaudeBackend
+from .backends import ChatInput
 
 
 _log = logging.getLogger(__name__)
@@ -248,10 +250,14 @@ class AgentRuntime(QObject):
         self._cwd = cwd
         self._model = model or "claude-sonnet-4-6"   # 기본 Sonnet — Pro 정액제 친화적.
         self._thread = _AgentThread(self)
-        self._client: Any = None
         self._started = False
-        # 진행 중인 _run_query 의 asyncio task — cancel() 가 이걸 취소.
-        self._current_task: Optional[asyncio.Task] = None
+        # backend — SDK 호출 + helpers 모두 위임.
+        self._backend = ClaudeBackend(cwd=cwd)
+        self._tools_dict = {
+            "mcp_server": self._video_tools.mcp_server(),
+            "allowed_tools": self._video_tools.tool_names(),
+        }
+        self._session_started: bool = False
 
     # ---- Phase B 콜백 진입점 ----
     def emit_apply_request(
@@ -298,8 +304,8 @@ class AgentRuntime(QObject):
         self._on_user_message_outgoing()
         # 클라이언트 정리는 worker 스레드의 asyncio 루프 안에서 수행.
         loop = self._thread._loop
-        if loop is not None and self._client is not None:
-            fut = asyncio.run_coroutine_threadsafe(self._disconnect_client(), loop)
+        if loop is not None:
+            fut = asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
             try:
                 fut.result(timeout=2.0)
             except Exception:
@@ -308,16 +314,6 @@ class AgentRuntime(QObject):
         self._thread.quit()
         self._thread.wait(3000)
         self._started = False
-
-    async def _disconnect_client(self) -> None:
-        client = self._client
-        self._client = None
-        if client is None:
-            return
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
 
     # ---- UI 진입점 ----
     def send(self, prompt: str, images: Optional[list[bytes]] = None) -> None:
@@ -330,33 +326,35 @@ class AgentRuntime(QObject):
         if not self._started:
             self.start()
         loop = self._thread.loop()
-        asyncio.run_coroutine_threadsafe(self._run_query(prompt, images), loop)
+        asyncio.run_coroutine_threadsafe(
+            self._run_query_with_backend(prompt, images), loop,
+        )
 
     def cancel(self) -> None:
-        """진행 중인 응답 취소 — worker 에서 현재 task 의 cancel() 호출.
+        """진행 중인 응답 취소 — backend.cancel() 이 내부 task 를 취소.
 
-        SDK 의 receive_response() 가 CancelledError 로 풀리고 done 이벤트로 종료.
+        SDK 의 receive_response() 가 CancelledError 로 풀리고 error 이벤트로 종료.
         새 send 후 정상 동작 복원.
         """
         self._on_user_message_outgoing()
         loop = self._thread._loop
-        task = self._current_task
-        if loop is None or task is None or task.done():
+        if loop is None:
             return
-        loop.call_soon_threadsafe(task.cancel)
+        asyncio.run_coroutine_threadsafe(self._backend.cancel(), loop)
 
     def set_model(self, model_id: str) -> None:
         """모델 전환 — 다음 send() 부터 새 모델로 재연결. 진행 중 응답은 영향 없음.
 
-        worker 의 기존 client 는 비동기 disconnect 후 None. 다음 _run_query 가 새 옵션
-        으로 재생성.
+        backend.close() 로 기존 client disconnect. _session_started=False 로 다음
+        send 가 새 session 으로 시작.
         """
         if not model_id or model_id == self._model:
             return
         self._model = model_id
+        self._session_started = False   # 다음 send 가 새 session 으로 재시작
         loop = self._thread._loop
-        if loop is not None and self._client is not None:
-            asyncio.run_coroutine_threadsafe(self._disconnect_client(), loop)
+        if loop is not None:
+            asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
 
     def clear_session(self) -> None:
         """슬래시 `/clear` — 진행 중 응답 취소 + client disconnect. 다음 send 시 새 세션.
@@ -366,9 +364,10 @@ class AgentRuntime(QObject):
         self._on_user_message_outgoing()
         # 진행 중 task 가 있으면 취소.
         self.cancel()
+        self._session_started = False
         loop = self._thread._loop
-        if loop is not None and self._client is not None:
-            asyncio.run_coroutine_threadsafe(self._disconnect_client(), loop)
+        if loop is not None:
+            asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
 
     def compact_session(self) -> None:
         """슬래시 `/compact` — Claude 에게 지금까지 대화 요약 부탁 후 새 세션 시작.
@@ -385,272 +384,41 @@ class AgentRuntime(QObject):
             "사용자가 원한 작업, 영상 상태, 이미 적용한 편집, 남은 할 일 위주로. "
             "이 요약을 본 뒤 사용자가 /clear 로 새 세션을 시작할 예정이니 핵심만."
         )
-        asyncio.run_coroutine_threadsafe(self._run_query(prompt), loop)
+        asyncio.run_coroutine_threadsafe(
+            self._run_query_with_backend(prompt), loop,
+        )
 
     # ---- worker 측 코루틴 ----
-    async def _run_query(self, prompt: str, images: Optional[list[bytes]] = None) -> None:
-        # 현재 task 등록 — cancel() 의 타겟.
-        self._current_task = asyncio.current_task()
-        try:
-            await self._run_query_impl(prompt, images)
-        except asyncio.CancelledError:
-            self.event_received.emit(AgentEvent(kind="error", detail="사용자가 취소함"))
-            # 다음 send 에서 정상 응답 위해 client 재연결 강제.
-            await self._disconnect_client()
-        finally:
-            self._current_task = None
+    async def _run_query_with_backend(
+        self, prompt: str, images: Optional[list[bytes]] = None,
+    ) -> None:
+        """backend 위임 — 첫 호출 시 start_session, 이후 send_message.
 
-    async def _run_query_impl(self, prompt: str, images: Optional[list[bytes]] = None) -> None:
-        try:
-            from claude_agent_sdk import (
-                ClaudeAgentOptions, ClaudeSDKClient,
-                AssistantMessage, ResultMessage, UserMessage, StreamEvent,
-                TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
+        모든 SDK 호출 + helper 로직은 ClaudeBackend 에 있음. 이 메서드는
+        Qt Signal emit 을 위한 얇은 어댑터 역할만.
+        """
+        # 첫 호출이면 backend start_session.
+        if not self._session_started:
+            await self._backend.start_session(
+                system_prompt=SYSTEM_PROMPT,
+                tools=self._tools_dict,
+                model=self._model,
             )
-        except Exception as exc:
-            _log.exception("agent runtime: SDK import failed")
-            self.event_received.emit(AgentEvent(kind="error", detail=f"SDK import failed: {exc}"))
-            return
+            self._session_started = True
 
+        def _emit(item: Any) -> None:
+            """backend 가 emit 하는 AgentMessage / AgentEvent → Qt Signal."""
+            if isinstance(item, AgentMessage):
+                self.message_received.emit(item)
+            elif isinstance(item, AgentEvent):
+                self.event_received.emit(item)
+
+        msg = ChatInput(text=prompt, images=images)
         try:
-            if self._client is None:
-                mcp = self._video_tools.mcp_server()
-                opts = ClaudeAgentOptions(
-                    mcp_servers={"kstudio_video": mcp},
-                    allowed_tools=self._video_tools.tool_names(),
-                    cwd=str(self._cwd) if self._cwd else None,
-                    # 정액제(Claude Pro/Max) 로그인 강제 — 사용자 정책 (2026-05-13).
-                    env={"ANTHROPIC_API_KEY": ""},
-                    # 모델 — ChatPanel 드롭다운으로 사용자 변경 가능.
-                    model=self._model,
-                    # 진행 중 스트리밍 — 텍스트가 부분 도착하면 즉시 패널에 표시.
-                    include_partial_messages=True,
-                    system_prompt=SYSTEM_PROMPT,
-                )
-                self._client = ClaudeSDKClient(options=opts)
-                await self._client.connect()
-
-            self.event_received.emit(AgentEvent(kind="started"))
-            # 컨텍스트 % 계산용 — 응답 안에서 마지막 AssistantMessage 의 usage 추적.
-            # SDK 의 ResultMessage.usage 는 한 응답 안 여러 API 호출 (도구 호출마다 1번) 의
-            # input_tokens 를 *합산* 해서 줌 → 도구 5번이면 5번의 context size 합쳐져 200k 초과
-            # 가능 (사용자 보고 2026-05-13: 166% 표시). 각 AM 의 usage 는 단일 API 호출 한 번
-            # 의 context 라 200k 안에서 정확.
-            last_am_total_input = 0
-            # 이미지 첨부 있으면 multipart 메시지 형식. SDK query() 는 str 또는
-            # AsyncIterable[dict] — async generator 로 yield. content 는 Anthropic
-            # content block list (image + text).
-            if images:
-                import base64
-                content_blocks: list[dict] = []
-                for img_bytes in images:
-                    content_blocks.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": base64.b64encode(img_bytes).decode("ascii"),
-                        },
-                    })
-                content_blocks.append({"type": "text", "text": prompt or "(첨부 이미지 참고)"})
-
-                async def _multipart_iter():
-                    yield {
-                        "type": "user",
-                        "message": {"role": "user", "content": content_blocks},
-                        "parent_tool_use_id": None,
-                    }
-
-                await self._client.query(_multipart_iter())
-            else:
-                await self._client.query(prompt)
-
-            # 2026-05-14: token-by-token 스트리밍 활성화 — 사용자 보고 "채팅 너무 느려".
-            # include_partial_messages=True 가 켜져 있으므로 SDK 가 StreamEvent (raw
-            # Anthropic stream event) 를 yield. content_block_delta 의 text_delta /
-            # thinking_delta 를 매 chunk 마다 emit → ChatPanel 의 _current_assistant_bubble /
-            # _current_thinking_bubble 누적 인프라가 그대로 같은 버블에 append.
-            #
-            # 중복 방지: partial 로 이미 emit 한 응답에선 AssistantMessage 도착 시
-            # 같은 TextBlock / ThinkingBlock 을 다시 emit 하면 화면에 두 번 그려짐.
-            # message_start 마다 flag 리셋, partial chunk 가 한 번이라도 흘렀으면 AM 의
-            # 해당 block skip. ToolUseBlock 은 partial 로 안 보냈으니 AM 에서 처리.
-            text_streamed = False
-            thinking_streamed = False
-            async for msg in self._client.receive_response():
-                if isinstance(msg, StreamEvent):
-                    ev = msg.event or {}
-                    ev_type = ev.get("type")
-                    if ev_type == "message_start":
-                        # 새 응답 turn 시작 — flag 리셋.
-                        text_streamed = False
-                        thinking_streamed = False
-                    elif ev_type == "content_block_delta":
-                        delta = ev.get("delta") or {}
-                        d_type = delta.get("type")
-                        if d_type == "text_delta":
-                            chunk = delta.get("text") or ""
-                            if chunk:
-                                text_streamed = True
-                                self.message_received.emit(AgentMessage(
-                                    role="assistant", text=chunk,
-                                ))
-                        elif d_type == "thinking_delta":
-                            chunk = delta.get("thinking") or ""
-                            if chunk:
-                                thinking_streamed = True
-                                self.message_received.emit(AgentMessage(
-                                    role="thinking", text=chunk,
-                                ))
-                    # 외 stream event (content_block_start/stop, message_delta/stop,
-                    # input_json_delta 등) 는 skip — 표시할 정보 없음.
-                    continue
-                if isinstance(msg, AssistantMessage):
-                    # 마지막 AM 의 usage 가 *한 번의 API 호출* context size — 200k 안에서 정확.
-                    am_usage = getattr(msg, "usage", None)
-                    if isinstance(am_usage, dict):
-                        last_am_total_input = (
-                            int(am_usage.get("input_tokens") or 0)
-                            + int(am_usage.get("cache_read_input_tokens") or 0)
-                            + int(am_usage.get("cache_creation_input_tokens") or 0)
-                        )
-                    for block in getattr(msg, "content", []) or []:
-                        if isinstance(block, ThinkingBlock):
-                            # partial 로 이미 그림 — 중복 방지.
-                            if thinking_streamed:
-                                continue
-                            txt = getattr(block, "thinking", "") or getattr(block, "text", "")
-                            if txt:
-                                self.message_received.emit(AgentMessage(
-                                    role="thinking", text=str(txt),
-                                ))
-                        elif isinstance(block, TextBlock):
-                            # partial 로 이미 그림 — 중복 방지.
-                            if text_streamed:
-                                continue
-                            text = getattr(block, "text", "")
-                            if text:
-                                self.message_received.emit(AgentMessage(
-                                    role="assistant", text=text,
-                                ))
-                        elif isinstance(block, ToolUseBlock):
-                            name = getattr(block, "name", "?")
-                            input_dict = getattr(block, "input", {}) or {}
-                            self.event_received.emit(AgentEvent(
-                                kind="tool_use",
-                                detail=f"{name} {_short_args(input_dict)}",
-                            ))
-                            self.message_received.emit(AgentMessage(
-                                role="tool_use",
-                                text=f"🔧 {name}({_short_args(input_dict)})",
-                                tool_name=name,
-                            ))
-                elif isinstance(msg, UserMessage):
-                    # 도구 결과 (tool_result) — Claude 가 다음 응답에 활용.
-                    for block in getattr(msg, "content", []) or []:
-                        if isinstance(block, ToolResultBlock):
-                            tool_id = getattr(block, "tool_use_id", "")
-                            content = getattr(block, "content", None)
-                            img_bytes, img_mime, preview = _extract_image_and_preview(content)
-                            self.message_received.emit(AgentMessage(
-                                role="tool_result",
-                                text=f"← {preview}",
-                                tool_name=tool_id,
-                                image_bytes=img_bytes,
-                                image_mime=img_mime,
-                            ))
-                elif isinstance(msg, ResultMessage):
-                    # 비용 / 토큰 사용량 표시 (정액제도 토큰 budget 추적용).
-                    # SDK 의 ResultMessage.usage 는 한 응답 안 여러 API 호출 (도구 호출
-                    # 마다 1번) 의 input_tokens 를 *합산*. 누적 토큰 (응답 단위 sum) 으로 사용.
-                    # 컨텍스트 % 는 last_am_total_input (마지막 API 호출 한 번의 context) 사용.
-                    usage = getattr(msg, "usage", None)
-                    parts: list[str] = []
-                    if isinstance(usage, dict):
-                        in_t = int(usage.get("input_tokens") or 0)
-                        cache_read = int(usage.get("cache_read_input_tokens") or 0)
-                        cache_create = int(usage.get("cache_creation_input_tokens") or 0)
-                        out_t = int(usage.get("output_tokens") or 0)
-                        total_in = in_t + cache_read + cache_create
-                        if total_in or out_t:
-                            parts.append(f"in={total_in}")
-                            parts.append(f"out={out_t}")
-                    # last_in — 컨텍스트 % 표시용. SDK 합산 over-count 회피.
-                    if last_am_total_input > 0:
-                        parts.append(f"last_in={last_am_total_input}")
-                    detail = " ".join(parts)
-                    self.event_received.emit(AgentEvent(kind="done", detail=detail))
-                    break
-        except Exception as exc:
-            _log.exception("agent runtime: query failed")
-            self.event_received.emit(AgentEvent(kind="error", detail=str(exc)))
+            await self._backend.send_message(msg, _emit)
+        except asyncio.CancelledError:
+            # backend 가 이미 error 이벤트 emit + close 했음. 재진입 위해 session 재시작 플래그 OFF.
+            self._session_started = False
+            raise
 
 
-def _short_args(d: dict) -> str:
-    """도구 호출 인자 짧게 (인스펙터용)."""
-    if not d:
-        return ""
-    parts = []
-    for k, v in list(d.items())[:4]:
-        sv = repr(v)
-        if len(sv) > 40:
-            sv = sv[:37] + "..."
-        parts.append(f"{k}={sv}")
-    return ", ".join(parts)
-
-
-def _result_preview(content: Any) -> str:
-    """도구 결과의 짧은 프리뷰. content 는 list[dict] 또는 str."""
-    if content is None:
-        return "(없음)"
-    if isinstance(content, str):
-        return content[:120] + ("…" if len(content) > 120 else "")
-    if isinstance(content, list) and content:
-        first = content[0]
-        if isinstance(first, dict):
-            if first.get("type") == "image":
-                return "[이미지]"
-            if first.get("type") == "text":
-                t = str(first.get("text", ""))
-                return t[:120] + ("…" if len(t) > 120 else "")
-    return str(content)[:120]
-
-
-def _extract_image_and_preview(content: Any) -> tuple[Optional[bytes], Optional[str], str]:
-    """tool_result content 에서 (image_bytes, mime, text_preview) 추출.
-
-    content 가 list[dict] 일 때 (MCP 표준):
-    - text 블록 → preview 누적
-    - image 블록 → base64 → bytes 디코드, mime 저장 (한 장만 처리, 첫 번째 우선)
-    문자열이면 그대로 preview.
-    """
-    import base64
-    if content is None:
-        return None, None, "(없음)"
-    if isinstance(content, str):
-        return None, None, content[:120] + ("…" if len(content) > 120 else "")
-    img_bytes: Optional[bytes] = None
-    img_mime: Optional[str] = None
-    text_parts: list[str] = []
-    if isinstance(content, list):
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            btype = block.get("type")
-            if btype == "image" and img_bytes is None:
-                data = block.get("data")
-                mime = block.get("mimeType") or block.get("mime_type") or "image/png"
-                if isinstance(data, str) and data:
-                    try:
-                        img_bytes = base64.b64decode(data)
-                        img_mime = str(mime)
-                    except Exception:
-                        pass
-            elif btype == "text":
-                text_parts.append(str(block.get("text", "")))
-    preview = " ".join(text_parts).strip()
-    if not preview:
-        preview = "[이미지]" if img_bytes else "(빈 결과)"
-    elif len(preview) > 120:
-        preview = preview[:117] + "…"
-    return img_bytes, img_mime, preview
