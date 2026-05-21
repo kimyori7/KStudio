@@ -1501,14 +1501,34 @@ class ChatPanel(QDockWidget):
     def _open_installer_for(self, meta, before: str) -> None:
         """PyTorch 1-클릭 설치 다이얼로그. 성공 시 set_model 재시도 (chain).
 
-        finished_ok → 동일 idx 로 _on_model_changed 다시 호출 → 의존성 OK 분기로
-        진행 → (캐시 없으면) 다운로드 단계 → 정상 set_model.
+        finished_ok → importlib.invalidate_caches() 후 의존성 재체크.
+          - 통과하면 _on_model_changed 다시 호출 → 다음 단계 (download or set_model).
+          - 실패하면 (Windows DLL 등 — 같은 프로세스에서 import 안 됨) → "재시작 안내"
+            시스템 메시지 + 콤보 fallback. **무한 chain 방지**.
         finished_error / rejected → 시스템 메시지 + 콤보 fallback.
+
+        진입 시 이미 다이얼로그가 떠있으면 raise 만 — 중복 다이얼로그 방지.
         """
+        # 중복 방지: 이미 설치 다이얼로그 진행 중이면 그걸 raise.
+        existing = getattr(self, "_pending_install_dialog", None)
+        try:
+            already_open = (
+                existing is not None
+                and not existing.isHidden()   # destroy 된 후엔 raise
+            )
+        except RuntimeError:
+            # C++ 객체 destroy 된 경우 — Qt 의 isHidden 가 raise.
+            already_open = False
+        if already_open:
+            existing.raise_()
+            existing.activateWindow()
+            return
+
         info = (
             f"{meta.display_name} 사용에 필요한 PyTorch 패키지를 venv 안에 설치합니다.\n"
             f"약 6GB 다운로드 — 인터넷 속도에 따라 수 분 ~ 십수 분 소요.\n"
-            f"설치 후 자동으로 모델 다운로드 단계로 진행됩니다."
+            f"설치 후 자동으로 모델 다운로드 단계로 진행됩니다.\n"
+            f"(설치 완료 후 import 가 안 되면 KStudio 재시작이 필요할 수 있습니다.)"
         )
         dlg = GpuInstallDialog(
             parent=self,
@@ -1524,8 +1544,23 @@ class ChatPanel(QDockWidget):
 
         def _on_install_ok() -> None:
             state["handled"] = True
-            # 설치 완료 → 다시 _on_model_changed 호출 → 다음 단계 (download or set_model).
-            self._on_model_changed(self._model_combo.currentIndex())
+            # pip 가 venv 에 추가한 패키지를 import 시스템이 즉시 인식하도록 캐시 무효화.
+            # 그래도 import 안 되는 경우 (Windows DLL / native ext 등) → 재시작 안내.
+            import importlib
+            importlib.invalidate_caches()
+            if check_runtime_available(meta.runtime):
+                # 의존성 OK — chain (download or set_model 단계).
+                self._on_model_changed(self._model_combo.currentIndex())
+            else:
+                # 같은 프로세스에선 import 불가 — 재시작 안내 + chain 중단 (무한 루프 방지).
+                self.append_message(AgentMessage(
+                    role="system",
+                    text=(
+                        f"✓ 설치 완료. 다만 같은 KStudio 프로세스에서 즉시 import 가 안 됩니다. "
+                        f"KStudio 를 재시작한 후 다시 {meta.display_name} 를 선택하세요."
+                    ),
+                ))
+                self._fallback_combo_to(before)
 
         def _on_install_err(msg: str) -> None:
             state["handled"] = True

@@ -316,3 +316,139 @@ def test_qwen_click_with_deps_and_cache_proceeds_normally(
         assert rt._model == "qwen25-omni-7b"
     finally:
         rt.stop()
+
+
+# ============================================================
+# 2026-05-21 사용자 보고 회귀 보호:
+# "설치 완료했는데도 PyTorch 설치 다이얼로그가 여러 개 뜬다"
+# 원인: pip install 후 같은 프로세스에서 importlib 가 새 패키지 인식 못 함 →
+#       check_runtime_available 가 여전히 False → _on_install_ok 가 chain
+#       호출 → _open_installer_for 가 또 호출 → 무한 chain.
+# Fix: invalidate_caches() 후 재체크. 그래도 False 면 "재시작 안내" + chain 중단.
+#      + 이미 다이얼로그 떠있으면 raise 만.
+# ============================================================
+
+
+def test_installer_finished_ok_but_import_still_fails_shows_restart_and_no_chain(
+    chat_panel_with_agent, monkeypatch, qtbot,
+):
+    """설치 성공 → 같은 프로세스 import 여전히 실패 → 재시작 안내 + chain 중단.
+
+    회귀 보호: 무한 chain (다이얼로그 여러 개 뜸) 방지.
+    """
+    import builtins
+    panel, rt = chat_panel_with_agent
+    rt.start()
+    try:
+        original_import = builtins.__import__
+        def _no_torch(name, *args, **kwargs):
+            if name in ("torch", "qwen_omni_utils", "transformers"):
+                raise ImportError(f"mock — {name} not available")
+            return original_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", _no_torch)
+
+        opened_dialogs: list = []
+        from screen_recorder.ui import gpu_install_dialog as gid_mod
+        original_dlg = gid_mod.GpuInstallDialog
+
+        class _Spy(original_dlg):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                opened_dialogs.append(self)
+            def show(self): pass
+
+        monkeypatch.setattr(gid_mod, "GpuInstallDialog", _Spy)
+        from screen_recorder.ui.agent import chat_panel as cp_mod
+        if hasattr(cp_mod, "GpuInstallDialog"):
+            monkeypatch.setattr(cp_mod, "GpuInstallDialog", _Spy)
+
+        # 시스템 메시지 수집.
+        sys_msgs: list = []
+        def _capture(m):
+            if getattr(m, "role", None) == "system":
+                sys_msgs.append(m.text)
+        original_append = panel.append_message
+        def _wrap(m):
+            _capture(m)
+            original_append(m)
+        monkeypatch.setattr(panel, "append_message", _wrap)
+
+        combo = panel._model_combo
+        qwen_idx = _find_qwen_idx(combo)
+        combo.setCurrentIndex(qwen_idx)
+        qtbot.wait(50)
+
+        # 첫 dialog 떴음.
+        assert len(opened_dialogs) == 1
+
+        # 첫 dialog 의 finished_ok 시뮬레이션 — import 는 여전히 차단된 상태.
+        opened_dialogs[0].finished_ok.emit()
+        qtbot.wait(50)
+
+        # 핵심 검증: 두 번째 dialog 안 떴음 (chain 중단).
+        assert len(opened_dialogs) == 1, (
+            f"무한 chain 회귀: dialog {len(opened_dialogs)}개 떴음 (1이어야)"
+        )
+        # 재시작 안내 메시지 emit.
+        assert any("재시작" in t for t in sys_msgs), (
+            f"재시작 안내 메시지 없음. 수신된 system msgs: {sys_msgs}"
+        )
+        # 콤보 fallback — sonnet 으로 복원.
+        assert combo.currentData() == "claude-sonnet-4-6"
+    finally:
+        rt.stop()
+
+
+def test_open_installer_twice_does_not_create_second_dialog(
+    chat_panel_with_agent, monkeypatch, qtbot,
+):
+    """이미 installer 다이얼로그 떠있는 상태에서 또 _open_installer_for 호출 → 새 dialog 안 만듦.
+
+    회귀 보호: 사용자가 Qwen 클릭 (dialog 뜸) → 닫지 않고 콤보에서 다른 클릭 →
+    또 새 dialog 뜨는 현상 방지.
+    """
+    import builtins
+    panel, rt = chat_panel_with_agent
+    rt.start()
+    try:
+        original_import = builtins.__import__
+        def _no_torch(name, *args, **kwargs):
+            if name in ("torch", "qwen_omni_utils", "transformers"):
+                raise ImportError("mock")
+            return original_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", _no_torch)
+
+        opened_dialogs: list = []
+        from screen_recorder.ui import gpu_install_dialog as gid_mod
+        original_dlg = gid_mod.GpuInstallDialog
+
+        class _Spy(original_dlg):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                opened_dialogs.append(self)
+                self._spy_visible = True
+            def show(self):
+                # show 후 isHidden() 가 False 반환하도록 — 실제 show 안 띄움.
+                self._spy_visible = True
+            def isHidden(self) -> bool:
+                return not self._spy_visible
+            def raise_(self): pass
+            def activateWindow(self): pass
+
+        monkeypatch.setattr(gid_mod, "GpuInstallDialog", _Spy)
+        from screen_recorder.ui.agent import chat_panel as cp_mod
+        if hasattr(cp_mod, "GpuInstallDialog"):
+            monkeypatch.setattr(cp_mod, "GpuInstallDialog", _Spy)
+
+        # 첫 호출 — Qwen 클릭.
+        meta = panel._model_registry.get("qwen25-omni-7b")
+        panel._open_installer_for(meta, "claude-sonnet-4-6")
+        assert len(opened_dialogs) == 1
+
+        # 두 번째 호출 — dialog 가 살아있으니 새 인스턴스화 안 됨.
+        panel._open_installer_for(meta, "claude-sonnet-4-6")
+        assert len(opened_dialogs) == 1, (
+            f"idempotency 회귀: dialog {len(opened_dialogs)}개 (1이어야)"
+        )
+    finally:
+        rt.stop()
