@@ -120,3 +120,59 @@ def test_supports_modality_text_image_only_in_poc():
     assert be.supports_modality("audio") is False
     assert be.supports_modality("video") is False
     assert be.supports_modality("text") is False
+
+
+def test_build_conversation_text_only():
+    """ChatInput(text='안녕') → [system, user(text)] — HF 모델카드 예시 형식 정확히."""
+    from screen_recorder.agent.backends import ChatInput
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    be._system_prompt = "너는 친절한 AI."
+    conv = be._build_conversation(ChatInput(text="안녕"))
+    assert len(conv) == 2
+    assert conv[0]["role"] == "system"
+    # HF 카드: system content 는 list of blocks
+    assert conv[0]["content"] == [{"type": "text", "text": "너는 친절한 AI."}]
+    assert conv[1]["role"] == "user"
+    # text-only user content 는 string (모델카드 예시)
+    assert conv[1]["content"] == "안녕"
+
+
+def test_build_conversation_with_images_writes_temp_files(tmp_path, monkeypatch):
+    """images 가 있으면 bytes → 임시 PNG 파일 → conversation 에 path 사용.
+
+    Qwen processor 의 image block 은 path 받음 — bytes 직접 안 됨 (HF 카드 확인).
+    임시 파일 정리는 Task 5 의 send_message finally 에서.
+    """
+    import tempfile
+    from pathlib import Path
+    from screen_recorder.agent.backends import ChatInput
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    be._system_prompt = "sys"
+    png = b"\x89PNG\r\n\x1a\nfake"
+    conv = be._build_conversation(ChatInput(text="이거 봐", images=[png]))
+
+    user_content = conv[1]["content"]
+    assert isinstance(user_content, list)
+    img_blocks = [b for b in user_content if b.get("type") == "image"]
+    text_blocks = [b for b in user_content if b.get("type") == "text"]
+    assert len(img_blocks) == 1
+    assert len(text_blocks) == 1
+    assert text_blocks[0]["text"] == "이거 봐"
+    p = Path(img_blocks[0]["image"])
+    assert p.exists()
+    assert p.read_bytes() == png
+    assert p in be._temp_files
+
+
+def test_build_conversation_empty_text_with_images_uses_placeholder(tmp_path, monkeypatch):
+    """text='' + images=[...] → '(첨부 이미지)' 같은 placeholder."""
+    import tempfile
+    from screen_recorder.agent.backends import ChatInput
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    be._system_prompt = "sys"
+    conv = be._build_conversation(ChatInput(text="", images=[b"\x89PNG..."]))
+    text_blocks = [b for b in conv[1]["content"] if b.get("type") == "text"]
+    assert text_blocks[0]["text"] == "(첨부 이미지)"

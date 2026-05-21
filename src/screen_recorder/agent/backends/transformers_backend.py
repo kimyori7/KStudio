@@ -39,6 +39,8 @@ class TransformersBackend:
         self._model: Optional[Any] = None
         self._processor: Optional[Any] = None
         self._stop_flag: Optional[threading.Event] = None
+        # 임시 파일 정리 추적 — 매 send_message finally 에서 unlink.
+        self._temp_files: list[Path] = []
 
     async def start_session(
         self, system_prompt: str, tools: dict[str, Any], model: str,
@@ -49,6 +51,52 @@ class TransformersBackend:
         model: ModelRegistry 의 id (sub-plan 3) — 현 PoC 는 1개 모델 hardcoded.
         """
         self._system_prompt = system_prompt
+
+    def _build_conversation(self, msg: ChatInput) -> list[dict]:
+        """ChatInput → Qwen2.5-Omni conversation list (HF 모델카드 형식 정확히 따름).
+
+        text-only: user content = string.
+        with images: user content = list of {"type":"image","image":path} +
+                     {"type":"text","text":...}. PNG bytes 는 임시 파일로 저장 후
+                     path 사용 — Qwen processor 가 path 만 받음 (bytes 미지원).
+
+        임시 파일은 self._temp_files 에 추적 — send_message finally 에서 정리.
+        audio/video 는 sub-plan 7 — 현 단계는 무시.
+        """
+        import tempfile
+        conv: list[dict] = [
+            {"role": "system",
+             "content": [{"type": "text", "text": self._system_prompt}]},
+        ]
+        if msg.images:
+            content_blocks: list[dict] = []
+            for img_bytes in msg.images:
+                # delete=False — close 후에도 파일 살아 있음. 우리가 unlink.
+                tf = tempfile.NamedTemporaryFile(
+                    suffix=".png", delete=False, mode="wb",
+                )
+                tf.write(img_bytes)
+                tf.close()
+                path = Path(tf.name)
+                self._temp_files.append(path)
+                content_blocks.append({"type": "image", "image": str(path)})
+            content_blocks.append({
+                "type": "text",
+                "text": msg.text or "(첨부 이미지)",
+            })
+            conv.append({"role": "user", "content": content_blocks})
+        else:
+            conv.append({"role": "user", "content": msg.text})
+        return conv
+
+    def _cleanup_temp_files(self) -> None:
+        """send_message finally — 추적된 temp 파일 모두 unlink."""
+        for p in self._temp_files:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                _log.exception("TransformersBackend: temp 파일 정리 실패 %s", p)
+        self._temp_files.clear()
 
     async def close(self) -> None:
         """모델 unload + gc — VRAM 회수."""
