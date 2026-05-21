@@ -135,6 +135,7 @@ class ClaudeBackend:
             # 텍스트/thinking 가 partial 로 도착 — 중복 방지 플래그.
             text_streamed = False
             thinking_streamed = False
+            last_am_total_input = 0   # 마지막 AssistantMessage 의 input_tokens + cache 합
 
             # 응답 루프 — task 4~7 에서 분기 추가.
             async for sdk_msg in self._client.receive_response():
@@ -161,6 +162,18 @@ class ClaudeBackend:
                     continue
 
                 if isinstance(sdk_msg, AssistantMessage):
+                    # 마지막 AM 의 usage 가 *한 번의 API 호출* context size — 200k 안에서 정확.
+                    # SDK ResultMessage.usage 는 한 응답 안 여러 API 호출 (도구 호출마다 1번) 의
+                    # input_tokens 를 *합산* 해서 줌 → 도구 5번이면 5번의 context size 합쳐져
+                    # 200k 초과 가능 (사용자 보고 2026-05-13: 166% 표시). 각 AM 의 usage 는 단일
+                    # API 호출 한 번의 context 라 200k 안에서 정확.
+                    am_usage = getattr(sdk_msg, "usage", None)
+                    if isinstance(am_usage, dict):
+                        last_am_total_input = (
+                            int(am_usage.get("input_tokens") or 0)
+                            + int(am_usage.get("cache_read_input_tokens") or 0)
+                            + int(am_usage.get("cache_creation_input_tokens") or 0)
+                        )
                     for block in getattr(sdk_msg, "content", []) or []:
                         if isinstance(block, ThinkingBlock):
                             # partial 로 이미 그림 — 중복 방지 (Task 4 의 thinking_streamed 플래그 사용).
@@ -204,12 +217,18 @@ class ClaudeBackend:
                 elif isinstance(sdk_msg, ResultMessage):
                     usage = getattr(sdk_msg, "usage", None) or {}
                     detail_parts = []
-                    if usage:
+                    if isinstance(usage, dict):
                         in_t = int(usage.get("input_tokens") or 0)
+                        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+                        cache_create = int(usage.get("cache_creation_input_tokens") or 0)
                         out_t = int(usage.get("output_tokens") or 0)
-                        if in_t or out_t:
-                            detail_parts.append(f"in={in_t}")
+                        total_in = in_t + cache_read + cache_create
+                        if total_in or out_t:
+                            detail_parts.append(f"in={total_in}")
                             detail_parts.append(f"out={out_t}")
+                    # last_in — 컨텍스트 % 표시용. SDK 합산 over-count 회피.
+                    if last_am_total_input > 0:
+                        detail_parts.append(f"last_in={last_am_total_input}")
                     emit_fn(AgentEvent(kind="done", detail=" ".join(detail_parts)))
                     break
         except Exception as exc:

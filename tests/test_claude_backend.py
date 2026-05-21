@@ -687,3 +687,84 @@ async def test_send_message_tool_result_empty_list_content(sdk_mock):
     # 빈 결과 placeholder.
     assert "빈 결과" in tool_results[0].text
     assert tool_results[0].image_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_send_message_done_includes_last_in_from_assistant_msg_usage(sdk_mock):
+    """AssistantMessage.usage 의 input_tokens + cache 합산을 last_in 으로 done detail 에."""
+    from screen_recorder.agent.runtime import AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _AM:
+        content = []
+        usage = {
+            "input_tokens": 1000,
+            "cache_read_input_tokens": 5000,
+            "cache_creation_input_tokens": 200,
+        }
+
+    class _R:
+        usage = {
+            "input_tokens": 100,        # SDK 합산 — 사용 안 함
+            "output_tokens": 50,
+            "cache_read_input_tokens": 5000,
+            "cache_creation_input_tokens": 200,
+        }
+
+    async def _r():
+        yield _AM()
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.AssistantMessage = _AM
+    mock_sdk.ResultMessage = _R
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    done_evs = [r for r in received if isinstance(r, AgentEvent) and r.kind == "done"]
+    assert len(done_evs) == 1
+    # last_in = 1000 + 5000 + 200 = 6200
+    assert "last_in=6200" in done_evs[0].detail
+    # in (SDK 합산) + out 도 함께 표시.
+    assert "in=" in done_evs[0].detail
+    assert "out=50" in done_evs[0].detail
+
+
+@pytest.mark.asyncio
+async def test_send_message_done_without_assistant_usage(sdk_mock):
+    """AssistantMessage.usage=None 이면 last_in 표시 안 함 — in/out 만."""
+    from screen_recorder.agent.runtime import AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _AM:
+        content = []
+        usage = None
+
+    class _R:
+        usage = {"input_tokens": 100, "output_tokens": 50}
+
+    async def _r():
+        yield _AM()
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.AssistantMessage = _AM
+    mock_sdk.ResultMessage = _R
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    done_evs = [r for r in received if isinstance(r, AgentEvent) and r.kind == "done"]
+    assert len(done_evs) == 1
+    assert "last_in" not in done_evs[0].detail   # AM usage 없으니 미표시
+    assert "in=100" in done_evs[0].detail
+    assert "out=50" in done_evs[0].detail
