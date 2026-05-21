@@ -38,6 +38,8 @@ class ClaudeBackend:
         self._model: str = "sonnet"
         self._tools: dict[str, Any] = {}
         self._current_task: Optional[asyncio.Task] = None
+        # 동시 send() 두 번 → 두 코루틴 모두 client 생성 → leak. Lock 으로 직렬화.
+        self._connect_lock = asyncio.Lock()
 
     async def start_session(
         self, system_prompt: str, tools: dict[str, Any], model: str,
@@ -101,31 +103,32 @@ class ClaudeBackend:
             return
 
         try:
-            if self._client is None:
-                mcp_servers = {}
-                allowed = []
-                if self._tools:
-                    mcp = self._tools.get("mcp_server")
-                    if mcp is not None:
-                        mcp_servers = {"kstudio_video": mcp}
-                    allowed = list(self._tools.get("allowed_tools") or [])
-                opts = ClaudeAgentOptions(
-                    mcp_servers=mcp_servers,
-                    allowed_tools=allowed,
-                    cwd=str(self._cwd) if self._cwd else None,
-                    env={"ANTHROPIC_API_KEY": ""},   # 정액제 강제
-                    model=self._model,
-                    include_partial_messages=True,
-                    system_prompt=self._system_prompt,
-                )
-                # connect 실패 시 self._client 에 broken 객체 남기지 않기 — 다음 호출이 재연결 시도.
-                client = ClaudeSDKClient(options=opts)
-                try:
-                    await client.connect()
-                except Exception:
-                    self._client = None
-                    raise
-                self._client = client
+            async with self._connect_lock:
+                if self._client is None:
+                    mcp_servers = {}
+                    allowed = []
+                    if self._tools:
+                        mcp = self._tools.get("mcp_server")
+                        if mcp is not None:
+                            mcp_servers = {"kstudio_video": mcp}
+                        allowed = list(self._tools.get("allowed_tools") or [])
+                    opts = ClaudeAgentOptions(
+                        mcp_servers=mcp_servers,
+                        allowed_tools=allowed,
+                        cwd=str(self._cwd) if self._cwd else None,
+                        env={"ANTHROPIC_API_KEY": ""},   # 정액제 강제
+                        model=self._model,
+                        include_partial_messages=True,
+                        system_prompt=self._system_prompt,
+                    )
+                    # connect 실패 시 self._client 에 broken 객체 남기지 않기 — 다음 호출이 재연결 시도.
+                    client = ClaudeSDKClient(options=opts)
+                    try:
+                        await client.connect()
+                    except Exception:
+                        self._client = None
+                        raise
+                    self._client = client
 
             emit_fn(AgentEvent(kind="started"))
 
