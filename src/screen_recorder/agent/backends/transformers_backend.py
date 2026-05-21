@@ -176,6 +176,11 @@ class TransformersBackend:
                 return_audio=False,
                 use_audio_in_video=False,
                 stopping_criteria=stopping,
+                # 무한 generate 방지 — 기본값(8192 등)이 너무 커서 모델이 끝없이 생성.
+                # 512 면 한국어 ~700자 = 일반 답변 충분. 코드 같이 긴 응답 필요 시 후속 조정.
+                max_new_tokens=512,
+                # greedy 대신 약한 sampling — 약간 빠르고 자연스러움.
+                do_sample=False,
             )
 
             # generate thread 안에서 raise 된 예외는 main coroutine 에 자동
@@ -236,7 +241,14 @@ class TransformersBackend:
         _log.debug("send_tool_result called (no-op for PoC): tool_use_id=%s", tool_use_id)
 
     async def _ensure_model_loaded(self) -> None:
-        """첫 호출 시 transformers import + 모델 로드. 이후 호출은 캐싱."""
+        """첫 호출 시 transformers import + 모델 로드. 이후 호출은 캐싱.
+
+        속도/메모리 최적화:
+        - attn_implementation="sdpa" — PyTorch built-in scaled_dot_product_attention.
+          기본 eager 보다 2-3배 빠름. flash-attn 별도 설치 없이 즉시 적용.
+        - 모델 로드 후 disable_talker() — Qwen2.5-Omni 의 speech 생성 모듈 (~2GB
+          VRAM) 해제. text/image 만 쓰므로 불필요.
+        """
         if self._model is not None and self._processor is not None:
             return
         from transformers import (
@@ -248,7 +260,15 @@ class TransformersBackend:
             self._repo_id,
             torch_dtype="auto",
             device_map="auto",
+            attn_implementation="sdpa",
         )
+        # text 응답만 사용 — speech 생성 모듈 해제 (메모리 ~2GB + 약간 빠름).
+        try:
+            disable = getattr(self._model, "disable_talker", None)
+            if callable(disable):
+                disable()
+        except Exception:
+            _log.exception("disable_talker 실패 (무시 — talker 활성 상태 유지)")
         self._processor = await asyncio.to_thread(
             Qwen2_5OmniProcessor.from_pretrained,
             self._repo_id,
