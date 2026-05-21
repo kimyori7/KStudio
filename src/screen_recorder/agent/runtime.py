@@ -33,7 +33,7 @@ from .backends.claude_backend import ClaudeBackend
 from .backends.transformers_backend import TransformersBackend
 # AgentMessage / AgentEvent 는 backends/base.py 로 이전 — 외부 호환 위해 re-export.
 from .backends import AgentEvent, AgentMessage, ChatInput
-from .models import ModelRegistry
+from .models import ModelRegistry, check_runtime_available
 
 
 _log = logging.getLogger(__name__)
@@ -350,8 +350,10 @@ class AgentRuntime(QObject):
     def set_model(self, model_id: str) -> None:
         """모델 전환. 다른 runtime (claude → transformers 등) 이면 backend 자체 교체.
 
-        같은 runtime 안 모델 전환 (sonnet → opus) 은 backend 인스턴스 재사용 + 재연결.
-        의존성 가드는 Task 3 에서 추가.
+        다른 runtime 으로 전환 시 의존성 체크 — 없으면 가드 시스템 메시지 emit + model
+        변경 차단 (호출자 = ChatPanel 이 콤보 fallback 처리).
+
+        같은 runtime 안 모델 전환 (sonnet → opus) 은 dep check 안 함.
         """
         if not model_id or model_id == self._model:
             return
@@ -361,6 +363,25 @@ class AgentRuntime(QObject):
         if new_meta is None:
             _log.warning("set_model: unknown model_id %s — 무시", model_id)
             return
+
+        # 다른 runtime 전환 시 의존성 가드.
+        if old_meta and old_meta.runtime != new_meta.runtime:
+            if not check_runtime_available(new_meta.runtime):
+                deps_map = {
+                    "transformers": "PyTorch + transformers + qwen_omni_utils",
+                    "llama-cpp": "llama-cpp-python",
+                }
+                deps_name = deps_map.get(new_meta.runtime, new_meta.runtime)
+                self.message_received.emit(AgentMessage(
+                    role="system",
+                    text=(
+                        f"⚠ {new_meta.display_name} 사용에 {deps_name} 가 필요합니다. "
+                        f"현재 미설치 — 모델 관리 메뉴의 1-클릭 설치 (Phase 3b 예정) 또는 "
+                        f"개발자 모드로 수동 설치 후 사용 가능. 모델은 변경되지 않았습니다."
+                    ),
+                ))
+                # model 변경 차단.
+                return
 
         self._model = model_id
         self._session_started = False
