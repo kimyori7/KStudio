@@ -35,9 +35,19 @@ class GpuInstallDialog(QDialog):
     finished_ok = Signal()    # 설치 성공
     finished_error = Signal(str)   # 설치 실패 (메시지)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(
+        self,
+        parent=None,
+        packages: tuple[str, ...] | None = None,
+        title: str | None = None,
+        info_text: str | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("GPU 가속 활성화")
+        # 기본값 = 기존 cuBLAS/cuDNN 동작 (호환성 100%).
+        # packages 인자로 PyTorch 등 다른 패키지 세트도 동일 UI 로 설치 가능.
+        self._packages = list(packages) if packages else list(NVIDIA_PIP_PACKAGES)
+
+        self.setWindowTitle(title or "GPU 가속 활성화")
         self.setModal(False)
         self.setWindowFlag(Qt.Window, True)
         self.resize(560, 440)
@@ -47,16 +57,16 @@ class GpuInstallDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        self.title_label = QLabel("자막 내보내기 GPU 가속")
+        self.title_label = QLabel(title or "자막 내보내기 GPU 가속")
         self.title_label.setStyleSheet("font-weight: bold; font-size: 13px;")
         layout.addWidget(self.title_label)
 
-        info = (
+        default_info = (
             "NVIDIA cuBLAS / cuDNN 라이브러리를 venv 안에 설치합니다.\n"
             "약 1.5GB 다운로드 — 인터넷 속도에 따라 수 분 ~ 십수 분 소요.\n"
             "설치 후 KStudio 를 재시작하면 large-v3 같은 큰 모델이 GPU 에서 빠르게 동작."
         )
-        self.info_label = QLabel(info)
+        self.info_label = QLabel(info_text or default_info)
         self.info_label.setStyleSheet("color: #555; margin-bottom: 8px;")
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
@@ -122,7 +132,7 @@ class GpuInstallDialog(QDialog):
             "-u", "-m", "pip", "install",
             "--no-input", "--disable-pip-version-check",
             "--progress-bar", "off",
-            "--upgrade", *NVIDIA_PIP_PACKAGES,
+            "--upgrade", *self._packages,
         ]
         self._append_log(f"$ {program} {' '.join(args)}\n")
         self._append_log("(pip 응답 대기 중… 첫 출력까지 몇 초 걸릴 수 있습니다)\n")
