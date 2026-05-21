@@ -12,7 +12,7 @@ VideoTools 파사드가 세 그룹을 합쳐 mcp_server() 와 tool_names() 노�
 from __future__ import annotations
 
 import concurrent.futures
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from claude_agent_sdk import create_sdk_mcp_server
 
@@ -95,6 +95,52 @@ class VideoTools:
         if self._transcript_ctx is not None:
             base = (*base, *TRANSCRIPT_TOOL_NAMES)
         return [prefix + name for name in base]
+
+    def openai_tools_and_handlers(self) -> tuple[list[dict], dict]:
+        """TransformersBackend 용 — OpenAI tools schema + name → 핸들러 dict.
+
+        mcp_server() 와 같은 `make_*_tools` list 들을 재사용하되, MCP 래핑 없이
+        각 SdkMcpTool 의 .name / .input_schema / .handler 직접 추출.
+        ClaudeBackend 와 같은 19개 도구 노출 — Qwen 도 동일 surface 가능.
+        """
+        from ..backends.tool_adapter import mcp_to_openai_tools, mcp_to_openai_name
+
+        # mcp_server() 와 동일한 도구 리스트 빌드.
+        raw_tools = (
+            make_read_tools(self._adapter)
+            + make_visual_tools(self._adapter, self._ffmpeg_path)
+            + make_mutation_tools(self._adapter, self._queue, self._on_apply, self._plan_gate)
+            + make_preview_tools(self._adapter, self._queue, self._ffmpeg_path)
+        )
+        if self._transcript_ctx is not None:
+            raw_tools = raw_tools + make_transcript_tools(
+                self._adapter, self._transcript_ctx,
+                on_download=self._on_download_whisper,
+            )
+
+        # SdkMcpTool → MCP dict 형식으로 인터미디어트 변환 후 어댑터로 OpenAI 형식 만듦.
+        prefix = f"mcp__{_MCP_SERVER_NAME}__"
+        mcp_dicts: list[dict] = []
+        handlers: dict[str, Any] = {}
+        for t in raw_tools:
+            # claude_agent_sdk 의 SdkMcpTool 공통 속성.
+            name = getattr(t, "name", None)
+            desc = getattr(t, "description", "")
+            schema = getattr(t, "input_schema", None) or {
+                "type": "object", "properties": {}, "required": [],
+            }
+            handler = getattr(t, "handler", None)
+            if name is None or handler is None:
+                continue
+            full_name = prefix + name if not name.startswith(prefix) else name
+            mcp_dicts.append({
+                "name": full_name,
+                "description": desc,
+                "input_schema": schema,
+            })
+            handlers[mcp_to_openai_name(full_name)] = handler
+
+        return mcp_to_openai_tools(mcp_dicts), handlers
 
 
 __all__ = [
