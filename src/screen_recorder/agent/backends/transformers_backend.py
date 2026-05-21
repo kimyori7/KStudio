@@ -83,6 +83,10 @@ class TransformersBackend:
         # 형식: [{"role": "user"|"assistant", "content": <str 또는 list-of-blocks>}, ...]
         # system 은 _system_prompt 로 별도 — _build_conversation 이 합쳐서 반환.
         self._history: list[dict] = []
+        # Tool use — start_session 에서 채움.
+        self._openai_tools: list[dict] = []
+        self._tool_handlers: dict[str, Any] = {}
+        self._tool_strategy: str = "none"
 
     async def start_session(
         self, system_prompt: str, tools: dict[str, Any], model: str,
@@ -92,13 +96,18 @@ class TransformersBackend:
 
         history 초기화 — 새 session 시작.
 
-        tools: 현 sub-plan 에선 무시 (sub-plan 6 의 tool_adapter 에서 사용).
-        model: ModelRegistry 의 id (sub-plan 3) — 현 PoC 는 1개 모델 hardcoded.
+        tools dict:
+        - "openai_tools": list[dict] — OpenAI function calling schema (mcp_to_openai_tools 결과).
+        - "tool_handlers": dict[str, Callable[[dict], Any|Coroutine]] — name → 핸들러.
+        - "tool_strategy": "none" | "official" | "prompted" — 모델별 도구 prompt 방식.
         """
         # Claude 의 SYSTEM_PROMPT 는 도구 호출 가정 — Qwen 에게 주면 가짜 JSON
         # 생성 회귀. 우리 전용 prompt 사용.
         self._system_prompt = _QWEN_SYSTEM_PROMPT
         self._history = []
+        self._openai_tools = list(tools.get("openai_tools") or [])
+        self._tool_handlers = dict(tools.get("tool_handlers") or {})
+        self._tool_strategy = str(tools.get("tool_strategy") or "none")
 
     def clear_history(self) -> None:
         """대화 누적 초기화 — runtime.clear_session() / set_model() 진입점에서 호출."""
