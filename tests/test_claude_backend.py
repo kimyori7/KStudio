@@ -768,3 +768,61 @@ async def test_send_message_done_without_assistant_usage(sdk_mock):
     assert "last_in" not in done_evs[0].detail   # AM usage 없으니 미표시
     assert "in=100" in done_evs[0].detail
     assert "out=50" in done_evs[0].detail
+
+
+@pytest.mark.asyncio
+async def test_send_message_last_in_uses_last_assistant_message(sdk_mock):
+    """도구 호출 시나리오 — 여러 AssistantMessage 가 오면 *마지막* AM 의 usage 만 last_in.
+
+    SDK 흐름: AM_1 (도구 호출) → UserMessage (tool_result) → AM_2 (최종 답변) → ResultMessage.
+    last_in 은 AM_2 의 context size 여야 — 사용자에게 표시되는 컨텍스트 % 는 마지막
+    API 호출 기준이라 의미가 있음.
+    """
+    from screen_recorder.agent.runtime import AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _AM:
+        pass
+
+    class _UM:
+        pass
+
+    class _R:
+        usage = {"input_tokens": 100, "output_tokens": 50}
+
+    # 두 AM 인스턴스 — 같은 클래스, 다른 usage. isinstance 가 AM 으로 양쪽 다 잡음.
+    am1 = _AM()
+    am1.content = []
+    am1.usage = {"input_tokens": 1000}
+
+    am2 = _AM()
+    am2.content = []
+    am2.usage = {"input_tokens": 5000}
+
+    um = _UM()
+    um.content = []   # 도구 결과 block 없는 빈 UserMessage (단순화).
+
+    async def _r():
+        yield am1
+        yield um
+        yield am2
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.AssistantMessage = _AM
+    mock_sdk.UserMessage = _UM
+    mock_sdk.ResultMessage = _R
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    done_evs = [r for r in received if isinstance(r, AgentEvent) and r.kind == "done"]
+    assert len(done_evs) == 1
+    # 마지막 AM 의 usage (5000) 만 last_in.
+    assert "last_in=5000" in done_evs[0].detail
+    # 첫 AM 의 1000 은 *없어야* — 덮어쓰기 확인.
+    assert "last_in=1000" not in done_evs[0].detail
