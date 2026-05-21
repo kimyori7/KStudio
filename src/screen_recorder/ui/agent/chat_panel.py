@@ -1109,7 +1109,7 @@ class ChatPanel(QDockWidget):
         input_row.setAlignment(Qt.AlignBottom)
         self._input = _ChatInputEdit()
         self._input.setPlaceholderText(
-            "Claude 에게 질문 또는 명령... (Enter=보내기, Shift+Enter=줄바꿈)"
+            "에이전트에게 질문 또는 명령... (Enter=보내기, Shift+Enter=줄바꿈)"
         )
         self._input.setStyleSheet(
             "QPlainTextEdit{background:#0f172a;color:#e2e8f0;border:1px solid #334155;"
@@ -1263,7 +1263,9 @@ class ChatPanel(QDockWidget):
     def append_event(self, evt: AgentEvent) -> None:
         """AgentRuntime.event_received 와 직접 연결 가능. 상태 라벨 + 보내기/취소 전환."""
         if evt.kind == "started":
-            self._status.setText("Claude 가 응답 중… (도구 호출/추론 과정도 아래에 표시됨)")
+            # 모델 이름 동적 표시 — Claude/Qwen/사용자 추가 모델 어느 것이든 정확히.
+            model_label = self._model_combo.currentText() if self._model_combo else "에이전트"
+            self._status.setText(f"{model_label} 응답 중… (도구 호출/추론 과정도 아래에 표시됨)")
             self._status.setVisible(True)
             self._send_btn.setVisible(False)
             self._cancel_btn.setVisible(True)
