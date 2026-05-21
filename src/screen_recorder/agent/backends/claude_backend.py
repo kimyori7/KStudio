@@ -74,8 +74,79 @@ class ClaudeBackend:
         return modality == "image"
 
     async def send_message(self, msg: ChatInput, emit_fn: EmitFn) -> None:
-        """다음 task 에서 구현 — 지금은 미완성."""
-        raise NotImplementedError("Task 3 에서 구현")
+        """텍스트 메시지 처리. 이미지/멀티모달은 후속 task."""
+        self._current_task = asyncio.current_task()
+        try:
+            await self._send_message_impl(msg, emit_fn)
+        except asyncio.CancelledError:
+            from ..runtime import AgentEvent
+            emit_fn(AgentEvent(kind="error", detail="사용자가 취소함"))
+            await self.close()
+            raise
+        finally:
+            self._current_task = None
+
+    async def _send_message_impl(self, msg: ChatInput, emit_fn: EmitFn) -> None:
+        from ..runtime import AgentMessage, AgentEvent
+        try:
+            from claude_agent_sdk import (
+                ClaudeAgentOptions, ClaudeSDKClient,
+                AssistantMessage, ResultMessage, UserMessage, StreamEvent,
+                TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock,
+            )
+        except Exception as exc:
+            _log.exception("ClaudeBackend: SDK import 실패")
+            emit_fn(AgentEvent(kind="error", detail=f"SDK import 실패: {exc}"))
+            return
+
+        try:
+            if self._client is None:
+                mcp_servers = {}
+                allowed = []
+                if self._tools:
+                    mcp = self._tools.get("mcp_server")
+                    if mcp is not None:
+                        mcp_servers = {"kstudio_video": mcp}
+                    allowed = list(self._tools.get("allowed_tools") or [])
+                opts = ClaudeAgentOptions(
+                    mcp_servers=mcp_servers,
+                    allowed_tools=allowed,
+                    cwd=str(self._cwd) if self._cwd else None,
+                    env={"ANTHROPIC_API_KEY": ""},   # 정액제 강제
+                    model=self._model,
+                    include_partial_messages=True,
+                    system_prompt=self._system_prompt,
+                )
+                self._client = ClaudeSDKClient(options=opts)
+                await self._client.connect()
+
+            emit_fn(AgentEvent(kind="started"))
+
+            # 텍스트 query 만 (이미지는 task 8).
+            await self._client.query(msg.text)
+
+            # 응답 루프 — task 4~7 에서 분기 추가.
+            async for sdk_msg in self._client.receive_response():
+                if isinstance(sdk_msg, AssistantMessage):
+                    for block in getattr(sdk_msg, "content", []) or []:
+                        if isinstance(block, TextBlock):
+                            text = getattr(block, "text", "")
+                            if text:
+                                emit_fn(AgentMessage(role="assistant", text=text))
+                elif isinstance(sdk_msg, ResultMessage):
+                    usage = getattr(sdk_msg, "usage", None) or {}
+                    detail_parts = []
+                    if usage:
+                        in_t = int(usage.get("input_tokens") or 0)
+                        out_t = int(usage.get("output_tokens") or 0)
+                        if in_t or out_t:
+                            detail_parts.append(f"in={in_t}")
+                            detail_parts.append(f"out={out_t}")
+                    emit_fn(AgentEvent(kind="done", detail=" ".join(detail_parts)))
+                    break
+        except Exception as exc:
+            _log.exception("ClaudeBackend: query 실패")
+            emit_fn(AgentEvent(kind="error", detail=str(exc)))
 
     async def send_tool_result(
         self, tool_use_id: str, result: Any, emit_fn: EmitFn,

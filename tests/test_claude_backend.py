@@ -112,3 +112,65 @@ async def test_cancel_noop_when_task_already_done():
     be._current_task = task
     assert task.done()
     await be.cancel()   # 예외 없어야 함
+
+
+@pytest.mark.asyncio
+async def test_send_message_text_emits_text_block(monkeypatch):
+    """텍스트 query → AssistantMessage TextBlock → emit AgentMessage(role='assistant')."""
+    from screen_recorder.agent.runtime import AgentMessage, AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    # SDK mock — connect/query/receive_response.
+    mock_client = MagicMock()
+    mock_client.connect = AsyncMock()
+    mock_client.query = AsyncMock()
+
+    # AssistantMessage 한 개 + ResultMessage 한 개 yield.
+    class _FakeTextBlock:
+        text = "안녕하세요"
+
+    class _FakeAssistantMsg:
+        content = [_FakeTextBlock()]
+        usage = None
+
+    class _FakeResultMsg:
+        usage = {"input_tokens": 100, "output_tokens": 50}
+
+    async def _fake_receive():
+        yield _FakeAssistantMsg()
+        yield _FakeResultMsg()
+
+    mock_client.receive_response = lambda: _fake_receive()
+
+    # ClaudeSDKClient mock — 호출 시 mock_client 반환.
+    mock_sdk = MagicMock()
+    mock_sdk.ClaudeSDKClient = lambda options: mock_client
+    mock_sdk.ClaudeAgentOptions = MagicMock(return_value=MagicMock())
+
+    # SDK 의 isinstance() 검사 우회 — runtime 의 type check 들이 다 mock 클래스 통과하게.
+    mock_sdk.AssistantMessage = _FakeAssistantMsg
+    mock_sdk.ResultMessage = _FakeResultMsg
+    mock_sdk.UserMessage = type("UserMessage", (), {})
+    mock_sdk.StreamEvent = type("StreamEvent", (), {})
+    mock_sdk.TextBlock = _FakeTextBlock
+    mock_sdk.ThinkingBlock = type("ThinkingBlock", (), {})
+    mock_sdk.ToolUseBlock = type("ToolUseBlock", (), {})
+    mock_sdk.ToolResultBlock = type("ToolResultBlock", (), {})
+
+    with patch.dict("sys.modules", {"claude_agent_sdk": mock_sdk}):
+        be = ClaudeBackend(cwd="/tmp")
+        await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+
+        received: list = []
+        await be.send_message(ChatInput(text="안녕"), received.append)
+
+    # 첫 emit: started 이벤트.
+    assert any(isinstance(r, AgentEvent) and r.kind == "started" for r in received)
+    # AssistantMessage TextBlock → AgentMessage(role="assistant", text="안녕하세요").
+    text_msgs = [r for r in received
+                  if isinstance(r, AgentMessage) and r.role == "assistant"]
+    assert len(text_msgs) == 1
+    assert text_msgs[0].text == "안녕하세요"
+    # 마지막: done.
+    done_evs = [r for r in received if isinstance(r, AgentEvent) and r.kind == "done"]
+    assert len(done_evs) == 1
