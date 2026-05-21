@@ -405,3 +405,123 @@ async def test_stream_text_delta_skips_textblock_in_assistant_msg(sdk_mock):
                        if isinstance(r, AgentMessage) and r.role == "assistant"]
     assert len(assistant_msgs) == 1
     assert assistant_msgs[0].text == "안녕하세요"
+
+
+@pytest.mark.asyncio
+async def test_send_message_thinking_block_in_assistant_msg(sdk_mock):
+    """partial 안 흐른 경우 ThinkingBlock → role='thinking' emit."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _ThinkingBlk:
+        thinking = "추론 중..."
+
+    class _AM:
+        content = [_ThinkingBlk()]
+        usage = None
+
+    async def _r():
+        yield _AM()
+        class _R:
+            usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.AssistantMessage = _AM
+    mock_sdk.ThinkingBlock = _ThinkingBlk
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    thinking = [r for r in received if isinstance(r, AgentMessage) and r.role == "thinking"]
+    assert len(thinking) == 1
+    assert thinking[0].text == "추론 중..."
+
+
+@pytest.mark.asyncio
+async def test_thinking_delta_skips_thinkingblock_in_assistant_msg(sdk_mock):
+    """partial 로 thinking_delta 가 흘렀으면 AM 의 ThinkingBlock 은 skip (중복 방지)."""
+    from screen_recorder.agent.runtime import AgentMessage
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _SE:
+        def __init__(self, d): self.event = d
+
+    class _ThinkingBlk:
+        thinking = "추론 중..."
+
+    class _AM:
+        content = [_ThinkingBlk()]
+        usage = None
+
+    async def _r():
+        yield _SE({"type": "message_start"})
+        yield _SE({"type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": "추론 중..."}})
+        yield _AM()
+        class _R:
+            usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.StreamEvent = _SE
+    mock_sdk.AssistantMessage = _AM
+    mock_sdk.ThinkingBlock = _ThinkingBlk
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    thinking = [r for r in received if isinstance(r, AgentMessage) and r.role == "thinking"]
+    # delta 1번만 — AM 의 ThinkingBlock 은 skip.
+    assert len(thinking) == 1
+    assert thinking[0].text == "추론 중..."
+
+
+@pytest.mark.asyncio
+async def test_send_message_tool_use_block_emits_tool_use(sdk_mock):
+    """ToolUseBlock → AgentEvent(kind='tool_use') + AgentMessage(role='tool_use')."""
+    from screen_recorder.agent.runtime import AgentMessage, AgentEvent
+    from screen_recorder.agent.backends import ChatInput
+
+    mock_sdk, mock_client = sdk_mock
+
+    class _TUB:
+        name = "mcp__kstudio_video__get_video_state"
+        input = {"foo": "bar"}
+
+    class _AM:
+        content = [_TUB()]
+        usage = None
+
+    async def _r():
+        yield _AM()
+        class _R:
+            usage = {}
+        yield _R()
+
+    mock_client.receive_response = lambda: _r()
+    mock_sdk.AssistantMessage = _AM
+    mock_sdk.ToolUseBlock = _TUB
+
+    be = ClaudeBackend(cwd="/tmp")
+    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
+    received: list = []
+    await be.send_message(ChatInput(text="hi"), received.append)
+
+    tool_use_evs = [r for r in received
+                     if isinstance(r, AgentEvent) and r.kind == "tool_use"]
+    assert len(tool_use_evs) == 1
+    assert "get_video_state" in tool_use_evs[0].detail
+
+    tool_use_msgs = [r for r in received
+                      if isinstance(r, AgentMessage) and r.role == "tool_use"]
+    assert len(tool_use_msgs) == 1
+    assert "get_video_state" in tool_use_msgs[0].text

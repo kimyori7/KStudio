@@ -160,14 +160,33 @@ class ClaudeBackend:
                     continue
 
                 if isinstance(sdk_msg, AssistantMessage):
-                    # Task 5 에서 ThinkingBlock/ToolUse 처리 확장 — 지금은 TextBlock 만 + 중복 방지.
                     for block in getattr(sdk_msg, "content", []) or []:
-                        if isinstance(block, TextBlock):
+                        if isinstance(block, ThinkingBlock):
+                            # partial 로 이미 그림 — 중복 방지 (Task 4 의 thinking_streamed 플래그 사용).
+                            if thinking_streamed:
+                                continue
+                            txt = getattr(block, "thinking", "") or getattr(block, "text", "")
+                            if txt:
+                                emit_fn(AgentMessage(role="thinking", text=str(txt)))
+                        elif isinstance(block, TextBlock):
+                            # partial 로 이미 그림 — 중복 방지.
                             if text_streamed:
-                                continue   # partial 로 이미 그림
+                                continue
                             text = getattr(block, "text", "")
                             if text:
                                 emit_fn(AgentMessage(role="assistant", text=text))
+                        elif isinstance(block, ToolUseBlock):
+                            name = getattr(block, "name", "?")
+                            input_dict = getattr(block, "input", {}) or {}
+                            emit_fn(AgentEvent(
+                                kind="tool_use",
+                                detail=f"{name} {_short_args(input_dict)}",
+                            ))
+                            emit_fn(AgentMessage(
+                                role="tool_use",
+                                text=f"🔧 {name}({_short_args(input_dict)})",
+                                tool_name=name,
+                            ))
                 elif isinstance(sdk_msg, ResultMessage):
                     usage = getattr(sdk_msg, "usage", None) or {}
                     detail_parts = []
@@ -188,3 +207,19 @@ class ClaudeBackend:
     ) -> None:
         """다음 task 에서 구현 — 지금은 미완성."""
         raise NotImplementedError("Task 6 에서 구현")
+
+
+def _short_args(d: dict) -> str:
+    """도구 호출 인자 짧게 (인스펙터용).
+
+    runtime.py 에서 이동 (Task 5). 한 줄 표시 위해 최대 4개 키 + 각 값 40자 cap.
+    """
+    if not d:
+        return ""
+    parts = []
+    for k, v in list(d.items())[:4]:
+        sv = repr(v)
+        if len(sv) > 40:
+            sv = sv[:37] + "..."
+        parts.append(f"{k}={sv}")
+    return ", ".join(parts)
