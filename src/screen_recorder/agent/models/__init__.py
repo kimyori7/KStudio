@@ -7,5 +7,9 @@ sub-plan 4 가 user_models.json 머지 추가 예정.
 from .metadata import ModelMetadata
 from .registry import ModelRegistry, check_runtime_available
 from .cache import is_model_cached
+from .downloader import ModelDownloadJob
 
-__all__ = ["ModelMetadata", "ModelRegistry", "check_runtime_available", "is_model_cached"]
+__all__ = [
+    "ModelMetadata", "ModelRegistry", "check_runtime_available",
+    "is_model_cached", "ModelDownloadJob",
+]
