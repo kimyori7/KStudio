@@ -41,9 +41,12 @@ from ..model_download_window import ModelDownloadWindow
 
 # Qwen2.5-Omni 7B 실행에 필요한 PyTorch + 의존성 패키지.
 # GpuInstallDialog(packages=...) 로 전달해 동일 UI 로 설치.
-# bitsandbytes = INT8 양자화, qwen-omni-utils[decord] = 영상 디코더, soundfile = 오디오 I/O.
+# - torchvision: qwen_omni_utils.v2_5.vision_process 가 module-level import
+#   (이게 빠지면 시작 시 _check_runtime_available("transformers") 영원히 False).
+# - bitsandbytes: INT8 양자화, qwen-omni-utils[decord]: 영상 디코더, soundfile: 오디오 I/O.
 PYTORCH_PACKAGES: tuple[str, ...] = (
     "torch",
+    "torchvision",
     "transformers",
     "accelerate",
     "bitsandbytes",
