@@ -49,6 +49,20 @@ _BUILTIN: list[ModelMetadata] = [
         description="가장 빠름. 간단한 질문/요약에.",
     ),
     ModelMetadata(
+        id="qwen25-7b-instruct",
+        display_name="Qwen2.5 7B Instruct (로컬, 텍스트)",
+        runtime="transformers",
+        repo_id="Qwen/Qwen2.5-7B-Instruct",
+        quantization="bf16 (원본)",
+        modalities=frozenset({"text"}),
+        supports_korean=True,
+        estimated_size_gb=15.5, estimated_vram_gb=9.0,
+        context_window=32_768,
+        supports_tools=True,
+        description="텍스트 전용. KStudio 도구 정식 호출 (Hermes 형식). 영상/이미지 분석 불가.",
+        tool_strategy="official",
+    ),
+    ModelMetadata(
         id="qwen25-omni-7b",
         display_name="Qwen2.5-Omni 7B (로컬, 멀티모달)",
         runtime="transformers",
@@ -60,6 +74,7 @@ _BUILTIN: list[ModelMetadata] = [
         context_window=32_768,
         supports_tools=True,
         description="영상/오디오 native. ~22GB 다운로드, bf16 로드 (VRAM ~14GB, talker 해제 후).",
+        tool_strategy="prompted",
     ),
 ]
 

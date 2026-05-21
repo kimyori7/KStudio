@@ -7,15 +7,16 @@ from screen_recorder.agent.models import ModelMetadata, ModelRegistry
 
 
 def test_builtin_models_count_and_ids():
-    """built-in 4개: Claude opus/sonnet/haiku + Qwen2.5-Omni 7B."""
+    """built-in 5개: Claude opus/sonnet/haiku + Qwen2.5-7B-Instruct + Qwen2.5-Omni 7B."""
     reg = ModelRegistry()
     models = reg.all_models()
     ids = [m.id for m in models]
     assert "claude-opus-4-7" in ids
     assert "claude-sonnet-4-6" in ids
     assert "claude-haiku-4-5-20251001" in ids
+    assert "qwen25-7b-instruct" in ids
     assert "qwen25-omni-7b" in ids
-    assert len(models) == 4
+    assert len(models) == 5
 
 
 def test_get_returns_metadata_by_id():
@@ -107,3 +108,25 @@ def test_metadata_tool_strategy_defaults_to_none():
         description="x",
     )
     assert m.tool_strategy == "none"
+
+
+def test_registry_contains_qwen_instruct_text_only():
+    """Qwen2.5-7B-Instruct — text only, tool_strategy='official'."""
+    from screen_recorder.agent.models.registry import ModelRegistry
+    reg = ModelRegistry()
+    m = reg.get("qwen25-7b-instruct")
+    assert m is not None
+    assert m.runtime == "transformers"
+    assert m.repo_id == "Qwen/Qwen2.5-7B-Instruct"
+    assert m.tool_strategy == "official"
+    assert m.modalities == frozenset({"text"})
+    assert m.supports_tools is True
+
+
+def test_registry_qwen_omni_uses_prompted_tool_strategy():
+    """Qwen2.5-Omni-7B 는 chat_template 에 tool 없음 → prompted 시뮬레이션."""
+    from screen_recorder.agent.models.registry import ModelRegistry
+    reg = ModelRegistry()
+    m = reg.get("qwen25-omni-7b")
+    assert m is not None
+    assert m.tool_strategy == "prompted"
