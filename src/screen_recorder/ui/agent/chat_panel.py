@@ -998,6 +998,19 @@ class ChatPanel(QDockWidget):
             desired_id = getattr(self._agent, "_model", None)
         if not desired_id:
             desired_id = DEFAULT_MODEL_ID
+
+        # 시작 시 의존성 가드 — settings 가 의존성 없는 모델 (예: Qwen + PyTorch 미설치)
+        # 을 가리키면 자동으로 DEFAULT_MODEL_ID 로 강등. 안 그러면 main_window 의
+        # `agent.set_model(current_model_id())` 동기화나 어떤 자동 트리거가 installer
+        # dialog 를 시작 시점에 띄울 위험 — 사용자가 KStudio 켤 때마다 PyTorch 설치
+        # 다이얼로그 보이는 회귀 (2026-05-21 사용자 보고).
+        self._startup_demoted_from: Optional[str] = None
+        desired_meta = self._model_registry.get(str(desired_id)) if desired_id else None
+        if desired_meta is not None and desired_meta.runtime != "claude":
+            if not check_runtime_available(desired_meta.runtime):
+                self._startup_demoted_from = desired_meta.display_name
+                desired_id = DEFAULT_MODEL_ID
+
         initial_idx = 0
         for i in range(self._model_combo.count()):
             if self._model_combo.itemData(i) == desired_id:
@@ -1488,6 +1501,25 @@ class ChatPanel(QDockWidget):
             text=f"모델 전환: {self._model_combo.itemText(idx)}",
         ))
         self.model_changed.emit(str(model_id))
+
+    def emit_startup_warnings(self) -> None:
+        """KStudio 시작 시 강등된 모델이 있으면 사용자에게 알림.
+
+        ChatPanel.__init__ 의 의존성 가드가 settings 의 모델을 default 로 강등한
+        경우만 메시지 emit. main_window 가 ChatPanel 생성 직후 호출.
+        """
+        demoted = getattr(self, "_startup_demoted_from", None)
+        if demoted:
+            self.append_message(AgentMessage(
+                role="system",
+                text=(
+                    f"⚠ 저장된 모델 '{demoted}' 의 의존성 (PyTorch 등) 이 미설치 — "
+                    f"기본 모델 (Sonnet) 로 시작합니다. 콤보에서 다시 선택하면 1-클릭 "
+                    f"설치 다이얼로그가 뜹니다."
+                ),
+            ))
+            # 한 번만 알림 — 동일 메시지 중복 방지.
+            self._startup_demoted_from = None
 
     def _fallback_combo_to(self, model_id: str) -> None:
         """콤보를 model_id 항목으로 되돌림 (signal recursion 방지 blockSignals)."""

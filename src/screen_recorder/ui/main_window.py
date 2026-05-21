@@ -512,10 +512,15 @@ class MainWindow(QMainWindow):
         self.agent_runtime.message_received.connect(self.agent_chat_panel.append_message)
         self.agent_runtime.event_received.connect(self.agent_chat_panel.append_event)
         # AgentRuntime 도 저장된 모델로 동기화 (첫 send 전에).
+        # ChatPanel 의 __init__ 에서 의존성 가드 적용 후라, current_model_id() 는
+        # 항상 가용한 모델 (의존성 OK 인 것) — 가드 트리거 안 함.
         try:
             self.agent_runtime.set_model(self.agent_chat_panel.current_model_id())
         except (RuntimeError, AttributeError):
             pass
+        # 시작 시 의존성 강등 메시지 — settings 의 모델이 의존성 없어 강등됐으면 알림.
+        # (그렇지 않으면 사용자가 모르게 모델이 sonnet 으로 바뀐 채로 시작 — 헷갈림.)
+        self.agent_chat_panel.emit_startup_warnings()
         # 대화 영속화 — 이전 세션 기록 복원 + 종료 시 자동 저장.
         try:
             from screen_recorder.agent.chat_history import default_history_path

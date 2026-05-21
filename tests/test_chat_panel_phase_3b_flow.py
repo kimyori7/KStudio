@@ -399,6 +399,105 @@ def test_installer_finished_ok_but_import_still_fails_shows_restart_and_no_chain
         rt.stop()
 
 
+def test_startup_demotes_qwen_to_default_when_deps_missing(qtbot, tmp_path, monkeypatch):
+    """settings 가 Qwen (의존성 없음) 가리키면 시작 시 default 로 강등.
+
+    회귀 보호 (2026-05-21 사용자 보고): "껏다 킬때마다 PyTorch 설치창 뜬다".
+    원인: settings 에 Qwen 저장 → 다음 실행 시 콤보가 Qwen 으로 → 자동 트리거.
+    Fix: __init__ 시점에 의존성 체크 → 없으면 default 로 강등.
+    """
+    import builtins
+    from screen_recorder.ui.agent.chat_panel import ChatPanel, DEFAULT_MODEL_ID
+    from screen_recorder.agent.runtime import AgentRuntime
+
+    original_import = builtins.__import__
+    def _no_torch(name, *args, **kwargs):
+        if name in ("torch", "qwen_omni_utils", "transformers"):
+            raise ImportError("mock")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", _no_torch)
+
+    vt = MagicMock()
+    vt.plan_gate = MagicMock(return_value=MagicMock())
+    vt.mcp_server = MagicMock(return_value=MagicMock())
+    vt.tool_names = MagicMock(return_value=["mcp__kstudio_video__noop"])
+    rt = AgentRuntime(video_tools=vt, model="claude-sonnet-4-6", cwd=tmp_path)
+
+    # settings 에 Qwen 저장된 상태 시뮬레이션.
+    panel = ChatPanel(agent=rt, initial_model_id="qwen25-omni-7b")
+    qtbot.addWidget(panel)
+
+    # 강등 확인 — 콤보가 default (Sonnet) 로 시작.
+    assert panel._model_combo.currentData() == DEFAULT_MODEL_ID
+    # 강등 플래그 set — 사용자 알림 대기.
+    assert panel._startup_demoted_from == "Qwen2.5-Omni 7B (로컬, 멀티모달)"
+
+
+def test_emit_startup_warnings_emits_demotion_message_once(qtbot, tmp_path, monkeypatch):
+    """emit_startup_warnings 호출 시 강등 사실 시스템 메시지로 사용자에게 알림."""
+    import builtins
+    from screen_recorder.ui.agent.chat_panel import ChatPanel
+    from screen_recorder.agent.runtime import AgentRuntime
+
+    original_import = builtins.__import__
+    def _no_torch(name, *args, **kwargs):
+        if name in ("torch", "qwen_omni_utils", "transformers"):
+            raise ImportError("mock")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", _no_torch)
+
+    vt = MagicMock()
+    vt.plan_gate = MagicMock(return_value=MagicMock())
+    vt.mcp_server = MagicMock(return_value=MagicMock())
+    vt.tool_names = MagicMock(return_value=["mcp__kstudio_video__noop"])
+    rt = AgentRuntime(video_tools=vt, model="claude-sonnet-4-6", cwd=tmp_path)
+
+    panel = ChatPanel(agent=rt, initial_model_id="qwen25-omni-7b")
+    qtbot.addWidget(panel)
+
+    # 시스템 메시지 수집.
+    sys_msgs: list = []
+    original_append = panel.append_message
+    def _wrap(m):
+        if getattr(m, "role", None) == "system":
+            sys_msgs.append(m.text)
+        original_append(m)
+    monkeypatch.setattr(panel, "append_message", _wrap)
+
+    panel.emit_startup_warnings()
+    assert len(sys_msgs) == 1
+    assert "Qwen" in sys_msgs[0]
+    assert "PyTorch" in sys_msgs[0] or "의존성" in sys_msgs[0]
+
+    # 두 번 호출해도 추가 메시지 X — 한 번만.
+    panel.emit_startup_warnings()
+    assert len(sys_msgs) == 1
+
+
+def test_startup_with_deps_ok_keeps_qwen(qtbot, tmp_path, monkeypatch):
+    """의존성 OK 면 settings 의 Qwen 그대로 유지 (강등 X)."""
+    import sys
+    from screen_recorder.ui.agent.chat_panel import ChatPanel
+    from screen_recorder.agent.runtime import AgentRuntime
+
+    monkeypatch.setitem(sys.modules, "transformers", object())
+    monkeypatch.setitem(sys.modules, "torch", object())
+    monkeypatch.setitem(sys.modules, "qwen_omni_utils", object())
+
+    vt = MagicMock()
+    vt.plan_gate = MagicMock(return_value=MagicMock())
+    vt.mcp_server = MagicMock(return_value=MagicMock())
+    vt.tool_names = MagicMock(return_value=["mcp__kstudio_video__noop"])
+    rt = AgentRuntime(video_tools=vt, model="claude-sonnet-4-6", cwd=tmp_path)
+
+    panel = ChatPanel(agent=rt, initial_model_id="qwen25-omni-7b")
+    qtbot.addWidget(panel)
+
+    # Qwen 유지 — 강등 안 됨.
+    assert panel._model_combo.currentData() == "qwen25-omni-7b"
+    assert panel._startup_demoted_from is None
+
+
 def test_open_installer_twice_does_not_create_second_dialog(
     chat_panel_with_agent, monkeypatch, qtbot,
 ):
