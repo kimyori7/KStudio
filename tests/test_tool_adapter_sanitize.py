@@ -29,5 +29,6 @@ def test_sanitize_unmapped_class_falls_back_to_classname():
 def test_sanitize_passes_through_primitives():
     assert sanitize_json_schema(42) == 42
     assert sanitize_json_schema("hi") == "hi"
+    assert sanitize_json_schema(None) is None
     assert sanitize_json_schema([1, "x", None]) == [1, "x", None]
     assert sanitize_json_schema({"a": 1}) == {"a": 1}
