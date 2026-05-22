@@ -955,6 +955,10 @@ class ChatPanel(QDockWidget):
     # 슬래시 명령 — runtime 측에 알려야 client 재연결/요약 트리거 가능.
     clear_requested = Signal()                 # /clear — 새 세션 시작 (client disconnect)
     compact_requested = Signal()               # /compact — Claude 에게 요약 부탁
+    # 모델 다운로드 진행률 — MainWindow 가 받아 GlobalToolbar 라벨 갱신.
+    # 사용자가 ModelDownloadWindow 를 닫아도 진행률 잃지 않게 (영구 인디케이터).
+    download_progress_changed = Signal(int, int, str)   # (received_bytes, total_bytes, display_name)
+    download_finished = Signal()                        # 다운로드 완료 또는 에러 — 라벨 숨김 신호
 
     def __init__(
         self,
@@ -1702,15 +1706,24 @@ class ChatPanel(QDockWidget):
         )
         job.download_progress.connect(win.update_progress)
 
+        # 영구 인디케이터: GlobalToolbar 의 라벨도 같이 갱신 — 사용자가
+        # ModelDownloadWindow 를 닫아도 진행률 잃지 않게.
+        display_name = meta.display_name
+        def _emit_global_progress(received: int, total: int) -> None:
+            self.download_progress_changed.emit(received, total, display_name)
+        job.download_progress.connect(_emit_global_progress)
+
         def _on_finished(repo_id: str) -> None:
             win.set_phase("done")
             win.append_log(f"다운로드 완료: {repo_id}")
+            self.download_finished.emit()   # 라벨 숨김.
             # 다시 _on_model_changed — 이번엔 캐시 hit 라 정상 set_model 진행.
             self._on_model_changed(self._model_combo.currentIndex())
 
         def _on_error(msg: str) -> None:
             win.set_phase("error")
             win.append_log(f"오류: {msg}")
+            self.download_finished.emit()   # 라벨 숨김 (에러도).
             self._on_install_or_download_failed(before, msg)
 
         job.finished.connect(_on_finished)

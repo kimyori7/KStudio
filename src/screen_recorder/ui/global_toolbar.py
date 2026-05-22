@@ -19,6 +19,18 @@ from .widgets import OneShotKeySequenceEdit
 
 _TB_ICON_PX = 16
 
+_MB = 1024 * 1024
+_GB = 1024 * 1024 * 1024
+
+
+def _fmt_size(num_bytes: int) -> str:
+    """바이트를 사람 읽기 좋은 형식으로 — 1GB 이상은 'X.XG', 그 아래는 'XMB'."""
+    if num_bytes >= _GB:
+        return f"{num_bytes / _GB:.1f}G"
+    if num_bytes >= _MB:
+        return f"{int(num_bytes / _MB)}MB"
+    return f"{num_bytes}B"
+
 
 def _targets() -> list[tuple[str, str, str]]:
     """대상 토글 라벨 — (key, text, icon_name). tr() 가 부팅 시점 언어 기준이라
@@ -283,6 +295,18 @@ class GlobalToolbar(QWidget):
         self._actions_by_key["remove_bg"] = self._action_remove_bg
 
         # ---------- 양쪽 공통 ----------
+        # 다운로드 진행률 라벨 — 설정 버튼 *왼쪽*. 평소 숨김.
+        # 사용자가 ModelDownloadWindow 를 닫아도 진행률을 잃지 않도록 — 백그라운드
+        # snapshot_download 가 살아있는 동안 항상 보이는 영구 인디케이터.
+        # MainWindow 가 ChatPanel.download_progress_changed 시그널을 받아 여기로
+        # 전달 (set_download_progress / clear_download_progress).
+        self.download_progress_label = QLabel("")
+        self.download_progress_label.setStyleSheet(
+            "color:#16a34a;font-size:11px;background:transparent;padding:0px 6px;"
+        )
+        self.download_progress_label.setVisible(False)
+        layout.addWidget(self.download_progress_label)
+
         self.preferences_btn = QPushButton(tr("설정"))
         self.preferences_btn.setIcon(load_icon("settings", size=_TB_ICON_PX))
         self.preferences_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
@@ -353,6 +377,37 @@ class GlobalToolbar(QWidget):
         """현재 선택된 모니터 (-1 = 전체 모니터)."""
         data = self.monitor_combo.currentData()
         return int(data) if data is not None else -1
+
+    # ---------- 다운로드 진행률 (설정 버튼 왼쪽 라벨) ----------
+    def set_download_progress(
+        self,
+        received_bytes: int,
+        total_bytes: int,
+        model_name: str,
+    ) -> None:
+        """다운로드 중인 모델의 진행률 표시. ChatPanel 의 download_progress_changed
+        시그널을 MainWindow 가 받아 여기로 위임. 사용자가 ModelDownloadWindow 를
+        닫아도 진행률 잃지 않게 영구 인디케이터.
+
+        total_bytes=0 (예상 크기 미정) 면 받은 양만 표시 + percent 생략.
+        """
+        if total_bytes > 0:
+            pct = int(received_bytes / total_bytes * 100)
+            pct = max(0, min(100, pct))
+            text = (
+                f"{pct}% ({_fmt_size(received_bytes)}/{_fmt_size(total_bytes)})"
+            )
+        else:
+            text = f"{_fmt_size(received_bytes)} 다운로드 중"
+        self.download_progress_label.setText(text)
+        self.download_progress_label.setToolTip(f"{model_name} 다운로드 중")
+        self.download_progress_label.setVisible(True)
+
+    def clear_download_progress(self) -> None:
+        """다운로드 완료 또는 에러 시 — 라벨 숨김."""
+        self.download_progress_label.setVisible(False)
+        self.download_progress_label.setText("")
+        self.download_progress_label.setToolTip("")
 
     def set_inline_hotkey(self, key: str, sequence_text: str) -> None:
         """외부에서 인라인 단축키 표시값 동기화 (환경설정 다이얼로그에서 바뀌었을 때 등)."""

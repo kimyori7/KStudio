@@ -503,6 +503,14 @@ class MainWindow(QMainWindow):
         self.agent_chat_panel.whisper_download_canceled.connect(
             self._on_whisper_card_cancel_clicked
         )
+        # 모델 다운로드 진행률 → GlobalToolbar 의 라벨 (설정 버튼 왼쪽).
+        # 사용자가 ModelDownloadWindow 를 닫아도 진행률 잃지 않게.
+        self.agent_chat_panel.download_progress_changed.connect(
+            self.global_toolbar.set_download_progress
+        )
+        self.agent_chat_panel.download_finished.connect(
+            self.global_toolbar.clear_download_progress
+        )
         # apply pending 상태 — Claude 의 apply_proposals 호출이 사용자 버튼 기다리는 동안 보관.
         self._pending_apply_proposals: list = []
         self._pending_apply_future = None
