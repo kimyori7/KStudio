@@ -38,6 +38,7 @@ from ...agent.plan_gate import PlanGate
 from ...agent.runtime import AgentMessage, AgentEvent
 from ..gpu_install_dialog import GpuInstallDialog
 from ..model_download_window import ModelDownloadWindow
+from .model_install_flow import ModelInstallController
 
 
 # Qwen2.5-Omni 7B 실행에 필요한 PyTorch + 의존성 패키지.
@@ -986,6 +987,12 @@ class ChatPanel(QDockWidget):
         _ensure_chat_log_handler()
         _chat_log.info("ChatPanel constructed model=%s show_thinking=%s",
                        initial_model_id, initial_show_thinking)
+
+        # 모델 설치/다운로드 흐름 controller — Task 6. 현재는 handle_runtime_check +
+        # signal 인터페이스만. _open_installer_for / _open_downloader_for 메서드
+        # 이동은 Task 7 (GC lifetime 정리 후).
+        self._install_controller = ModelInstallController(parent_widget=self)
+        self._install_controller.fallback_requested.connect(self._fallback_combo_to)
 
         body = QWidget(self)
         body.setMinimumWidth(320)
