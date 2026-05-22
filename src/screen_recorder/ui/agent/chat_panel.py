@@ -39,7 +39,12 @@ from ...agent.runtime import AgentMessage, AgentEvent
 from ..gpu_install_dialog import GpuInstallDialog
 from ..model_download_window import ModelDownloadWindow
 from .model_install_flow import ModelInstallController
-from .bubbles import _MessageBubble, _WhisperDownloadCard, _ProposalsPreviewCard, _PlanCard
+from .bubbles import (
+    MessageBubble as _MessageBubble,
+    PlanCard as _PlanCard,
+    ProposalsPreviewCard as _ProposalsPreviewCard,
+    WhisperDownloadCard as _WhisperDownloadCard,
+)
 from .chat_input_edit import ChatInputEdit as _ChatInputEdit
 
 
