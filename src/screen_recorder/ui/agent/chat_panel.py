@@ -145,16 +145,19 @@ DEFAULT_MODEL_ID = MODEL_OPTIONS[0][1]
 # 미등록 모델을 위한 보수적 default — 200k 면 대부분 안전.
 _DEFAULT_CONTEXT_LIMIT = 200_000
 
+# ModelRegistry 는 무상태 + builtin list 가 모듈 레벨 전역이라 인스턴스 1회면 충분.
+# 매 호출마다 new 할 이유 없음 (UI 응답 직후 호출되어 hot path 아니지만 관용 패턴).
+_CONTEXT_REGISTRY = ModelRegistry()
+
 
 def _context_limit_for(model_id: str) -> int:
     """모델별 context window — ModelRegistry 가 single source of truth.
 
-    metadata.context_window 가 0/None 이거나 모델 자체 미등록이면 default.
+    metadata.context_window 가 0 (또는 falsy) 이거나 모델 자체 미등록이면 default.
     UI 의 컨텍스트 dot/% 계산에 사용.
     새 모델을 추가할 때 이 함수는 건드릴 필요 없음 — registry.py 만 수정하면 됨.
     """
-    from screen_recorder.agent.models.registry import ModelRegistry
-    meta = ModelRegistry().get(model_id)
+    meta = _CONTEXT_REGISTRY.get(model_id)
     if meta is None or not meta.context_window:
         return _DEFAULT_CONTEXT_LIMIT
     return meta.context_window
