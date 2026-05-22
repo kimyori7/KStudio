@@ -246,14 +246,10 @@ class AgentRuntime(QObject):
         """현 모델 metadata.runtime 보고 backend 별 tools dict 빌드.
 
         실제 조립 로직은 backends/factory.build_backend_tools 로 위임.
+        __init__/set_model 가 unknown model 을 사전 차단하므로 meta is None 분기는 dead.
         """
         meta = self._registry.get(self._model)
-        if meta is None:
-            self._tools_dict = {
-                "mcp_server": self._video_tools.mcp_server(),
-                "allowed_tools": self._video_tools.tool_names(),
-            }
-            return
+        assert meta is not None, f"_build_tools_dict 진입 시 model={self._model!r} 미등록 (개발 시 가드)"
         self._tools_dict = build_backend_tools(meta, self._video_tools)
 
     # ---- Phase B 콜백 진입점 ----

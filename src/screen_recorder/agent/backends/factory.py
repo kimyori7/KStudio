@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .base import ChatBackend
 from .claude_backend import ClaudeBackend
 from .ollama_backend import OllamaBackend
 from .transformers_backend import TransformersBackend
@@ -25,7 +26,7 @@ _DEPENDENCY_LABELS: dict[str, str] = {
 }
 
 
-def create_backend(meta: "ModelMetadata", cwd) -> "ClaudeBackend | TransformersBackend | OllamaBackend":
+def create_backend(meta: "ModelMetadata", cwd) -> ChatBackend:
     """ModelMetadata.runtime 에 따라 ChatBackend 인스턴스를 반환.
 
     - "claude": ClaudeBackend(cwd=cwd)
