@@ -344,8 +344,17 @@ class TransformersBackend:
             ))
             emit_fn(AgentEvent(kind="done"))
         except Exception as exc:
+            # detail 에 짧은 traceback 도 같이 — 사용자가 KStudio 콘솔/로그 못 봐도
+            # 채팅 메시지에서 정확한 발생 위치 노출 (멀티모달 로드/파싱 디버깅).
+            # str(exc) 가 빈 경우 (일부 transformers 예외) repr 폴백.
+            import traceback as _tb
+            tb_tail = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))[-1200:]
+            detail = str(exc) or repr(exc) or type(exc).__name__
             _log.exception("TransformersBackend: send_message 실패")
-            emit_fn(AgentEvent(kind="error", detail=str(exc)))
+            emit_fn(AgentEvent(
+                kind="error",
+                detail=f"{detail}\n--- traceback (마지막 1200자) ---\n{tb_tail}",
+            ))
         finally:
             self._stop_flag = None
             self._cleanup_temp_files()
@@ -470,6 +479,11 @@ class TransformersBackend:
 
         flash-attn 미지원 GPU (Blackwell/sm_120 — RTX 5060/5090) 에서 가장 효과 큰
         가속 옵션 (2026-05-22 smoke test 확인). 외부 의존: bitsandbytes ≥ 0.43 + torch.
+
+        llm_int8_enable_fp32_cpu_offload=True — Qwen2.5-Omni 같이 thinker + talker 합쳐
+        ~10B 인 모델은 4-bit 양자화 + 비양자화 encoder/talker 합쳐 16GB GPU 에 빠듯.
+        accelerate 가 talker (speech 전용, 우리가 안 씀) 같은 모듈을 CPU 로 보낼 수
+        있게 허용 — 핵심 thinker 는 GPU 유지되니 generate 속도 영향 거의 없음.
         """
         if not self._load_in_4bit:
             return None
@@ -480,6 +494,7 @@ class TransformersBackend:
             bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
+            llm_int8_enable_fp32_cpu_offload=True,
         )
 
     async def _ensure_model_loaded(self) -> None:

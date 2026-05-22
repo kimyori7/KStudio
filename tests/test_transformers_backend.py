@@ -668,11 +668,15 @@ async def test_ensure_model_loaded_with_4bit_passes_quantization_config(transfor
     assert "quantization_config" in from_pretrained_kwargs, "4-bit 인데 quantization_config 누락"
     # torch_dtype 는 양자화 시 명시 X — BitsAndBytesConfig 의 compute_dtype 이 우선.
     assert "torch_dtype" not in from_pretrained_kwargs
-    # BitsAndBytesConfig 가 NF4 + double quant 옵션으로 호출되었는지.
+    # BitsAndBytesConfig 가 NF4 + double quant + CPU offload 옵션으로 호출되었는지.
     bnb_call = transformers_mock["transformers"].BitsAndBytesConfig.call_args
     assert bnb_call.kwargs.get("load_in_4bit") is True
     assert bnb_call.kwargs.get("bnb_4bit_quant_type") == "nf4"
     assert bnb_call.kwargs.get("bnb_4bit_use_double_quant") is True
+    # CPU offload — Qwen2.5-Omni 같이 ~10B 합산 모델이 16GB GPU 에 빠듯할 때 accelerate
+    # 가 talker 등 안 쓰는 모듈을 CPU 로 보낼 수 있게. 없으면 'Some modules dispatched on
+    # CPU or the disk' 에러로 로드 실패.
+    assert bnb_call.kwargs.get("llm_int8_enable_fp32_cpu_offload") is True
 
 
 @pytest.mark.asyncio
