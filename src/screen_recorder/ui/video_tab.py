@@ -237,6 +237,23 @@ class VideoTab(QWidget):
         # sidecar_replaced.connect 로 연결됨).
         self._initial_thumbs_requested = False
 
+        # 2026-05-22: 라이브러리 "이것저것 클릭" → N개 탭 누적 회귀.
+        # QMediaPlayer 디코더 파이프라인을 비활성 탭에서도 들고 있어 Windows MF
+        # 디코더 contention → 점점 느려짐. 두 가지 lazy 정책 도입:
+        # 1) 탭 생성 시 player.load() 를 호출하지 않음 — showEvent 첫 발화 때 load.
+        # 2) hideEvent (다른 탭으로 전환) 시 release_file_handles + 다음 show 때 reload
+        #    (position 보존). 같은 탭 다시 보면 ~200ms 재로드 비용. 새 탭 클릭 비용
+        #    (수 초) 보다 훨씬 짧음.
+        # _thumbnail_pending: __init__ 인자로 받은 미리보기 이미지를 load 후에 적용하기
+        # 위해 보관. set_thumbnail 은 load 없이도 동작하지만, release 후 reload 사이
+        # 에서 frame surface 가 비워지므로 thumbnail 다시 그려야 함.
+        self._media_loaded = False
+        self._saved_position_ms = 0
+        self._thumbnail_pending = thumbnail if thumbnail is not None and not thumbnail.isNull() else None
+        # set_duration_ms / set_audio_enabled 등 player 의존 controls 초기화도 _ensure_player_loaded
+        # 안에서 수행. 단 duration_ms 는 caller 가 알려준 값이라 player 와 무관 — 즉시 적용.
+        self._duration_ms_initial = duration_ms
+
         # Timeline 시그널
         self.timeline.seek_request.connect(self._on_user_seek_request)
         self.timeline.trim_changed.connect(self._on_timeline_trim_changed)
@@ -258,10 +275,8 @@ class VideoTab(QWidget):
         # Stage 1: 박스 드래그 → start_ms 변경 (clamp 는 EditController 에서).
         track.segment_position_changed.connect(self._edit_controller.set_segment_start)
 
-        self.player.load(path)
-        if thumbnail is not None and not thumbnail.isNull():
-            self.player.set_thumbnail(thumbnail)
-        self.controls.set_audio_enabled(self.player.has_audio())
+        # player.load() 는 첫 showEvent 까지 defer (lazy load 정책 — 위 _media_loaded 주석 참조).
+        # duration 은 caller 가 알려준 값이라 player 와 무관 — 즉시 controls 에 표시.
         if duration_ms > 0:
             self.controls.set_duration_ms(duration_ms)
 
@@ -1394,16 +1409,94 @@ class VideoTab(QWidget):
                 _dt_ms, int(ms), n_zoom, n_speed,
             )
 
+    def _ensure_player_loaded(self) -> None:
+        """탭이 보일 때 player.load + thumbnail + audio_enabled 적용.
+
+        2026-05-22 (Phase 51): 라이브러리 "이것저것 클릭" 누적 회귀 fix. __init__ 에서
+        load 안 하고 여기서 lazy 로드. release_player 후 다시 호출되면 reload + seek 복원.
+
+        반복 호출 안전 — _media_loaded 플래그로 중복 차단.
+        """
+        if self._media_loaded:
+            return
+        self.player.load(self._source_path)
+        if self._thumbnail_pending is not None:
+            self.player.set_thumbnail(self._thumbnail_pending)
+        self.controls.set_audio_enabled(self.player.has_audio())
+        # release 후 reload 라면 마지막 position 으로 복원 — UX 연속성.
+        # setSource() 는 비동기 — duration 이 처음 보고될 때 (metadata 로드 완료)
+        # 한 번만 seek (즉시 seek 은 duration=0 clamp 로 silent fail).
+        if self._saved_position_ms > 0:
+            self._schedule_pending_seek(self._saved_position_ms)
+        self._media_loaded = True
+
+    def _schedule_pending_seek(self, target_ms: int) -> None:
+        """release → reload 사이 보존한 position 으로 metadata 로드 후 1회 seek.
+
+        QMediaPlayer.setSource 는 비동기 — duration_ms() 가 처음 >0 으로 보고될 때까지
+        seek_ms 가 clamp 0 으로 silent fail. duration_changed one-shot 으로 적용.
+        """
+        pending = {"applied": False, "target": int(target_ms)}
+
+        def _apply(dur_ms: int) -> None:
+            if pending["applied"] or int(dur_ms) <= 0:
+                return
+            pending["applied"] = True
+            try:
+                self.player.seek_ms(pending["target"])
+            except (AttributeError, RuntimeError):
+                # 위젯 destroyed / API 변경 — 무시 (다음 사용자 seek 으로 자연 복원).
+                pass
+            # one-shot — disconnect.
+            try:
+                self.player.duration_changed.disconnect(_apply)
+            except (TypeError, RuntimeError):
+                pass
+
+        self.player.duration_changed.connect(_apply)
+
+    def _release_player(self) -> None:
+        """탭이 비활성화될 때 디코더 해제 + 현재 position 보존.
+
+        Windows MF QMediaPlayer 가 비활성 상태에서도 디코더 reservation + 메모리 점유.
+        라이브러리 N번 클릭 시 누적 회귀의 핵심 원인. setSource(QUrl()) 로 즉시 해제 →
+        다음 showEvent 에서 reload (~200ms) + seek 복원.
+        """
+        if not self._media_loaded:
+            return
+        try:
+            self._saved_position_ms = int(self.player.position_ms())
+        except (AttributeError, RuntimeError):
+            self._saved_position_ms = 0
+        try:
+            self.player.release_file_handles()
+        except (AttributeError, RuntimeError):
+            pass
+        self._media_loaded = False
+
     def showEvent(self, event) -> None:  # noqa: N802 — Qt signature
-        """탭이 처음 보일 때 thumbnail filmstrip 디스패치 (defer 효과).
+        """탭이 보일 때 player lazy 로드 + thumbnail filmstrip 디스패치.
 
         2026-05-14: 여러 탭 동시 열기 시 비가시 탭이 ffmpeg storm 을 일으켜 가시 탭의
         프리뷰 로딩까지 지연되던 회귀. QTabWidget 은 보이는 탭만 showEvent 발화.
+
+        2026-05-22: lazy player.load + release 패턴 추가 — 비활성 탭의 디코더 해제.
         """
         super().showEvent(event)
+        # 매 showEvent 마다 lazy 로드 시도 (release 후 재진입 포함).
+        self._ensure_player_loaded()
         if not self._initial_thumbs_requested:
             self._initial_thumbs_requested = True
             self._request_all_thumbnails(self._edit_controller.sidecar())
+
+    def hideEvent(self, event) -> None:  # noqa: N802 — Qt signature
+        """탭이 가려질 때 디코더 해제 — 비활성 탭의 메모리/MF 디코더 점유 회피.
+
+        QTabWidget 의 다른 탭으로 전환 / 윈도우 minimize 시 발화. 같은 탭 다시 보면
+        showEvent 가 _ensure_player_loaded 로 재로드 (~200ms + saved_position 복원).
+        """
+        super().hideEvent(event)
+        self._release_player()
 
     def _on_user_play_toggle(self) -> None:
         """재생 토글 (스페이스 / 컨트롤바 ▶ 버튼) — 누적 카운터 초기화."""

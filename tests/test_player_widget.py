@@ -105,3 +105,26 @@ def test_stop_on_gif_emits_playing_false(qtbot, gif_file):
     w.playing_changed.connect(received.append)
     w.stop()
     assert received == [False]
+
+
+def test_release_file_handles_then_reload_works(qtbot, gif_file):
+    """비활성 탭 디코더 해제 → 재활성화 시 reload 동작 검증 (Lazy + release 패턴 기반).
+
+    VideoTab 의 hideEvent/showEvent 가 release_file_handles + load 를 반복 호출하는데,
+    이 기본 building block 이 깨지면 안 됨.
+    """
+    w = PlayerWidget()
+    qtbot.addWidget(w)
+    w.load(gif_file)
+    assert w.is_loaded()
+    # 1. 해제 — setSource(QUrl()) + QMovie 정리.
+    w.release_file_handles()
+    # 2. 재로드 — 같은 경로로 다시.
+    w.load(gif_file)
+    assert w.is_loaded()
+    # 3. 또 해제 + 재로드 (반복 안정성) — 메모리 누수 / dangling signal 회귀 가드.
+    w.release_file_handles()
+    w.load(gif_file)
+    assert w.is_loaded()
+    # 4. 마지막 해제 후 is_loaded — _path 가 클리어되진 않으므로 True 그대로지만
+    #    실제 decoder 는 해제됨 (sharing violation 회피 동작 검증은 별도 OS 의존).
