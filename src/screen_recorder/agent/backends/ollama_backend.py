@@ -26,6 +26,7 @@ import logging
 from typing import Any, Optional
 
 from .base import AgentEvent, AgentMessage, ChatInput, EmitFn
+from .tool_runtime import NormalizedToolCall, execute_tool_call
 
 
 _log = logging.getLogger(__name__)
@@ -180,44 +181,14 @@ class OllamaBackend:
                     emit_fn(AgentEvent(kind="done"))
                     return
 
-                # tool_use UI emit + 핸들러 실행.
+                # tool_use UI emit + 핸들러 실행 + tool_result emit (execute_tool_call 통합).
                 for call in tool_calls:
                     fn = call.get("function") or {}
                     name = fn.get("name", "?")
                     args = fn.get("arguments") or {}
-                    emit_fn(AgentEvent(
-                        kind="tool_use", detail=f"{name} {args}",
-                    ))
-                    emit_fn(AgentMessage(
-                        role="tool_use",
-                        text=f"🔧 {name}({args})",
-                        tool_name=name,
-                    ))
-
-                    handler = self._tool_handlers.get(name)
-                    if handler is None:
-                        result_val: Any = {"error": f"unknown tool: {name}"}
-                    else:
-                        try:
-                            ret = handler(args)
-                            if asyncio.iscoroutine(ret):
-                                ret = await ret
-                            result_val = ret
-                        except Exception as exc:
-                            _log.exception("ollama tool handler 실패: %s", name)
-                            result_val = {"error": str(exc)}
-
-                    # tool_result UI emit + conversation 에 tool 메시지 append.
-                    body = (
-                        result_val if isinstance(result_val, str)
-                        else json.dumps(result_val, ensure_ascii=False, default=str)
-                    )
-                    preview = body[:200]
-                    emit_fn(AgentMessage(
-                        role="tool_result",
-                        text=f"← {preview}",
-                        tool_name=name,
-                    ))
+                    norm = NormalizedToolCall(id=None, name=name, arguments=args)
+                    body = await execute_tool_call(norm, self._tool_handlers, emit_fn)
+                    # Ollama 컨벤션: tool role + name 키.
                     tool_msg = {"role": "tool", "content": body, "name": name}
                     messages.append(tool_msg)
                     self._history.append(tool_msg)

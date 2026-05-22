@@ -447,3 +447,62 @@ async def test_send_tool_result_is_noop():
     be = OllamaBackend(model_tag="qwen3:8b")
     await be.send_tool_result("tu_0", {"ok": True}, lambda _: None)
     # noop — 예외만 안 나면 OK.
+
+
+@pytest.mark.asyncio
+async def test_emit_order_tool_use_before_tool_result_before_assistant():
+    """회귀: tool_use → tool_result → final assistant 순서 보장.
+
+    execute_tool_call helper 도입 후 Ollama emit 순서 명시 검증.
+    single tool_call 시나리오.
+    """
+    be = OllamaBackend(model_tag="qwen3:8b")
+    await be.start_session(
+        system_prompt="", tools={
+            "openai_tools": [{"type": "function",
+                              "function": {"name": "get_video_state", "parameters": {}}}],
+            "tool_handlers": {"get_video_state": lambda args: {"duration_ms": 5000}},
+            "tool_strategy": "official",
+        }, model="x",
+    )
+
+    lines_r1 = [
+        _ollama_line(content="", tool_calls=[{
+            "function": {"name": "get_video_state", "arguments": {}},
+        }]),
+        _ollama_line(content="", done=True),
+    ]
+    lines_r2 = [
+        _ollama_line(content="영상은 5초입니다"),
+        _ollama_line(content="", done=True),
+    ]
+
+    fake_client = MagicMock()
+    fake_client.stream = MagicMock(side_effect=[
+        _FakeStreamCM(_FakeStreamResponse(lines_r1)),
+        _FakeStreamCM(_FakeStreamResponse(lines_r2)),
+    ])
+    fake_client.aclose = AsyncMock()
+    be._client = fake_client
+
+    events: list = []
+    await be.send_message(ChatInput(text="영상 길이?"), events.append)
+
+    # AgentMessage 만 필터 (역할 순서 추출).
+    msgs = [e for e in events if isinstance(e, AgentMessage)]
+    roles = [m.role for m in msgs]
+
+    assert "tool_use" in roles, "tool_use 메시지 없음"
+    assert "tool_result" in roles, "tool_result 메시지 없음"
+    assert "assistant" in roles, "최종 assistant 메시지 없음"
+
+    i_tool_use = roles.index("tool_use")
+    i_tool_result = roles.index("tool_result")
+    i_final_assistant = max(i for i, r in enumerate(roles) if r == "assistant")
+
+    assert i_tool_use < i_tool_result, (
+        f"tool_use({i_tool_use}) 가 tool_result({i_tool_result}) 보다 늦음"
+    )
+    assert i_tool_result < i_final_assistant, (
+        f"tool_result({i_tool_result}) 가 final assistant({i_final_assistant}) 보다 늦음"
+    )

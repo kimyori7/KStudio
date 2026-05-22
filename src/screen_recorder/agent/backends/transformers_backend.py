@@ -247,6 +247,7 @@ class TransformersBackend:
             emit_fn(AgentEvent(kind="started"))
 
             from .tool_adapter import build_tool_result_message
+            from .tool_runtime import NormalizedToolCall, execute_tool_call
 
             conversation = self._build_conversation(msg)
             # _build_conversation 가 새 user 를 self._history 에 append 했음.
@@ -294,46 +295,19 @@ class TransformersBackend:
                     emit_fn(AgentEvent(kind="done"))
                     return
 
-                # tool_use UI emit.
-                for call in tool_calls:
-                    emit_fn(AgentEvent(
-                        kind="tool_use",
-                        detail=f"{call['name']} {call['arguments']}",
-                    ))
-                    emit_fn(AgentMessage(
-                        role="tool_use",
-                        text=f"🔧 {call['name']}({call['arguments']})",
-                        tool_name=call["name"],
-                    ))
-
                 # tool_call 한 assistant turn 도 history 에 누적 (텍스트 + 태그 모두).
                 # Qwen 이 다음 generate 에서 자기가 어떤 호출했는지 알도록.
                 conversation.append({"role": "assistant", "content": full_text})
                 self._history.append({"role": "assistant", "content": full_text})
 
-                # 핸들러 실행 + 결과 메시지 conversation/history 에 append.
+                # 핸들러 실행 + emit + 결과 메시지 conversation/history 에 append.
+                # execute_tool_call 이 tool_use + tool_result UI emit + body 직렬화까지 처리.
                 for call in tool_calls:
-                    handler = self._tool_handlers.get(call["name"])
-                    if handler is None:
-                        result_val: Any = {"error": f"unknown tool: {call['name']}"}
-                    else:
-                        try:
-                            ret = handler(call["arguments"])
-                            if asyncio.iscoroutine(ret):
-                                ret = await ret
-                            result_val = ret
-                        except Exception as exc:
-                            _log.exception("tool handler 실패: %s", call["name"])
-                            result_val = {"error": str(exc)}
-                    # tool_result UI emit — Claude 패턴 (chat_panel 의 role='tool_result' 표시).
-                    preview = json.dumps(result_val, ensure_ascii=False, default=str)[:200]
-                    emit_fn(AgentMessage(
-                        role="tool_result",
-                        text=f"← {preview}",
-                        tool_name=call["name"],
-                    ))
-                    # 다음 generate 의 context.
-                    result_msg = build_tool_result_message(call["id"], result_val)
+                    norm = NormalizedToolCall(
+                        id=call.get("id"), name=call["name"], arguments=call["arguments"],
+                    )
+                    body = await execute_tool_call(norm, self._tool_handlers, emit_fn)
+                    result_msg = build_tool_result_message(call["id"], body)
                     conversation.append(result_msg)
                     self._history.append(result_msg)
 

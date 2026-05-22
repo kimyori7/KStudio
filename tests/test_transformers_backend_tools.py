@@ -498,3 +498,83 @@ def test_malformed_retry_preserves_role_alternation(transformers_mock):
             assert roles[i + 1] != "user", (
                 f"user-user 연속 발견 at index {i}: {roles}"
             )
+
+
+def test_emit_order_tool_use_before_tool_result_before_assistant(transformers_mock):
+    """회귀: tool_use → tool_result → final assistant 순서 보장.
+
+    execute_tool_call helper 도입 후 emit 순서가 바뀌지 않았는지 명시 검증.
+    single tool_call 시나리오 — tool_use index < tool_result index < 최종 assistant index.
+    """
+    from screen_recorder.agent.backends.base import ChatInput, AgentMessage, AgentEvent
+    from screen_recorder.agent.backends.transformers_backend import TransformersBackend
+
+    generate_count = {"n": 0}
+    outputs = [
+        '<tool_call>{"name": "get_video_state", "arguments": {}}</tool_call>',
+        "최종 답변입니다.",
+    ]
+
+    class _FakeProcessor:
+        def apply_chat_template(self, conv, tools=None, **kw): return "p"
+        def __call__(self, **kw):
+            class _Inputs(dict):
+                def to(self, *_a, **_kw): return self
+            return _Inputs()
+        def batch_decode(self, ids, **kw): return [""]
+
+    class _FakeStreamer:
+        def __init__(self, *a, **kw):
+            self._fed = [outputs[generate_count["n"]]]
+        def __iter__(self): return iter(self._fed)
+        def end(self): pass
+
+    class _FakeModel:
+        device = "cpu"; dtype = None
+        def generate(self, **kw):
+            generate_count["n"] += 1
+            kw["streamer"].end()
+            return None
+
+    transformers_mock["transformers"].TextIteratorStreamer = _FakeStreamer
+    transformers_mock["transformers"].StoppingCriteria = object
+    transformers_mock["transformers"].StoppingCriteriaList = lambda x: x
+    transformers_mock["qwen_omni_utils"].process_mm_info.return_value = (None, None, None)
+
+    backend = TransformersBackend(repo_id="Qwen/test")
+    backend._model = _FakeModel()
+    backend._processor = _FakeProcessor()
+
+    tools_dict = {
+        "openai_tools": [{"type": "function", "function": {"name": "get_video_state",
+                                                            "description": "x", "parameters": {}}}],
+        "tool_handlers": {"get_video_state": lambda args: {"duration_ms": 5000}},
+        "tool_strategy": "prompted",
+    }
+    asyncio.run(backend.start_session("ignored", tools_dict, "x"))
+
+    events: list = []
+    async def _run():
+        await backend.send_message(ChatInput(text="영상 정보?"), events.append)
+    asyncio.run(_run())
+
+    # AgentMessage 만 필터 (역할 순서 추출).
+    msgs = [e for e in events if isinstance(e, AgentMessage)]
+    roles = [m.role for m in msgs]
+
+    assert "tool_use" in roles, "tool_use 메시지 없음"
+    assert "tool_result" in roles, "tool_result 메시지 없음"
+    # 최종 assistant 텍스트가 있어야 함.
+    assert "assistant" in roles, "최종 assistant 메시지 없음"
+
+    i_tool_use = roles.index("tool_use")
+    i_tool_result = roles.index("tool_result")
+    # 마지막 assistant 의 index (최종 답변).
+    i_final_assistant = max(i for i, r in enumerate(roles) if r == "assistant")
+
+    assert i_tool_use < i_tool_result, (
+        f"tool_use({i_tool_use}) 가 tool_result({i_tool_result}) 보다 늦음"
+    )
+    assert i_tool_result < i_final_assistant, (
+        f"tool_result({i_tool_result}) 가 final assistant({i_final_assistant}) 보다 늦음"
+    )
