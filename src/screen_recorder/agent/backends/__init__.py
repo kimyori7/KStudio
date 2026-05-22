@@ -5,10 +5,11 @@ AgentMessage/AgentEvent emit. runtime.py 의 Agent 가 backend 한 개를 보유
 """
 from .base import AgentEvent, AgentMessage, ChatBackend, ChatInput, EmitFn
 from .claude_backend import ClaudeBackend
+from .ollama_backend import OllamaBackend
 from .transformers_backend import TransformersBackend
 
 __all__ = [
     "AgentEvent", "AgentMessage",
     "ChatBackend", "ChatInput", "EmitFn",
-    "ClaudeBackend", "TransformersBackend",
+    "ClaudeBackend", "TransformersBackend", "OllamaBackend",
 ]

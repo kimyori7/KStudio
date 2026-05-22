@@ -1543,9 +1543,13 @@ class ChatPanel(QDockWidget):
             if not check_runtime_available(meta.runtime):
                 self._open_installer_for(meta, before or "")
                 return
-            if meta.repo_id and not _models.is_model_cached(meta.repo_id):
-                self._open_downloader_for(meta, before or "")
-                return
+            # ollama 는 HF 캐시 X — 자체 모델 스토어 (`ollama list`) 사용. HF
+            # 다운로더 띄우면 잘못된 repo_id ('qwen3:8b') 로 다운 시도. 캐시 체크 건너뛰고
+            # send_message 시점에 "ollama pull <tag>" 안내가 친절한 에러로 처리.
+            if meta.runtime != "ollama":
+                if meta.repo_id and not _models.is_model_cached(meta.repo_id):
+                    self._open_downloader_for(meta, before or "")
+                    return
 
         # 정상 set_model — Phase 3a 의 가드 fallback 동작 유지 (안전망).
         self._agent.set_model(str(model_id))

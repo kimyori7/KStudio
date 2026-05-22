@@ -76,12 +76,35 @@ _BUILTIN: list[ModelMetadata] = [
         description="영상/오디오 native. ~22GB 다운로드, bf16 로드. 도구 호출은 prompt 시뮬레이션 (정식 미지원).",
         tool_strategy="prompted",
     ),
+    ModelMetadata(
+        id="qwen3-8b-ollama",
+        display_name="Qwen3 8B (Ollama, 빠름)",
+        runtime="ollama",
+        # repo_id 자리에 Ollama 태그를 둠 — Ollama 가 자체 모델 스토어 관리하므로 HF
+        # 다운로드 X. 사용 전 사용자가 'ollama pull qwen3:8b' 수동 실행 필요.
+        repo_id="qwen3:8b",
+        quantization="Q4_K_M (Ollama 기본)",
+        modalities=frozenset({"text"}),
+        supports_korean=True,
+        estimated_size_gb=5.2, estimated_vram_gb=6.0,
+        context_window=32_768,
+        supports_tools=True,
+        description=(
+            "Ollama 백엔드 — GGUF + llama.cpp 로 transformers (bf16) 보다 5~10배 빠름. "
+            "도구 호출 정식 지원 (Qwen3 chat_template + Ollama native). "
+            "사전 요구: Ollama 설치 + `ollama serve` 동작 + `ollama pull qwen3:8b`."
+        ),
+        tool_strategy="official",
+    ),
 ]
 
 
 _RUNTIME_DEPS: dict[str, tuple[str, ...]] = {
     "claude": ("claude_agent_sdk",),
     "transformers": ("transformers", "torch", "qwen_omni_utils"),
+    # Ollama 백엔드는 httpx 만 있으면 OK — 서버 자체 (ollama.exe) 는 Python dep 아님.
+    # 서버 reachability 는 send_message 시점에 ConnectError 로 친절히 안내.
+    "ollama": ("httpx",),
 }
 
 

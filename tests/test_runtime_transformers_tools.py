@@ -62,6 +62,41 @@ def test_runtime_transformers_tools_dict_for_omni_uses_prompted_strategy(tmp_pat
     assert rt._tools_dict["tool_strategy"] == "prompted"
 
 
+def test_runtime_creates_ollama_backend_for_qwen3(tmp_path, monkeypatch):
+    """qwen3-8b-ollama → OllamaBackend(model_tag='qwen3:8b') + tool_strategy='official'."""
+    import screen_recorder.agent.runtime as runtime_mod
+    from screen_recorder.agent.backends.ollama_backend import OllamaBackend
+
+    captured: dict = {}
+
+    class _Spy(OllamaBackend):
+        def __init__(self, model_tag, base_url="http://localhost:11434", think=False):
+            captured["model_tag"] = model_tag
+            captured["base_url"] = base_url
+            super().__init__(model_tag, base_url=base_url, think=think)
+
+    monkeypatch.setattr(runtime_mod, "OllamaBackend", _Spy)
+
+    vt = MagicMock()
+    vt.plan_gate = MagicMock(return_value=MagicMock())
+    vt.mcp_server = MagicMock(return_value=MagicMock())
+    vt.tool_names = MagicMock(return_value=[])
+    vt.openai_tools_and_handlers = MagicMock(return_value=([
+        {"type": "function", "function": {"name": "get_video_state",
+                                          "description": "x", "parameters": {}}},
+    ], {"get_video_state": lambda a: {}}))
+
+    from screen_recorder.agent.runtime import AgentRuntime
+    rt = AgentRuntime(video_tools=vt, model="qwen3-8b-ollama", cwd=tmp_path)
+    assert captured.get("model_tag") == "qwen3:8b"
+    assert captured.get("base_url") == "http://localhost:11434"
+    # tools_dict 가 transformers/ollama 공통 형식 + tool_strategy='official'.
+    rt._build_tools_dict()
+    td = rt._tools_dict
+    assert "openai_tools" in td
+    assert td["tool_strategy"] == "official"
+
+
 def test_runtime_creates_transformers_backend_with_modalities_for_qwen_instruct(tmp_path, monkeypatch):
     """qwen25-7b-instruct → TransformersBackend(modalities=frozenset({'text'})) 전달 확인.
 

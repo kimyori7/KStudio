@@ -30,6 +30,7 @@ from .tools_video import VideoTools, VideoSessionAdapter
 from .proposals import EffectProposal, ProposalQueue
 from .plan_gate import PlanGate
 from .backends.claude_backend import ClaudeBackend
+from .backends.ollama_backend import OllamaBackend
 from .backends.transformers_backend import TransformersBackend
 # AgentMessage / AgentEvent 는 backends/base.py 로 이전 — 외부 호환 위해 re-export.
 from .backends import AgentEvent, AgentMessage, ChatInput
@@ -245,6 +246,7 @@ class AgentRuntime(QObject):
 
         - "claude": ClaudeBackend(cwd=...)
         - "transformers": TransformersBackend(repo_id=metadata.repo_id)
+        - "ollama": OllamaBackend(model_tag=metadata.repo_id) — Ollama 태그를 repo_id 자리에.
         - "llama-cpp" (sub-plan 5): NotImplementedError.
 
         의존성 가드는 set_model 진입점에서 — 여기는 단순 factory.
@@ -258,6 +260,10 @@ class AgentRuntime(QObject):
             if not meta.repo_id:
                 raise ValueError(f"transformers 백엔드 모델인데 repo_id 누락: {model_id}")
             return TransformersBackend(repo_id=meta.repo_id, modalities=meta.modalities)
+        if meta.runtime == "ollama":
+            if not meta.repo_id:
+                raise ValueError(f"ollama 백엔드 모델인데 model tag (repo_id) 누락: {model_id}")
+            return OllamaBackend(model_tag=meta.repo_id)
         raise NotImplementedError(
             f"runtime '{meta.runtime}' (모델 {model_id}) — sub-plan 5 이후 지원"
         )
@@ -276,7 +282,7 @@ class AgentRuntime(QObject):
                 "allowed_tools": self._video_tools.tool_names(),
             }
             return
-        if meta.runtime in ("transformers", "llama-cpp"):
+        if meta.runtime in ("transformers", "llama-cpp", "ollama"):
             openai_tools, handlers = self._video_tools.openai_tools_and_handlers()
             self._tools_dict = {
                 "openai_tools": openai_tools,
@@ -392,6 +398,7 @@ class AgentRuntime(QObject):
                 deps_map = {
                     "transformers": "PyTorch + transformers + qwen_omni_utils",
                     "llama-cpp": "llama-cpp-python",
+                    "ollama": "httpx (Ollama 클라이언트)",
                 }
                 deps_name = deps_map.get(new_meta.runtime, new_meta.runtime)
                 self.message_received.emit(AgentMessage(
