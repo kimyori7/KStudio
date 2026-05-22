@@ -155,5 +155,8 @@ def test_runtime_creates_transformers_backend_with_modalities_for_qwen_omni(tmp_
     from screen_recorder.agent.runtime import AgentRuntime
     AgentRuntime(video_tools=vt, model="qwen25-omni-7b", cwd=tmp_path)
     assert captured.get("modalities") == frozenset({"text", "image", "audio", "video"})
-    # Omni 의 quantization="4-bit NF4 (bitsandbytes)" — 4-bit 켜짐.
-    assert captured.get("load_in_4bit") is True
+    # Omni 의 quantization="bf16 (원본)" — 사용자 환경 (RTX 5060 Ti 16GB, 가용 VRAM
+    # ~7.5GB) 에서 4-bit 가 dequantize buffer 로 오히려 spillover 유발 → bf16 으로 회귀.
+    # 다른 GPU 환경 (가용 14GB+) 사용자는 ModelMetadata.quantization 을 "4-bit ..." 로
+    # 바꾸면 load_in_4bit=True 활성.
+    assert captured.get("load_in_4bit") is False

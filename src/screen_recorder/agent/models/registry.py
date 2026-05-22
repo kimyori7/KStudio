@@ -66,21 +66,25 @@ _BUILTIN: list[ModelMetadata] = [
     ),
     ModelMetadata(
         id="qwen25-omni-7b",
-        display_name="Qwen2.5-Omni 7B (로컬, 멀티모달, 4-bit)",
+        display_name="Qwen2.5-Omni 7B (로컬, 멀티모달)",
         runtime="transformers",
         repo_id="Qwen/Qwen2.5-Omni-7B",
-        # 4-bit NF4 양자화 — VRAM ~14GB → ~7GB, 속도 1.3~1.7배. Blackwell (RTX 50 series,
-        # sm_120) 에서 flash-attn 미지원 → bitsandbytes 4-bit + sdpa attention 이 최선.
-        # AgentRuntime 가 이 문자열에 '4-bit' 들어있으면 load_in_4bit=True 로 backend 생성.
-        quantization="4-bit NF4 (bitsandbytes)",
+        # bf16 + device_map="auto" — accelerate 가 자연스럽게 talker (speech 전용,
+        # 안 씀) 를 CPU 로 보내 GPU ~7-8GB 만 사용. 2026-05-22 시도한 4-bit 양자화
+        # (llm_int8_enable_fp32_cpu_offload) 는 매 forward 마다 dequantize 임시 buffer 가
+        # GPU 에 올라가 spillover + KV cache 누적 → 사용자 환경 (가용 VRAM 7.5GB) 에서
+        # 메모리 폭증 + 단어 3중 반복 (spillover 로 generate 망가짐). 회귀로 되돌림.
+        # 4-bit 옵션 자체 (TransformersBackend.load_in_4bit) 는 코드에 남겨둠 — 다른
+        # GPU 환경 (가용 14GB+) 사용자가 quantization 필드 "4-bit" 로 바꾸면 사용 가능.
+        quantization="bf16 (원본)",
         modalities=frozenset({"text", "image", "audio", "video"}),
         supports_korean=True,
-        estimated_size_gb=22.4, estimated_vram_gb=7.0,
+        estimated_size_gb=22.4, estimated_vram_gb=14.0,
         context_window=32_768,
         supports_tools=True,
         description=(
-            "영상/오디오 native + 도구 호출 (prompt 시뮬레이션). 4-bit NF4 양자화로 "
-            "~7GB VRAM. bitsandbytes 필요 (이미 KStudio 의존성)."
+            "영상/오디오 native + 도구 호출 (prompt 시뮬레이션). bf16 원본 로드 — "
+            "accelerate 가 device_map=auto 로 talker 자동 CPU offload → 실 사용 ~7-8GB."
         ),
         tool_strategy="prompted",
     ),
