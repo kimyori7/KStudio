@@ -243,7 +243,7 @@ class TransformersBackend:
         4. 최종 텍스트 → emit + history 에 append.
         """
         try:
-            await self._ensure_model_loaded()
+            await self._ensure_model_loaded(emit_fn=emit_fn)
             emit_fn(AgentEvent(kind="started"))
 
             from .tool_adapter import build_tool_result_message
@@ -497,8 +497,11 @@ class TransformersBackend:
             llm_int8_enable_fp32_cpu_offload=True,
         )
 
-    async def _ensure_model_loaded(self) -> None:
+    async def _ensure_model_loaded(self, emit_fn: "EmitFn | None" = None) -> None:
         """첫 호출 시 transformers import + 모델 로드. 이후 호출은 캐싱.
+
+        emit_fn: 옵션 — 로드 시작/완료 시 시스템 메시지 emit. None 이면 silent.
+        사용자가 첫 메시지 후 30초+ 대기하는 동안 진행 상황 모르는 문제 해결.
 
         속도/메모리 최적화:
         - attn_implementation="sdpa" — PyTorch built-in scaled_dot_product_attention.
@@ -515,6 +518,13 @@ class TransformersBackend:
         """
         if self._model is not None and self._processor is not None:
             return
+        import time
+        _t0 = time.time()
+        if emit_fn is not None:
+            emit_fn(AgentMessage(
+                role="system",
+                text=f"🔄 {self._repo_id} 로딩 중... (수십 초 걸릴 수 있습니다)",
+            ))
         quant_config = self._build_quantization_config()
         # 4-bit 양자화 시엔 torch_dtype 명시 X (BitsAndBytesConfig 의 compute_dtype 가 우선).
         common_kwargs: dict[str, Any] = {
@@ -537,6 +547,11 @@ class TransformersBackend:
                 AutoTokenizer.from_pretrained,
                 self._repo_id,
             )
+            if emit_fn is not None:
+                emit_fn(AgentMessage(
+                    role="system",
+                    text=f"✅ 모델 준비 완료 ({time.time()-_t0:.1f}초)",
+                ))
             return
         # Omni 경로 — 멀티모달 (image/audio/video 포함).
         from transformers import (
@@ -559,3 +574,8 @@ class TransformersBackend:
             Qwen2_5OmniProcessor.from_pretrained,
             self._repo_id,
         )
+        if emit_fn is not None:
+            emit_fn(AgentMessage(
+                role="system",
+                text=f"✅ 모델 준비 완료 ({time.time()-_t0:.1f}초)",
+            ))
