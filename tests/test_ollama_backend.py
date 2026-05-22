@@ -506,3 +506,41 @@ async def test_emit_order_tool_use_before_tool_result_before_assistant():
     assert i_tool_result < i_final_assistant, (
         f"tool_result({i_tool_result}) 가 final assistant({i_final_assistant}) 보다 늦음"
     )
+
+
+@pytest.mark.asyncio
+async def test_cancel_emits_error_event_once_no_done_after(monkeypatch):
+    """회귀 (코드리뷰 Critical): cancel 시 error event 정확히 1회 + done 절대 없음.
+
+    이전 버그: _generate 가 빈 tuple 반환 → run_tool_loop 가 done 추가 emit → error+done 이중.
+    수정: _CancelledByUser 예외로 빠져나가서 done 안 발행.
+
+    시나리오: 1라운드 tool_call → handler 가 _cancelled 설정 → 2라운드 _generate 에서 raise.
+    """
+    be = OllamaBackend(model_tag="qwen3:8b")
+    await be.start_session(
+        system_prompt="", tools={
+            "openai_tools": [{"type": "function",
+                              "function": {"name": "x", "parameters": {}}}],
+            "tool_handlers": {"x": lambda args: setattr(be, "_cancelled", True) or {"ok": True}},
+            "tool_strategy": "official",
+        }, model="x",
+    )
+
+    # _run_one_generate mock — 1라운드 tool_call 반환. 2라운드는 호출 안 됨 (cancel raise).
+    call_count = {"n": 0}
+    async def _fake_generate(messages, emit_fn):
+        call_count["n"] += 1
+        return ("...", [{"function": {"name": "x", "arguments": {}}}])
+    be._run_one_generate = _fake_generate
+    be._client = MagicMock()
+    be._client.aclose = AsyncMock()
+
+    events: list = []
+    await be.send_message(ChatInput(text="x"), events.append)
+
+    error_events = [e for e in events if isinstance(e, AgentEvent) and e.kind == "error"]
+    done_events = [e for e in events if isinstance(e, AgentEvent) and e.kind == "done"]
+    assert len(error_events) == 1, f"error event 1회여야 하는데 {len(error_events)}회: {events}"
+    assert len(done_events) == 0, f"cancel 후 done 절대 없어야 하는데 {len(done_events)}개"
+    assert error_events[0].detail == "취소됨"

@@ -35,8 +35,9 @@ _log = logging.getLogger(__name__)
 # 메인 코루틴에서 단순 비교 (is _STREAM_SENTINEL) 로 종료 판정.
 _STREAM_SENTINEL = object()
 
-# tool use 최대 라운드 — 무한 루프 방지 안전망. 5 라운드면 일반 작업에 충분.
-_MAX_TOOL_ROUNDS = 5
+# tool use 최대 라운드 — backends/tool_loop.py 의 공통 상수 재사용 (multi-backend SSOT).
+# retry 분기 때문에 직접 helper 위임은 안 했지만 상수는 공유.
+from .tool_loop import DEFAULT_MAX_TOOL_ROUNDS as _MAX_TOOL_ROUNDS  # noqa: E402
 
 
 def _next_or_sentinel(it):

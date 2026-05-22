@@ -49,6 +49,14 @@ _CONN_ERROR_HINT = (
 # 그대로 받음. 호출자(runtime) 가 system_prompt 전달.
 
 
+class _CancelledByUser(Exception):
+    """send_message 안에서 cancel 신호 — except 가 한 번만 error emit 하도록 전용 예외.
+
+    run_tool_loop 가 generator 반환값 (text, calls) 만 보고 동작하므로 cancel 을 빈
+    tuple 로 표시하면 done 도 추가 emit 되는 회귀 발생. 예외로 빠져나가는 패턴이 안전.
+    """
+
+
 class OllamaBackend:
     """Ollama HTTP API 백엔드. /api/chat 스트리밍 + 네이티브 tool calling."""
 
@@ -161,10 +169,14 @@ class OllamaBackend:
             messages = self._build_messages(msg)
 
             async def _generate() -> tuple[str, list[dict]]:
-                """한 라운드 generate — cancel 체크 + history append."""
+                """한 라운드 generate — cancel 체크 + history append.
+
+                cancel 시 _CancelledByUser 예외로 빠져나가 send_message except 가 한 번만
+                error emit. 빈 tuple 반환하면 run_tool_loop 가 done 까지 emit 해서
+                error+done 이중 발행되는 회귀 (코드리뷰 지적) 회피.
+                """
                 if self._cancelled:
-                    emit_fn(AgentEvent(kind="error", detail="취소됨"))
-                    return "", []
+                    raise _CancelledByUser()
                 full_text, tool_calls = await self._run_one_generate(messages, emit_fn)
                 # 어시스턴트 turn 누적 — tool_calls 포함 (다음 라운드 모델이 자기 호출 기억).
                 assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_text}
@@ -188,6 +200,9 @@ class OllamaBackend:
                     self._history.append(tool_msg)
 
             await run_tool_loop(_generate, _on_calls, emit_fn)
+        except _CancelledByUser:
+            # cancel 은 정상 종료 경로 — error event 한 번만 emit.
+            emit_fn(AgentEvent(kind="error", detail="취소됨"))
         except Exception as exc:
             # ConnectionError / ConnectError 는 친절한 안내 + 원인 같이.
             text = self._friendly_error_text(exc)
