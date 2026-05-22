@@ -32,7 +32,7 @@ def mcp_to_openai_tools(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]
     out: list[dict[str, Any]] = []
     for t in mcp_tools:
         name = mcp_to_openai_name(t.get("name", ""))
-        params = _sanitize_json_schema(t.get("input_schema") or {
+        params = sanitize_json_schema(t.get("input_schema") or {
             "type": "object", "properties": {}, "required": [],
         })
         out.append({
@@ -54,19 +54,27 @@ _PY_TYPE_TO_JSON_SCHEMA: dict[type, str] = {
 }
 
 
-def _sanitize_json_schema(obj: Any) -> Any:
+def sanitize_json_schema(obj: Any) -> Any:
     """JSON 직렬화 불가능한 값 (Python type 객체) 을 JSON Schema 표준 string 으로 변환.
+
+    Public API — Transformers/Ollama backend 가 직접 호출 가능.
 
     SdkMcpTool 의 input_schema 가 함수 type hint 를 그대로 보유 시 발생 — 예:
     {"properties": {"start_ms": int}} → {"properties": {"start_ms": "integer"}}.
 
     재귀로 dict/list 내부까지 처리. None / str / int (instance) / float / bool 같은
     JSON primitive 는 그대로 통과.
+
+    Args:
+        obj: 정규화할 값. dict / list / type / primitive 모두 처리.
+
+    Returns:
+        JSON 직렬화 가능한 동등 값.
     """
     if isinstance(obj, dict):
-        return {k: _sanitize_json_schema(v) for k, v in obj.items()}
+        return {k: sanitize_json_schema(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_sanitize_json_schema(v) for v in obj]
+        return [sanitize_json_schema(v) for v in obj]
     if isinstance(obj, type):
         # `int`, `str`, ... → "integer", "string". 매핑 없는 클래스는 클래스 이름.
         return _PY_TYPE_TO_JSON_SCHEMA.get(obj, obj.__name__)
