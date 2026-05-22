@@ -46,6 +46,7 @@ from .bubbles import (
     WhisperDownloadCard as _WhisperDownloadCard,
 )
 from .chat_input_edit import ChatInputEdit as _ChatInputEdit
+from .message_list import MessageListWidget as _MessageListWidget
 
 
 # Qwen2.5-Omni 7B 실행에 필요한 PyTorch + 의존성 패키지.
@@ -244,19 +245,14 @@ class ChatPanel(QDockWidget):
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(6)
 
-        # ---- 메시지 리스트 ----
-        # 채팅 표준: stretch 를 *맨 위*에 둬서 메시지가 아래쪽 정렬 (WhatsApp / Slack 스타일).
-        # 콘텐츠가 viewport 보다 짧을 때 빈 공간이 *위*에 생기고, 콘텐츠가 늘어나면 아래에서
-        # 차오르는 자연스러운 흐름. 이전 (stretch 아래) 은 콘텐츠 위 정렬이라 viewport 아래에
-        # 빈 공간이 쌓여 보이는 문제 — 사용자가 "빈곳 늘어남" 으로 인지.
-        self._messages_host = QWidget()
-        self._messages_lay = QVBoxLayout(self._messages_host)
-        # 오른쪽 8px 마진 — scrollbar 가 등장해도 콘텐츠가 scrollbar 와 겹치지 않게.
-        # 사용자 보고 (2026-05-13): "스크롤바가 채팅 일부 가린다".
-        self._messages_lay.setContentsMargins(0, 0, 8, 0)
-        self._messages_lay.setSpacing(4)  # 기본 spacing 더 좁게 (log-line 들 많음).
-        self._messages_lay.addStretch(1)
-        # stretch index = 0 (맨 위). _insert_bubble 은 stretch *뒤에* 삽입.
+        # ---- 메시지 리스트 (MessageListWidget) ----
+        # Task 8: message bubble container 를 _MessageListWidget 으로 분리.
+        # ChatPanel 은 _messages_host / _messages_lay 별칭을 유지 — 기존 테스트 호환.
+        # MessageListWidget 이 stretch/layout/bubble 관리 + streaming 누적 + 직렬화 API.
+        self._message_list = _MessageListWidget()
+        # 기존 코드·테스트가 _messages_host / _messages_lay 로 직접 접근하는 별칭 유지.
+        self._messages_host: QWidget = self._message_list        # type: ignore[assignment]
+        self._messages_lay = self._message_list._layout
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         # 가로 스크롤 절대 금지 — markdown 긴 줄이 wrap 되지 않고 viewport 넘어가던 사용자 보고
@@ -441,16 +437,16 @@ class ChatPanel(QDockWidget):
 
         self.setWidget(body)
 
-        # 마지막으로 추가된 assistant / thinking 말풍선 (스트리밍 chunk 누적 대상).
-        # 새 사용자 입력 또는 다른 role 메시지(tool_use 등) 도착 시 None 으로 reset.
-        # SDK 의 include_partial_messages 가 thinking 도 partial 로 보내므로 누적 필수 —
-        # 누적 안 하면 partial 마다 새 박스가 추가돼서 화면이 점프하며 빈 박스가 쌓임.
-        self._current_assistant_bubble: Optional[_MessageBubble] = None
-        self._current_thinking_bubble: Optional[_MessageBubble] = None
-        # 최신 active proposals card — 외부에서 mark_resolved 호출 가능.
-        self._active_proposals_card: Optional[_ProposalsPreviewCard] = None
-        # 최신 active whisper download card.
-        self._active_whisper_card: Optional[_WhisperDownloadCard] = None
+        # streaming 상태 / active card 는 _message_list 안으로 이동 (Task 8).
+        # ChatPanel 은 _message_list 를 통해 접근. append_event 의 reset 도 위임.
+
+        # MessageListWidget signal 연결.
+        # proposals_card_added → ChatPanel 이 신호 받아 apply/cancel signal 연결.
+        self._message_list.proposals_card_added.connect(self._on_proposals_card_added)
+        # whisper_card_added → download/cancel signal 연결.
+        self._message_list.whisper_card_added.connect(self._on_whisper_card_added)
+        # messages_cleared → history save 예약 (clear 직후 빈 상태 저장).
+        self._message_list.messages_cleared.connect(self._schedule_history_save)
 
         # 대화 영속화 — set_history_path 로 활성화. 메시지 추가마다 디바운스 저장.
         self._history_path: Optional[Path] = None
@@ -481,72 +477,22 @@ class ChatPanel(QDockWidget):
     def append_message(self, msg: AgentMessage) -> None:
         """AgentRuntime.message_received 와 직접 연결 가능.
 
-        thinking / tool_use / tool_result 는 새 말풍선으로. assistant 는 연속 청크
-        면 이전 말풍선에 누적. tool_result 의 image_bytes 있으면 인라인 표시.
-        proposals_preview 는 interactive 카드 (적용/취소 버튼) 로 표시.
+        표시 정책 (추론 toggle) 은 여기서 처리 — _MessageListWidget 은 policy 없음.
+        실제 bubble 생성/누적은 _message_list.append_agent_message 로 위임.
         """
         # 추론 표시 OFF 면 thinking 뿐 아니라 도구 호출/결과도 숨김 — 사용자/Claude 대화만 보기.
         # tool_use/tool_result 는 Claude 의 *내부 작업* 이라 일반 대화 흐름에서 잡음으로 인식.
         if (msg.role in ("thinking", "tool_use", "tool_result")
                 and not self._thinking_check.isChecked()):
             return
-        if msg.role == "proposals_preview" and msg.proposals is not None:
-            card = _ProposalsPreviewCard(msg.proposals)
-            card.apply_clicked.connect(self.proposals_apply_confirmed)
-            card.cancel_clicked.connect(self.proposals_apply_canceled)
-            self._insert_bubble(card)
-            self._active_proposals_card = card
-            self._current_assistant_bubble = None
-            self._current_thinking_bubble = None
-            self._scroll_to_bottom()
-            return
-        if msg.role == "whisper_download_request":
-            # text 에 "model_size=base" 형식으로 Claude 가 제안한 크기.
-            meta = self._parse_whisper_meta(msg.text)
-            card = _WhisperDownloadCard(meta["model_size"])
-            card.download_clicked.connect(self.whisper_download_confirmed)
-            card.cancel_clicked.connect(self.whisper_download_canceled)
-            self._insert_bubble(card)
-            self._active_whisper_card = card
-            self._current_assistant_bubble = None
-            self._current_thinking_bubble = None
-            self._scroll_to_bottom()
-            return
-        # 같은 role 연속 streaming chunk 면 마지막 bubble 에 누적.
-        if (msg.role == "assistant"
-                and self._current_assistant_bubble is not None
-                and not msg.image_bytes):
-            self._current_assistant_bubble.append_text(msg.text)
-        elif (msg.role == "thinking"
-                and self._current_thinking_bubble is not None):
-            self._current_thinking_bubble.append_text(msg.text)
-        else:
-            bubble = _MessageBubble(
-                msg.role, msg.text,
-                image_bytes=msg.image_bytes, image_mime=msg.image_mime,
-            )
-            self._insert_bubble(bubble)
-            if msg.role == "assistant":
-                self._current_assistant_bubble = bubble
-                self._current_thinking_bubble = None
-            elif msg.role == "thinking":
-                self._current_thinking_bubble = bubble
-                self._current_assistant_bubble = None
-            else:
-                # tool_use / tool_result / system / error 등 — streaming 누적 대상 아님.
-                self._current_assistant_bubble = None
-                self._current_thinking_bubble = None
+        # 위임 — bubble 생성/누적/카드 생성은 _message_list 에서 처리.
+        self._message_list.append_agent_message(msg)
         self._scroll_to_bottom()
         self._schedule_history_save()
 
     def mark_proposals_resolved(self, outcome: str) -> None:
-        """외부에서 적용/취소 처리 완료 후 카드 상태 갱신.
-
-        outcome: "applied" / "canceled".
-        """
-        if self._active_proposals_card is not None:
-            self._active_proposals_card.mark_resolved(outcome)
-            self._active_proposals_card = None
+        """외부에서 적용/취소 처리 완료 후 카드 상태 갱신. outcome: 'applied'/'canceled'."""
+        self._message_list.mark_proposals_resolved(outcome)
 
     @Slot(str, str)
     def mark_whisper_download_resolved(self, outcome: str, message: str = "") -> None:
@@ -554,20 +500,25 @@ class ChatPanel(QDockWidget):
 
         @Slot 데코레이터로 QMetaObject.invokeMethod 에서 호출 가능하게 등록.
         """
-        if self._active_whisper_card is not None:
-            self._active_whisper_card.mark_resolved(outcome, message)
-            self._active_whisper_card = None
+        self._message_list.mark_whisper_download_resolved(outcome, message)
 
     @staticmethod
     def _parse_whisper_meta(text: str) -> dict:
-        """text 'model_size=base' → {model_size}."""
-        out = {"model_size": "base"}
-        for part in (text or "").split():
-            if "=" in part:
-                k, v = part.split("=", 1)
-                if k == "model_size":
-                    out["model_size"] = v
-        return out
+        """text 'model_size=base' → {model_size}. (backward-compat — 외부 코드가 호출할 수 있음)"""
+        from .message_list import _parse_whisper_meta as _pmeta
+        return _pmeta(text)
+
+    # ---- _message_list signal 핸들러 ----
+
+    def _on_proposals_card_added(self, card: "_ProposalsPreviewCard") -> None:
+        """MessageListWidget 이 ProposalsPreviewCard 생성 후 emit — signal 연결."""
+        card.apply_clicked.connect(self.proposals_apply_confirmed)
+        card.cancel_clicked.connect(self.proposals_apply_canceled)
+
+    def _on_whisper_card_added(self, card: "_WhisperDownloadCard") -> None:
+        """MessageListWidget 이 WhisperDownloadCard 생성 후 emit — signal 연결."""
+        card.download_clicked.connect(self.whisper_download_confirmed)
+        card.cancel_clicked.connect(self.whisper_download_canceled)
 
     def append_event(self, evt: AgentEvent) -> None:
         """AgentRuntime.event_received 와 직접 연결 가능. 상태 라벨 + 보내기/취소 전환."""
@@ -591,33 +542,25 @@ class ChatPanel(QDockWidget):
             self._status.setText("완료")
             self._send_btn.setVisible(True)
             self._cancel_btn.setVisible(False)
-            self._current_assistant_bubble = None
-            self._current_thinking_bubble = None
+            # streaming bubble 참조 초기화 — 다음 턴의 chunk 가 별도 bubble 로 시작.
+            self._message_list.reset_streaming_state()
         elif evt.kind == "error":
             err_bubble = _MessageBubble("error", f"⚠ 오류: {evt.detail}")
             self._insert_bubble(err_bubble)
             self._status.setVisible(False)
             self._send_btn.setVisible(True)
             self._cancel_btn.setVisible(False)
-            self._current_assistant_bubble = None
-            self._current_thinking_bubble = None
+            # streaming bubble 참조 초기화.
+            self._message_list.reset_streaming_state()
             self._scroll_to_bottom()
 
     def message_count(self) -> int:
-        """테스트용 — addStretch 1개 제외한 실제 말풍선 개수."""
-        return max(0, self._messages_lay.count() - 1)
+        """테스트용 — addStretch 1개 제외한 실제 말풍선 개수. _message_list 에 위임."""
+        return self._message_list.message_count()
 
     def last_bubble_role(self) -> Optional[str]:
-        """테스트용 — 가장 최근 말풍선의 role.
-
-        stretch 는 index 0, 말풍선은 그 뒤에 차례로 append → 마지막 = count()-1.
-        """
-        idx = self._messages_lay.count() - 1
-        if idx <= 0:
-            return None
-        item = self._messages_lay.itemAt(idx)
-        w = item.widget() if item else None
-        return w.role() if isinstance(w, _MessageBubble) else None
+        """테스트용 — 가장 최근 말풍선의 role. _message_list 에 위임."""
+        return self._message_list.last_bubble_role()
 
     def current_model_id(self) -> str:
         return self._model_combo.currentData() or DEFAULT_MODEL_ID
@@ -652,13 +595,8 @@ class ChatPanel(QDockWidget):
         if self._history_path is None:
             return
         try:
-            messages: list[tuple[str, str]] = []
-            # stretch 는 index 0, 말풍선은 그 뒤부터 — 순서대로 (oldest first).
-            for i in range(1, self._messages_lay.count()):
-                item = self._messages_lay.itemAt(i)
-                w = item.widget() if item else None
-                if isinstance(w, _MessageBubble) and w.role() in PERSISTABLE_ROLES:
-                    messages.append((w.role(), w._raw_text))
+            # _message_list.persistable_messages() — bubble 순회 + PERSISTABLE_ROLES 필터.
+            messages = self._message_list.persistable_messages()
             save_history(self._history_path, messages)
         except Exception:
             import logging
@@ -1010,8 +948,8 @@ class ChatPanel(QDockWidget):
                        len(text), len(self._pending_images),
                        (text[:80] + "…") if len(text) > 80 else text)
         self._input.clear()
-        self._current_assistant_bubble = None
-        self._current_thinking_bubble = None
+        # 사용자가 새 메시지를 보내면 streaming 상태 초기화 — 다음 assistant chunk 가 새 bubble.
+        self._message_list.reset_streaming_state()
         # 사용자가 새 메시지 보낼 때는 자동 스크롤 강제 활성 — 답이 보여야 하니까.
         self._auto_scroll = True
         # 슬래시 명령 — Claude 호출 없이 로컬 처리.
@@ -1113,30 +1051,16 @@ class ChatPanel(QDockWidget):
         self._refresh_attach_label()
 
     def _clear_messages(self) -> None:
-        """말풍선 전부 제거 — stretch (index 0) 는 유지.
+        """말풍선 전부 제거 — _message_list.clear_messages() 에 위임.
 
-        stretch 뒤의 항목들만 takeAt(1) 로 반복 제거. stretch 까지 제거하면 다음
-        insert 시 아래쪽 정렬이 깨짐.
+        clear_messages 내에서 messages_cleared signal 이 emit 되고,
+        그 signal 이 _schedule_history_save 에 연결되어 영속화도 즉시 반영됨.
         """
-        while self._messages_lay.count() > 1:
-            item = self._messages_lay.takeAt(1)   # index 1 = stretch 바로 뒤.
-            if item is None:
-                break
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
-        self._active_proposals_card = None
-        self._active_whisper_card = None
-        self._current_assistant_bubble = None
-        self._current_thinking_bubble = None
-        # 영속화도 즉시 반영.
-        self._schedule_history_save()
+        self._message_list.clear_messages()
 
-    def _insert_bubble(self, bubble: _MessageBubble) -> None:
-        # stretch 가 *맨 위* (index 0) 에 있으니, 그 *뒤*에 차례로 append.
-        # 결과: stretch / oldest_bubble / ... / newest_bubble — 콘텐츠는 아래로 쌓임.
-        self._messages_lay.addWidget(bubble)
+    def _insert_bubble(self, bubble) -> None:
+        """_message_list._insert_bubble 에 위임 — backward-compat (append_event/plan 등)."""
+        self._message_list._insert_bubble(bubble)
 
     @Slot(str, str, str)
     def _on_plan_submitted(self, plan_id: str, summary: str, markdown: str) -> None:
