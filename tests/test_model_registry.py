@@ -73,23 +73,21 @@ def test_check_runtime_available_transformers_imports(monkeypatch):
 
 
 def test_check_runtime_available_transformers_missing_returns_false(monkeypatch):
-    """transformers / torch / qwen_omni_utils 중 하나라도 없으면 False."""
+    """RUNTIME_DEPS 안 모듈이 disk 에 없으면 False.
+
+    구현 변경 (2026-05-22): find_spec 기반이라 builtins.__import__ patch 우회 가능.
+    대신 _RUNTIME_DEPS 자체에 존재 안 하는 모듈 이름 inject → find_spec 이 None 반환.
+    """
     import sys
     from screen_recorder.agent.models import check_runtime_available
+    import screen_recorder.agent.models.registry as reg_mod
 
-    monkeypatch.setitem(sys.modules, "transformers", object())
-    monkeypatch.delitem(sys.modules, "torch", raising=False)
-    monkeypatch.delitem(sys.modules, "qwen_omni_utils", raising=False)
-
-    import builtins
-    original_import = builtins.__import__
-
-    def _fake_import(name, *args, **kwargs):
-        if name in ("torch", "qwen_omni_utils"):
-            raise ImportError(f"mock — {name} not available")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    # 모르는 모듈 이름으로 _RUNTIME_DEPS 교체 + sys.modules cache 도 비움.
+    monkeypatch.setitem(
+        reg_mod._RUNTIME_DEPS, "transformers",
+        ("definitely_not_installed_module_xyz",),
+    )
+    monkeypatch.delitem(sys.modules, "definitely_not_installed_module_xyz", raising=False)
     assert check_runtime_available("transformers") is False
 
 

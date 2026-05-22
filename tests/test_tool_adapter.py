@@ -215,3 +215,74 @@ def test_build_tool_result_message_handles_string_result():
     from screen_recorder.agent.backends.tool_adapter import build_tool_result_message
     msg = build_tool_result_message(tool_use_id="tu_0", result="some plain string")
     assert "some plain string" in msg["content"]
+
+
+# ============================================================
+# 2026-05-22 — SdkMcpTool 의 input_schema 가 Python type 객체 (int, str 등)
+# 보유 시 JSON 직렬화 깨짐 — _sanitize_json_schema 가 표준 JSON Schema string 으로 변환.
+# 회귀 원인: tool_adapter.py:119 의 json.dumps 가 'start_ms: int' 만나 type 객체 직렬화 실패.
+# ============================================================
+def test_mcp_to_openai_tools_sanitizes_python_type_values():
+    """input_schema 안 Python type 객체 → JSON Schema string ('integer' / 'string').
+
+    SdkMcpTool 이 함수 시그니처의 type hint (예: start_ms: int) 를 schema 에 type 객체로
+    그대로 보유 시 json.dumps 가 'Object of type type is not JSON serializable' 던짐.
+    """
+    import json
+    from screen_recorder.agent.backends.tool_adapter import mcp_to_openai_tools
+
+    mcp_tools = [{
+        "name": "mcp__kstudio_video__get_frame_at",
+        "description": "프레임 추출",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start_ms": int,      # ← Python type 객체.
+                "label": str,
+                "ratio": float,
+                "loop": bool,
+            },
+            "required": ["start_ms"],
+        },
+    }]
+    out = mcp_to_openai_tools(mcp_tools)
+    params = out[0]["function"]["parameters"]
+    assert params["properties"]["start_ms"] == "integer"
+    assert params["properties"]["label"] == "string"
+    assert params["properties"]["ratio"] == "number"
+    assert params["properties"]["loop"] == "boolean"
+    # 결과 schema 는 반드시 json.dumps 가능해야 — 회귀 보호 핵심.
+    json.dumps(params)
+
+
+def test_mcp_to_openai_tools_unknown_type_falls_back_to_name():
+    """매핑 없는 클래스는 클래스 이름 (예: '_FakeClass') 으로 fallback — 깨지지 않게."""
+    import json
+    from screen_recorder.agent.backends.tool_adapter import mcp_to_openai_tools
+
+    class _FakeClass: pass
+
+    out = mcp_to_openai_tools([{
+        "name": "x", "description": "y",
+        "input_schema": {"properties": {"weird": _FakeClass}},
+    }])
+    assert out[0]["function"]["parameters"]["properties"]["weird"] == "_FakeClass"
+    json.dumps(out[0]["function"]["parameters"])
+
+
+def test_mcp_to_openai_tools_keeps_jsonable_schema_unchanged():
+    """이미 JSON 호환 schema 는 그대로 통과 (회귀 보호 — 기존 동작 유지)."""
+    from screen_recorder.agent.backends.tool_adapter import mcp_to_openai_tools
+
+    mcp_tools = [{
+        "name": "x", "description": "y",
+        "input_schema": {
+            "type": "object",
+            "properties": {"x": {"type": "integer", "description": "ms"}},
+            "required": ["x"],
+        },
+    }]
+    out = mcp_to_openai_tools(mcp_tools)
+    assert out[0]["function"]["parameters"]["properties"]["x"] == {
+        "type": "integer", "description": "ms",
+    }

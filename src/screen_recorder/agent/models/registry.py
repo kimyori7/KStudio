@@ -5,7 +5,9 @@ check_runtime_available(runtime) 도 여기 — 의존성 import 시도.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
+import sys
 from typing import Optional
 
 from .metadata import ModelMetadata
@@ -128,20 +130,35 @@ class ModelRegistry:
 
 
 def check_runtime_available(runtime: str) -> bool:
-    """runtime 의 의존성 모듈이 모두 import 가능한지 — backend 활성화 가드용.
+    """runtime 의 의존성 모듈이 모두 설치되어 있는지 — backend 활성화 가드용.
 
     return: True 면 backend 인스턴스화 가능. False 면 ChatPanel 이 가드 시스템
     메시지 emit + 콤보 fallback.
 
     "llama-cpp" 등 미구현 runtime 은 False.
+
+    구현 (2026-05-22 변경): `importlib.util.find_spec` 사용 — disk 의 .dist-info /
+    __init__.py 위치만 확인. 실제 import 안 함 → torch 같이 CUDA driver init 으로
+    수십 초 걸리는 무거운 모듈도 ms 단위. KStudio 시작 시 ChatPanel 의 모델 콤보가
+    각 모델 메타에 대해 호출하므로 가벼움이 중요. 이전엔 `importlib.import_module`
+    실제 호출 → 첫 부팅 시 transformers + torch + qwen_omni_utils 까지 강제 import
+    → 시작 지연 10~30초 (사용자 보고).
     """
     deps = _RUNTIME_DEPS.get(runtime)
     if not deps:
         return False
     for mod_name in deps:
+        # 이미 import 됐거나 테스트가 sys.modules 에 mock inject 한 경우 — 통과.
+        # find_spec 은 sys.modules 에 있는 모듈의 __spec__ attribute 를 참조 →
+        # mock object 면 ValueError. 그 가드 위해 sys.modules 먼저 확인.
+        if mod_name in sys.modules:
+            continue
         try:
-            importlib.import_module(mod_name)
-        except ImportError:
+            spec = importlib.util.find_spec(mod_name)
+        except (ImportError, ValueError):
+            _log.debug("check_runtime_available(%s): %s find_spec 실패", runtime, mod_name)
+            return False
+        if spec is None:
             _log.debug("check_runtime_available(%s): missing %s", runtime, mod_name)
             return False
     return True
