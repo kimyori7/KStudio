@@ -64,7 +64,7 @@ def test_runtime_transformers_tools_dict_for_omni_uses_prompted_strategy(tmp_pat
 
 def test_runtime_creates_ollama_backend_for_qwen3(tmp_path, monkeypatch):
     """qwen3-8b-ollama → OllamaBackend(model_tag='qwen3:8b') + tool_strategy='official'."""
-    import screen_recorder.agent.runtime as runtime_mod
+    import screen_recorder.agent.backends.factory as factory_mod
     from screen_recorder.agent.backends.ollama_backend import OllamaBackend
 
     captured: dict = {}
@@ -75,7 +75,7 @@ def test_runtime_creates_ollama_backend_for_qwen3(tmp_path, monkeypatch):
             captured["base_url"] = base_url
             super().__init__(model_tag, base_url=base_url, think=think)
 
-    monkeypatch.setattr(runtime_mod, "OllamaBackend", _Spy)
+    monkeypatch.setattr(factory_mod, "OllamaBackend", _Spy)
 
     vt = MagicMock()
     vt.plan_gate = MagicMock(return_value=MagicMock())
@@ -100,9 +100,9 @@ def test_runtime_creates_ollama_backend_for_qwen3(tmp_path, monkeypatch):
 def test_runtime_creates_transformers_backend_with_modalities_for_qwen_instruct(tmp_path, monkeypatch):
     """qwen25-7b-instruct → TransformersBackend(modalities=frozenset({'text'})) 전달 확인.
 
-    runtime.py 는 TransformersBackend 를 직접 import 하므로 runtime 모듈 내 이름을 patch.
+    factory.py 가 실제 사용 위치이므로 factory 모듈 내 이름을 patch.
     """
-    import screen_recorder.agent.runtime as runtime_mod
+    import screen_recorder.agent.backends.factory as factory_mod
     from screen_recorder.agent.backends.transformers_backend import TransformersBackend
 
     captured: dict = {}
@@ -114,7 +114,7 @@ def test_runtime_creates_transformers_backend_with_modalities_for_qwen_instruct(
             captured["load_in_4bit"] = load_in_4bit
             super().__init__(repo_id, modalities, load_in_4bit=load_in_4bit)
 
-    monkeypatch.setattr(runtime_mod, "TransformersBackend", _Spy)
+    monkeypatch.setattr(factory_mod, "TransformersBackend", _Spy)
 
     vt = MagicMock()
     vt.plan_gate = MagicMock(return_value=MagicMock())
@@ -132,7 +132,7 @@ def test_runtime_creates_transformers_backend_with_modalities_for_qwen_instruct(
 
 def test_runtime_creates_transformers_backend_with_modalities_for_qwen_omni(tmp_path, monkeypatch):
     """qwen25-omni-7b → TransformersBackend(modalities=full, load_in_4bit=True)."""
-    import screen_recorder.agent.runtime as runtime_mod
+    import screen_recorder.agent.backends.factory as factory_mod
     from screen_recorder.agent.backends.transformers_backend import TransformersBackend
 
     captured: dict = {}
@@ -144,7 +144,7 @@ def test_runtime_creates_transformers_backend_with_modalities_for_qwen_omni(tmp_
             captured["load_in_4bit"] = load_in_4bit
             super().__init__(repo_id, modalities, load_in_4bit=load_in_4bit)
 
-    monkeypatch.setattr(runtime_mod, "TransformersBackend", _Spy)
+    monkeypatch.setattr(factory_mod, "TransformersBackend", _Spy)
 
     vt = MagicMock()
     vt.plan_gate = MagicMock(return_value=MagicMock())

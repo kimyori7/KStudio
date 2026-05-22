@@ -30,10 +30,9 @@ from .tools_video import VideoTools, VideoSessionAdapter
 from .proposals import EffectProposal, ProposalQueue
 from .plan_gate import PlanGate
 from .backends.claude_backend import ClaudeBackend
-from .backends.ollama_backend import OllamaBackend
-from .backends.transformers_backend import TransformersBackend
 # AgentMessage / AgentEvent 는 backends/base.py 로 이전 — 외부 호환 위해 re-export.
 from .backends import AgentEvent, AgentMessage, ChatInput
+from .backends.factory import create_backend, build_backend_tools, runtime_dependency_label
 from .models import ModelRegistry, check_runtime_available
 
 
@@ -235,68 +234,27 @@ class AgentRuntime(QObject):
         self._registry = ModelRegistry()
         # backend 는 model_id 에 따라 생성. 의존성 가드는 set_model 진입점에서만
         # (init 시점에 가드하면 사용자가 claude 로 시작했어도 qwen 의존성 체크해야 — 무관).
-        self._backend = self._create_backend(self._model)
+        meta = self._registry.get(self._model)
+        if meta is None:
+            raise ValueError(f"unknown model: {self._model}")
+        self._backend = create_backend(meta, cwd=self._cwd)
         self._tools_dict: dict[str, Any] = {}
         self._build_tools_dict()
         self._session_started: bool = False
 
-    # ---- backend factory ----
-    def _create_backend(self, model_id: str):
-        """model_id → ChatBackend 인스턴스. ModelMetadata.runtime 으로 분기.
-
-        - "claude": ClaudeBackend(cwd=...)
-        - "transformers": TransformersBackend(repo_id=metadata.repo_id)
-        - "ollama": OllamaBackend(model_tag=metadata.repo_id) — Ollama 태그를 repo_id 자리에.
-        - "llama-cpp" (sub-plan 5): NotImplementedError.
-
-        의존성 가드는 set_model 진입점에서 — 여기는 단순 factory.
-        """
-        meta = self._registry.get(model_id)
-        if meta is None:
-            raise ValueError(f"unknown model: {model_id}")
-        if meta.runtime == "claude":
-            return ClaudeBackend(cwd=self._cwd)
-        if meta.runtime == "transformers":
-            if not meta.repo_id:
-                raise ValueError(f"transformers 백엔드 모델인데 repo_id 누락: {model_id}")
-            # metadata.quantization 에 '4-bit' 들어 있으면 bitsandbytes NF4 로드.
-            # 별도 ModelMetadata bool field 두지 않고 표시용 문자열을 single source of truth 로.
-            load_in_4bit = "4-bit" in (meta.quantization or "")
-            return TransformersBackend(
-                repo_id=meta.repo_id, modalities=meta.modalities,
-                load_in_4bit=load_in_4bit,
-            )
-        if meta.runtime == "ollama":
-            if not meta.repo_id:
-                raise ValueError(f"ollama 백엔드 모델인데 model tag (repo_id) 누락: {model_id}")
-            return OllamaBackend(model_tag=meta.repo_id)
-        raise NotImplementedError(
-            f"runtime '{meta.runtime}' (모델 {model_id}) — sub-plan 5 이후 지원"
-        )
-
     def _build_tools_dict(self) -> None:
         """현 모델 metadata.runtime 보고 backend 별 tools dict 빌드.
 
-        - claude: {"mcp_server", "allowed_tools"} — 기존.
-        - transformers: {"openai_tools", "tool_handlers", "tool_strategy"} — sub-plan 6.
-        - llama-cpp (sub-plan 5): transformers 와 동일 shape 재사용.
+        실제 조립 로직은 backends/factory.build_backend_tools 로 위임.
         """
         meta = self._registry.get(self._model)
-        if meta is None or meta.runtime == "claude":
+        if meta is None:
             self._tools_dict = {
                 "mcp_server": self._video_tools.mcp_server(),
                 "allowed_tools": self._video_tools.tool_names(),
             }
             return
-        if meta.runtime in ("transformers", "llama-cpp", "ollama"):
-            openai_tools, handlers = self._video_tools.openai_tools_and_handlers()
-            self._tools_dict = {
-                "openai_tools": openai_tools,
-                "tool_handlers": handlers,
-                "tool_strategy": meta.tool_strategy,
-            }
-            return
-        self._tools_dict = {}
+        self._tools_dict = build_backend_tools(meta, self._video_tools)
 
     # ---- Phase B 콜백 진입점 ----
     def emit_apply_request(
@@ -401,12 +359,7 @@ class AgentRuntime(QObject):
         # 다른 runtime 전환 시 의존성 가드.
         if old_meta and old_meta.runtime != new_meta.runtime:
             if not check_runtime_available(new_meta.runtime):
-                deps_map = {
-                    "transformers": "PyTorch + transformers + qwen_omni_utils",
-                    "llama-cpp": "llama-cpp-python",
-                    "ollama": "httpx (Ollama 클라이언트)",
-                }
-                deps_name = deps_map.get(new_meta.runtime, new_meta.runtime)
+                deps_name = runtime_dependency_label(new_meta.runtime)
                 self.message_received.emit(AgentMessage(
                     role="system",
                     text=(
@@ -426,8 +379,8 @@ class AgentRuntime(QObject):
         if loop is not None:
             asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
         if not same_runtime:
-            # runtime 자체 변경 → 새 backend 생성.
-            self._backend = self._create_backend(model_id)
+            # runtime 자체 변경 → 새 backend 생성. factory 가 ModelMetadata 로 분기.
+            self._backend = create_backend(new_meta, cwd=self._cwd)
         # 모델(또는 runtime) 변경 시 tools_dict 재빌드 — tool_strategy 등 meta 변경 반영.
         self._build_tools_dict()
 
