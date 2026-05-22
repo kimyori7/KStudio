@@ -5,5 +5,6 @@
 from .message_bubble import MessageBubble as _MessageBubble
 from .whisper_download_card import WhisperDownloadCard as _WhisperDownloadCard
 from .proposals_preview_card import ProposalsPreviewCard as _ProposalsPreviewCard
+from .plan_card import PlanCard as _PlanCard
 
-__all__ = ["_MessageBubble", "_WhisperDownloadCard", "_ProposalsPreviewCard"]
+__all__ = ["_MessageBubble", "_WhisperDownloadCard", "_ProposalsPreviewCard", "_PlanCard"]
