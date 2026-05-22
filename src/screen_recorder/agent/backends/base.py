@@ -61,9 +61,11 @@ class ChatBackend(Protocol):
     1. start_session(system_prompt, tools, model) — 백엔드 초기화 + 첫 client 연결 준비.
     2. send_message(msg, emit_fn) async — 사용자 메시지 처리. 응답 동안 emit_fn 으로
        AgentMessage/AgentEvent 전달. 끝나면 "done" event emit.
-    3. send_tool_result(tool_use_id, result, emit_fn) async — 도구 결과를 백엔드에 회신.
-    4. cancel() — 진행 중 응답 취소.
-    5. close() — 백엔드 해제 (session 종료, 모델 unload 등).
+    3. cancel() — 진행 중 응답 취소.
+    4. close() — 백엔드 해제 (session 종료, 모델 unload 등).
+
+    Note: send_tool_result 는 모든 백엔드가 in-process 도구를 자체 처리하므로 Protocol
+    에서 제거. 외부 tool callback 이 필요해지면 optional capability 로 재추가 예정.
     """
 
     async def start_session(
@@ -90,10 +92,6 @@ class ChatBackend(Protocol):
         ...
 
     async def send_message(self, msg: ChatInput, emit_fn: EmitFn) -> None: ...
-
-    async def send_tool_result(
-        self, tool_use_id: str, result: Any, emit_fn: EmitFn,
-    ) -> None: ...
 
     async def cancel(self) -> None: ...
 

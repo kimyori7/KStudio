@@ -443,12 +443,6 @@ class TransformersBackend:
 
         return StoppingCriteriaList([_StopOnFlag(flag)])
 
-    async def send_tool_result(
-        self, tool_use_id: str, result: Any, emit_fn: EmitFn,
-    ) -> None:
-        """sub-plan 6 까지 no-op stub."""
-        _log.debug("send_tool_result called (no-op for PoC): tool_use_id=%s", tool_use_id)
-
     def _build_quantization_config(self) -> "Any | None":
         """load_in_4bit=True 면 NF4 + double quant + bf16 compute 의 BitsAndBytesConfig.
 

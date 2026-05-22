@@ -438,17 +438,6 @@ async def test_cancel_sets_flag_and_breaks_loop():
     assert be._cancelled is True
 
 
-# ===========================================================================
-# Tool result 회신 (Protocol stub).
-# ===========================================================================
-@pytest.mark.asyncio
-async def test_send_tool_result_is_noop():
-    """sub-plan 까지는 send_message 가 in-process 로 처리 — Protocol 충족용 stub."""
-    be = OllamaBackend(model_tag="qwen3:8b")
-    await be.send_tool_result("tu_0", {"ok": True}, lambda _: None)
-    # noop — 예외만 안 나면 OK.
-
-
 @pytest.mark.asyncio
 async def test_emit_order_tool_use_before_tool_result_before_assistant():
     """회귀: tool_use → tool_result → final assistant 순서 보장.

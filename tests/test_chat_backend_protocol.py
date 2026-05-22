@@ -30,8 +30,15 @@ def test_chat_input_multimodal_paths():
 
 
 def test_chat_backend_protocol_has_required_methods():
-    """Protocol 구조 검증 — 구현체가 이 메서드들을 가져야 한다는 계약."""
-    required = {"start_session", "send_message", "send_tool_result",
-                "cancel", "close", "supports_modality"}
+    """Protocol 구조 검증 — 구현체가 이 메서드들을 가져야 한다는 계약.
+
+    send_tool_result 는 모든 백엔드가 in-process 도구를 자체 처리하므로 Protocol 에서
+    제거됨. 외부 tool callback 필요 시 optional capability 로 재추가 예정.
+    """
+    required = {"start_session", "send_message", "cancel", "close", "supports_modality"}
     for name in required:
         assert hasattr(ChatBackend, name), f"ChatBackend missing {name}"
+
+    # send_tool_result 는 의도적으로 제거 — Protocol 에 없어야 함
+    assert not hasattr(ChatBackend, "send_tool_result"), \
+        "send_tool_result 는 Protocol 에서 제거됨 (in-process 도구 자체 처리)"

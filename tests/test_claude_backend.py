@@ -909,17 +909,6 @@ async def test_send_message_with_images_empty_text_uses_placeholder(sdk_mock):
     assert text_blocks[0]["text"] == "(첨부 이미지 참고)"
 
 
-@pytest.mark.asyncio
-async def test_send_tool_result_is_noop_for_in_process_mcp(sdk_mock):
-    """현재 KStudio 의 모든 MCP 도구는 in-process — send_tool_result 는 no-op stub."""
-    be = ClaudeBackend(cwd="/tmp")
-    await be.start_session(system_prompt="sys", tools={}, model="sonnet")
-    # 예외 없이 그냥 끝나야 함.
-    received = []
-    await be.send_tool_result("toolu_123", "결과", received.append)
-    assert received == []   # emit 안 함.
-
-
 def test_sniff_image_mime_png():
     from screen_recorder.agent.backends.claude_backend import _sniff_image_mime
     assert _sniff_image_mime(b"\x89PNG\r\n\x1a\nfoo") == "image/png"

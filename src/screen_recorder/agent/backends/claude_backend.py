@@ -258,21 +258,6 @@ class ClaudeBackend:
             _log.exception("ClaudeBackend: query 실패")
             emit_fn(AgentEvent(kind="error", detail=str(exc)))
 
-    async def send_tool_result(
-        self, tool_use_id: str, result: Any, emit_fn: EmitFn,
-    ) -> None:
-        """도구 결과를 Claude 에 회신 — runtime.py 의 in-process MCP 도구가 자체 응답하는
-        경우와 별개로, 사용자 ✓ 게이트 같이 외부 동기화 필요한 도구를 위한 경로.
-
-        현재 KStudio 의 모든 MCP 도구는 in-process 라 SDK 가 자동 회신 → 이 메서드는
-        향후 비-MCP 도구 (예: plan_gate 의 비동기 응답) 추가 시 사용. 지금은 단순 stub.
-        """
-        # SDK 의 in-process MCP 도구는 자체 응답하므로 별도 동작 없음.
-        # 비-MCP 외부 도구 추가될 때 (sub-plan 6 tool adapter) 채워질 예정.
-        _log.debug("send_tool_result called (no-op for in-process MCP): tool_use_id=%s result=%r",
-                    tool_use_id, result)
-
-
 def _sniff_image_mime(data: bytes) -> str:
     """이미지 bytes 의 magic number 보고 MIME 추정.
 

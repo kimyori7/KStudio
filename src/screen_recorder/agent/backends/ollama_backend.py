@@ -291,12 +291,3 @@ class OllamaBackend:
             self._current_request_cm = None
 
         return ("".join(chunks), tool_calls)
-
-    async def send_tool_result(
-        self, tool_use_id: str, result: Any, emit_fn: EmitFn,
-    ) -> None:
-        """send_message 가 in-process 로 tool 호출 처리 — 외부 호출자가 회신할 일 없음.
-
-        ChatBackend Protocol 충족용 stub (TransformersBackend 와 동일).
-        """
-        _log.debug("OllamaBackend.send_tool_result: no-op (tool_use_id=%s)", tool_use_id)
