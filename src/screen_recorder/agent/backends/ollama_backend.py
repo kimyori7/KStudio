@@ -10,7 +10,7 @@ httpx.AsyncClient 로 비동기 HTTP — generate.py 같은 blocking 없음.
 수명주기:
 - start_session(): system_prompt + tools 저장. HTTP 클라이언트 lazy.
 - send_message(): /api/chat 스트리밍 호출 → 텍스트/tool_calls emit → tool_call 있으면
-  핸들러 실행 후 다시 호출 (multi-round 루프, 최대 _MAX_TOOL_ROUNDS).
+  핸들러 실행 후 다시 호출 (multi-round 루프 — run_tool_loop helper 사용).
 - cancel(): 진행 중 요청 task 취소 → httpx 가 연결 종료 → Ollama 가 generate 중단.
 - close(): httpx client 닫기 + history 리셋.
 
@@ -26,14 +26,11 @@ import logging
 from typing import Any, Optional
 
 from .base import AgentEvent, AgentMessage, ChatInput, EmitFn
+from .tool_loop import run_tool_loop
 from .tool_runtime import NormalizedToolCall, execute_tool_call
 
 
 _log = logging.getLogger(__name__)
-
-
-# tool use 무한루프 안전망. TransformersBackend 와 동일 상수.
-_MAX_TOOL_ROUNDS = 5
 
 # Ollama 기본 엔드포인트.
 _DEFAULT_BASE_URL = "http://localhost:11434"
@@ -154,7 +151,7 @@ class OllamaBackend:
         2. JSONL 한 줄씩 파싱 → message.content 청크 emit + tool_calls 누적.
         3. done=true 받으면 tool_calls 있는지 확인 — 있으면 핸들러 실행 후 tool 메시지
            append → 다시 호출. 없으면 done emit.
-        4. _MAX_TOOL_ROUNDS 초과 시 안전망.
+        4. run_tool_loop 의 max_rounds 초과 시 안전망 (helper 가 처리).
         """
         self._cancelled = False
         try:
@@ -163,26 +160,23 @@ class OllamaBackend:
 
             messages = self._build_messages(msg)
 
-            for _round in range(_MAX_TOOL_ROUNDS):
+            async def _generate() -> tuple[str, list[dict]]:
+                """한 라운드 generate — cancel 체크 + history append."""
                 if self._cancelled:
                     emit_fn(AgentEvent(kind="error", detail="취소됨"))
-                    return
-
+                    return "", []
                 full_text, tool_calls = await self._run_one_generate(messages, emit_fn)
-
                 # 어시스턴트 turn 누적 — tool_calls 포함 (다음 라운드 모델이 자기 호출 기억).
                 assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_text}
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
                 messages.append(assistant_msg)
                 self._history.append(assistant_msg)
+                return full_text, tool_calls
 
-                if not tool_calls:
-                    emit_fn(AgentEvent(kind="done"))
-                    return
-
-                # tool_use UI emit + 핸들러 실행 + tool_result emit (execute_tool_call 통합).
-                for call in tool_calls:
+            async def _on_calls(calls: list[dict]) -> None:
+                """tool_use UI emit + 핸들러 실행 + tool_result append."""
+                for call in calls:
                     fn = call.get("function") or {}
                     name = fn.get("name", "?")
                     args = fn.get("arguments") or {}
@@ -193,12 +187,7 @@ class OllamaBackend:
                     messages.append(tool_msg)
                     self._history.append(tool_msg)
 
-            # 루프 한계 초과.
-            emit_fn(AgentMessage(
-                role="system",
-                text=f"⚠ 도구 호출 루프 한계 ({_MAX_TOOL_ROUNDS} 라운드) 초과 — 중단.",
-            ))
-            emit_fn(AgentEvent(kind="done"))
+            await run_tool_loop(_generate, _on_calls, emit_fn)
         except Exception as exc:
             # ConnectionError / ConnectError 는 친절한 안내 + 원인 같이.
             text = self._friendly_error_text(exc)
