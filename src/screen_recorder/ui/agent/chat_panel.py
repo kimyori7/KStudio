@@ -1070,7 +1070,11 @@ class ChatPanel(QDockWidget):
         card.approved.connect(lambda pid=plan_id: self._plan_gate.approve(pid))
         card.rejected.connect(lambda reason, pid=plan_id: self._plan_gate.reject(pid, reason))
         self._plan_cards[plan_id] = card
-        self._messages_lay.addWidget(card)
+        # _insert_bubble 사용 — _bubbles 추적에 포함 + streaming 상태 reset (코드리뷰 Important).
+        # _messages_lay.addWidget 직접 호출 시 message_count/clear 순회에서 빠지고
+        # 다음 assistant chunk 가 이전 bubble 에 잘못 누적될 수 있음.
+        self._insert_bubble(card)
+        self._message_list.reset_streaming_state()
         self._scroll_to_bottom()
 
     @Slot(str, str)
