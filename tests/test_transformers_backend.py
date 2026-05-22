@@ -647,3 +647,63 @@ async def test_run_one_generate_omni_calls_process_mm_info(transformers_mock):
     _, gen_kwargs = transformers_mock["model_inst"].generate.call_args
     assert gen_kwargs.get("return_audio") is False
     assert gen_kwargs.get("use_audio_in_video") is False
+
+
+# ============================================================
+# 2026-05-22 — bitsandbytes 4-bit (NF4) 양자화 옵션.
+# Flash Attention 2 가 sm_120 (Blackwell) 미지원이라 가장 효과 큰 가속 대안.
+# ============================================================
+@pytest.mark.asyncio
+async def test_ensure_model_loaded_with_4bit_passes_quantization_config(transformers_mock):
+    """load_in_4bit=True → BitsAndBytesConfig 생성 + from_pretrained 의 quantization_config kwarg 로 전달.
+
+    회귀 보호: 4-bit 가 무음으로 미적용 되면 사용자 PC 메모리 14GB → 7GB 절감 효과 소실.
+    """
+    be = TransformersBackend(
+        repo_id="Qwen/Qwen2.5-Omni-7B",
+        load_in_4bit=True,
+    )
+    await be._ensure_model_loaded()
+    _, from_pretrained_kwargs = transformers_mock["model_cls"].from_pretrained.call_args
+    assert "quantization_config" in from_pretrained_kwargs, "4-bit 인데 quantization_config 누락"
+    # torch_dtype 는 양자화 시 명시 X — BitsAndBytesConfig 의 compute_dtype 이 우선.
+    assert "torch_dtype" not in from_pretrained_kwargs
+    # BitsAndBytesConfig 가 NF4 + double quant 옵션으로 호출되었는지.
+    bnb_call = transformers_mock["transformers"].BitsAndBytesConfig.call_args
+    assert bnb_call.kwargs.get("load_in_4bit") is True
+    assert bnb_call.kwargs.get("bnb_4bit_quant_type") == "nf4"
+    assert bnb_call.kwargs.get("bnb_4bit_use_double_quant") is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_loaded_without_4bit_uses_torch_dtype(transformers_mock):
+    """load_in_4bit=False (기본) → 기존 torch_dtype='auto' 경로 유지 (회귀 보호)."""
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be._ensure_model_loaded()
+    _, kwargs = transformers_mock["model_cls"].from_pretrained.call_args
+    assert kwargs.get("torch_dtype") == "auto"
+    assert "quantization_config" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_ensure_model_loaded_text_only_with_4bit(transformers_mock):
+    """text-only (Qwen2.5-7B-Instruct) + load_in_4bit=True 도 동일하게 quantization_config 전달.
+
+    AutoModelForCausalLM 경로도 4-bit 옵션 누리도록.
+    """
+    fake_auto_model = MagicMock()
+    fake_auto_model.from_pretrained = MagicMock(return_value=transformers_mock["model_inst"])
+    fake_auto_tokenizer = MagicMock()
+    fake_auto_tokenizer.from_pretrained = MagicMock(return_value=transformers_mock["processor_inst"])
+    transformers_mock["transformers"].AutoModelForCausalLM = fake_auto_model
+    transformers_mock["transformers"].AutoTokenizer = fake_auto_tokenizer
+
+    be = TransformersBackend(
+        repo_id="Qwen/Qwen2.5-7B-Instruct",
+        modalities=frozenset({"text"}),
+        load_in_4bit=True,
+    )
+    await be._ensure_model_loaded()
+    _, kwargs = fake_auto_model.from_pretrained.call_args
+    assert "quantization_config" in kwargs
+    assert "torch_dtype" not in kwargs

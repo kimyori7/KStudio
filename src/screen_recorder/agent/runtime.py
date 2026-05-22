@@ -259,7 +259,13 @@ class AgentRuntime(QObject):
         if meta.runtime == "transformers":
             if not meta.repo_id:
                 raise ValueError(f"transformers 백엔드 모델인데 repo_id 누락: {model_id}")
-            return TransformersBackend(repo_id=meta.repo_id, modalities=meta.modalities)
+            # metadata.quantization 에 '4-bit' 들어 있으면 bitsandbytes NF4 로드.
+            # 별도 ModelMetadata bool field 두지 않고 표시용 문자열을 single source of truth 로.
+            load_in_4bit = "4-bit" in (meta.quantization or "")
+            return TransformersBackend(
+                repo_id=meta.repo_id, modalities=meta.modalities,
+                load_in_4bit=load_in_4bit,
+            )
         if meta.runtime == "ollama":
             if not meta.repo_id:
                 raise ValueError(f"ollama 백엔드 모델인데 model tag (repo_id) 누락: {model_id}")

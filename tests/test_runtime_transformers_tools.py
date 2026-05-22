@@ -108,10 +108,11 @@ def test_runtime_creates_transformers_backend_with_modalities_for_qwen_instruct(
     captured: dict = {}
 
     class _Spy(TransformersBackend):
-        def __init__(self, repo_id, modalities=None):
+        def __init__(self, repo_id, modalities=None, load_in_4bit=False):
             captured["repo_id"] = repo_id
             captured["modalities"] = modalities
-            super().__init__(repo_id, modalities)
+            captured["load_in_4bit"] = load_in_4bit
+            super().__init__(repo_id, modalities, load_in_4bit=load_in_4bit)
 
     monkeypatch.setattr(runtime_mod, "TransformersBackend", _Spy)
 
@@ -125,20 +126,23 @@ def test_runtime_creates_transformers_backend_with_modalities_for_qwen_instruct(
     AgentRuntime(video_tools=vt, model="qwen25-7b-instruct", cwd=tmp_path)
     assert captured.get("repo_id") == "Qwen/Qwen2.5-7B-Instruct"
     assert captured.get("modalities") == frozenset({"text"})
+    # Instruct 는 quantization="bf16 (원본)" — 4-bit 안 함.
+    assert captured.get("load_in_4bit") is False
 
 
 def test_runtime_creates_transformers_backend_with_modalities_for_qwen_omni(tmp_path, monkeypatch):
-    """qwen25-omni-7b → TransformersBackend(modalities=frozenset({'text','image','audio','video'}))."""
+    """qwen25-omni-7b → TransformersBackend(modalities=full, load_in_4bit=True)."""
     import screen_recorder.agent.runtime as runtime_mod
     from screen_recorder.agent.backends.transformers_backend import TransformersBackend
 
     captured: dict = {}
 
     class _Spy(TransformersBackend):
-        def __init__(self, repo_id, modalities=None):
+        def __init__(self, repo_id, modalities=None, load_in_4bit=False):
             captured["repo_id"] = repo_id
             captured["modalities"] = modalities
-            super().__init__(repo_id, modalities)
+            captured["load_in_4bit"] = load_in_4bit
+            super().__init__(repo_id, modalities, load_in_4bit=load_in_4bit)
 
     monkeypatch.setattr(runtime_mod, "TransformersBackend", _Spy)
 
@@ -151,3 +155,5 @@ def test_runtime_creates_transformers_backend_with_modalities_for_qwen_omni(tmp_
     from screen_recorder.agent.runtime import AgentRuntime
     AgentRuntime(video_tools=vt, model="qwen25-omni-7b", cwd=tmp_path)
     assert captured.get("modalities") == frozenset({"text", "image", "audio", "video"})
+    # Omni 의 quantization="4-bit NF4 (bitsandbytes)" — 4-bit 켜짐.
+    assert captured.get("load_in_4bit") is True

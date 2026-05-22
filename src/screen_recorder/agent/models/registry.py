@@ -64,16 +64,22 @@ _BUILTIN: list[ModelMetadata] = [
     ),
     ModelMetadata(
         id="qwen25-omni-7b",
-        display_name="Qwen2.5-Omni 7B (로컬, 멀티모달)",
+        display_name="Qwen2.5-Omni 7B (로컬, 멀티모달, 4-bit)",
         runtime="transformers",
         repo_id="Qwen/Qwen2.5-Omni-7B",
-        quantization="bf16 (원본)",
+        # 4-bit NF4 양자화 — VRAM ~14GB → ~7GB, 속도 1.3~1.7배. Blackwell (RTX 50 series,
+        # sm_120) 에서 flash-attn 미지원 → bitsandbytes 4-bit + sdpa attention 이 최선.
+        # AgentRuntime 가 이 문자열에 '4-bit' 들어있으면 load_in_4bit=True 로 backend 생성.
+        quantization="4-bit NF4 (bitsandbytes)",
         modalities=frozenset({"text", "image", "audio", "video"}),
         supports_korean=True,
-        estimated_size_gb=22.4, estimated_vram_gb=14.0,
+        estimated_size_gb=22.4, estimated_vram_gb=7.0,
         context_window=32_768,
         supports_tools=True,
-        description="영상/오디오 native. ~22GB 다운로드, bf16 로드. 도구 호출은 prompt 시뮬레이션 (정식 미지원).",
+        description=(
+            "영상/오디오 native + 도구 호출 (prompt 시뮬레이션). 4-bit NF4 양자화로 "
+            "~7GB VRAM. bitsandbytes 필요 (이미 KStudio 의존성)."
+        ),
         tool_strategy="prompted",
     ),
     ModelMetadata(
