@@ -30,7 +30,7 @@ class NormalizedToolCall:
     """
     id: str | None
     name: str
-    arguments: dict
+    arguments: dict[str, Any]
 
 
 async def execute_tool_call(
