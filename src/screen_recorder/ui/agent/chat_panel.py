@@ -142,20 +142,22 @@ MODEL_OPTIONS: list[tuple[str, str]] = [
 DEFAULT_MODEL_ID = MODEL_OPTIONS[0][1]
 
 
-# 모델별 컨텍스트 윈도 한계 — 입력 토큰이 이 값에 가까워지면 /compact 권유.
-# 1M 컨텍스트 변형도 있지만 default 200k 가정. 정확한 한계 모르면 200k 폴백.
-# Qwen2.5-Omni 7B 는 native 32k — 훨씬 빨리 가득 차므로 별도 한계.
-_MODEL_CONTEXT_LIMITS: dict[str, int] = {
-    "claude-sonnet-4-6":        200_000,
-    "claude-opus-4-7":          200_000,
-    "claude-haiku-4-5-20251001": 200_000,
-    "qwen25-omni-7b":            32_768,
-}
+# 미등록 모델을 위한 보수적 default — 200k 면 대부분 안전.
 _DEFAULT_CONTEXT_LIMIT = 200_000
 
 
 def _context_limit_for(model_id: str) -> int:
-    return _MODEL_CONTEXT_LIMITS.get(model_id, _DEFAULT_CONTEXT_LIMIT)
+    """모델별 context window — ModelRegistry 가 single source of truth.
+
+    metadata.context_window 가 0/None 이거나 모델 자체 미등록이면 default.
+    UI 의 컨텍스트 dot/% 계산에 사용.
+    새 모델을 추가할 때 이 함수는 건드릴 필요 없음 — registry.py 만 수정하면 됨.
+    """
+    from screen_recorder.agent.models.registry import ModelRegistry
+    meta = ModelRegistry().get(model_id)
+    if meta is None or not meta.context_window:
+        return _DEFAULT_CONTEXT_LIMIT
+    return meta.context_window
 
 
 def _ctx_color_for(pct: float) -> str:

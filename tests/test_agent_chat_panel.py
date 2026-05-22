@@ -152,9 +152,10 @@ def test_ctx_dot_cleared_on_slash_clear(panel, qtbot):
 
 
 def test_context_limit_lookup():
-    """알려진 모델은 정확한 limit, 모르는 모델은 폴백."""
+    """알려진 모델은 registry 값, 모르는 모델은 200k 폴백."""
+    # registry single source of truth — 각 모델의 실제 context_window 값 검증.
     assert _context_limit_for("claude-sonnet-4-6") == 200_000
-    assert _context_limit_for("claude-opus-4-7") == 200_000
+    assert _context_limit_for("claude-opus-4-7") == 1_000_000   # Opus 4.7 은 1M 컨텍스트
     assert _context_limit_for("claude-haiku-4-5-20251001") == 200_000
     # 알 수 없는 ID → 200k 폴백 (raise 안 함).
     assert _context_limit_for("madeup-model-9000") == 200_000
