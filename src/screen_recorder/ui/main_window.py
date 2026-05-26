@@ -517,6 +517,9 @@ class MainWindow(QMainWindow):
         # Whisper 다운로드 pending 상태.
         self._pending_whisper_size: Optional[str] = None
         self._pending_whisper_future = None
+        # 이미지 생성 패널 — lazy 생성 (사용자가 메뉴 "이미지 생성" 또는 Ctrl+Shift+G
+        # 처음 누를 때 만듦). 미사용 사용자에게 PixArtSigmaPipeline import / VRAM 영향 없음.
+        self.image_gen_dock = None  # type: ignore[assignment]
         self.agent_runtime.message_received.connect(self.agent_chat_panel.append_message)
         self.agent_runtime.event_received.connect(self.agent_chat_panel.append_event)
         # AgentRuntime 도 저장된 모델로 동기화 (첫 send 전에).
@@ -872,6 +875,8 @@ class MainWindow(QMainWindow):
         self.menu_bar.tool_palette_visibility_toggled.connect(self._on_tool_palette_visibility_toggled)
         self.menu_bar.layers_visibility_toggled.connect(self._on_layers_visibility_toggled)
         self.menu_bar.record_status_visibility_toggled.connect(self._on_record_status_visibility_toggled)
+        # 이미지 생성 패널 토글 (Ctrl+Shift+G 또는 창 메뉴) — 첫 토글 시 lazy 생성.
+        self.menu_bar.image_gen_visibility_toggled.connect(self._on_image_gen_visibility_toggled)
         # Phase 23: dock 가시성을 settings 에 영속화 — X 로 닫은 dock 이 재시작 후 다시 보이던 회귀 fix.
         self.menu_bar.library_visibility_toggled.connect(self._on_library_dock_visibility_persist)
         self.menu_bar.layers_visibility_toggled.connect(self._on_layers_dock_visibility_persist)
@@ -2815,6 +2820,42 @@ class MainWindow(QMainWindow):
             except OSError:
                 continue
         return None
+
+    # ---------- 이미지 생성 패널 (Ctrl+Shift+G — 2026-05-26) ----------
+    def _on_image_gen_visibility_toggled(self, visible: bool) -> None:
+        """창 메뉴의 '이미지 생성' 토글 또는 Ctrl+Shift+G 진입점.
+
+        첫 토글 시 lazy 생성 — 미사용 사용자에게 import / VRAM 영향 0.
+        """
+        if visible:
+            if self.image_gen_dock is None:
+                from .image_gen import ImageGenDock
+                self.image_gen_dock = ImageGenDock(parent=self)
+                self.image_gen_dock.image_for_editor.connect(
+                    self._open_image_path_from_generated
+                )
+                # video_btn 은 Phase 6+ 까지 비활성 — image_for_video 신호는 와이어링만
+                # 해두고 실 슬롯은 placeholder.
+                self.image_gen_dock.image_for_video.connect(
+                    self._on_generated_image_for_video
+                )
+                self.addDockWidget(Qt.RightDockWidgetArea, self.image_gen_dock)
+            self.image_gen_dock.setVisible(True)
+            self.image_gen_dock.raise_()
+        elif self.image_gen_dock is not None:
+            self.image_gen_dock.setVisible(False)
+
+    def _open_image_path_from_generated(self, path_str: str) -> None:
+        """ImageGenDock 의 '편집기로 열기' — 생성한 PNG 를 새 EditTab 으로 연다."""
+        self._open_image_path(Path(path_str))
+
+    def _on_generated_image_for_video(self, path_str: str) -> None:
+        """ImageGenDock 의 '영상에 추가' placeholder — 현재는 비활성 버튼이라 호출 안 됨."""
+        QMessageBox.information(
+            self,
+            "영상에 추가",
+            "다음 업데이트에서 지원 예정. 현재는 '편집기로 열기' 또는 '저장' 만 사용 가능합니다.",
+        )
 
     def _open_image_path(self, p: Path) -> None:
         """이미지 또는 .kstudio 파일을 새 EditTab 으로 연다."""
@@ -4937,5 +4978,11 @@ class MainWindow(QMainWindow):
             self.agent_runtime.stop()
         except (RuntimeError, AttributeError):
             pass
+        # 이미지 생성 worker / VRAM 정리 (lazy 생성됐을 때만).
+        if self.image_gen_dock is not None:
+            try:
+                self.image_gen_dock.shutdown()
+            except (RuntimeError, AttributeError):
+                pass
         self._hide_border()
         e.accept()

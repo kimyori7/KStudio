@@ -40,6 +40,7 @@ class KStudioMenuBar(QMenuBar):
     tool_palette_visibility_toggled = Signal(bool)
     layers_visibility_toggled = Signal(bool)
     library_visibility_toggled = Signal(bool)
+    image_gen_visibility_toggled = Signal(bool)   # 이미지 생성 패널 (2026-05-26)
     # 녹화
     record_start_requested = Signal()
     record_stop_requested = Signal()
@@ -209,6 +210,15 @@ class KStudioMenuBar(QMenuBar):
         self.status_visible_action.setChecked(True)
         self.status_visible_action.toggled.connect(self.record_status_visibility_toggled.emit)
         m_window.addAction(self.status_visible_action)
+
+        # 이미지 생성 패널 — Ctrl+Shift+G (Generate). Ctrl+Shift+I 는 이미지 크기 변경에
+        # 점유 중이라 다른 키 사용. 2026-05-26 추가.
+        self.image_gen_visible_action = QAction(tr("이미지 생성"), self)
+        self.image_gen_visible_action.setCheckable(True)
+        self.image_gen_visible_action.setChecked(False)
+        self.image_gen_visible_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        self.image_gen_visible_action.toggled.connect(self.image_gen_visibility_toggled.emit)
+        m_window.addAction(self.image_gen_visible_action)
 
         m_record = self.addMenu(tr("녹화"))
         self.record_start_action = QAction(tr("녹화 시작"), self)
