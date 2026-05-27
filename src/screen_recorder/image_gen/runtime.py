@@ -38,21 +38,41 @@ class _GenWorker(QThread):
     cancelled_sig = Signal()
     load_started_sig = Signal()
     load_finished_sig = Signal()
+    # 자동 번역 흐름 (2026-05-27): 한국어 → 영어.
+    translate_started_sig = Signal()         # 번역 시작
+    translated_sig = Signal(str, str)        # (원문 한국어, 번역된 영어)
 
     def __init__(
         self,
         backend: ImageGenBackend,
         prompt: str,
         params: dict[str, Any],
+        *,
+        auto_translate: bool = True,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._backend = backend
         self._prompt = prompt
         self._params = dict(params)
+        self._auto_translate = auto_translate
 
     def run(self) -> None:
         try:
+            # 1) 한국어 자동 번역 — 옵션 켜져있고 한글 포함이면 Claude Haiku 호출.
+            prompt = self._prompt
+            if self._auto_translate:
+                from .translator import has_korean, translate_to_english_sync
+                if has_korean(prompt):
+                    self.translate_started_sig.emit()
+                    translated = translate_to_english_sync(prompt)
+                    if translated:
+                        self.translated_sig.emit(prompt, translated)
+                        prompt = translated
+                    # 실패 시 한국어 그대로 — PixArt 가 부정확한 결과 낼 가능성 있지만
+                    # 사용자가 안 하는 것보단 나음. fallback log 는 translator 가 남김.
+
+            # 2) 모델 로드 (cold 첫 호출만).
             if not self._backend.is_loaded():
                 self.load_started_sig.emit()
                 self._backend.load()
@@ -64,7 +84,7 @@ class _GenWorker(QThread):
                 self.step_sig.emit(current, total)
 
             path = self._backend.generate(
-                self._prompt,
+                prompt,
                 step_cb=_step_cb,
                 **self._params,
             )
@@ -88,6 +108,9 @@ class ImageGenRuntime(QObject):
     image_ready = Signal(str)                # 결과 png 경로 (문자열)
     generation_failed = Signal(str)
     generation_cancelled = Signal()
+    # 한국어 → 영어 자동 번역 흐름 (2026-05-27).
+    translate_started = Signal()
+    translated = Signal(str, str)            # (원문, 번역)
 
     def __init__(
         self,
@@ -101,6 +124,8 @@ class ImageGenRuntime(QObject):
         self._busy = False
         # close() 가 worker join 못해 hang 안 되게 — 최대 대기 시간.
         self._close_join_ms = 500
+        # 한국어 자동 번역 옵션 — 기본 ON. UI 체크박스로 토글 가능.
+        self._auto_translate = True
 
     # ---- 상태 조회 ----
     def is_busy(self) -> bool:
@@ -110,6 +135,10 @@ class ImageGenRuntime(QObject):
         return self._backend.is_loaded()
 
     # ---- 작업 트리거 ----
+    def set_auto_translate(self, on: bool) -> None:
+        """한국어 → 영어 자동 번역 옵션 토글. UI 체크박스에서 호출."""
+        self._auto_translate = bool(on)
+
     def generate(
         self,
         prompt: str,
@@ -136,7 +165,11 @@ class ImageGenRuntime(QObject):
             "guidance_scale": float(guidance_scale),
             "seed": None if seed is None or seed < 0 else int(seed),
         }
-        worker = _GenWorker(self._backend, prompt, params, parent=self)
+        worker = _GenWorker(
+            self._backend, prompt, params,
+            auto_translate=self._auto_translate,
+            parent=self,
+        )
         worker.load_started_sig.connect(self.load_started)
         worker.load_finished_sig.connect(self.load_finished)
         worker.started_sig.connect(self.generation_started)
@@ -144,6 +177,8 @@ class ImageGenRuntime(QObject):
         worker.image_sig.connect(self._on_image_ready)
         worker.failed_sig.connect(self._on_failed)
         worker.cancelled_sig.connect(self._on_cancelled)
+        worker.translate_started_sig.connect(self.translate_started)
+        worker.translated_sig.connect(self.translated)
         # worker 가 종료되면 정리 — Qt finished 시그널.
         worker.finished.connect(self._on_worker_finished)
         self._worker = worker

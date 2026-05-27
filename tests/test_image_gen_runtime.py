@@ -277,6 +277,76 @@ def test_params_pass_through_to_backend():
     assert p["seed"] == 123
 
 
+def test_auto_translate_off_skips_translator(monkeypatch):
+    """auto_translate=False 면 한국어 prompt 도 backend 에 그대로 전달."""
+    from screen_recorder.image_gen.runtime import ImageGenRuntime
+    from screen_recorder.image_gen import translator as t_mod
+
+    backend = _FakeBackend()
+    rt = ImageGenRuntime(backend=backend)
+    rt.set_auto_translate(False)
+    c = _Catcher()
+    _attach(rt, c)
+
+    # translator 가 호출되면 fail 시키는 sentinel — set_auto_translate(False) 면 안 불려야.
+    monkeypatch.setattr(
+        t_mod, "translate_to_english_sync",
+        lambda *_a, **_kw: pytest.fail("translator should not be called when auto_translate=False"),
+    )
+
+    rt.generate("고양이", num_inference_steps=2)
+    _process_events_until(lambda: c.images, timeout_s=2.0)
+
+    assert backend.last_params["prompt"] == "고양이"
+
+
+def test_auto_translate_replaces_prompt(monkeypatch):
+    """auto_translate=True + 한국어 prompt → backend 는 영어 받음."""
+    from screen_recorder.image_gen.runtime import ImageGenRuntime
+    from screen_recorder.image_gen import translator as t_mod
+
+    backend = _FakeBackend()
+    rt = ImageGenRuntime(backend=backend)
+    c = _Catcher()
+    _attach(rt, c)
+
+    translated_emits: list[tuple[str, str]] = []
+    rt.translated.connect(lambda src, dst: translated_emits.append((src, dst)))
+
+    monkeypatch.setattr(
+        t_mod, "translate_to_english_sync",
+        lambda prompt, model="claude-haiku-4-5-20251001": "a calico cat",
+    )
+
+    rt.generate("고양이", num_inference_steps=2)
+    _process_events_until(lambda: c.images, timeout_s=2.0)
+
+    assert backend.last_params["prompt"] == "a calico cat"
+    assert translated_emits == [("고양이", "a calico cat")]
+
+
+def test_auto_translate_falls_back_on_failure(monkeypatch):
+    """번역 실패 (None 반환) 시 원본 한국어 그대로 backend 에 전달."""
+    from screen_recorder.image_gen.runtime import ImageGenRuntime
+    from screen_recorder.image_gen import translator as t_mod
+
+    backend = _FakeBackend()
+    rt = ImageGenRuntime(backend=backend)
+    c = _Catcher()
+    _attach(rt, c)
+
+    monkeypatch.setattr(
+        t_mod, "translate_to_english_sync",
+        lambda *_a, **_kw: None,
+    )
+
+    rt.generate("고양이", num_inference_steps=2)
+    _process_events_until(lambda: c.images, timeout_s=2.0)
+
+    # backend 에는 원본 한국어 — translator 가 None 반환 → fallback.
+    assert backend.last_params["prompt"] == "고양이"
+
+
 def test_seed_negative_becomes_none():
     """seed=-1 (UI 의 '랜덤' 의미) 은 backend 에 None 으로 전달."""
     from screen_recorder.image_gen.runtime import ImageGenRuntime

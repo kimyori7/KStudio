@@ -18,6 +18,8 @@ class _FakeSigBus(QObject):
     image_ready = Signal(str)
     generation_failed = Signal(str)
     generation_cancelled = Signal()
+    translate_started = Signal()
+    translated = Signal(str, str)
 
 
 class _FakeRuntime:
@@ -32,6 +34,8 @@ class _FakeRuntime:
         self.image_ready = self._bus.image_ready
         self.generation_failed = self._bus.generation_failed
         self.generation_cancelled = self._bus.generation_cancelled
+        self.translate_started = self._bus.translate_started
+        self.translated = self._bus.translated
         self.calls: list[tuple] = []
 
     def generate(self, prompt: str, **kw) -> bool:
@@ -46,6 +50,9 @@ class _FakeRuntime:
 
     def is_busy(self) -> bool:
         return False
+
+    def set_auto_translate(self, on: bool) -> None:
+        self.calls.append(("set_auto_translate", on))
 
 
 def _write_real_png(path) -> None:
@@ -144,6 +151,44 @@ def test_video_button_stays_disabled_after_result(qtbot, tmp_path, monkeypatch):
     assert dock._ready_panel.editor_btn.isEnabled()
     assert dock._ready_panel.save_btn.isEnabled()
     assert not dock._ready_panel.video_btn.isEnabled()
+
+
+def test_auto_translate_checkbox_default_on_and_toggles_runtime(qtbot, monkeypatch):
+    """체크박스 기본 ON + 토글 시 runtime.set_auto_translate 호출."""
+    from screen_recorder.ui.image_gen import image_gen_dock as mod
+
+    monkeypatch.setattr(mod, "_is_model_cached", lambda repo: True)
+    rt = _FakeRuntime()
+    # FakeRuntime 에 set_auto_translate 추가.
+    rt.translate_calls = []
+    rt.set_auto_translate = lambda on: rt.translate_calls.append(on)
+    dock = mod.ImageGenDock(runtime=rt)
+    qtbot.addWidget(dock)
+
+    assert dock._ready_panel.auto_translate_check.isChecked()
+    dock._ready_panel.auto_translate_check.setChecked(False)
+    assert rt.translate_calls == [False]
+    dock._ready_panel.auto_translate_check.setChecked(True)
+    assert rt.translate_calls == [False, True]
+
+
+def test_translated_label_shows_after_translation(qtbot, monkeypatch):
+    """runtime 이 translated 시그널 emit → 패널이 영어 결과 표시."""
+    from screen_recorder.ui.image_gen import image_gen_dock as mod
+
+    monkeypatch.setattr(mod, "_is_model_cached", lambda repo: True)
+    rt = _FakeRuntime()
+    rt.set_auto_translate = lambda on: None
+    dock = mod.ImageGenDock(runtime=rt)
+    qtbot.addWidget(dock)
+    # _ensure_runtime 강제 (와이어링).
+    dock._ensure_runtime()
+
+    assert not dock._ready_panel.translated_label.isVisible() or \
+           dock._ready_panel.translated_label.text() == ""
+
+    rt._bus.translated.emit("고양이", "a calico cat")
+    assert "a calico cat" in dock._ready_panel.translated_label.text()
 
 
 def test_generate_button_disables_immediately_on_click(qtbot, monkeypatch):

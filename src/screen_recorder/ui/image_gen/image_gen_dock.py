@@ -19,6 +19,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDockWidget,
     QFileDialog,
@@ -112,6 +113,7 @@ class _ReadyPanel(QWidget):
     open_in_editor_requested = Signal(str)
     save_as_requested = Signal(str)
     add_to_video_requested = Signal(str)
+    auto_translate_toggled = Signal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -122,14 +124,40 @@ class _ReadyPanel(QWidget):
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(8)
 
-        # ---- 프롬프트 ----
-        outer.addWidget(QLabel("프롬프트 (한국어/영어):"))
+        # ---- 프롬프트 + 자동 번역 ----
+        outer.addWidget(QLabel("프롬프트 (한국어 OK — 자동으로 영어로 번역):"))
         self.prompt_edit = QTextEdit()
+        # PixArt 는 영어 학습 위주라 한국어 직접 입력은 부정확 (예: '고양이' → 사람).
+        # 자동 번역 ON 이면 Claude Haiku 가 한국어 → 영어 변환 후 PixArt 에 전달.
         self.prompt_edit.setPlaceholderText(
-            "예: 노을이 비치는 창가의 삼색 고양이, 영화 같은 클로즈업"
+            "예: 노을이 비치는 창가의 삼색 고양이, 영화 같은 클로즈업\n"
+            "(또는 영어로 직접: A calico cat by a sunset window, cinematic close-up)"
         )
         self.prompt_edit.setFixedHeight(80)
         outer.addWidget(self.prompt_edit)
+
+        # 자동 번역 토글 + 번역 결과 라벨.
+        translate_row = QHBoxLayout()
+        self.auto_translate_check = QCheckBox("한국어 → 영어 자동 번역 (Claude)")
+        self.auto_translate_check.setChecked(True)
+        self.auto_translate_check.setToolTip(
+            "PixArt 는 영어 학습이 99% 라 한국어 직접 입력 시 결과가 부정확합니다. "
+            "켜져 있으면 KStudio 의 Claude 정액제로 자동 번역 (Haiku, 1~2초 추가)."
+        )
+        self.auto_translate_check.toggled.connect(self.auto_translate_toggled)
+        translate_row.addWidget(self.auto_translate_check)
+        translate_row.addStretch(1)
+        outer.addLayout(translate_row)
+
+        # 번역 결과 표시 라벨 — 번역됐을 때만 보임.
+        self.translated_label = QLabel("")
+        self.translated_label.setWordWrap(True)
+        self.translated_label.setStyleSheet(
+            "color: #6b7280; font-size: 11px; font-style: italic; "
+            "padding: 4px 6px; background: #f3f4f6; border-radius: 3px;"
+        )
+        self.translated_label.setVisible(False)
+        outer.addWidget(self.translated_label)
 
         # ---- 옵션 (해상도 / step / guidance / seed) ----
         opts = QVBoxLayout()
@@ -285,6 +313,8 @@ class _ReadyPanel(QWidget):
             # 동안 bar 가 0% 로 멈춰있어 "프리즈" 로 오해받는 회귀 차단 (사용자 보고 2026-05-27).
             self.progress_bar.setRange(0, 0)
             self.status_label.setText("준비 중…")
+            # 이전 번역 라벨 정리 — 새 시도 시작.
+            self.translated_label.setVisible(False)
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
@@ -344,6 +374,17 @@ class _ReadyPanel(QWidget):
     def show_cancelled(self) -> None:
         self.status_label.setText("취소됨")
         self.progress_bar.setVisible(False)
+
+    def show_translation_started(self) -> None:
+        self.status_label.setText("한국어 → 영어 번역 중…")
+        self.translated_label.setVisible(False)
+
+    def show_translation(self, source_ko: str, translated_en: str) -> None:
+        """번역 결과를 사용자에게 보여줌 — 어떻게 변환됐는지 확인 가능."""
+        # 너무 길면 자름.
+        en_short = translated_en if len(translated_en) <= 200 else translated_en[:200] + "…"
+        self.translated_label.setText(f"번역됨 → {en_short}")
+        self.translated_label.setVisible(True)
 
     def _push_recent(self, path: str, max_keep: int = 8) -> None:
         if path in self._recent_paths:
@@ -405,6 +446,7 @@ class ImageGenDock(QDockWidget):
         self._ready_panel.open_in_editor_requested.connect(self.image_for_editor)
         self._ready_panel.save_as_requested.connect(self._save_as)
         self._ready_panel.add_to_video_requested.connect(self.image_for_video)
+        self._ready_panel.auto_translate_toggled.connect(self._on_auto_translate_toggled)
         self._stack.addWidget(self._ready_panel)
 
         # 초기 상태 결정.
@@ -432,8 +474,19 @@ class ImageGenDock(QDockWidget):
             self._runtime.image_ready.connect(self._on_image_ready)
             self._runtime.generation_failed.connect(self._on_failed)
             self._runtime.generation_cancelled.connect(self._on_cancelled)
+            # 자동 번역 흐름 (2026-05-27).
+            self._runtime.translate_started.connect(
+                self._ready_panel.show_translation_started
+            )
+            self._runtime.translated.connect(self._ready_panel.show_translation)
             self._runtime._dock_wired = True   # type: ignore[attr-defined]
         return self._runtime
+
+    def _on_auto_translate_toggled(self, on: bool) -> None:
+        """UI 체크박스 → runtime 옵션 갱신."""
+        rt = self._ensure_runtime()
+        if hasattr(rt, "set_auto_translate"):
+            rt.set_auto_translate(on)
 
     # ---- 다운로드 ----
     def _start_download(self) -> None:
