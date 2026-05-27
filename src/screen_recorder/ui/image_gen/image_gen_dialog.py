@@ -841,6 +841,8 @@ class ImageGenDialog(QDialog):
         job = ModelDownloadJob(
             repo_id=entry.repo_id,
             estimated_size_bytes=estimated_size_bytes(entry),
+            allow_patterns=list(entry.download_allow_patterns) if entry.download_allow_patterns else None,
+            ignore_patterns=list(entry.download_ignore_patterns) if entry.download_ignore_patterns else None,
         )
         job.download_progress.connect(win.update_progress)
         job.finished.connect(lambda _rid: self._on_download_finished(win))

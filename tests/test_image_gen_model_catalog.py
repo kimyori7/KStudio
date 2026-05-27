@@ -87,3 +87,28 @@ def test_backend_kind_known_values():
     known = {"pixart", "sdxl", "sd35_medium", "sd35_large", "flux"}
     for e in CATALOG:
         assert e.backend_kind in known, f"{e.id} unknown backend_kind: {e.backend_kind}"
+
+
+def test_sdxl_has_fp16_allow_patterns():
+    """SDXL 은 fp16 variant 만 받게 allow_patterns 박혀있어야 — 사용자 보고 2026-05-27
+    (snapshot_download 가 모든 variant 받아 28GB 다운로드)."""
+    from screen_recorder.image_gen.model_catalog import by_id
+    e = by_id("sdxl-1.0")
+    assert e.download_allow_patterns is not None
+    assert any("fp16" in p for p in e.download_allow_patterns)
+
+
+def test_sd35_medium_has_fp16_allow_patterns():
+    from screen_recorder.image_gen.model_catalog import by_id
+    e = by_id("sd35-medium")
+    assert e.download_allow_patterns is not None
+    assert any("fp16" in p for p in e.download_allow_patterns)
+
+
+def test_pixart_uses_ignore_patterns_not_allow():
+    """PixArt 는 variant 없음 — allow_patterns 대신 ignore 로 무거운 무관 파일 제외."""
+    from screen_recorder.image_gen.model_catalog import by_id
+    e = by_id("pixart-sigma-1024ms")
+    assert e.download_allow_patterns is None
+    assert e.download_ignore_patterns is not None
+    assert any(p == "*.bin" for p in e.download_ignore_patterns)

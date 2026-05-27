@@ -123,8 +123,14 @@ class ModelDownloadWindow(QDialog):
             self.phase_label.setStyleSheet("font-weight: bold; color: #2563eb;")  # 파랑
 
     def update_progress(self, received_bytes: int, total_bytes: int) -> None:
-        """다운로드 progress 갱신 — bar + MB / % 라벨."""
-        if total_bytes > 0:
+        """다운로드 progress 갱신 — bar + MB / % 라벨.
+
+        시각 일관성 (2026-05-27 사용자 보고): 추정 estimated 보다 실제 received 가
+        더 크면 (HF snapshot_download 가 모든 variant 받기 때문) 바는 100% 막대에
+        도달했는데 라벨엔 "100% (27918 / 7106 MB)" 처럼 숫자가 어긋남.
+        → received > total 이면 라벨도 "총량 미정" 모드로 전환.
+        """
+        if total_bytes > 0 and received_bytes <= total_bytes:
             pct = int(received_bytes / total_bytes * 100)
             pct = max(0, min(100, pct))
             self.progress_bar.setValue(pct)
@@ -132,9 +138,16 @@ class ModelDownloadWindow(QDialog):
             mb_total = total_bytes / (1024 * 1024)
             self.progress_label.setText(f"{pct}% ({mb_recv:.1f} / {mb_total:.1f} MB)")
         else:
-            # total 미상 — 받은 양만 표시.
+            # total 미상 OR 추정 초과 — 받은 양만 표시.
             mb_recv = received_bytes / (1024 * 1024)
-            self.progress_label.setText(f"{mb_recv:.1f} MB 받음 (전체 크기 미정)")
+            self.progress_bar.setRange(0, 0)   # 무한 막대로 전환
+            if total_bytes > 0:
+                mb_est = total_bytes / (1024 * 1024)
+                self.progress_label.setText(
+                    f"{mb_recv:.1f} MB 받음 (추정 {mb_est:.0f} MB 초과 — variant 다중 다운로드)"
+                )
+            else:
+                self.progress_label.setText(f"{mb_recv:.1f} MB 받음 (전체 크기 미정)")
 
     def append_log(self, text: str) -> None:
         """로그 한 줄 추가 + 스크롤 맨 아래로."""

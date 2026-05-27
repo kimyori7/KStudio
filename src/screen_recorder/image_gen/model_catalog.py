@@ -16,8 +16,38 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+
+# fp16 variant 받기용 표준 패턴 — SDXL/SD3.5/FLUX 모두 같은 diffusers 레이아웃.
+# HF snapshot_download 의 allow_patterns 로 전달.
+#
+# 배경 (2026-05-27 사용자 보고): SDXL 1.0 다운로드 시 카탈로그 추정 6.94GB 에 비해
+# 실제 27.9GB 받음. snapshot_download 기본 동작은 repo 의 모든 파일 (fp32 .bin +
+# fp16 .safetensors + native + non_ema 등 모든 variant) 을 받기 때문. fp16 만 골라
+# 받게 패턴 명시하면 카탈로그 추정값과 일치.
+DIFFUSERS_FP16_ALLOW = [
+    "*.json",                    # model_index.json + 각 sub-component config
+    "*.txt",                     # README, special_tokens_map.txt 등
+    "*.fp16.safetensors",        # fp16 weights (각 sub-dir 의)
+    "tokenizer*/**",             # tokenizer/, tokenizer_2/ 전체
+    "*.model",                   # sentencepiece (T5 등)
+    "*.spm",
+    "vocab*",
+    "merges*",
+]
+
+# variant 없는 모델 (PixArt 등) 용 — 명백히 큰 무관 파일만 제외.
+HEAVY_VARIANT_IGNORE = [
+    "*.bin",                     # PyTorch native (대부분 safetensors 와 중복)
+    "*.msgpack",                 # Flax
+    "*.ot",                      # Rust transformers
+    "*.onnx*",
+    "*.h5",                      # TensorFlow
+    "*.tflite",
+    "*non_ema*",                 # SD 의 non-EMA variant (필요 X)
+]
 
 
 @dataclass(frozen=True)
@@ -42,6 +72,9 @@ class ImageGenModelEntry:
     backend_kind: str                # "pixart" / "sdxl" / "sd35_medium" / "sd35_large" / "flux"
     is_implemented: bool             # 현재 코드에서 실제 generate 가능?
     description: str
+    # 다운로드 시 HF snapshot_download 에 넘길 패턴 — variant 다중 받기 방지.
+    download_allow_patterns: Optional[tuple[str, ...]] = None
+    download_ignore_patterns: Optional[tuple[str, ...]] = None
 
 
 CATALOG: tuple[ImageGenModelEntry, ...] = (
@@ -69,6 +102,8 @@ CATALOG: tuple[ImageGenModelEntry, ...] = (
             "사용자 환경에서는 CPU offload 강제라 1024×1024 한 장에 2~4분. "
             "라이선스: 비상업 (개인용/연구만)."
         ),
+        # FLUX 는 단일 .safetensors (flux1-dev.safetensors ~24GB) + T5/CLIP — variant 없음.
+        download_ignore_patterns=tuple(HEAVY_VARIANT_IGNORE),
     ),
     # Rank 2 — SD 3.5 Large. 8B MMDiT. CPU offload 강제 → 1~2분/장.
     ImageGenModelEntry(
@@ -93,6 +128,7 @@ CATALOG: tuple[ImageGenModelEntry, ...] = (
             "Stable Diffusion 3.5 Large — 8B MMDiT. 텍스트 충실도 우수, 손/구도 안정. "
             "사용자 환경에서 CPU offload 분 단위. 라이선스: Stability Community."
         ),
+        download_ignore_patterns=tuple(HEAVY_VARIANT_IGNORE),
     ),
     # Rank 3 — SD 3.5 Medium. 2.5B MMDiT. GPU fit. 10~20초/장. Phase 1 구현 대상.
     ImageGenModelEntry(
@@ -117,6 +153,8 @@ CATALOG: tuple[ImageGenModelEntry, ...] = (
             "Stable Diffusion 3.5 Medium — 2.5B MMDiT. 사용자 GPU 에 fit 하면서 텍스트 "
             "충실도 SDXL 이상. img2img 지원."
         ),
+        # SD 3.5 Medium 은 diffusers 레이아웃, fp16 variant 있음 (T5-XXL fp16 가 큰 비중).
+        download_allow_patterns=tuple(DIFFUSERS_FP16_ALLOW),
     ),
     # Rank 4 — SDXL 1.0. 6.6B UNet. GPU fit. 8~15초/장. Phase 1 구현 대상 (workhorse).
     ImageGenModelEntry(
@@ -141,6 +179,9 @@ CATALOG: tuple[ImageGenModelEntry, ...] = (
             "SDXL 1.0 — 6.6B U-Net + dual text encoder. 가장 표준화/안정. img2img 동일 "
             "weights 재사용. KStudio Phase 1 의 workhorse."
         ),
+        # SDXL repo 는 fp32 .bin + fp16 .safetensors + native + non_ema 모두 있어
+        # 전체 받으면 ~28GB. fp16 only 만 받으면 ~7GB (카탈로그 추정값과 일치).
+        download_allow_patterns=tuple(DIFFUSERS_FP16_ALLOW),
     ),
     # Rank 5 — PixArt-Sigma 1024MS. 0.6B DiT. 가장 가벼움 + 이미 캐시됨.
     ImageGenModelEntry(
@@ -165,6 +206,8 @@ CATALOG: tuple[ImageGenModelEntry, ...] = (
             "PixArt-Sigma 1024MS — 0.6B DiT + T5-XXL. 가장 가벼움 (CPU offload 시 GPU "
             "피크 ~1.5GB). T5 다국어라 한국어 프롬프트도 동작. text-to-image 전용."
         ),
+        # PixArt 는 single variant — 무거운 무관 파일만 제외.
+        download_ignore_patterns=tuple(HEAVY_VARIANT_IGNORE),
     ),
 )
 
