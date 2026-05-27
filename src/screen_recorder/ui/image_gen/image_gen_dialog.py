@@ -172,14 +172,19 @@ class _ReadyPanel(QWidget):
         strength_row.addWidget(QLabel("Strength:"))
         self.strength_slider = QSlider(Qt.Horizontal)
         self.strength_slider.setRange(10, 95)     # 0.10 ~ 0.95
-        self.strength_slider.setValue(70)         # 기본 0.70
+        # 기본 0.55 — SDXL/SD3 공식 권장 sweet spot (원본 구도 보존 + 충분한 변형).
+        # 0.7 이상은 거의 새 이미지가 되어 사용자가 의도한 "원본 + 변형" 흐름 깨짐
+        # (사용자 보고 2026-05-27: 좀비 prompt + strength 0.7 → 잿빛 풍경으로 변질).
+        self.strength_slider.setValue(55)
         self.strength_slider.valueChanged.connect(self._on_strength_changed)
         strength_row.addWidget(self.strength_slider, stretch=1)
-        self.strength_label = QLabel("0.70")
+        self.strength_label = QLabel("0.55")
         self.strength_label.setFixedWidth(40)
         strength_row.addWidget(self.strength_label)
         i2i_layout.addLayout(strength_row)
-        strength_hint = QLabel("낮을수록 원본 유지 · 높을수록 새 이미지")
+        strength_hint = QLabel(
+            "0.3~0.5 살짝 변형 · 0.5~0.65 권장 · 0.7+ 거의 새 이미지"
+        )
         strength_hint.setStyleSheet("color: #9CA3AF; font-size: 11px;")
         i2i_layout.addWidget(strength_hint)
 
@@ -588,6 +593,9 @@ class _ReadyPanel(QWidget):
                 "Image-to-Image 모드에서는 원본 이미지를 선택해주세요.",
             )
             return
+        # 직전 회 번역 라벨 stale 가능 — 새 generate 시작 시점에 hide. 번역 흐름이
+        # 다시 켤 거고, 영어 입력일 땐 hide 상태로 남아도 OK.
+        self.translated_label.setVisible(False)
         res = int(self.res_combo.currentData())
         seed_text = self.seed_edit.text().strip()
         try:
@@ -633,7 +641,9 @@ class _ReadyPanel(QWidget):
         if busy:
             self.progress_bar.setRange(0, 0)
             self.status_label.setText("준비 중…")
-            self.translated_label.setVisible(False)
+            # 번역 라벨은 건드리지 않음 — translate 흐름이 자체 관리 (show_translation
+            # 으로 켜진 뒤, generation_started 시점에 set_generating(True) 두 번째
+            # 호출이 강제로 hide 하면 사용자가 번역 결과를 못 봄. 사용자 보고 2026-05-27.
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
