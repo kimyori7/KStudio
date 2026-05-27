@@ -280,19 +280,40 @@ class _ReadyPanel(QWidget):
         self.generate_btn.setEnabled(not busy)
         self.cancel_btn.setEnabled(busy)
         self.progress_bar.setVisible(busy)
-        if not busy:
+        if busy:
+            # 첫 step 도달 전엔 indeterminate (회전 marquee) — load + 첫 step 까지 10~60초
+            # 동안 bar 가 0% 로 멈춰있어 "프리즈" 로 오해받는 회귀 차단 (사용자 보고 2026-05-27).
+            self.progress_bar.setRange(0, 0)
+            self.status_label.setText("준비 중…")
+        else:
+            self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
 
     def set_load_state(self, loading: bool) -> None:
-        """모델 콜드 로드 표시 (generate 첫 호출 시점에 5~15초)."""
+        """모델 콜드 로드 표시.
+
+        실측 (2026-05-27 사용자 환경): 첫 generate → diffusers import + PixArtSigmaPipeline
+        from_pretrained + accelerate CPU offload hook 등록 + 첫 step JIT = **10~60초** 가능.
+        그동안 progress_bar 는 indeterminate marquee 상태로 두고 status_label 로 안내.
+        """
         if loading:
-            self.status_label.setText("모델 로딩 중… (첫 생성은 추가 5~15초)")
+            self.status_label.setText(
+                "모델 메모리에 올리는 중… 처음엔 10~60초 걸릴 수 있어요"
+            )
+            self.generate_btn.setEnabled(False)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
         else:
-            self.status_label.setText("")
+            # load 끝나도 progress_bar / status_label 안 비움 — generation_started 가
+            # 곧 "Step 1/20" 으로 갱신. 비웠다가 다시 채우면 깜빡임.
+            pass
 
     def set_step(self, current: int, total: int) -> None:
         if total <= 0:
             return
+        # 첫 step 도달 — indeterminate marquee 에서 determinate 로 전환.
+        if self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
         pct = int(current / total * 100)
         self.progress_bar.setValue(pct)
         self.status_label.setText(f"Step {current}/{total}")
@@ -464,10 +485,13 @@ class ImageGenDock(QDockWidget):
     # ---- 생성 흐름 ----
     def _on_generate_requested(self, prompt: str, params: dict) -> None:
         rt = self._ensure_runtime()
+        # 클릭 즉시 버튼 비활성 + indeterminate progress — load_started / generation_started
+        # 시그널이 worker 스레드에서 큐잉돼 도착하는 동안의 빈 시간을 채움. 사용자가 두 번
+        # 클릭하거나 멈춤으로 오해하는 것 방지 (2026-05-27 보고).
+        self._ready_panel.set_generating(True)
         ok = rt.generate(prompt, **params)
-        if not ok:
-            # 이미 진행 중이거나 prompt 빈 경우 — runtime 이 알아서 generation_failed emit.
-            return
+        # ok=False (이미 진행 중 / 빈 prompt) 면 runtime 이 generation_failed 시그널 emit →
+        # _on_failed 가 set_generating(False) 호출해서 다시 활성화. 안전망 자동.
 
     def _on_cancel(self) -> None:
         if self._runtime is not None:

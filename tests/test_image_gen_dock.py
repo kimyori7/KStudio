@@ -146,6 +146,54 @@ def test_video_button_stays_disabled_after_result(qtbot, tmp_path, monkeypatch):
     assert not dock._ready_panel.video_btn.isEnabled()
 
 
+def test_generate_button_disables_immediately_on_click(qtbot, monkeypatch):
+    """클릭 즉시 비활성 — runtime 시그널 도착 전 race 회피 (2026-05-27)."""
+    from screen_recorder.ui.image_gen import image_gen_dock as mod
+
+    monkeypatch.setattr(mod, "_is_model_cached", lambda repo: True)
+    rt = _FakeRuntime()
+    dock = mod.ImageGenDock(runtime=rt)
+    qtbot.addWidget(dock)
+
+    dock._ready_panel.prompt_edit.setPlainText("test")
+    assert dock._ready_panel.generate_btn.isEnabled()
+    dock._ready_panel._on_generate_clicked()
+    assert not dock._ready_panel.generate_btn.isEnabled()
+    assert dock._ready_panel.cancel_btn.isEnabled()
+
+
+def test_progress_bar_indeterminate_during_load(qtbot, monkeypatch):
+    """load 중엔 progress_bar 가 indeterminate (range 0~0) — '멈춤' 오해 방지."""
+    from screen_recorder.ui.image_gen import image_gen_dock as mod
+
+    monkeypatch.setattr(mod, "_is_model_cached", lambda repo: True)
+    dock = mod.ImageGenDock(runtime=_FakeRuntime())
+    qtbot.addWidget(dock)
+
+    dock._ready_panel.set_load_state(True)
+    # offscreen 플랫폼에선 isVisible() 이 parent 의 hide 상태로 False 일 수 있어 maximum 만 검증.
+    assert dock._ready_panel.progress_bar.maximum() == 0   # indeterminate
+    assert not dock._ready_panel.generate_btn.isEnabled()
+    assert "10~60초" in dock._ready_panel.status_label.text()
+
+
+def test_progress_bar_becomes_determinate_on_first_step(qtbot, monkeypatch):
+    """첫 step 도달 시 indeterminate → 0~100 determinate 전환."""
+    from screen_recorder.ui.image_gen import image_gen_dock as mod
+
+    monkeypatch.setattr(mod, "_is_model_cached", lambda repo: True)
+    dock = mod.ImageGenDock(runtime=_FakeRuntime())
+    qtbot.addWidget(dock)
+
+    dock._ready_panel.set_generating(True)
+    assert dock._ready_panel.progress_bar.maximum() == 0
+
+    dock._ready_panel.set_step(1, 20)
+    assert dock._ready_panel.progress_bar.maximum() == 100
+    assert dock._ready_panel.progress_bar.value() == 5
+    assert "Step 1/20" in dock._ready_panel.status_label.text()
+
+
 def test_uninstalled_download_button_signals_dock(qtbot, monkeypatch):
     """미설치 패널의 다운로드 버튼이 _start_download 호출."""
     from screen_recorder.ui.image_gen import image_gen_dock as mod
