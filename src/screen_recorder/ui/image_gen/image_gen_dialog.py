@@ -138,6 +138,20 @@ class _ReadyPanel(QWidget):
             "(또는 영어로 직접: A calico cat by a sunset window, cinematic close-up)"
         )
         self.prompt_edit.setFixedHeight(80)
+        # 메인 배경과 동화돼 입력 영역인지 안 보이는 회귀 fix (사용자 보고 2026-05-27).
+        # 한 단계 밝은 surface + border + focus 시 emerald 강조.
+        self.prompt_edit.setStyleSheet(
+            "QTextEdit {"
+            " background-color: #252932;"
+            " border: 1px solid #3F4554;"
+            " border-radius: 4px;"
+            " padding: 6px 8px;"
+            " color: #E8EAED;"
+            "}"
+            "QTextEdit:focus {"
+            " border: 1px solid #10B981;"
+            "}"
+        )
         outer.addWidget(self.prompt_edit)
 
         translate_row = QHBoxLayout()
@@ -204,7 +218,21 @@ class _ReadyPanel(QWidget):
 
         action_row = QHBoxLayout()
         self.generate_btn = QPushButton("생성하기")
-        self.generate_btn.setStyleSheet("padding: 6px 14px; font-weight: bold;")
+        # 주요 액션 강조 — 다크 배경과 명확히 구분 (사용자 보고 2026-05-27 "어딜 눌러야할지를 모르겠네").
+        # image 팔레트의 primary (#10B981 emerald) — 모드 무관 박아넣음.
+        self.generate_btn.setStyleSheet(
+            "QPushButton {"
+            " background-color: #10B981;"
+            " color: white;"
+            " border: none;"
+            " border-radius: 4px;"
+            " padding: 8px 22px;"
+            " font-weight: bold;"
+            "}"
+            "QPushButton:hover { background-color: #34D399; }"
+            "QPushButton:pressed { background-color: #047857; }"
+            "QPushButton:disabled { background-color: #2F343F; color: #6B7280; }"
+        )
         self.generate_btn.clicked.connect(self._on_generate_clicked)
         action_row.addWidget(self.generate_btn)
         self.cancel_btn = QPushButton("취소")
