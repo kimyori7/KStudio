@@ -50,8 +50,16 @@ class ImageGenBackend(Protocol):
         seed: Optional[int] = None,
         step_cb: Optional[StepCallback] = None,
         out_path: Optional[Path] = None,
+        # Image-to-Image 모드: reference_image 가 제공되면 i2i pipeline 사용,
+        # 없으면 t2i (text-to-image). strength 0.0 = 원본 유지, 1.0 = 거의 새 이미지.
+        # 일부 backend (PixArt) 는 i2i 미지원 — reference 받으면 NotImplementedError.
+        reference_image: Optional[Path] = None,
+        strength: float = 0.7,
     ) -> Path:
         """1장 생성. 결과 이미지를 out_path (None 이면 임시 파일) 에 저장하고 경로 반환.
+
+        - reference_image None → t2i (text-to-image).
+        - reference_image 제공 → i2i (image-to-image). backend 미지원 시 NotImplementedError.
 
         cancel 요청을 받으면 ``InterruptedError`` 를 raise.
         step_cb 는 매 step 후 호출 — UI progress.

@@ -74,11 +74,20 @@ class PixArtSigmaBackend(ImageGenBackend):
         seed: Optional[int] = None,
         step_cb: Optional[StepCallback] = None,
         out_path: Optional[Path] = None,
+        reference_image: Optional[Path] = None,
+        strength: float = 0.7,
     ) -> Path:
         if self._pipe is None:
             raise RuntimeError("backend not loaded — call load() first")
         if not prompt or not prompt.strip():
             raise ValueError("prompt 가 비었습니다")
+        if reference_image is not None:
+            # PixArt-Sigma 는 diffusers 표준 img2img pipeline 이 없음 — Phase 1 미지원.
+            # 카탈로그 entry 의 supports_i2i=False 와 일치.
+            raise NotImplementedError(
+                "PixArt-Sigma 백엔드는 image-to-image 를 지원하지 않습니다. "
+                "SDXL 또는 SD 3.5 Medium 을 사용하세요."
+            )
 
         import torch
 

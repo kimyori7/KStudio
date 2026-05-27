@@ -58,12 +58,14 @@ class _FakeBackend:
 
     def generate(self, prompt, *, width=1024, height=1024,
                  num_inference_steps=20, guidance_scale=4.5,
-                 seed=None, step_cb=None, out_path=None) -> Path:
+                 seed=None, step_cb=None, out_path=None,
+                 reference_image=None, strength=0.7) -> Path:
         self.generate_calls += 1
         self.last_params = dict(
             prompt=prompt, width=width, height=height,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale, seed=seed,
+            reference_image=reference_image, strength=strength,
         )
         if self._fail_msg:
             raise RuntimeError(self._fail_msg)
