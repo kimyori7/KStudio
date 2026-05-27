@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -246,8 +246,9 @@ class _ReadyPanel(QWidget):
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("해상도:"))
         self.res_combo = QComboBox()
-        for label, value in [("1024×1024", 1024), ("768×768", 768), ("512×512", 512)]:
-            self.res_combo.addItem(label, value)
+        # 라벨은 모델별 default_resolution 에 따라 _refresh_resolution_labels 가 갱신.
+        for value in (1024, 768, 512):
+            self.res_combo.addItem(f"{value}×{value}", value)
         self.res_combo.setCurrentIndex(0)
         row1.addWidget(self.res_combo, stretch=1)
         opts.addLayout(row1)
@@ -446,8 +447,23 @@ class _ReadyPanel(QWidget):
                 f"⬇ {entry.display_name} 미설치 — 다운로드 후 생성 가능"
             )
 
-        # 모델별 기본값을 UI 에 반영 (사용자가 변경한 값은 다른 모델 선택 시 덮어쓰지 않음).
-        # 한 번만 — populate 직후 초기값 세팅.
+        # 모델별 추천 해상도를 dropdown 라벨에 (추천) 으로 표시.
+        self._refresh_resolution_labels(entry)
+
+    def _refresh_resolution_labels(self, entry: ImageGenModelEntry) -> None:
+        """현재 선택 모델의 default_resolution 항목에 '(추천)' 라벨 표시.
+
+        SDXL/SD3/PixArt 모두 1024 학습 기본이지만 향후 모델별로 다를 수 있어 동적 처리.
+        """
+        default_res = entry.default_resolution
+        self.res_combo.blockSignals(True)
+        for i in range(self.res_combo.count()):
+            value = self.res_combo.itemData(i)
+            base = f"{value}×{value}"
+            self.res_combo.setItemText(i, f"{base} (추천)" if value == default_res else base)
+        # 현재 선택값이 추천 해상도와 다른 default 일 경우 자동으로 (추천) 으로 이동.
+        # 단 사용자가 명시적으로 다른 해상도를 골랐을 수 있어 — populate 직후 한 번만.
+        self.res_combo.blockSignals(False)
 
     def refresh_after_download(self) -> None:
         """다운로드 완료 후 호출 — 캐시 상태 다시 검사하고 UI 갱신."""
@@ -480,9 +496,16 @@ class _ReadyPanel(QWidget):
         )
         if not path:
             return
-        self._reference_path = Path(path)
-        self.ref_path_label.setText(Path(path).name)
-        pix = QPixmap(path)
+        self._set_reference_from_path(Path(path), label=Path(path).name)
+
+    def _set_reference_from_path(
+        self, path: Path, *, label: Optional[str] = None,
+        switch_to_i2i: bool = False,
+    ) -> None:
+        """파일 path 로 원본 세팅 — file picker / clipboard 의 url 분기에서 호출."""
+        self._reference_path = path
+        self.ref_path_label.setText(label or path.name)
+        pix = QPixmap(str(path))
         if not pix.isNull():
             scaled = pix.scaled(
                 self.ref_preview.size(),
@@ -490,6 +513,64 @@ class _ReadyPanel(QWidget):
                 Qt.SmoothTransformation,
             )
             self.ref_preview.setPixmap(scaled)
+        if switch_to_i2i and not self.i2i_radio.isChecked():
+            self.i2i_radio.setChecked(True)
+
+    def paste_reference_from_clipboard(self) -> bool:
+        """클립보드의 이미지를 i2i 원본으로 세팅 + i2i 모드 자동 전환.
+
+        우선순위: QImage (스크린샷/이미지 앱 copy) → file URL (탐색기에서 이미지 파일 copy).
+        성공 시 True. 클립보드에 이미지 없으면 False (호출자가 텍스트 paste 등 fallback).
+        """
+        from PySide6.QtGui import QGuiApplication, QImage
+        clipboard = QGuiApplication.clipboard()
+
+        # 1) raw 이미지 (스크린샷 / 이미지 앱 copy) — 가장 흔한 케이스.
+        img = clipboard.image()
+        if not img.isNull():
+            return self._set_reference_from_qimage(img, label="(클립보드 이미지)")
+
+        # 2) 파일 URL — 탐색기에서 이미지 파일 copy 한 경우.
+        mime = clipboard.mimeData()
+        if mime is not None and mime.hasUrls():
+            for url in mime.urls():
+                if not url.isLocalFile():
+                    continue
+                file_path = url.toLocalFile()
+                file_img = QImage(file_path)
+                if not file_img.isNull():
+                    self._set_reference_from_path(
+                        Path(file_path),
+                        label=Path(file_path).name,
+                        switch_to_i2i=True,
+                    )
+                    self.status_label.setText(
+                        f"📋 클립보드: {Path(file_path).name} 을 원본으로 사용"
+                    )
+                    return True
+        return False
+
+    def _set_reference_from_qimage(self, q_image, *, label: str) -> bool:
+        """QImage → 임시 PNG 로 저장 후 _reference_path 세팅 + i2i 모드 전환."""
+        import tempfile
+        import os
+        fd, tmp = tempfile.mkstemp(prefix="kstudio_clip_", suffix=".png")
+        os.close(fd)
+        if not q_image.save(tmp, "PNG"):
+            return False
+        self._reference_path = Path(tmp)
+        self.ref_path_label.setText(label)
+        pix = QPixmap.fromImage(q_image).scaled(
+            self.ref_preview.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.ref_preview.setPixmap(pix)
+        # 클립보드 paste 는 명백한 i2i 의도 → 모드 자동 전환.
+        if not self.i2i_radio.isChecked():
+            self.i2i_radio.setChecked(True)
+        self.status_label.setText("📋 클립보드 이미지를 원본으로 사용 — i2i 모드로 전환")
+        return True
 
     def _on_strength_changed(self, value: int) -> None:
         self.strength_label.setText(f"{value / 100:.2f}")
@@ -672,6 +753,12 @@ class ImageGenDialog(QDialog):
         self._panel.download_requested.connect(self._on_download_requested)
         outer.addWidget(self._panel)
 
+        # Ctrl+V — 다이얼로그가 활성화된 상태에서 클립보드 이미지 → i2i 원본 자동 세팅.
+        # 사용자 결정 2026-05-27: prompt 칸에 focus 있을 땐 텍스트 paste 가 우선 (충돌 회피).
+        self._paste_shortcut = QShortcut(QKeySequence.Paste, self)
+        self._paste_shortcut.setContext(Qt.WindowShortcut)
+        self._paste_shortcut.activated.connect(self._handle_paste_shortcut)
+
     def _ensure_runtime(self) -> ImageGenRuntime:
         if self._runtime is None:
             self._runtime = ImageGenRuntime()
@@ -700,6 +787,26 @@ class ImageGenDialog(QDialog):
         rt = self._ensure_runtime()
         if hasattr(rt, "set_auto_translate"):
             rt.set_auto_translate(on)
+
+    def _handle_paste_shortcut(self) -> None:
+        """Ctrl+V — focus 위치 보고 텍스트 paste vs 이미지 paste 분기.
+
+        - prompt_edit / seed_edit 에 focus → 기본 텍스트 paste 동작 유지 (사용자가 텍스트 입력 중).
+        - 그 외 (다이얼로그 빈 영역, dropdown 등) → 클립보드 이미지를 i2i 원본으로 세팅.
+        """
+        focus_w = self.focusWidget()
+        if focus_w is self._panel.prompt_edit:
+            self._panel.prompt_edit.paste()
+            return
+        if focus_w is self._panel.seed_edit:
+            self._panel.seed_edit.paste()
+            return
+        # 그 외 → 이미지 paste 시도.
+        if not self._panel.paste_reference_from_clipboard():
+            # 클립보드에 이미지 없으면 — 빈 영역에선 그냥 무시.
+            self._panel.status_label.setText(
+                "클립보드에 이미지가 없습니다. 스크린샷 또는 이미지 복사 후 다시 시도."
+            )
 
     def _on_model_changed(self, model_id: str) -> None:
         """사용자가 dropdown 에서 다른 모델 선택 — runtime 의 backend 교체."""

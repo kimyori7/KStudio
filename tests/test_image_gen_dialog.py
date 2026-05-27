@@ -374,6 +374,102 @@ def test_progress_bar_becomes_determinate_on_first_step(qtbot, monkeypatch):
     assert "Step 1/20" in dlg._panel.status_label.text()
 
 
+def test_recommended_resolution_marked_in_dropdown(qtbot, monkeypatch):
+    """해상도 dropdown 에서 모델의 default_resolution 항목에 '(추천)' 라벨."""
+    from screen_recorder.ui.image_gen import image_gen_dialog as mod
+    from screen_recorder.image_gen.model_catalog import by_id
+
+    monkeypatch.setattr(mod, "_is_model_cached", _all_cached)
+    dlg = mod.ImageGenDialog(runtime=_FakeRuntime())
+    qtbot.addWidget(dlg)
+
+    entry = by_id(dlg._panel.model_combo.currentData())
+    assert entry is not None
+    default_res = entry.default_resolution
+
+    # default_resolution 항목 라벨에 "(추천)" 포함, 나머지엔 없음.
+    found_rec = False
+    for i in range(dlg._panel.res_combo.count()):
+        value = dlg._panel.res_combo.itemData(i)
+        text = dlg._panel.res_combo.itemText(i)
+        if value == default_res:
+            assert "(추천)" in text
+            found_rec = True
+        else:
+            assert "(추천)" not in text
+    assert found_rec
+
+
+def test_clipboard_paste_sets_reference_and_switches_to_i2i(qtbot, monkeypatch):
+    """Ctrl+V → 클립보드 이미지 → reference path 세팅 + i2i 모드 자동 전환."""
+    from screen_recorder.ui.image_gen import image_gen_dialog as mod
+    from PySide6.QtGui import QGuiApplication, QImage, QColor
+
+    monkeypatch.setattr(mod, "_is_model_cached", _all_cached)
+    dlg = mod.ImageGenDialog(runtime=_FakeRuntime())
+    qtbot.addWidget(dlg)
+
+    # 초기: t2i 모드, reference 없음.
+    assert dlg._panel.t2i_radio.isChecked()
+    assert dlg._panel._reference_path is None
+
+    # 클립보드에 빨간색 32×32 이미지 set.
+    test_img = QImage(32, 32, QImage.Format_ARGB32)
+    test_img.fill(QColor(255, 0, 0))
+    QGuiApplication.clipboard().setImage(test_img)
+
+    # paste handler 직접 호출 (shortcut.activated 와 동등).
+    ok = dlg._panel.paste_reference_from_clipboard()
+    assert ok is True
+    assert dlg._panel._reference_path is not None
+    assert dlg._panel._reference_path.exists()
+    assert dlg._panel.i2i_radio.isChecked()   # i2i 모드 자동 전환
+    assert "클립보드" in dlg._panel.status_label.text()
+
+
+def test_clipboard_paste_returns_false_when_no_image(qtbot, monkeypatch):
+    """클립보드에 이미지 없으면 False — 호출자가 fallback 가능."""
+    from screen_recorder.ui.image_gen import image_gen_dialog as mod
+    from PySide6.QtGui import QGuiApplication
+
+    monkeypatch.setattr(mod, "_is_model_cached", _all_cached)
+    dlg = mod.ImageGenDialog(runtime=_FakeRuntime())
+    qtbot.addWidget(dlg)
+
+    QGuiApplication.clipboard().clear()
+    QGuiApplication.clipboard().setText("just text, no image")
+
+    ok = dlg._panel.paste_reference_from_clipboard()
+    assert ok is False
+    assert dlg._panel._reference_path is None
+
+
+def test_paste_shortcut_routes_to_prompt_when_prompt_focused(qtbot, monkeypatch):
+    """prompt_edit 에 focus 있으면 텍스트 paste 가 우선 — 이미지 paste 안 함."""
+    from screen_recorder.ui.image_gen import image_gen_dialog as mod
+    from PySide6.QtGui import QGuiApplication, QImage, QColor
+
+    monkeypatch.setattr(mod, "_is_model_cached", _all_cached)
+    dlg = mod.ImageGenDialog(runtime=_FakeRuntime())
+    qtbot.addWidget(dlg)
+    dlg.show()   # focus 동작에 widget visible 필요.
+
+    # 클립보드에 이미지 + 텍스트 둘다 (PySide 가 image 우선이지만 prompt focus 면 텍스트 paste).
+    img = QImage(8, 8, QImage.Format_ARGB32)
+    img.fill(QColor(0, 0, 255))
+    QGuiApplication.clipboard().clear()
+    QGuiApplication.clipboard().setImage(img)
+    QGuiApplication.clipboard().setText("hello prompt")  # setText 가 image 덮을 수 있음
+
+    # prompt_edit 에 focus 설정.
+    dlg._panel.prompt_edit.setFocus()
+    dlg._handle_paste_shortcut()
+
+    # reference 는 안 들어감 (텍스트 paste 경로).
+    assert dlg._panel._reference_path is None
+    dlg.hide()
+
+
 def test_close_emits_closed_signal(qtbot, monkeypatch):
     """X 닫기 → closed 시그널 발화 (main_window 가 메뉴 체크 해제)."""
     from screen_recorder.ui.image_gen import image_gen_dialog as mod
