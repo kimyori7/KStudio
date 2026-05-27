@@ -155,23 +155,35 @@ class _ReadyPanel(QWidget):
         outer.addWidget(self.prompt_edit)
 
         translate_row = QHBoxLayout()
-        self.auto_translate_check = QCheckBox("한국어 → 영어 자동 번역 (NLLB-200)")
+        self.auto_translate_check = QCheckBox("한국어 → 영어 자동 번역 (Qwen3-VL 2B)")
         self.auto_translate_check.setChecked(True)
         self.auto_translate_check.setToolTip(
             "PixArt 는 영어 학습이 99% 라 한국어 직접 입력 시 결과가 부정확합니다. "
-            "켜져 있으면 로컬 NLLB-200 모델로 자동 번역 (첫 호출 5~10초, 이후 ~0.5초). "
-            "ComfyUI 커뮤니티의 프롬프트 번역 표준."
+            "켜져 있으면 로컬 Qwen3-VL 2B (instruction-tuned) 로 자동 번역 — "
+            "시각 디테일 (노을/달빛/영화 같은 등) 과 고유명사 (한복/떡볶이/지브리) 보존. "
+            "첫 호출 5~15초, 이후 ~1~2초."
         )
         self.auto_translate_check.toggled.connect(self.auto_translate_toggled)
         translate_row.addWidget(self.auto_translate_check)
         translate_row.addStretch(1)
         outer.addLayout(translate_row)
 
+        # 번역 결과 표시 — 다크 배경에서 또렷이 보이도록 emerald accent border + 큰 글자.
+        # 사용자 보고 2026-05-27: "어떻게 번역됐는지 보여줘" + "노을이 비치는 땅 → nook 어쩌고".
+        # 번역 정확도가 떨어질 때 사용자가 즉시 알아채고 영어로 재시도할 수 있도록 가시성 최우선.
         self.translated_label = QLabel("")
         self.translated_label.setWordWrap(True)
+        self.translated_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.translated_label.setStyleSheet(
-            "color: #6b7280; font-size: 11px; font-style: italic; "
-            "padding: 4px 6px; background: #f3f4f6; border-radius: 3px;"
+            "QLabel {"
+            " color: #E8EAED;"
+            " font-size: 12px;"
+            " padding: 8px 10px;"
+            " background: #1F2630;"
+            " border: 1px solid #10B981;"
+            " border-left: 3px solid #10B981;"
+            " border-radius: 4px;"
+            "}"
         )
         self.translated_label.setVisible(False)
         outer.addWidget(self.translated_label)
@@ -388,8 +400,14 @@ class _ReadyPanel(QWidget):
         self.translated_label.setVisible(False)
 
     def show_translation(self, source_ko: str, translated_en: str) -> None:
+        # 원문/번역 양쪽 모두 표시 — 번역이 누락/왜곡됐을 때 사용자가 즉시 알 수 있게.
+        ko_short = source_ko if len(source_ko) <= 200 else source_ko[:200] + "…"
         en_short = translated_en if len(translated_en) <= 200 else translated_en[:200] + "…"
-        self.translated_label.setText(f"번역됨 → {en_short}")
+        self.translated_label.setText(
+            f"<b style='color:#10B981;'>📝 한 → 영 번역됨</b><br>"
+            f"<span style='color:#9CA3AF;'>원문:</span> {ko_short}<br>"
+            f"<span style='color:#9CA3AF;'>영어:</span> <b>{en_short}</b>"
+        )
         self.translated_label.setVisible(True)
 
     def _push_recent(self, path: str, max_keep: int = 8) -> None:
