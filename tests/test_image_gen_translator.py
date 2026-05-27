@@ -11,6 +11,15 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clear_translation_cache():
+    """각 테스트가 깨끗한 캐시로 시작."""
+    from screen_recorder.image_gen import translator
+    translator.clear_translation_cache()
+    yield
+    translator.clear_translation_cache()
+
+
 def test_has_korean_detects_hangul():
     from screen_recorder.image_gen.translator import has_korean
 
@@ -52,6 +61,52 @@ def test_translate_sync_returns_english_on_success(monkeypatch):
     monkeypatch.setattr(mod, "_translate_via_claude", _fake)
     result = mod.translate_to_english_sync("노을이 비치는 창가의 고양이")
     assert result == "a calico cat sitting by a sunset window"
+
+
+def test_translate_sync_caches_result(monkeypatch):
+    """두 번째 같은 prompt 호출 시 SDK 안 거치고 캐시 반환."""
+    from screen_recorder.image_gen import translator as mod
+
+    mod.clear_translation_cache()
+    call_count = {"n": 0}
+
+    async def _fake(prompt, model):
+        call_count["n"] += 1
+        return f"english v{call_count['n']}"
+
+    monkeypatch.setattr(mod, "_translate_via_claude", _fake)
+
+    first = mod.translate_to_english_sync("고양이")
+    assert first == "english v1"
+    assert call_count["n"] == 1
+
+    second = mod.translate_to_english_sync("고양이")
+    assert second == "english v1"   # 캐시 — 같은 결과
+    assert call_count["n"] == 1     # SDK 다시 호출 안 함
+
+    # 다른 prompt 는 새 호출.
+    third = mod.translate_to_english_sync("강아지")
+    assert third == "english v2"
+    assert call_count["n"] == 2
+
+
+def test_clear_translation_cache_resets(monkeypatch):
+    from screen_recorder.image_gen import translator as mod
+
+    mod.clear_translation_cache()
+    call_count = {"n": 0}
+
+    async def _fake(prompt, model):
+        call_count["n"] += 1
+        return f"v{call_count['n']}"
+
+    monkeypatch.setattr(mod, "_translate_via_claude", _fake)
+
+    mod.translate_to_english_sync("고양이")
+    assert call_count["n"] == 1
+    mod.clear_translation_cache()
+    mod.translate_to_english_sync("고양이")
+    assert call_count["n"] == 2   # 캐시 비웠으니 다시 호출
 
 
 def test_translate_sync_strips_common_prefixes(monkeypatch):

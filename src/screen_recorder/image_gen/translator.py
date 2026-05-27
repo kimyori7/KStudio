@@ -68,6 +68,19 @@ async def _translate_via_claude(prompt: str, model: str) -> str:
     return out
 
 
+# 세션 내 번역 결과 캐시 — 같은 한국어 prompt 재시도 시 즉시 반환.
+# 실측 (2026-05-27 사용자 보고): claude_agent_sdk.query() 는 매번 Claude CLI subprocess
+# 를 새로 spawn → Node.js 시작 + TLS handshake + 인증으로 5~10초 over head. 첫 번역은
+# 어쩔 수 없지만 같은 prompt 재시도 / seed 만 바꿔 재생성 같은 흐름에서 캐시 효과 큼.
+# 영속 X — 메모리 dict 만. KStudio 재시작 시 비움.
+_translation_cache: dict[str, str] = {}
+
+
+def clear_translation_cache() -> None:
+    """테스트 / 사용자 메모리 회수 용."""
+    _translation_cache.clear()
+
+
 def translate_to_english_sync(
     prompt: str,
     *,
@@ -77,15 +90,23 @@ def translate_to_english_sync(
 
     반환:
     - 한글 없으면 None (호출자가 원본 그대로 사용)
-    - 번역 성공 시 영어 문자열
+    - 번역 성공 시 영어 문자열 (캐시 hit 시 즉시)
     - Claude SDK 실패 (의존성 / 인증 / 네트워크 등) 시 None — 호출자가 원본 fallback
 
-    haiku 기본 — 짧은 번역에 1~2초. sonnet 으로 바꾸면 더 정확하지만 5~10초.
+    첫 번역은 Claude CLI subprocess spawn + TLS handshake 로 5~10초 — 두 번째 같은
+    prompt 부터는 메모리 캐시로 0초.
     """
     if not has_korean(prompt):
         return None
+    cached = _translation_cache.get(prompt)
+    if cached is not None:
+        _log.info("translation cache hit (len=%d)", len(prompt))
+        return cached
     try:
-        return asyncio.run(_translate_via_claude(prompt, model))
+        result = asyncio.run(_translate_via_claude(prompt, model))
+        if result:
+            _translation_cache[prompt] = result
+        return result
     except Exception:
         _log.exception("Korean→English translation failed — falling back to original prompt")
         return None
