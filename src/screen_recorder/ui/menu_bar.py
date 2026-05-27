@@ -40,7 +40,8 @@ class KStudioMenuBar(QMenuBar):
     tool_palette_visibility_toggled = Signal(bool)
     layers_visibility_toggled = Signal(bool)
     library_visibility_toggled = Signal(bool)
-    image_gen_visibility_toggled = Signal(bool)   # 이미지 생성 패널 (2026-05-26)
+    agent_panel_visibility_toggled = Signal(bool)   # 에이전트 패널 (2026-05-27)
+    image_gen_visibility_toggled = Signal(bool)     # 이미지 생성 패널 (2026-05-26)
     # 녹화
     record_start_requested = Signal()
     record_stop_requested = Signal()
@@ -210,6 +211,15 @@ class KStudioMenuBar(QMenuBar):
         self.status_visible_action.setChecked(True)
         self.status_visible_action.toggled.connect(self.record_status_visibility_toggled.emit)
         m_window.addAction(self.status_visible_action)
+
+        # 에이전트 패널 — Ctrl+Shift+A (Agent). 2026-05-27 추가 — 그동안 X 로만 닫을 수
+        # 있고 다시 열려면 재시작 필요했음. 사용자 보고로 토글 추가.
+        self.agent_panel_visible_action = QAction(tr("에이전트"), self)
+        self.agent_panel_visible_action.setCheckable(True)
+        self.agent_panel_visible_action.setChecked(True)
+        self.agent_panel_visible_action.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self.agent_panel_visible_action.toggled.connect(self.agent_panel_visibility_toggled.emit)
+        m_window.addAction(self.agent_panel_visible_action)
 
         # 이미지 생성 패널 — Ctrl+Shift+G (Generate). Ctrl+Shift+I 는 이미지 크기 변경에
         # 점유 중이라 다른 키 사용. 2026-05-26 추가.

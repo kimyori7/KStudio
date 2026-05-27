@@ -124,6 +124,10 @@ class PreferencesSettings:
     library_dock_visible: bool = True
     layers_dock_visible: bool = True
     record_status_dock_visible: bool = True
+    # 에이전트 채팅 패널 (Claude/Qwen 등). 기본 True — 첫 실행 사용자에게 노출.
+    agent_panel_visible: bool = True
+    # 이미지 생성 패널. 기본 False — 옵트인 기능 (~6.3GB 모델 다운로드 필요).
+    image_gen_dock_visible: bool = False
     # 사이드카(.kvedit) 저장 폴더. 빈 문자열 = OS 기본 (%APPDATA%\KStudio\sidecars).
     sidecar_dir: str = ""
     # 파일 → 열기 다이얼로그의 마지막 사용 폴더. 빈 문자열 = 사용자 홈.

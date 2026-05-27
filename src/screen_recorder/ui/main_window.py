@@ -264,7 +264,11 @@ class _DockCloseFilter(QObject):
     """dock 의 X 버튼 close 만 잡아 menu_check 를 false 로. setVisible(False) 는 안 잡힘."""
     def __init__(self, dock_action_map: dict) -> None:
         super().__init__()
-        self._map = dock_action_map
+        self._map = dict(dock_action_map)
+
+    def add(self, dock, action) -> None:
+        """lazy 생성된 dock (예: ImageGenDock) 을 사후 등록."""
+        self._map[dock] = action
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() == QEvent.Close:
@@ -617,17 +621,28 @@ class MainWindow(QMainWindow):
         # Phase 23: dock 가시성 메뉴 액션 상태를 settings 에서 복원 (X 닫음 영속).
         # _restore_dock_state 전에 해야 enforce_dock_visibility 가 메뉴 상태를 올바로 본다.
         prefs = self.app_settings.preferences
-        for action, attr in (
-            (self.menu_bar.library_visible_action, "library_dock_visible"),
-            (self.menu_bar.layers_visible_action, "layers_dock_visible"),
-            (self.menu_bar.status_visible_action, "record_status_dock_visible"),
+        for action, attr, default in (
+            (self.menu_bar.library_visible_action, "library_dock_visible", True),
+            (self.menu_bar.layers_visible_action, "layers_dock_visible", True),
+            (self.menu_bar.status_visible_action, "record_status_dock_visible", True),
+            (self.menu_bar.agent_panel_visible_action, "agent_panel_visible", True),
+            (self.menu_bar.image_gen_visible_action, "image_gen_dock_visible", False),
         ):
             action.blockSignals(True)
-            action.setChecked(bool(getattr(prefs, attr, True)))
+            action.setChecked(bool(getattr(prefs, attr, default)))
             action.blockSignals(False)
 
         # dock 레이아웃 복원 — 사용자가 직전 세션에 옮긴 위치/크기/floating 상태 그대로.
         self._restore_dock_state()
+
+        # 영속화된 가시성 적용 (2026-05-27):
+        # - agent: 메뉴 신호 connection 시점에 이미 토글 처리되므로 setVisible 만 명시.
+        # - image_gen: lazy 생성이라 settings 가 True 면 시작 시 즉시 생성.
+        self.agent_chat_panel.setVisible(
+            self.menu_bar.agent_panel_visible_action.isChecked()
+        )
+        if self.menu_bar.image_gen_visible_action.isChecked():
+            self._on_image_gen_visibility_toggled(True)
 
         # Phase 23: 폴더 스캔 대신 "최근 연 파일" 영속 목록 복원.
         # settings.preferences.recent_library_entries 에서 읽어 path.exists() 통과한
@@ -877,6 +892,10 @@ class MainWindow(QMainWindow):
         self.menu_bar.record_status_visibility_toggled.connect(self._on_record_status_visibility_toggled)
         # 이미지 생성 패널 토글 (Ctrl+Shift+G 또는 창 메뉴) — 첫 토글 시 lazy 생성.
         self.menu_bar.image_gen_visibility_toggled.connect(self._on_image_gen_visibility_toggled)
+        self.menu_bar.image_gen_visibility_toggled.connect(self._on_image_gen_dock_visibility_persist)
+        # 에이전트 패널 토글 (Ctrl+Shift+A 또는 창 메뉴) — 2026-05-27 추가.
+        self.menu_bar.agent_panel_visibility_toggled.connect(self.agent_chat_panel.setVisible)
+        self.menu_bar.agent_panel_visibility_toggled.connect(self._on_agent_panel_visibility_persist)
         # Phase 23: dock 가시성을 settings 에 영속화 — X 로 닫은 dock 이 재시작 후 다시 보이던 회귀 fix.
         self.menu_bar.library_visibility_toggled.connect(self._on_library_dock_visibility_persist)
         self.menu_bar.layers_visibility_toggled.connect(self._on_layers_dock_visibility_persist)
@@ -1416,8 +1435,10 @@ class MainWindow(QMainWindow):
             self.library_dock: self.menu_bar.library_visible_action,
             self.layers_dock:  self.menu_bar.layers_visible_action,
             self.record_status_dock: self.menu_bar.status_visible_action,
+            self.agent_chat_panel: self.menu_bar.agent_panel_visible_action,
         })
-        for dock in (self.library_dock, self.layers_dock, self.record_status_dock):
+        for dock in (self.library_dock, self.layers_dock,
+                     self.record_status_dock, self.agent_chat_panel):
             dock.installEventFilter(self._dock_close_filter)
 
     def _enforce_dock_visibility(self) -> None:
@@ -2840,6 +2861,13 @@ class MainWindow(QMainWindow):
                     self._on_generated_image_for_video
                 )
                 self.addDockWidget(Qt.RightDockWidgetArea, self.image_gen_dock)
+                # X 로 닫음 → 메뉴 체크 unchecked (영속). lazy 생성이라 여기서 등록.
+                if hasattr(self, "_dock_close_filter"):
+                    self._dock_close_filter.add(
+                        self.image_gen_dock,
+                        self.menu_bar.image_gen_visible_action,
+                    )
+                    self.image_gen_dock.installEventFilter(self._dock_close_filter)
             self.image_gen_dock.setVisible(True)
             self.image_gen_dock.raise_()
         elif self.image_gen_dock is not None:
@@ -4214,6 +4242,16 @@ class MainWindow(QMainWindow):
 
     def _on_record_status_dock_visibility_persist(self, checked: bool) -> None:
         self.app_settings.preferences.record_status_dock_visible = bool(checked)
+        self._persist_settings()
+
+    def _on_agent_panel_visibility_persist(self, checked: bool) -> None:
+        """2026-05-27 추가 — 에이전트 패널 토글 영속화."""
+        self.app_settings.preferences.agent_panel_visible = bool(checked)
+        self._persist_settings()
+
+    def _on_image_gen_dock_visibility_persist(self, checked: bool) -> None:
+        """2026-05-27 추가 — 이미지 생성 패널 토글 영속화."""
+        self.app_settings.preferences.image_gen_dock_visible = bool(checked)
         self._persist_settings()
 
     # ---------- dock 레이아웃 영속화 (모드별 분리) ----------

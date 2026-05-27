@@ -208,7 +208,10 @@ class ChatPanel(QDockWidget):
     compact_requested = Signal()               # /compact — Claude 에게 요약 부탁
     # 모델 다운로드 진행률 — MainWindow 가 받아 GlobalToolbar 라벨 갱신.
     # 사용자가 ModelDownloadWindow 를 닫아도 진행률 잃지 않게 (영구 인디케이터).
-    download_progress_changed = Signal(int, int, str)   # (received_bytes, total_bytes, display_name)
+    # `object` 타입 — Signal(int, int, str) 는 C qint32 한계 (~2.1GB) 로 5GB 다운로드 시
+    # OverflowError. `object` 는 PyObject* 로 통과해 Qt 타입 마샬링 자체가 없음. 사용자
+    # 보고 회귀 (2026-05-26). ModelDownloadJob.download_progress 와 동일 사유.
+    download_progress_changed = Signal(object, object, str)   # (received_bytes, total_bytes, display_name)
     download_finished = Signal()                        # 다운로드 완료 또는 에러 — 라벨 숨김 신호
 
     def __init__(
@@ -223,7 +226,7 @@ class ChatPanel(QDockWidget):
         # set_model 가드가 model 변경을 차단했는지 ChatPanel 이 직접 알아야 콤보 fallback
         # 가능 → AgentRuntime 의 _model 상태를 즉시 비교해야 함. signal/slot 만으로는
         # synchronous 결과 회신이 어려움. MainWindow 가 agent=runtime 으로 주입.
-        super().__init__("Claude 에이전트", parent)
+        super().__init__("에이전트", parent)
         self.setObjectName("AgentChatPanel")
         self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
         # AgentRuntime 참조 — 콤보 fallback 시 set_model 직접 호출 + _model 비교 용.
