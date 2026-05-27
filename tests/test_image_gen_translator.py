@@ -40,27 +40,52 @@ def test_translate_sync_returns_none_for_english_input():
 
 
 def test_translate_sync_returns_none_on_sdk_failure(monkeypatch):
-    """Claude SDK import 실패 / 인증 실패 시 None — 호출자가 원본 fallback."""
+    """NLLB 로드 실패 시 None — 호출자가 원본 fallback."""
     from screen_recorder.image_gen import translator as mod
 
-    async def _boom(prompt, model):
-        raise RuntimeError("sdk not configured")
+    def _boom(prompt):
+        raise RuntimeError("nllb not available")
 
-    monkeypatch.setattr(mod, "_translate_via_claude", _boom)
+    monkeypatch.setattr(mod, "_translate_via_nllb", _boom)
     result = mod.translate_to_english_sync("고양이")
     assert result is None
 
 
-def test_translate_sync_returns_english_on_success(monkeypatch):
+def test_translate_sync_claude_backend_returns_none_on_sdk_failure(monkeypatch):
+    """backend='claude' 명시 시 SDK 실패도 None fallback."""
     from screen_recorder.image_gen import translator as mod
 
-    async def _fake(prompt, model):
+    async def _boom(prompt, model):
+        raise RuntimeError("claude sdk not configured")
+
+    monkeypatch.setattr(mod, "_translate_via_claude", _boom)
+    result = mod.translate_to_english_sync("고양이", backend="claude")
+    assert result is None
+
+
+def test_translate_sync_returns_english_on_success_nllb(monkeypatch):
+    """기본 NLLB 백엔드 성공 path."""
+    from screen_recorder.image_gen import translator as mod
+
+    def _fake(prompt):
         assert "고양이" in prompt
         return "a calico cat sitting by a sunset window"
 
-    monkeypatch.setattr(mod, "_translate_via_claude", _fake)
+    monkeypatch.setattr(mod, "_translate_via_nllb", _fake)
     result = mod.translate_to_english_sync("노을이 비치는 창가의 고양이")
     assert result == "a calico cat sitting by a sunset window"
+
+
+def test_translate_sync_claude_backend_success(monkeypatch):
+    """backend='claude' 명시 시 SDK path."""
+    from screen_recorder.image_gen import translator as mod
+
+    async def _fake(prompt, model):
+        return "a calico cat"
+
+    monkeypatch.setattr(mod, "_translate_via_claude", _fake)
+    result = mod.translate_to_english_sync("고양이", backend="claude")
+    assert result == "a calico cat"
 
 
 def test_translate_sync_caches_result(monkeypatch):
@@ -70,11 +95,11 @@ def test_translate_sync_caches_result(monkeypatch):
     mod.clear_translation_cache()
     call_count = {"n": 0}
 
-    async def _fake(prompt, model):
+    def _fake(prompt):
         call_count["n"] += 1
         return f"english v{call_count['n']}"
 
-    monkeypatch.setattr(mod, "_translate_via_claude", _fake)
+    monkeypatch.setattr(mod, "_translate_via_nllb", _fake)
 
     first = mod.translate_to_english_sync("고양이")
     assert first == "english v1"
@@ -96,11 +121,11 @@ def test_clear_translation_cache_resets(monkeypatch):
     mod.clear_translation_cache()
     call_count = {"n": 0}
 
-    async def _fake(prompt, model):
+    def _fake(prompt):
         call_count["n"] += 1
         return f"v{call_count['n']}"
 
-    monkeypatch.setattr(mod, "_translate_via_claude", _fake)
+    monkeypatch.setattr(mod, "_translate_via_nllb", _fake)
 
     mod.translate_to_english_sync("고양이")
     assert call_count["n"] == 1
@@ -109,15 +134,9 @@ def test_clear_translation_cache_resets(monkeypatch):
     assert call_count["n"] == 2   # 캐시 비웠으니 다시 호출
 
 
-def test_translate_sync_strips_common_prefixes(monkeypatch):
-    """Claude 가 'Translation: ' 같은 prefix 붙이면 청소 (translator 내부 기능)."""
+def test_unload_nllb_safe_when_not_loaded():
+    """NLLB 미로드 상태에서 unload 호출해도 에러 없음."""
     from screen_recorder.image_gen import translator as mod
 
-    # _translate_via_claude 자체가 prefix 청소 하므로 거기까지 mock.
-    async def _fake(prompt, model):
-        # 시뮬레이션: 사용자 시스템 prompt 가 약해서 Claude 가 prefix 붙임.
-        # 실제 _translate_via_claude 가 후처리 — 우리는 그 결과 (이미 청소된) 만 검증.
-        return "a calico cat"
-
-    monkeypatch.setattr(mod, "_translate_via_claude", _fake)
-    assert mod.translate_to_english_sync("고양이") == "a calico cat"
+    mod._nllb_pipeline = None
+    mod.unload_nllb()   # no-op, 예외 없음

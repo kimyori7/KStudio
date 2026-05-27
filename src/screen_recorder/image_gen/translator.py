@@ -1,10 +1,14 @@
-"""한국어 프롬프트 → 영어 자동 번역 (Claude Haiku 정액제 활용).
+"""한국어 프롬프트 → 영어 자동 번역.
+
+기본 백엔드: **NLLB-200 distilled-600M** (로컬, transformers) — ~0.5초/번역.
+Fallback: Claude Haiku (정액제) — 인터넷 OK 지만 매 호출 25~50초 subprocess
+오버헤드 (실측 2026-05-27).
 
 PixArt-Sigma / FLUX / SDXL 등 디퓨전 모델은 학습 데이터의 비중이 99% 영어라 한국어
-프롬프트 결과가 부정확함 (사용자 보고 2026-05-27: "고양이라고 했는데 사람이 나옴").
+프롬프트 결과가 부정확함 (사용자 보고: "고양이라고 했는데 사람이 나옴").
 
-해결책: 한국어 감지 → Claude Haiku 4.5 로 영어 번역 → 영어 prompt 로 generate.
-KStudio 가 이미 사용자 Claude 정액제로 동작하므로 별도 API 키 / 외부 의존 없음.
+해결책: 한국어 감지 → NLLB 로 영어 번역 → 영어 prompt 로 generate.
+NLLB-200 = ComfyUI 커뮤니티의 prompt 번역 표준. 다국어 + 시각 디테일 보존 + transformers 호환.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ _log = logging.getLogger(__name__)
 
 
 _HANGUL_RE = re.compile(r"[가-힣]")
+_NLLB_REPO = "facebook/nllb-200-distilled-600M"
 
 
 def has_korean(text: str) -> bool:
@@ -81,20 +86,89 @@ def clear_translation_cache() -> None:
     _translation_cache.clear()
 
 
+# NLLB-200 singleton — (tokenizer, model, device) tuple. 모듈 전역. 첫 호출 시
+# ~5-10초 (디스크/다운로드 + bf16 변환), 후속 호출 ~0.5초. KStudio 종료까지 메모리 상주.
+# transformers 의 `pipeline("translation")` 은 일부 빌드 (사용자 환경 포함) 에서 task
+# registry 에 빠져있어 직접 AutoModelForSeq2SeqLM 사용 (2026-05-27).
+_nllb_pipeline = None
+
+
+def _ensure_nllb_loaded():
+    """NLLB-200 distilled-600M 을 lazy 로드. 두 번째 호출부터 즉시 반환."""
+    global _nllb_pipeline
+    if _nllb_pipeline is not None:
+        return _nllb_pipeline
+    import torch
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    _log.info("Loading NLLB-200 translator (%s, device=%s) — cold load 5~10초",
+              _NLLB_REPO, device)
+    tokenizer = AutoTokenizer.from_pretrained(_NLLB_REPO, src_lang="kor_Hang")
+    # GPU 면 float16, CPU 면 float32 (CPU 는 fp16 연산 미지원).
+    dtype = torch.float16 if device.startswith("cuda") else torch.float32
+    model = AutoModelForSeq2SeqLM.from_pretrained(_NLLB_REPO, torch_dtype=dtype)
+    model = model.to(device)
+    model.eval()
+    _nllb_pipeline = (tokenizer, model, device)
+    return _nllb_pipeline
+
+
+def _translate_via_nllb(prompt: str) -> Optional[str]:
+    """NLLB-200 distilled-600M 로 한→영 번역. ~0.5초/번역 (warm)."""
+    import torch
+    tokenizer, model, device = _ensure_nllb_loaded()
+    try:
+        # src_lang 는 _ensure_nllb_loaded 에서 kor_Hang 으로 설정됨.
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=400)
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        forced_bos = tokenizer.convert_tokens_to_ids("eng_Latn")
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                forced_bos_token_id=forced_bos,
+                max_length=400,
+                num_beams=4,
+            )
+        text = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+        return text or None
+    except Exception:
+        _log.exception("NLLB translation failed")
+        return None
+
+
+def unload_nllb() -> None:
+    """KStudio 종료 / 메모리 회수 시 호출. 다음 번역 호출이 다시 로드."""
+    global _nllb_pipeline
+    if _nllb_pipeline is None:
+        return
+    _nllb_pipeline = None
+    try:
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def translate_to_english_sync(
     prompt: str,
     *,
-    model: str = "claude-haiku-4-5-20251001",
+    backend: str = "nllb",
+    claude_model: str = "claude-haiku-4-5-20251001",
 ) -> Optional[str]:
     """sync wrapper — worker thread (QThread) 안에서 호출.
+
+    backend:
+    - "nllb"   (기본): NLLB-200 distilled-600M 로컬. 첫 호출 5~10초, 이후 ~0.5초.
+    - "claude": Claude Haiku 정액제. 매 호출 25~50초 (CLI subprocess spawn).
 
     반환:
     - 한글 없으면 None (호출자가 원본 그대로 사용)
     - 번역 성공 시 영어 문자열 (캐시 hit 시 즉시)
-    - Claude SDK 실패 (의존성 / 인증 / 네트워크 등) 시 None — 호출자가 원본 fallback
-
-    첫 번역은 Claude CLI subprocess spawn + TLS handshake 로 5~10초 — 두 번째 같은
-    prompt 부터는 메모리 캐시로 0초.
+    - 실패 시 None — 호출자가 원본 fallback
     """
     if not has_korean(prompt):
         return None
@@ -103,10 +177,13 @@ def translate_to_english_sync(
         _log.info("translation cache hit (len=%d)", len(prompt))
         return cached
     try:
-        result = asyncio.run(_translate_via_claude(prompt, model))
+        if backend == "claude":
+            result = asyncio.run(_translate_via_claude(prompt, claude_model))
+        else:
+            result = _translate_via_nllb(prompt)
         if result:
             _translation_cache[prompt] = result
         return result
     except Exception:
-        _log.exception("Korean→English translation failed — falling back to original prompt")
+        _log.exception("Korean→English translation failed (backend=%s) — fallback", backend)
         return None

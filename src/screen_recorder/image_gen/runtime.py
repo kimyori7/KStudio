@@ -215,6 +215,12 @@ class ImageGenRuntime(QObject):
             self._backend.close()
         except Exception:
             _log.exception("backend.close raised — 무시")
+        # NLLB 번역 모델도 해제 — KStudio 종료 시 메모리 회수.
+        try:
+            from .translator import unload_nllb
+            unload_nllb()
+        except Exception:
+            pass
         self._busy = False
 
     # ---- worker 종료 처리 ----

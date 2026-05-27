@@ -155,11 +155,12 @@ class _ReadyPanel(QWidget):
         outer.addWidget(self.prompt_edit)
 
         translate_row = QHBoxLayout()
-        self.auto_translate_check = QCheckBox("한국어 → 영어 자동 번역 (Claude)")
+        self.auto_translate_check = QCheckBox("한국어 → 영어 자동 번역 (NLLB-200)")
         self.auto_translate_check.setChecked(True)
         self.auto_translate_check.setToolTip(
             "PixArt 는 영어 학습이 99% 라 한국어 직접 입력 시 결과가 부정확합니다. "
-            "켜져 있으면 KStudio 의 Claude 정액제로 자동 번역 (Haiku, 1~2초 추가)."
+            "켜져 있으면 로컬 NLLB-200 모델로 자동 번역 (첫 호출 5~10초, 이후 ~0.5초). "
+            "ComfyUI 커뮤니티의 프롬프트 번역 표준."
         )
         self.auto_translate_check.toggled.connect(self.auto_translate_toggled)
         translate_row.addWidget(self.auto_translate_check)
@@ -382,7 +383,8 @@ class _ReadyPanel(QWidget):
         self.progress_bar.setVisible(False)
 
     def show_translation_started(self) -> None:
-        self.status_label.setText("한국어 → 영어 번역 중…")
+        # 첫 호출만 5~10초 (NLLB 모델 다운로드/로드), 이후 ~0.5초.
+        self.status_label.setText("한국어 → 영어 번역 중… (첫 호출 5~10초, 이후 즉시)")
         self.translated_label.setVisible(False)
 
     def show_translation(self, source_ko: str, translated_en: str) -> None:
