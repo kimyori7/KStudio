@@ -45,6 +45,10 @@ _MASK_TOOLS = [
 # 액션 (도구 아님) — 토글 안 됨, 누르면 즉시 트리거
 _ACTIONS = [
     ("auto_bg", "sparkles", "자동 누끼 (rembg) — 한 번에 배경 제거", None),
+    # 이미지 생성 — 별창 팝업 (Ctrl+Shift+G). 자동 누끼 아래 (2026-05-27 사용자 요청).
+    ("image_gen", "image-plus",
+     "이미지 생성 (PixArt-Sigma) — 텍스트 → 이미지 별창. 떠 있는 동안 다른 도구 자유 사용.",
+     None),
 ]
 
 

@@ -521,9 +521,10 @@ class MainWindow(QMainWindow):
         # Whisper 다운로드 pending 상태.
         self._pending_whisper_size: Optional[str] = None
         self._pending_whisper_future = None
-        # 이미지 생성 패널 — lazy 생성 (사용자가 메뉴 "이미지 생성" 또는 Ctrl+Shift+G
-        # 처음 누를 때 만듦). 미사용 사용자에게 PixArtSigmaPipeline import / VRAM 영향 없음.
-        self.image_gen_dock = None  # type: ignore[assignment]
+        # 이미지 생성 별창 (2026-05-27: dock → 비모달 dialog 로 변경).
+        # lazy 생성 (사용자가 메뉴 "이미지 생성" / Ctrl+Shift+G / 도구 팔레트 첫 클릭 시).
+        # 미사용 사용자에게 PixArtSigmaPipeline import / VRAM 영향 없음.
+        self.image_gen_dialog = None  # type: ignore[assignment]
         self.agent_runtime.message_received.connect(self.agent_chat_panel.append_message)
         self.agent_runtime.event_received.connect(self.agent_chat_panel.append_event)
         # AgentRuntime 도 저장된 모델로 동기화 (첫 send 전에).
@@ -2540,6 +2541,9 @@ class MainWindow(QMainWindow):
         """ToolPalette 의 액션 버튼 (one-shot) 라우팅."""
         if action_id == "auto_bg":
             self._on_remove_background()
+        elif action_id == "image_gen":
+            # 2026-05-27: 도구 팔레트에서 진입 → 메뉴 체크 토글 (lazy 생성 + show + persist).
+            self.menu_bar.image_gen_visible_action.setChecked(True)
 
     # ---------- 드래그-저장 버튼 콜백 ----------
     def _current_image_for_drag(self):
@@ -2842,36 +2846,32 @@ class MainWindow(QMainWindow):
                 continue
         return None
 
-    # ---------- 이미지 생성 패널 (Ctrl+Shift+G — 2026-05-26) ----------
+    # ---------- 이미지 생성 별창 (Ctrl+Shift+G / 도구 팔레트 — 2026-05-27 dialog 로 변경) ----------
     def _on_image_gen_visibility_toggled(self, visible: bool) -> None:
-        """창 메뉴의 '이미지 생성' 토글 또는 Ctrl+Shift+G 진입점.
+        """창 메뉴 / Ctrl+Shift+G / 도구 팔레트 아이콘 진입점.
 
-        첫 토글 시 lazy 생성 — 미사용 사용자에게 import / VRAM 영향 0.
+        첫 토글 시 lazy 생성. 비모달 별창이라 떠있는 동안 메인 도구 자유 사용.
         """
         if visible:
-            if self.image_gen_dock is None:
-                from .image_gen import ImageGenDock
-                self.image_gen_dock = ImageGenDock(parent=self)
-                self.image_gen_dock.image_for_editor.connect(
+            if self.image_gen_dialog is None:
+                from .image_gen import ImageGenDialog
+                self.image_gen_dialog = ImageGenDialog(parent=self)
+                self.image_gen_dialog.image_for_editor.connect(
                     self._open_image_path_from_generated
                 )
-                # video_btn 은 Phase 6+ 까지 비활성 — image_for_video 신호는 와이어링만
-                # 해두고 실 슬롯은 placeholder.
-                self.image_gen_dock.image_for_video.connect(
+                # video_btn 은 Phase 6+ 까지 비활성 — image_for_video 신호는 와이어링만.
+                self.image_gen_dialog.image_for_video.connect(
                     self._on_generated_image_for_video
                 )
-                self.addDockWidget(Qt.RightDockWidgetArea, self.image_gen_dock)
-                # X 로 닫음 → 메뉴 체크 unchecked (영속). lazy 생성이라 여기서 등록.
-                if hasattr(self, "_dock_close_filter"):
-                    self._dock_close_filter.add(
-                        self.image_gen_dock,
-                        self.menu_bar.image_gen_visible_action,
-                    )
-                    self.image_gen_dock.installEventFilter(self._dock_close_filter)
-            self.image_gen_dock.setVisible(True)
-            self.image_gen_dock.raise_()
-        elif self.image_gen_dock is not None:
-            self.image_gen_dock.setVisible(False)
+                # X 로 닫음 → 메뉴 체크 자동 해제 (settings 영속도 따라옴).
+                self.image_gen_dialog.closed.connect(
+                    lambda: self.menu_bar.image_gen_visible_action.setChecked(False)
+                )
+            self.image_gen_dialog.show()
+            self.image_gen_dialog.raise_()
+            self.image_gen_dialog.activateWindow()
+        elif self.image_gen_dialog is not None:
+            self.image_gen_dialog.hide()
 
     def _open_image_path_from_generated(self, path_str: str) -> None:
         """ImageGenDock 의 '편집기로 열기' — 생성한 PNG 를 새 EditTab 으로 연다."""
@@ -5017,9 +5017,9 @@ class MainWindow(QMainWindow):
         except (RuntimeError, AttributeError):
             pass
         # 이미지 생성 worker / VRAM 정리 (lazy 생성됐을 때만).
-        if self.image_gen_dock is not None:
+        if self.image_gen_dialog is not None:
             try:
-                self.image_gen_dock.shutdown()
+                self.image_gen_dialog.shutdown()
             except (RuntimeError, AttributeError):
                 pass
         self._hide_border()

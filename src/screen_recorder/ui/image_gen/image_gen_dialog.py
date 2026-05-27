@@ -1,9 +1,18 @@
-"""ImageGenDock — KStudio 우측 사이드 패널로 도킹되는 이미지 생성 위젯.
+"""ImageGenDialog — 비모달 별창 형태 이미지 생성 패널.
 
 상태:
 - **uninstalled**: 모델 미다운로드. 다운로드 안내 + 버튼.
 - **downloading**: ModelDownloadWindow 별창이 떠 있음. 패널은 "다운로드 진행 중" 표시.
 - **ready**: 프롬프트 입력 + 생성/취소 + 미리보기 + 액션 버튼 + 최근 결과 스트립.
+
+설계 변경 (2026-05-27 사용자 요청):
+- 기존: QDockWidget — 메인 윈도우에 도킹
+- 변경: QDialog 비모달 별창 — `Qt.Window` 플래그로 main 과 독립. 떠있어도 메인의
+  도구 자유롭게 쓸 수 있고 (modal=False), 위치 자유 이동.
+
+진입점:
+- 도구 팔레트 "이미지 생성" 액션 (자동 누끼 아래)
+- 창 메뉴 "이미지 생성" (Ctrl+Shift+G)
 
 다운로드 / 모델 로드 / 생성 흐름:
 - 다운로드: `agent/models/downloader.ModelDownloadJob` 재사용.
@@ -21,7 +30,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDockWidget,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -55,8 +64,6 @@ def _is_model_cached(repo_id: str, min_size_gb: float = 4.0) -> bool:
         d = Path(constants.HF_HUB_CACHE) / dir_name / "snapshots"
         if not d.exists():
             return False
-        # snapshots/<sha>/<file> 들 안에서 큰 safetensors 가 있으면 캐시 완료로 봄.
-        # 다운로드 중에는 .incomplete 또는 partial 파일이 있어서 size 합으로 판정.
         total = 0
         for f in d.rglob("*"):
             if f.is_file() and not f.name.endswith(".incomplete"):
@@ -121,14 +128,11 @@ class _ReadyPanel(QWidget):
         self._recent_paths: list[str] = []
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        # ---- 프롬프트 + 자동 번역 ----
         outer.addWidget(QLabel("프롬프트 (한국어 OK — 자동으로 영어로 번역):"))
         self.prompt_edit = QTextEdit()
-        # PixArt 는 영어 학습 위주라 한국어 직접 입력은 부정확 (예: '고양이' → 사람).
-        # 자동 번역 ON 이면 Claude Haiku 가 한국어 → 영어 변환 후 PixArt 에 전달.
         self.prompt_edit.setPlaceholderText(
             "예: 노을이 비치는 창가의 삼색 고양이, 영화 같은 클로즈업\n"
             "(또는 영어로 직접: A calico cat by a sunset window, cinematic close-up)"
@@ -136,7 +140,6 @@ class _ReadyPanel(QWidget):
         self.prompt_edit.setFixedHeight(80)
         outer.addWidget(self.prompt_edit)
 
-        # 자동 번역 토글 + 번역 결과 라벨.
         translate_row = QHBoxLayout()
         self.auto_translate_check = QCheckBox("한국어 → 영어 자동 번역 (Claude)")
         self.auto_translate_check.setChecked(True)
@@ -149,7 +152,6 @@ class _ReadyPanel(QWidget):
         translate_row.addStretch(1)
         outer.addLayout(translate_row)
 
-        # 번역 결과 표시 라벨 — 번역됐을 때만 보임.
         self.translated_label = QLabel("")
         self.translated_label.setWordWrap(True)
         self.translated_label.setStyleSheet(
@@ -159,7 +161,6 @@ class _ReadyPanel(QWidget):
         self.translated_label.setVisible(False)
         outer.addWidget(self.translated_label)
 
-        # ---- 옵션 (해상도 / step / guidance / seed) ----
         opts = QVBoxLayout()
         opts.setSpacing(4)
 
@@ -201,7 +202,6 @@ class _ReadyPanel(QWidget):
         opts.addLayout(row3)
         outer.addLayout(opts)
 
-        # ---- 액션 (생성 / 취소) ----
         action_row = QHBoxLayout()
         self.generate_btn = QPushButton("생성하기")
         self.generate_btn.setStyleSheet("padding: 6px 14px; font-weight: bold;")
@@ -214,7 +214,6 @@ class _ReadyPanel(QWidget):
         action_row.addStretch(1)
         outer.addLayout(action_row)
 
-        # ---- 진행률 ----
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -225,18 +224,16 @@ class _ReadyPanel(QWidget):
         self.status_label.setStyleSheet("color: #555; font-size: 11px;")
         outer.addWidget(self.status_label)
 
-        # ---- 미리보기 ----
         outer.addWidget(QLabel("결과:"))
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumHeight(280)
+        self.preview_label.setMinimumHeight(300)
         self.preview_label.setStyleSheet(
             "border: 1px dashed #d1d5db; background: #f9fafb; color: #9ca3af;"
         )
         self.preview_label.setText("(생성된 이미지가 여기 표시됩니다)")
         outer.addWidget(self.preview_label, stretch=1)
 
-        # ---- 결과 액션 ----
         out_row = QHBoxLayout()
         self.editor_btn = QPushButton("편집기로 열기")
         self.editor_btn.setEnabled(False)
@@ -246,8 +243,6 @@ class _ReadyPanel(QWidget):
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self._on_save)
         out_row.addWidget(self.save_btn)
-        # "영상에 추가" 는 Phase 6 이후 — 정지 이미지를 영상 타임라인 클립으로 변환하는
-        # VideoTab.add_static_image_clip 구현이 선행 필요. 첫 출시에선 placeholder.
         self.video_btn = QPushButton("영상에 추가")
         self.video_btn.setEnabled(False)
         self.video_btn.setToolTip("다음 업데이트 지원 예정 — 현재는 [편집기로 열기] / [저장] 사용")
@@ -255,7 +250,6 @@ class _ReadyPanel(QWidget):
         out_row.addWidget(self.video_btn)
         outer.addLayout(out_row)
 
-        # ---- 최근 결과 스트립 ----
         outer.addWidget(QLabel("최근 결과:"))
         self.recent_list = QListWidget()
         self.recent_list.setFlow(QListWidget.LeftToRight)
@@ -266,7 +260,6 @@ class _ReadyPanel(QWidget):
         self.recent_list.itemClicked.connect(self._on_recent_clicked)
         outer.addWidget(self.recent_list)
 
-    # ---- 내부 액션 ----
     def _on_generate_clicked(self) -> None:
         prompt = self.prompt_edit.toPlainText().strip()
         if not prompt:
@@ -303,29 +296,19 @@ class _ReadyPanel(QWidget):
         if path:
             self.show_result(path)
 
-    # ---- 외부에서 호출되는 상태 갱신 ----
     def set_generating(self, busy: bool) -> None:
         self.generate_btn.setEnabled(not busy)
         self.cancel_btn.setEnabled(busy)
         self.progress_bar.setVisible(busy)
         if busy:
-            # 첫 step 도달 전엔 indeterminate (회전 marquee) — load + 첫 step 까지 10~60초
-            # 동안 bar 가 0% 로 멈춰있어 "프리즈" 로 오해받는 회귀 차단 (사용자 보고 2026-05-27).
             self.progress_bar.setRange(0, 0)
             self.status_label.setText("준비 중…")
-            # 이전 번역 라벨 정리 — 새 시도 시작.
             self.translated_label.setVisible(False)
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
 
     def set_load_state(self, loading: bool) -> None:
-        """모델 콜드 로드 표시.
-
-        실측 (2026-05-27 사용자 환경): 첫 generate → diffusers import + PixArtSigmaPipeline
-        from_pretrained + accelerate CPU offload hook 등록 + 첫 step JIT = **10~60초** 가능.
-        그동안 progress_bar 는 indeterminate marquee 상태로 두고 status_label 로 안내.
-        """
         if loading:
             self.status_label.setText(
                 "모델 메모리에 올리는 중… 처음엔 10~60초 걸릴 수 있어요"
@@ -334,14 +317,11 @@ class _ReadyPanel(QWidget):
             self.progress_bar.setVisible(True)
             self.progress_bar.setRange(0, 0)
         else:
-            # load 끝나도 progress_bar / status_label 안 비움 — generation_started 가
-            # 곧 "Step 1/20" 으로 갱신. 비웠다가 다시 채우면 깜빡임.
             pass
 
     def set_step(self, current: int, total: int) -> None:
         if total <= 0:
             return
-        # 첫 step 도달 — indeterminate marquee 에서 determinate 로 전환.
         if self.progress_bar.maximum() == 0:
             self.progress_bar.setRange(0, 100)
         pct = int(current / total * 100)
@@ -354,7 +334,6 @@ class _ReadyPanel(QWidget):
         if pix.isNull():
             self.preview_label.setText(f"(이미지 로드 실패: {path})")
             return
-        # 미리보기 영역에 fit — 너무 큰 이미지는 축소.
         scaled = pix.scaled(
             self.preview_label.size(),
             Qt.KeepAspectRatio,
@@ -363,7 +342,6 @@ class _ReadyPanel(QWidget):
         self.preview_label.setPixmap(scaled)
         self.editor_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
-        # video_btn 은 Phase 6+ 까지 비활성 유지.
         self.status_label.setText("완료")
         self._push_recent(path)
 
@@ -380,8 +358,6 @@ class _ReadyPanel(QWidget):
         self.translated_label.setVisible(False)
 
     def show_translation(self, source_ko: str, translated_en: str) -> None:
-        """번역 결과를 사용자에게 보여줌 — 어떻게 변환됐는지 확인 가능."""
-        # 너무 길면 자름.
         en_short = translated_en if len(translated_en) <= 200 else translated_en[:200] + "…"
         self.translated_label.setText(f"번역됨 → {en_short}")
         self.translated_label.setVisible(True)
@@ -399,7 +375,6 @@ class _ReadyPanel(QWidget):
         item.setData(Qt.UserRole, path)
         item.setSizeHint(QSize(110, 110))
         self.recent_list.addItem(item)
-        # max_keep 넘어가면 앞에서 제거.
         while self.recent_list.count() > max_keep:
             removed = self.recent_list.takeItem(0)
             removed_path = removed.data(Qt.UserRole)
@@ -407,34 +382,42 @@ class _ReadyPanel(QWidget):
                 self._recent_paths.remove(removed_path)
 
 
-class ImageGenDock(QDockWidget):
-    """KStudio 우측 사이드 패널 — 이미지 생성 모듈 통합 진입점.
+class ImageGenDialog(QDialog):
+    """비모달 별창 형태 이미지 생성 패널.
 
-    Phase 3 (다운로드 가드) + Phase 4 (UI) + Phase 5 (편집기/타임라인 통합) 를 통합한 셸.
-    `MainWindow` 가 이 dock 을 만들고 `image_for_editor` / `image_for_video` 시그널을
-    각각 적절한 슬롯에 연결.
+    `Qt.Window` 플래그로 main window 와 독립된 별창. 비모달이라 떠있는 동안에도
+    메인의 도구는 자유롭게 사용. 닫기 (X) 는 hide() 와 같아 다음 토글로 재표시 가능
+    (ModelDownloadWindow 와 같은 패턴).
     """
 
     # MainWindow 가 받는 시그널.
-    image_for_editor = Signal(str)        # 결과 png 경로 → EditTab 으로 열기
-    image_for_video = Signal(str)         # 결과 png 경로 → 활성 VideoTab 타임라인 추가
+    image_for_editor = Signal(str)
+    image_for_video = Signal(str)
+    closed = Signal()                  # X 닫기 — main_window 가 메뉴 체크 해제 용
 
     def __init__(
         self,
         runtime: Optional[ImageGenRuntime] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super().__init__("이미지 생성", parent)
-        self.setObjectName("ImageGenDock")
-        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        super().__init__(parent)
+        self.setObjectName("ImageGenDialog")
+        self.setWindowTitle("이미지 생성")
+        # 비모달 + 별창 — main 도구 사용 자유.
+        self.setModal(False)
+        self.setWindowFlag(Qt.Window, True)
+        self.resize(460, 720)
 
         # runtime 은 lazy — 미설치 상태에선 backend 까지 만들 필요 없음.
         self._runtime: Optional[ImageGenRuntime] = runtime
         self._download_window: Optional[ModelDownloadWindow] = None
         self._download_job = None
 
+        # QDialog 안에 stack — setWidget 이 아니라 layout 으로.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
         self._stack = QStackedWidget()
-        self.setWidget(self._stack)
+        outer.addWidget(self._stack)
 
         self._uninstalled_panel = _UninstalledPanel()
         self._uninstalled_panel.download_clicked.connect(self._start_download)
@@ -449,18 +432,15 @@ class ImageGenDock(QDockWidget):
         self._ready_panel.auto_translate_toggled.connect(self._on_auto_translate_toggled)
         self._stack.addWidget(self._ready_panel)
 
-        # 초기 상태 결정.
         if _is_model_cached(MODEL_META.repo_id):
             self._show_ready()
         else:
             self._stack.setCurrentWidget(self._uninstalled_panel)
 
-    # ---- runtime 진입 ----
     def _ensure_runtime(self) -> ImageGenRuntime:
         if self._runtime is None:
             self._runtime = ImageGenRuntime()
-        # 시그널 와이어링 — runtime 이 바뀌어도 안전하게 한 번만.
-        if getattr(self._runtime, "_dock_wired", False) is False:
+        if getattr(self._runtime, "_dialog_wired", False) is False:
             self._runtime.load_started.connect(
                 lambda: self._ready_panel.set_load_state(True)
             )
@@ -474,36 +454,31 @@ class ImageGenDock(QDockWidget):
             self._runtime.image_ready.connect(self._on_image_ready)
             self._runtime.generation_failed.connect(self._on_failed)
             self._runtime.generation_cancelled.connect(self._on_cancelled)
-            # 자동 번역 흐름 (2026-05-27).
             self._runtime.translate_started.connect(
                 self._ready_panel.show_translation_started
             )
             self._runtime.translated.connect(self._ready_panel.show_translation)
-            self._runtime._dock_wired = True   # type: ignore[attr-defined]
+            self._runtime._dialog_wired = True   # type: ignore[attr-defined]
         return self._runtime
 
     def _on_auto_translate_toggled(self, on: bool) -> None:
-        """UI 체크박스 → runtime 옵션 갱신."""
         rt = self._ensure_runtime()
         if hasattr(rt, "set_auto_translate"):
             rt.set_auto_translate(on)
 
-    # ---- 다운로드 ----
     def _start_download(self) -> None:
-        # 이미 진행 중이면 창만 다시 띄움.
         if self._download_window is not None and self._download_job is not None:
             self._download_window.show()
             self._download_window.raise_()
             return
 
-        # Lazy import — 에이전트 모델 다운로더 재사용.
         from ...agent.models.downloader import ModelDownloadJob
 
         win = ModelDownloadWindow(
             repo_id=MODEL_META.repo_id,
             display_name=MODEL_META.display_name,
             estimated_size_gb=MODEL_META.estimated_size_gb,
-            parent=self.window(),
+            parent=self,
         )
         win.set_phase("downloading")
         win.show()
@@ -535,16 +510,10 @@ class ImageGenDock(QDockWidget):
     def _show_ready(self) -> None:
         self._stack.setCurrentWidget(self._ready_panel)
 
-    # ---- 생성 흐름 ----
     def _on_generate_requested(self, prompt: str, params: dict) -> None:
         rt = self._ensure_runtime()
-        # 클릭 즉시 버튼 비활성 + indeterminate progress — load_started / generation_started
-        # 시그널이 worker 스레드에서 큐잉돼 도착하는 동안의 빈 시간을 채움. 사용자가 두 번
-        # 클릭하거나 멈춤으로 오해하는 것 방지 (2026-05-27 보고).
         self._ready_panel.set_generating(True)
-        ok = rt.generate(prompt, **params)
-        # ok=False (이미 진행 중 / 빈 prompt) 면 runtime 이 generation_failed 시그널 emit →
-        # _on_failed 가 set_generating(False) 호출해서 다시 활성화. 안전망 자동.
+        rt.generate(prompt, **params)
 
     def _on_cancel(self) -> None:
         if self._runtime is not None:
@@ -562,7 +531,6 @@ class ImageGenDock(QDockWidget):
         self._ready_panel.set_generating(False)
         self._ready_panel.show_cancelled()
 
-    # ---- 저장 ----
     def _save_as(self, src_path: str) -> None:
         target, _ = QFileDialog.getSaveFileName(
             self,
@@ -578,15 +546,15 @@ class ImageGenDock(QDockWidget):
         except Exception as exc:
             QMessageBox.warning(self, "저장 실패", f"저장 중 오류: {exc}")
 
-    # ---- 수명 ----
     def shutdown(self) -> None:
-        """MainWindow 종료 hook — runtime 정리."""
         if self._runtime is not None:
             try:
                 self._runtime.close()
             except Exception:
-                _log.exception("ImageGenDock.shutdown: runtime.close 오류 무시")
-        if self._download_job is not None:
-            # 다운로드 job 은 백그라운드에서 자체 종료 — 명시적 stop 안 함 (sub-thread 가 끊김
-            # 어려운 hf snapshot_download 라). interpreter 종료 시 daemon 으로 같이 죽음.
-            pass
+                _log.exception("ImageGenDialog.shutdown: runtime.close 오류 무시")
+
+    # ---- 비모달 close 패턴 — ModelDownloadWindow 와 같이 hide 처리 ----
+    def closeEvent(self, event):  # noqa: N802 (Qt 시그니처)
+        # closed 시그널 → main_window 가 메뉴 체크 + settings 영속.
+        self.closed.emit()
+        super().closeEvent(event)
