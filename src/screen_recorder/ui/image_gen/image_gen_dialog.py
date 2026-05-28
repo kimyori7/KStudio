@@ -210,7 +210,7 @@ class _ReadyPanel(QWidget):
             "QTextEdit {"
             " background-color: #252932;"
             " border: 1px solid #3F4554;"
-            " border-radius: 4px;"
+            " border-radius: 6px;"
             " padding: 6px 8px;"
             " color: #E8EAED;"
             "}"
@@ -238,7 +238,7 @@ class _ReadyPanel(QWidget):
             "QLabel {"
             " color: #E8EAED; font-size: 12px; padding: 8px 10px;"
             " background: #1F2630; border: 1px solid #10B981;"
-            " border-left: 3px solid #10B981; border-radius: 4px;"
+            " border-left: 3px solid #10B981; border-radius: 6px;"
             "}"
         )
         self.translated_label.setVisible(False)
@@ -293,7 +293,7 @@ class _ReadyPanel(QWidget):
         self.generate_btn.setStyleSheet(
             "QPushButton {"
             " background-color: #10B981; color: white; border: none;"
-            " border-radius: 4px; padding: 8px 22px; font-weight: bold;"
+            " border-radius: 6px; padding: 8px 22px; font-weight: bold;"
             "}"
             "QPushButton:hover { background-color: #34D399; }"
             "QPushButton:pressed { background-color: #047857; }"

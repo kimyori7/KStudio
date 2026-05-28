@@ -77,7 +77,7 @@ class WhisperDownloadCard(QFrame):
                 break
         self._size_combo.setStyleSheet(
             "QComboBox{background:#1e1b4b;color:#ddd6fe;border:1px solid #a78bfa;"
-            "border-radius:4px;padding:3px 6px;font-size:11px;}"
+            "border-radius:6px;padding:3px 8px;font-size:11px;}"
         )
         size_row.addWidget(size_label)
         size_row.addWidget(self._size_combo, 1)
@@ -92,14 +92,14 @@ class WhisperDownloadCard(QFrame):
         btn_row.setSpacing(6)
         self._dl_btn = QPushButton("✓ 다운로드")
         self._dl_btn.setStyleSheet(
-            "QPushButton{background:#7c3aed;color:white;border:none;border-radius:4px;padding:6px 12px;font-weight:bold;}"
+            "QPushButton{background:#7c3aed;color:white;border:none;border-radius:6px;padding:6px 14px;font-weight:bold;}"
             "QPushButton:hover{background:#6d28d9;}"
             "QPushButton:disabled{background:#374151;color:#9ca3af;}"
         )
         self._dl_btn.clicked.connect(self._on_download)
         self._cancel_btn = QPushButton("✗ 취소")
         self._cancel_btn.setStyleSheet(
-            "QPushButton{background:#7f1d1d;color:white;border:none;border-radius:4px;padding:6px 12px;}"
+            "QPushButton{background:#7f1d1d;color:white;border:none;border-radius:6px;padding:6px 14px;}"
             "QPushButton:hover{background:#991b1b;}"
             "QPushButton:disabled{background:#374151;color:#9ca3af;}"
         )

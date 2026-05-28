@@ -26,17 +26,21 @@ def chat_panel(qtbot, tmp_path):
     yield panel, rt
 
 
-def test_combo_lists_all_models_from_registry(chat_panel):
-    """콤보가 ModelRegistry 의 built-in 5개 다 표시."""
+def test_combo_lists_only_non_claude_models(chat_panel):
+    """콤보가 ModelRegistry 의 non-Claude 항목만 표시 (Claude 는 UI 노출 안 함)."""
     panel, _ = chat_panel
     combo = panel._model_combo
     ids = [combo.itemData(i) for i in range(combo.count())]
-    assert "claude-sonnet-4-6" in ids
-    assert "claude-opus-4-7" in ids
-    assert "claude-haiku-4-5-20251001" in ids
+    # Claude 계열은 filter 됨 — registry 에는 있지만 콤보엔 없음.
+    assert "claude-sonnet-4-6" not in ids
+    assert "claude-opus-4-7" not in ids
+    assert "claude-haiku-4-5-20251001" not in ids
+    # 로컬 Qwen 시리즈는 모두 노출.
     assert "qwen25-7b-instruct" in ids
     assert "qwen25-omni-7b" in ids
-    assert combo.count() == 5
+    assert "qwen3-vl-2b-instruct" in ids
+    assert "qwen3-vl-4b-instruct" in ids
+    assert "qwen3-8b-ollama" in ids
 
 
 def test_combo_marks_qwen_as_install_required_or_normal(chat_panel):
@@ -97,7 +101,9 @@ def test_selecting_qwen_without_deps_opens_installer_keeps_model(
 
         combo = panel._model_combo
         initial_id = combo.currentData()
-        assert initial_id == "claude-sonnet-4-6"
+        # AgentRuntime 에는 claude-sonnet-4-6 (registry 항목) 이 들어 있지만,
+        # ChatPanel 시작 시 Claude 는 DEFAULT_MODEL_ID 로 demote → 콤보 첫 칸이 Qwen3-VL 2B.
+        assert initial_id == "qwen3-vl-2b-instruct"
 
         qwen_idx = None
         for i in range(combo.count()):

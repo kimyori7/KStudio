@@ -300,6 +300,15 @@ def _is_cuda_runtime_error(exc: BaseException) -> bool:
     return any(k in msg for k in _CUDA_ERROR_KEYWORDS)
 
 
+class TranscribeCancelled(Exception):
+    """전사 중간에 사용자가 취소했음을 알리는 시그널 예외.
+
+    Transcriber.transcribe(is_cancelled=...) 콜백이 True 반환 시 segment 루프가
+    즉시 raise. autoedit 의 TranscriptAnalyzer 는 이를 잡아 AnalyzerCancelled 로
+    재발생시켜 worker 가 깔끔히 종료.
+    """
+
+
 class Transcriber:
     """faster-whisper 래퍼 — 모델 lazy load + 캐시.
 
@@ -368,6 +377,7 @@ class Transcriber:
         model_size: str = "base",
         language: Optional[str] = "ko",
         on_segment: Optional[Any] = None,
+        is_cancelled: Optional[Any] = None,
     ) -> Transcript:
         """전사 실행. 동기 차단 — 1시간 영상 base 기준 ~1~2분.
 
@@ -378,10 +388,18 @@ class Transcriber:
         UI 업데이트용). seg 는 TranscriptSegment, duration_s 는 전체 영상 길이(초).
         예외 던지면 무시 (전사 중단 방지). None 이면 기존 동작 (collect 후 반환).
 
+        is_cancelled() — bool 반환 콜백. 매 segment 마다 체크 → True 면
+        TranscribeCancelled raise → 즉시 중단 (faster-whisper iterator 도 함께 종료).
+        None 이면 무시 (취소 불가능). 자동편집 worker thread 가 사용자 취소 버튼
+        클릭 전파용.
+
         CUDA 추론 실패 (cuBLAS/cuDNN 누락 등) 시 자동으로 CPU 폴백 후 재시도.
         """
         try:
-            return self._do_transcribe(video_path, model_size, language, on_segment)
+            return self._do_transcribe(video_path, model_size, language, on_segment, is_cancelled)
+        except TranscribeCancelled:
+            # 취소는 CUDA 에러로 오인하지 않도록 별도 처리 — 그대로 propagate.
+            raise
         except Exception as e:
             if self._device != "cpu" and _is_cuda_runtime_error(e):
                 _log.warning("Transcriber: CUDA 추론 실패 (%s) — CPU 폴백 후 재시도", e)
@@ -389,7 +407,7 @@ class Transcriber:
                 self._model = None
                 self._model_size = None
                 self._device, self._compute_type = "cpu", "int8"
-                return self._do_transcribe(video_path, model_size, language, on_segment)
+                return self._do_transcribe(video_path, model_size, language, on_segment, is_cancelled)
             raise
 
     def _do_transcribe(
@@ -398,6 +416,7 @@ class Transcriber:
         model_size: str,
         language: Optional[str],
         on_segment: Optional[Any],
+        is_cancelled: Optional[Any] = None,
     ) -> Transcript:
         """단일 시도 — transcribe 의 폴백 없는 내부 구현."""
         model = self._ensure_model(model_size)
@@ -410,6 +429,10 @@ class Transcriber:
         duration_s = float(info.duration) if info.duration else 0.0
         segments: list[TranscriptSegment] = []
         for seg in segments_iter:
+            # 매 segment 시작 직전 취소 체크 — segments_iter 가 lazy generator 이므로
+            # 여기서 raise 하면 faster-whisper 도 더 이상 다음 segment 추론 안 함.
+            if is_cancelled is not None and is_cancelled():
+                raise TranscribeCancelled()
             ts = TranscriptSegment(
                 start_ms=int(round(seg.start * 1000)),
                 end_ms=int(round(seg.end * 1000)),

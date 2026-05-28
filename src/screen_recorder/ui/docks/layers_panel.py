@@ -96,7 +96,7 @@ class LayersPanel(QWidget):
         # 주지 않는다 — 행 위젯(_LayerRow) 이 자체 contentsMargin/spacing 을 가지므로
         # 두 군데서 합쳐지면 텍스트가 잘려 보임.
         self._list.setStyleSheet("""
-            QListWidget { background-color: #1A1C20; border: 1px solid #3C414B; border-radius: 4px; }
+            QListWidget { background-color: #1A1C20; border: 1px solid #3C414B; border-radius: 6px; }
             QListWidget::item { padding: 0; border-left: 3px solid transparent; color: #CFD3DA; }
             QListWidget::item:hover { background-color: #2A2E36; }
             QListWidget::item:selected { background-color: #2E5D8A;

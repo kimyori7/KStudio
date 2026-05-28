@@ -204,7 +204,8 @@ class AgentSettings:
       large-v3 가 한국어 정확도 가장 높음 (3GB, base 대비 ~5배 느림).
       사용자 요구 (2026-05-15) — "제일 좋은 걸로". 환경설정에서 변경 가능.
     """
-    model_id: str = "claude-sonnet-4-6"
+    # 기본 모델 — 로컬 Qwen3-VL 2B (사용자 환경 가장 가벼움). Claude 계열은 UI 노출 안 함.
+    model_id: str = "qwen3-vl-2b-instruct"
     whisper_model_size: str = "large-v3"
     # 추론(ThinkingBlock) 표시 ON/OFF — 노이즈 줄이고 싶을 때 끔.
     # OFF 여도 Claude 는 내부적으로 thinking 수행 (응답 품질 유지) — 화면 표시만 가림.

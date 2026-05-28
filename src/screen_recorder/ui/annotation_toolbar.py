@@ -217,7 +217,7 @@ class AnnotationToolbar(QToolBar):
         self._brush_mode_group = QButtonGroup(self)
         self._brush_mode_group.setExclusive(True)
         mode_qss = (
-            "QPushButton { background: #2c2c2c; border: 1px solid #555; padding: 2px 8px; }"
+            "QPushButton { background: #2c2c2c; border: 1px solid #555; border-radius: 5px; padding: 2px 8px; }"
             "QPushButton:hover { background: #3a3a3a; border: 1px solid #888; }"
             "QPushButton:checked { background: #1976d2; border: 2px solid #fff; }"
         )
@@ -313,7 +313,7 @@ class AnnotationToolbar(QToolBar):
             btn.setCheckable(True)
             btn.setToolTip(f"{hexcolor}")
             btn.setStyleSheet(
-                f"QPushButton {{ background: {hexcolor}; border: 1px solid #555; }}"
+                f"QPushButton {{ background: {hexcolor}; border: 1px solid #555; border-radius: 5px; }}"
                 f"QPushButton:hover {{ border: 2px solid #fff; }}"
                 f"QPushButton:checked {{ border: 3px solid #fff; }}"
             )
@@ -327,6 +327,10 @@ class AnnotationToolbar(QToolBar):
         custom.setIconSize(custom.size())
         custom.setFixedSize(28, 22)
         custom.setToolTip("더 많은 색… (커스텀 색상 선택)")
+        custom.setStyleSheet(
+            "QPushButton { border: 1px solid #555; border-radius: 5px; background: #2c2c2c; }"
+            "QPushButton:hover { border: 1px solid #888; background: #3a3a3a; }"
+        )
         custom.clicked.connect(self._on_custom_color)
         layout.addWidget(custom)
 
@@ -373,11 +377,12 @@ class AnnotationToolbar(QToolBar):
         from image_editor.thickness import thickness_to_pixels
         self._thickness_buttons: dict[int, QPushButton] = {}
         thickness_qss = (
-            "QPushButton { background: #2c2c2c; border: 1px solid #555; }"
+            "QPushButton { background: #2c2c2c; border: 1px solid #555; border-radius: 5px; }"
             "QPushButton:hover { background: #3a3a3a; border: 1px solid #888; }"
             "QPushButton:checked {"
             "  background: #1976d2;"
             "  border: 2px solid #fff;"
+            "  border-radius: 5px;"
             "}"
         )
         for step in THICKNESS_STEPS:

@@ -79,7 +79,7 @@ class VideoTrackLane(QWidget):
         self._drop_hint = _QLabel("🎞 여기에 놓으면 영상 트랙에 추가됩니다", self)
         self._drop_hint.setStyleSheet(
             "background: rgba(34, 197, 94, 230); color: white;"
-            " padding: 5px 10px; border-radius: 4px; font-weight: bold;"
+            " padding: 6px 12px; border-radius: 8px; font-weight: bold;"
         )
         self._drop_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._drop_hint.hide()

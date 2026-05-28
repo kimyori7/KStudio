@@ -52,7 +52,7 @@ class PlanCard(QFrame):
         self._approve_btn = QPushButton("✓ 진행")
         self._approve_btn.setStyleSheet(
             "QPushButton{background:#16a34a;color:white;border:none;"
-            "border-radius:4px;padding:6px 12px;font-weight:bold;}"
+            "border-radius:6px;padding:6px 14px;font-weight:bold;}"
             "QPushButton:hover{background:#15803d;}"
             "QPushButton:disabled{background:#374151;color:#9ca3af;}"
         )
@@ -60,7 +60,7 @@ class PlanCard(QFrame):
         self._reject_btn = QPushButton("✗ 취소")
         self._reject_btn.setStyleSheet(
             "QPushButton{background:#7f1d1d;color:white;border:none;"
-            "border-radius:4px;padding:6px 12px;}"
+            "border-radius:6px;padding:6px 14px;}"
             "QPushButton:hover{background:#991b1b;}"
             "QPushButton:disabled{background:#374151;color:#9ca3af;}"
         )
@@ -86,7 +86,7 @@ class PlanCard(QFrame):
         self._reason_input = QPlainTextEdit()
         self._reason_input.setStyleSheet(
             "QPlainTextEdit{background:#0f172a;color:#e0f2fe;border:1px solid #334155;"
-            "border-radius:4px;padding:4px 6px;font-size:12px;}"
+            "border-radius:6px;padding:6px 8px;font-size:12px;}"
         )
         self._reason_input.setFixedHeight(60)
         self._reason_input.setVisible(False)
@@ -97,7 +97,7 @@ class PlanCard(QFrame):
         self._send_reason_btn = QPushButton("전송")
         self._send_reason_btn.setStyleSheet(
             "QPushButton{background:#1e293b;color:#e0f2fe;border:1px solid #475569;"
-            "border-radius:4px;padding:4px 10px;}"
+            "border-radius:6px;padding:4px 12px;}"
             "QPushButton:hover{background:#334155;}"
         )
         self._send_reason_btn.clicked.connect(self._on_send_reason)
@@ -105,7 +105,7 @@ class PlanCard(QFrame):
         self._close_no_reason_btn = QPushButton("그냥 닫기")
         self._close_no_reason_btn.setStyleSheet(
             "QPushButton{background:transparent;color:#94a3b8;border:1px solid #475569;"
-            "border-radius:4px;padding:4px 10px;}"
+            "border-radius:6px;padding:4px 12px;}"
             "QPushButton:hover{background:#1e293b;}"
         )
         self._close_no_reason_btn.clicked.connect(self._on_close_no_reason)

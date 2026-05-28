@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QEvent, QTimer, Signal
+from PySide6.QtCore import Qt, QEvent, QSize, QTimer, Signal
 from PySide6.QtGui import QCursor, QImage, QKeyEvent
 from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
+from .icons import load_icon
+from .widgets import CenteredIconButton
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
@@ -154,12 +156,21 @@ class VideoTab(QWidget):
             self.timeline.set_duration_ms(duration_ms)
 
         # 영상-수준 액션 헤더 (~32px) — 자동편집 등.
-        from PySide6.QtWidgets import QHBoxLayout, QPushButton
+        from PySide6.QtWidgets import QHBoxLayout
         self._tab_header = QWidget()
         self._tab_header.setFixedHeight(32)
         header_layout = QHBoxLayout(self._tab_header)
         header_layout.setContentsMargins(8, 4, 8, 4)
-        self._autoedit_button = QPushButton("🪄 자동 편집")
+        # CenteredIconButton — QPushButton 의 icon 좌측 고정 동작을 우회해 icon+text 를
+        # 진짜 가운데 정렬. (이모지 / setIcon 사용 시 텍스트가 왼쪽으로 치우쳐 보이는
+        # 문제 — diagnose_autoedit_button.py 로 검증 후 채택.)
+        self._autoedit_button = CenteredIconButton(
+            load_icon("sparkles", size=14), "자동 편집", icon_px=14,
+        )
+        # CenteredIconButton 은 setIcon/setText 를 안 써서 QPushButton 의 기본 sizeHint
+        # 가 0 에 가까움 — layout sizeHint 를 그대로 쓰면 QSS padding 만 반영되어
+        # 폭이 거의 컨텐츠에 fit. 그래서 _하단 헤더 폭_ 만큼 wide 하게 만들지 않음.
+        # (테스트는 diagnose_autoedit_button.py 의 변형 F 로 검증.)
         self._autoedit_button.setToolTip("무음 컷·자막·씬 감지·BPM 알고리즘으로 1차 편집 자동 생성")
         header_layout.addWidget(self._autoedit_button)
         header_layout.addStretch(1)
@@ -448,7 +459,11 @@ class VideoTab(QWidget):
         # 진행률 다이얼로그 미리 띄움 — modal, 분석 중 다른 UI 차단.
         self._progress_dlg = AutoEditProgressDialog(parent=self)
         self._autoedit_coord.progress_updated.connect(self._progress_dlg.update_progress)
+        # 취소 클릭 → (1) worker 에 cancel flag 전파, (2) dialog 즉시 닫음
+        # (worker 가 백그라운드에서 실제 종료될 때까지 사용자 UX 가 멈춰있지 않게).
+        # 그리고 (3) coordinator.cancelled 가 emit 되면 진행 중인 result_ready 도 무시.
         self._progress_dlg.cancelled.connect(self._autoedit_coord.cancel)
+        self._progress_dlg.cancelled.connect(self._on_autoedit_cancelled)
         self._progress_dlg.show()
         # 모델은 MainWindow.app_settings.agent 에서 — 사용자가 환경설정 변경 시 즉시 반영.
         # MainWindow 없는 단위 테스트 환경엔 default "large-v3" fallback.
@@ -488,6 +503,17 @@ class VideoTab(QWidget):
             effects = dlg.compute_effects()
             self._edit_controller.add_effects(effects)
             self._notify_autoedit_done(len(effects), failed)
+
+    def _on_autoedit_cancelled(self) -> None:
+        """사용자가 진행률 dialog 의 취소 버튼 클릭 → 즉시 dialog 닫고 정리.
+
+        worker 의 cancel flag 는 coordinator.cancel 이 이미 전파. 여기서는 UI 측
+        cleanup 만 — dialog close + 참조 해제. worker 가 cancel flag 보고 종료
+        되기까지 사용자 UX 가 멈춰있지 않게 즉시 응답.
+        """
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.close()
+            self._progress_dlg = None
 
     def _notify_autoedit_done(self, n: int, failed: list[str]) -> None:
         """자동편집 완료 시 사용자 안내 — Task 5.2 에서 main_window 채팅 패널 연동."""

@@ -199,7 +199,7 @@ class LibraryPanel(QWidget):
         self._drop_hint = QLabel("📋 여기에 놓으면 라이브러리에 추가됩니다", self)
         self._drop_hint.setStyleSheet(
             "background: rgba(59, 130, 246, 230); color: white;"
-            " padding: 6px 12px; border-radius: 4px; font-weight: bold;"
+            " padding: 6px 14px; border-radius: 8px; font-weight: bold;"
         )
         self._drop_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._drop_hint.hide()

@@ -14,7 +14,9 @@ from screen_recorder.ui.agent.chat_panel import (
 
 @pytest.fixture
 def panel(qtbot):
-    p = ChatPanel(initial_model_id="claude-sonnet-4-6", initial_show_thinking=True)
+    # Qwen3-VL 2B (256k context) — UI default. Claude 계열은 demote 대상이라
+    # 컨텍스트 % 계산 검증에 부적합.
+    p = ChatPanel(initial_model_id="qwen3-vl-2b-instruct", initial_show_thinking=True)
     qtbot.addWidget(p)
     return p
 
@@ -104,20 +106,22 @@ def test_context_summary_empty_when_no_response_yet(panel):
 
 def test_context_summary_after_done_event(panel):
     """done 이벤트의 in=N 토큰이 last_input_tokens 에 들어가고 % 계산."""
+    # Qwen3-VL 2B = 256_000 context. 20000 / 256000 ≈ 8%.
     panel.append_event(AgentEvent(kind="done", detail="in=20000 out=500"))
     summary = panel._context_summary()
     assert "ctx" in summary
     assert "20.0k" in summary
-    assert "200.0k" in summary
-    assert "10%" in summary   # 20000 / 200000 = 10%
+    assert "256.0k" in summary
+    assert "8%" in summary
 
 
 def test_context_summary_warning_at_high_usage(panel):
     """70% 이상이면 ⚠ 마크."""
-    panel.append_event(AgentEvent(kind="done", detail="in=150000 out=100"))
+    # 256k 컨텍스트의 75% = 192000. 70% 임계 넘기려면 ≥180000.
+    panel.append_event(AgentEvent(kind="done", detail="in=200000 out=100"))
     summary = panel._context_summary()
     assert "⚠" in summary
-    assert "75%" in summary
+    assert "78%" in summary   # 200000 / 256000 ≈ 78%
 
 
 def test_ctx_dot_hidden_initially(panel):
@@ -134,7 +138,7 @@ def test_ctx_dot_visible_after_done(panel, qtbot):
     tip = panel._ctx_dot.toolTip()
     assert "컨텍스트" in tip
     assert "12.3k" in tip
-    assert "200.0k" in tip
+    assert "256.0k" in tip   # Qwen3-VL 2B context window.
     assert "누적" in tip
     assert "12,345" in tip
     assert "678" in tip

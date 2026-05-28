@@ -81,14 +81,14 @@ class ProposalsPreviewCard(QFrame):
         btn_row.setSpacing(6)
         self._apply_btn = QPushButton("✓ 적용")
         self._apply_btn.setStyleSheet(
-            "QPushButton{background:#16a34a;color:white;border:none;border-radius:4px;padding:6px 12px;font-weight:bold;}"
+            "QPushButton{background:#16a34a;color:white;border:none;border-radius:6px;padding:6px 14px;font-weight:bold;}"
             "QPushButton:hover{background:#15803d;}"
             "QPushButton:disabled{background:#374151;color:#9ca3af;}"
         )
         self._apply_btn.clicked.connect(self._on_apply)
         self._cancel_btn = QPushButton("✗ 취소")
         self._cancel_btn.setStyleSheet(
-            "QPushButton{background:#7f1d1d;color:white;border:none;border-radius:4px;padding:6px 12px;}"
+            "QPushButton{background:#7f1d1d;color:white;border:none;border-radius:6px;padding:6px 14px;}"
             "QPushButton:hover{background:#991b1b;}"
             "QPushButton:disabled{background:#374151;color:#9ca3af;}"
         )

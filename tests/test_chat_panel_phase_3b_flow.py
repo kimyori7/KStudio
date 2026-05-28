@@ -391,8 +391,9 @@ def test_installer_finished_ok_but_import_still_fails_shows_restart_and_no_chain
         assert any("재시작" in t for t in sys_msgs), (
             f"재시작 안내 메시지 없음. 수신된 system msgs: {sys_msgs}"
         )
-        # 콤보 fallback — sonnet 으로 복원.
-        assert combo.currentData() == "claude-sonnet-4-6"
+        # 콤보 fallback — DEFAULT_MODEL_ID (qwen3-vl-2b-instruct) 로 복원.
+        # Claude 는 UI 노출 안 됨 → 더 이상 fallback 대상 아님.
+        assert combo.currentData() == "qwen3-vl-2b-instruct"
     finally:
         rt.stop()
 

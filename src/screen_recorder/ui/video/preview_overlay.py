@@ -856,7 +856,7 @@ class PreviewOverlay(QWidget):
             )
             self._broll_drop_hint.setStyleSheet(
                 "background: rgba(245, 158, 11, 230); color: white;"
-                " padding: 5px 10px; border-radius: 4px; font-weight: bold;"
+                " padding: 6px 12px; border-radius: 8px; font-weight: bold;"
             )
             self._broll_drop_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         h = self._broll_drop_hint

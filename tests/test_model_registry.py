@@ -7,7 +7,8 @@ from screen_recorder.agent.models import ModelMetadata, ModelRegistry
 
 
 def test_builtin_models_count_and_ids():
-    """built-in 6개: Claude opus/sonnet/haiku + Qwen2.5-7B-Instruct + Qwen2.5-Omni 7B + Qwen3-8B (Ollama)."""
+    """built-in 8개: Claude opus/sonnet/haiku + Qwen2.5-7B-Instruct + Qwen2.5-Omni 7B
+    + Qwen3-VL-2B (최경량 비전·영상) + Qwen3-VL-4B (비전·영상) + Qwen3-8B (Ollama)."""
     reg = ModelRegistry()
     models = reg.all_models()
     ids = [m.id for m in models]
@@ -16,8 +17,10 @@ def test_builtin_models_count_and_ids():
     assert "claude-haiku-4-5-20251001" in ids
     assert "qwen25-7b-instruct" in ids
     assert "qwen25-omni-7b" in ids
+    assert "qwen3-vl-2b-instruct" in ids
+    assert "qwen3-vl-4b-instruct" in ids
     assert "qwen3-8b-ollama" in ids
-    assert len(models) == 6
+    assert len(models) == 8
 
 
 def test_qwen3_ollama_metadata():

@@ -21,15 +21,25 @@ class _Segment:
     text: str
 
 
-def _transcribe(media_path: Path, *, model_size: str = "base") -> list[_Segment]:
+def _transcribe(
+    media_path: Path,
+    *,
+    model_size: str = "base",
+    is_cancelled: Callable[[], bool] | None = None,
+) -> list[_Segment]:
     """faster-whisper 호출 — 분리해서 테스트에서 mock 가능.
 
     agent/transcript.Transcriber 를 그대로 재사용해 전사 캐시 hit 가능.
+    is_cancelled 전달 → 매 segment 마다 체크해 사용자 취소 즉시 반영.
     반환: start/end (float 초), text 를 가진 객체 리스트.
     """
     from ...agent.transcript import get_transcriber
     t = get_transcriber()
-    result = t.transcribe(str(media_path), model_size=model_size)
+    result = t.transcribe(
+        str(media_path),
+        model_size=model_size,
+        is_cancelled=is_cancelled,
+    )
     # result 는 Transcript 객체 — .segments 는 TranscriptSegment(start_ms, end_ms, text)
     return [
         _Segment(
@@ -60,7 +70,19 @@ class TranscriptAnalyzer(Analyzer):
         if progress:
             progress(0.1)
 
-        segments = _transcribe(media_path, model_size=self._model_size)
+        # is_cancelled 를 transcribe 안쪽 segment 루프까지 전파 — 사용자 취소 시
+        # whisper iterator 가 즉시 중단되어 다음 segment 추론 안 함.
+        try:
+            segments = _transcribe(
+                media_path,
+                model_size=self._model_size,
+                is_cancelled=is_cancelled,
+            )
+        except Exception as e:
+            # Transcriber 가 던지는 TranscribeCancelled — autoedit 의 AnalyzerCancelled 로 정규화.
+            if type(e).__name__ == "TranscribeCancelled":
+                raise AnalyzerCancelled from e
+            raise
 
         if is_cancelled and is_cancelled():
             raise AnalyzerCancelled

@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...agent.chat_history import (
-    MAX_MESSAGES, PERSISTABLE_ROLES, load_history, save_history,
+    MAX_MESSAGES, PERSISTABLE_ROLES, save_history,
 )
 from ...agent import models as _models   # is_model_cached / ModelDownloadJob alias 용 (monkeypatch 친화).
 from ...agent.models import ModelRegistry, check_runtime_available
@@ -140,15 +140,9 @@ def _ensure_chat_log_handler() -> None:
         pass
 
 
-# 모델 옵션 — (display, model_id). 정액제 사용자도 모델 선택 자유롭게.
-# Opus 가 가장 똑똑하지만 토큰 비싸고 Pro 플랜 quota 낮음. Sonnet 이 기본 추천.
-# 짧은 라벨 — 입력 바 위 좁은 공간에 깔끔히 들어가도록.
-MODEL_OPTIONS: list[tuple[str, str]] = [
-    ("Sonnet 4.6", "claude-sonnet-4-6"),
-    ("Opus 4.7", "claude-opus-4-7"),
-    ("Haiku 4.5", "claude-haiku-4-5-20251001"),
-]
-DEFAULT_MODEL_ID = MODEL_OPTIONS[0][1]
+# 기본 모델 — 사용자 환경 (RTX 5060 Ti 16GB) 에서 가장 안전한 로컬 옵션.
+# Claude 계열은 UI 에서 노출 안 함 (combo 의 runtime=='claude' 필터 참조).
+DEFAULT_MODEL_ID = "qwen3-vl-2b-instruct"
 
 
 # 미등록 모델을 위한 보수적 default — 200k 면 대부분 안전.
@@ -292,14 +286,18 @@ class ChatPanel(QDockWidget):
         model_row.setSpacing(6)
         model_row.setContentsMargins(0, 0, 0, 0)
         self._model_combo = QComboBox()
-        # ModelRegistry 기반 — built-in 4개 (Sonnet/Opus/Haiku/Qwen) 자동 표시.
-        # MODEL_OPTIONS 하드코딩 fallback 은 더 이상 사용 안 함 (backward-compat 으로 상수만 유지).
+        # ModelRegistry 기반 — 로컬 모델 (Qwen 시리즈) 만 노출.
+        # Claude 계열 (runtime='claude') 은 사용자가 UI 에서 보지 않도록 필터 — registry
+        # entry 자체는 보존 (테스트/내부 fallback 이 참조하는 default model_id 'claude-sonnet-4-6'
+        # 가 unknown 으로 떨어지지 않도록).
         self._model_registry = ModelRegistry()
         for meta in self._model_registry.all_models():
+            if meta.runtime == "claude":
+                continue
             display = meta.display_name
-            # claude 외 runtime — 의존성 미설치면 "(설치 필요)" 라벨 + 사용자가 클릭하면
-            # set_model 가드가 차단 → 콤보 fallback. 의존성 표시는 정보용일 뿐 disable 안 함.
-            if meta.runtime != "claude" and not check_runtime_available(meta.runtime):
+            # 의존성 미설치면 "(설치 필요)" 라벨 + 사용자가 클릭하면 set_model 가드가
+            # 차단 → 콤보 fallback. 의존성 표시는 정보용일 뿐 disable 안 함.
+            if not check_runtime_available(meta.runtime):
                 display = f"{display} (설치 필요)"
             self._model_combo.addItem(display, userData=meta.id)
         # 초기 인덱스 — initial_model_id (저장된 ID) 매칭, 없으면 agent 의 현재 model,
@@ -315,10 +313,13 @@ class ChatPanel(QDockWidget):
         # `agent.set_model(current_model_id())` 동기화나 어떤 자동 트리거가 installer
         # dialog 를 시작 시점에 띄울 위험 — 사용자가 KStudio 켤 때마다 PyTorch 설치
         # 다이얼로그 보이는 회귀 (2026-05-21 사용자 보고).
+        # 또한 settings 의 desired_id 가 Claude 계열이면 (UI 노출 안 함) DEFAULT 로 강등.
         self._startup_demoted_from: Optional[str] = None
         desired_meta = self._model_registry.get(str(desired_id)) if desired_id else None
-        if desired_meta is not None and desired_meta.runtime != "claude":
-            if not check_runtime_available(desired_meta.runtime):
+        if desired_meta is not None:
+            if desired_meta.runtime == "claude":
+                desired_id = DEFAULT_MODEL_ID
+            elif not check_runtime_available(desired_meta.runtime):
                 self._startup_demoted_from = desired_meta.display_name
                 desired_id = DEFAULT_MODEL_ID
 
@@ -331,7 +332,7 @@ class ChatPanel(QDockWidget):
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
         self._model_combo.setStyleSheet(
             "QComboBox{background:#1e293b;color:#e2e8f0;border:1px solid #334155;"
-            "border-radius:4px;padding:2px 6px;font-size:11px;}"
+            "border-radius:6px;padding:2px 8px;font-size:11px;}"
         )
         # combo 자체가 가로로 가능한 작게 — 라벨(예: "Sonnet 4.6") 너비만큼.
         self._model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
@@ -354,7 +355,7 @@ class ChatPanel(QDockWidget):
         # /clear /compact 버튼 — 슬래시 명령과 동일 흐름. % 라벨 오른쪽에 붙음.
         _slash_btn_style = (
             "QPushButton{background:#1e293b;color:#cbd5e1;border:1px solid #334155;"
-            "border-radius:3px;padding:1px 6px;font-size:11px;}"
+            "border-radius:5px;padding:2px 8px;font-size:11px;}"
             "QPushButton:hover{background:#334155;color:#f1f5f9;}"
         )
         self._clear_btn = QPushButton("Clear")
@@ -391,7 +392,7 @@ class ChatPanel(QDockWidget):
         # QFrame 안에 라벨 + 취소 버튼 — 사용자가 잘못 paste 한 이미지 제거 가능.
         self._attach_row = QFrame()
         self._attach_row.setStyleSheet(
-            "QFrame{background:#1e1b4b;border-radius:4px;}"
+            "QFrame{background:#1e1b4b;border-radius:6px;}"
         )
         _attach_lay = QHBoxLayout(self._attach_row)
         _attach_lay.setContentsMargins(8, 3, 6, 3)
@@ -403,7 +404,7 @@ class ChatPanel(QDockWidget):
         self._attach_cancel_btn.setCursor(Qt.PointingHandCursor)
         self._attach_cancel_btn.setStyleSheet(
             "QPushButton{background:transparent;color:#c4b5fd;border:1px solid #7c3aed;"
-            "border-radius:3px;padding:1px 6px;font-size:11px;}"
+            "border-radius:5px;padding:2px 8px;font-size:11px;}"
             "QPushButton:hover{background:#7c3aed;color:white;}"
         )
         self._attach_cancel_btn.clicked.connect(self._on_attach_cancel)
@@ -421,14 +422,14 @@ class ChatPanel(QDockWidget):
         )
         self._input.setStyleSheet(
             "QPlainTextEdit{background:#0f172a;color:#e2e8f0;border:1px solid #334155;"
-            "border-radius:4px;padding:4px 6px;font-size:12px;}"
+            "border-radius:8px;padding:6px 10px;font-size:12px;}"
         )
         self._input.submit_requested.connect(self._on_submit)
         self._send_btn = QPushButton("보내기")
         self._send_btn.clicked.connect(self._on_submit)
         self._cancel_btn = QPushButton("취소")
         self._cancel_btn.setStyleSheet(
-            "QPushButton{background:#7f1d1d;color:#fef2f2;border:none;border-radius:4px;padding:4px 8px;}"
+            "QPushButton{background:#7f1d1d;color:#fef2f2;border:none;border-radius:6px;padding:4px 10px;}"
             "QPushButton:hover{background:#991b1b;}"
         )
         self._cancel_btn.clicked.connect(self._on_cancel_clicked)
@@ -573,17 +574,8 @@ class ChatPanel(QDockWidget):
 
     # ---- 대화 영속화 ----
     def set_history_path(self, path: Path) -> None:
-        """디스크 경로 설정 + 즉시 로드."""
+        """디스크 경로 설정. 저장은 계속 — 이전 세션 복원 (load) 은 사용자 요청으로 제거."""
         self._history_path = Path(path)
-        history = load_history(self._history_path)
-        if history:
-            sep = AgentMessage(
-                role="system",
-                text=f"이전 세션의 대화 {len(history)}건 복원됨.",
-            )
-            self.append_message(sep)
-            for role, text in history:
-                self.append_message(AgentMessage(role=role, text=text))
 
     def flush_history_now(self) -> None:
         """앱 종료 시 호출 — 디바운스 우회 즉시 저장."""
@@ -781,13 +773,19 @@ class ChatPanel(QDockWidget):
             self._startup_demoted_from = None
 
     def _fallback_combo_to(self, model_id: str) -> None:
-        """콤보를 model_id 항목으로 되돌림 (signal recursion 방지 blockSignals)."""
-        for i in range(self._model_combo.count()):
-            if self._model_combo.itemData(i) == model_id:
-                self._model_combo.blockSignals(True)
-                self._model_combo.setCurrentIndex(i)
-                self._model_combo.blockSignals(False)
-                return
+        """콤보를 model_id 항목으로 되돌림. 콤보에 없으면 DEFAULT_MODEL_ID 로 fallback.
+
+        Claude 필터 이후 — 이전 선택이 claude 계열이면 콤보에 없을 수 있어
+        DEFAULT (qwen3-vl-2b-instruct) 로 안전하게 떨어진다.
+        """
+        targets = [model_id, DEFAULT_MODEL_ID]
+        for target in targets:
+            for i in range(self._model_combo.count()):
+                if self._model_combo.itemData(i) == target:
+                    self._model_combo.blockSignals(True)
+                    self._model_combo.setCurrentIndex(i)
+                    self._model_combo.blockSignals(False)
+                    return
 
     def _open_installer_for(self, meta, before: str) -> None:
         """PyTorch 1-클릭 설치 다이얼로그. 성공 시 set_model 재시도 (chain).
