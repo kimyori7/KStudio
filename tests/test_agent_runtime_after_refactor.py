@@ -19,11 +19,13 @@ from screen_recorder.agent.backends import ChatInput
 
 @pytest.fixture
 def mock_video_tools():
-    """VideoTools mock — mcp_server() + tool_names() + plan_gate() 만 필요."""
+    """VideoTools mock — mcp_server() + tool_names() + plan_gate() + openai_tools_and_handlers()."""
     vt = MagicMock()
     vt.mcp_server.return_value = MagicMock()
     vt.tool_names.return_value = ["get_video_state"]
     vt.plan_gate.return_value = MagicMock()
+    # transformers / ollama backend factory 가 호출 — (openai_tools, handlers) 튜플.
+    vt.openai_tools_and_handlers.return_value = ([], {})
     return vt
 
 
@@ -164,6 +166,60 @@ def test_clear_session_resets_session_started(agent):
     assert agent._session_started is False
 
 
+def test_stop_calls_cancel_before_close(mock_video_tools, tmp_path, qtbot):
+    """stop() 호출 시 backend.cancel() 이 close() 보다 먼저 schedule.
+
+    회귀 보호 (2026-05-26 사용자 보고): generate 중 앱 종료 느림 → fire-and-forget 으로
+    바꿨음. stop() 은 두 코루틴 schedule 만 하고 결과 안 기다림. schedule 순서는 보장.
+    """
+    agent = AgentRuntime(video_tools=mock_video_tools, cwd=tmp_path)
+
+    call_order: list[str] = []
+
+    async def _record_cancel():
+        call_order.append("cancel")
+
+    async def _record_close():
+        call_order.append("close")
+
+    async def _fake_send(msg, emit_fn):
+        await asyncio.sleep(2.0)   # 무한 generate 흉내
+
+    agent._backend.start_session = AsyncMock()
+    agent._backend.cancel = _record_cancel
+    agent._backend.close = _record_close
+    agent._backend.send_message = _fake_send
+
+    try:
+        agent.send("hi")
+        qtbot.wait(150)   # send_message 진입 보장
+        agent.stop()
+        # fire-and-forget — 코루틴들이 실제 실행되도록 잠시 대기.
+        # send_message 의 asyncio.sleep(2.0) 이 cancel 받아 풀려야 cancel 실행됨.
+        # 정확한 순서 보장은 어렵지만 두 개 모두 호출됐는지는 확인 가능.
+        import time
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            qtbot.wait(50)
+            if "cancel" in call_order and "close" in call_order:
+                break
+        assert "cancel" in call_order, "cancel() 미호출 — schedule 실패"
+        assert "close" in call_order, "close() 미호출 — schedule 실패"
+        # 순서: cancel 이 schedule 되고 그 다음 close.
+        # 둘 다 같은 asyncio loop 에 sequential schedule 되므로 cancel 이 먼저 시작.
+        assert call_order.index("cancel") < call_order.index("close"), (
+            f"순서 위반: cancel 이 close 보다 먼저 schedule 돼야. 실제: {call_order}"
+        )
+    finally:
+        # stop() 가 이미 정리했지만 안전망.
+        if agent._started:
+            loop = agent._thread._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(loop.stop)
+            agent._thread.quit()
+            agent._thread.wait(2000)
+
+
 def test_agent_default_model_is_sonnet(agent):
     """기본 모델이 claude-sonnet-4-6 (Pro 정액제 친화)."""
     assert "sonnet" in agent._model.lower()
@@ -273,6 +329,71 @@ def test_cancel_resets_session_started_for_next_send(mock_video_tools, tmp_path,
         # 단 위 mock 의 cancel 이 실제 작동하지 않으면 1번만 호출됨 — assertion 약하게.
         # 가능한 검증: start_session 이 *최소 1번* 은 호출됨.
         assert len(start_calls) >= 1
+    finally:
+        if agent._started:
+            loop = agent._thread._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(loop.stop)
+            agent._thread.quit()
+            agent._thread.wait(2000)
+
+
+def test_set_model_recreates_backend_when_repo_id_changes(mock_video_tools, tmp_path, qtbot):
+    """같은 runtime 안 다른 모델 (다른 repo_id) 로 전환 시 backend recreate.
+
+    회귀 보호 (2026-05-26 사용자 보고): VL 4B → VL 2B 갈아탔는데 옛 backend 가 repo_id
+    "Qwen3-VL-4B-Instruct" hard-coded 상태로 남아 로딩 시 4B 다시 로드 + UI 에 "VL 4B
+    로딩 중" 표시.
+    """
+    agent = AgentRuntime(video_tools=mock_video_tools, cwd=tmp_path)
+    agent.start()
+    qtbot.wait(50)
+
+    try:
+        # transformers runtime 의 두 모델 — VL 4B → VL 2B 시뮬레이션.
+        agent.set_model("qwen3-vl-4b-instruct")
+        qtbot.wait(100)
+        backend_first = agent._backend
+
+        agent.set_model("qwen3-vl-2b-instruct")
+        qtbot.wait(100)
+        backend_second = agent._backend
+
+        # 새 backend 인스턴스여야 (repo_id 가 다르므로 recreate 필수).
+        assert backend_first is not backend_second, (
+            "repo_id 가 달라졌는데 backend 가 재사용됨 — 옛 repo_id 로 로드됨"
+        )
+        # 새 backend 는 새 repo_id.
+        assert agent._backend._repo_id == "Qwen/Qwen3-VL-2B-Instruct"
+    finally:
+        if agent._started:
+            loop = agent._thread._loop
+            if loop is not None:
+                loop.call_soon_threadsafe(loop.stop)
+            agent._thread.quit()
+            agent._thread.wait(2000)
+
+
+def test_set_model_does_not_recreate_within_claude_models(mock_video_tools, tmp_path, qtbot):
+    """Claude 모델 간 전환 (opus → sonnet) 은 backend recreate 불필요 — model arg 만 변경.
+
+    SDK client subprocess 재생성은 비용 큼. Claude 백엔드는 send_message 에 model 전달.
+    """
+    agent = AgentRuntime(video_tools=mock_video_tools, cwd=tmp_path)
+    agent.start()
+    qtbot.wait(50)
+
+    try:
+        agent.set_model("claude-opus-4-7")
+        qtbot.wait(100)
+        backend_first = agent._backend
+
+        agent.set_model("claude-sonnet-4-6")
+        qtbot.wait(100)
+        backend_second = agent._backend
+
+        # Claude 는 같은 backend 재사용 — repo_id 가 None (cloud) 이라 recreate 안 함.
+        assert backend_first is backend_second
     finally:
         if agent._started:
             loop = agent._thread._loop

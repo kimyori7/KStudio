@@ -89,6 +89,58 @@ _BUILTIN: list[ModelMetadata] = [
         tool_strategy="prompted",
     ),
     ModelMetadata(
+        id="qwen3-vl-2b-instruct",
+        display_name="Qwen3-VL 2B (로컬, 가장 가벼움)",
+        runtime="transformers",
+        repo_id="Qwen/Qwen3-VL-2B-Instruct",
+        # 2B bf16 ~4GB. KStudio 비디오 디코더 + Qt + KV cache 합쳐도 5060 Ti 16GB 에
+        # 절반 이상 여유. 4B 가 다른 process 와 합쳐 spillover 일으킨 사용자 환경
+        # (2026-05-26) 의 안전 옵션. 품질은 4B 보다 약간 낮지만 frame 분석엔 충분.
+        quantization="bf16 (원본)",
+        modalities=frozenset({"text", "image", "video"}),
+        supports_korean=True,
+        estimated_size_gb=3.5, estimated_vram_gb=6.0,
+        context_window=256_000,
+        supports_tools=True,
+        description=(
+            "VL 최경량 (2B). VRAM 부족 환경에 우선 시도. 영상 frame 분석 + 한국어 OK. "
+            "4B 가 spillover 일으키는 사용자는 이걸로 갈아타면 여유 있게 동작."
+        ),
+        # VL 모델은 작아서 chat_template 의 tools= 만으론 도구 호출 형식 안 따라옴
+        # (사용자 보고 2026-05-26: <tool_call> 태그 0 회). prompted 로 강제 → system
+        # prompt 에 도구 카탈로그 + Hermes 형식 예시 직접 주입 → 따라할 확률 ↑.
+        tool_strategy="prompted",
+    ),
+    ModelMetadata(
+        id="qwen3-vl-4b-instruct",
+        display_name="Qwen3-VL 4B (로컬, 비전+영상)",
+        runtime="transformers",
+        repo_id="Qwen/Qwen3-VL-4B-Instruct",
+        # bf16 원본 — 4B 라 ~8GB. RTX 5060 Ti 가용 VRAM 7.5GB 환경에 통째로 fit 목표
+        # (Omni 7B 는 CPU offload 불가피해서 느림). VL family 는 audio native X — 영상은
+        # 시각 프레임만 분석 (KStudio 의 Whisper 가 오디오 전사를 별도로 담당).
+        # Qwen2.5 디코더 계승 → 한국어 OK. 도구 호출은 tool_strategy="prompted"
+        # (VL 모델은 official 만으론 도구 호출 형식 안 따라옴 — prompted 가 카탈로그 명시).
+        quantization="bf16 (원본)",
+        modalities=frozenset({"text", "image", "video"}),
+        supports_korean=True,
+        # estimated_size_gb=5.5 — 사용자 실측 (2026-05-26): HF cache dedup 적용 시 ~5.1GB.
+        # 여유 0.4GB. 추정과 실제가 크게 다르면 progress bar 가 100% 못 채움 → "멈춤" 오해.
+        # estimated_vram_gb=11 — 사용자 실측 (2026-05-26): 가중치 8GB + ViT 0.6-1GB +
+        # CUDA context 0.5-1GB + caching allocator 여유 + KV cache + activations. 처음
+        # 7GB 로 추정했으나 inference 시 실제로는 ~10-12GB. 5060 Ti 16GB 에 여유 fit.
+        estimated_size_gb=5.5, estimated_vram_gb=11.0,
+        context_window=256_000,
+        supports_tools=True,
+        description=(
+            "비전·영상 특화 (1h+ 동영상 이해, 시각 frame 분석). bf16 ~7GB 로 5060 Ti 가용 "
+            "VRAM 안에 통째로 fit → Omni 보다 빠름. 오디오 native 없음 — Whisper 로 우회."
+        ),
+        # VL 모델은 official 만으론 도구 호출 형식 안 따라옴 (사용자 보고 2026-05-26).
+        # prompted 가 system prompt 에 카탈로그 + Hermes 형식 예시 명시 → 모델이 따라할 확률 ↑.
+        tool_strategy="prompted",
+    ),
+    ModelMetadata(
         id="qwen3-8b-ollama",
         display_name="Qwen3 8B (Ollama, 빠름)",
         runtime="ollama",

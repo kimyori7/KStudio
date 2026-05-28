@@ -128,6 +128,59 @@ def test_download_emits_progress_when_polling(qtbot, monkeypatch, tmp_path):
         job.start()
 
     assert len(progress_calls) >= 1
-    for r, t in progress_calls:
-        assert t == 3072
+    # 마지막 progress 는 _on_worker_done 의 100% 강제 → total=received (estimated_size 무시).
+    # 중간 polling 은 estimated_size 사용. 끝 - 1 까지는 estimated.
+    *mid_calls, last_call = progress_calls
+    for r, t in mid_calls:
+        assert t == 3072, f"중간 polling 은 estimated_size 사용: {(r, t)}"
         assert r >= 0
+    last_r, last_t = last_call
+    assert last_t == last_r, (
+        f"완료 시 progress 는 received == total (100% 강제): {last_call}"
+    )
+
+
+def test_download_finished_signal_forces_progress_to_100_percent(qtbot, monkeypatch, tmp_path):
+    """estimated_size 가 실제보다 클 때 (예: 8.5GB 추정 / 5.1GB 실측) — 완료 시점에
+    bar 가 60% 같은 어중간한 값에서 멈춘 채로 끝나 보이는 회귀 방지.
+
+    Fix: _on_worker_done 에서 cache 측정값을 total 로도 사용 → pct = 100%.
+    """
+    import sys
+    cache_dir = tmp_path / "models--Qwen--Qwen3-VL-4B-Instruct"
+    cache_dir.mkdir()
+
+    def _download(**kwargs):
+        # 5.1GB 분량 (실측) — estimated 8.5GB 의 60%.
+        (cache_dir / "model.safetensors").write_bytes(b"x" * 5100)
+        return str(cache_dir)
+
+    fake_hub = MagicMock()
+    fake_hub.snapshot_download = MagicMock(side_effect=_download)
+    fake_constants = MagicMock()
+    fake_constants.HF_HUB_CACHE = str(tmp_path)
+    fake_hub.constants = fake_constants
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake_constants)
+
+    from screen_recorder.agent.models.downloader import ModelDownloadJob
+
+    job = ModelDownloadJob(
+        repo_id="Qwen/Qwen3-VL-4B-Instruct",
+        estimated_size_bytes=8500,  # 추정 (잘못)
+        poll_interval_ms=10,
+    )
+    progress_calls = []
+    job.download_progress.connect(lambda r, t: progress_calls.append((r, t)))
+
+    with qtbot.waitSignal(job.finished, timeout=3000):
+        job.start()
+
+    # 가장 마지막 emit 의 received == total → 100%.
+    assert len(progress_calls) >= 1
+    final_received, final_total = progress_calls[-1]
+    assert final_received == final_total, (
+        f"완료 시 bar 가 100% 안 됨: received={final_received} total={final_total} "
+        f"→ pct={final_received * 100 // final_total if final_total else 0}%"
+    )
+    assert final_received >= 5100, "완료 progress 가 실제 cache 크기 반영해야"

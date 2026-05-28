@@ -292,20 +292,52 @@ class AgentRuntime(QObject):
         self._started = True
 
     def stop(self) -> None:
+        """앱 종료 hook — fire-and-forget cancel/close + 짧은 thread join.
+
+        설계 (2026-05-26 사용자 보고 "모델과 이야기중이라 종료 느림" 회귀):
+        과거엔 close().result(timeout=3.0) 같이 명시적으로 기다렸는데, generate 가
+        forward pass 중간이면 (spillover 환경에선 한 토큰 30+초) 그 한 토큰이 끝날 때까지
+        대기 → 앱 종료가 30초+ 걸림.
+
+        새 전략: cancel/close 는 best-effort fire-and-forget 으로 schedule 만 하고
+        result 기다리지 않음. asyncio loop stop 도 즉시. QThread join 도 0.5s 만.
+        나머지는 Python interpreter 종료 시 daemon 스레드가 같이 죽음.
+
+        ClaudeBackend 의 subprocess 정리도 SDK 가 daemon 으로 spawn → interpreter
+        종료 시 자동 정리.
+        """
         if not self._started:
             return
         self._on_user_message_outgoing()
-        # 클라이언트 정리는 worker 스레드의 asyncio 루프 안에서 수행.
         loop = self._thread._loop
         if loop is not None:
-            fut = asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
+            # 1) cancel — stop_flag set. fire-and-forget.
             try:
-                fut.result(timeout=2.0)
+                asyncio.run_coroutine_threadsafe(self._backend.cancel(), loop)
             except Exception:
                 pass
+            # 2) close — cleanup. fire-and-forget (generate 중이면 뒤에 큐잉되지만
+            # 어차피 app 종료 중. daemon 스레드가 interpreter 종료 시 같이 죽음).
+            try:
+                asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
+            except Exception:
+                pass
+            # 3) default executor 강제 종료 — Python atexit 이 ThreadPoolExecutor 의
+            # 실행 중 task 끝나길 기다림 (Python 3.x 의 ThreadPoolExecutor 기본 동작).
+            # streamer.next() 가 forward pass (spillover 환경 30+초) 블록 중이면 atexit
+            # 이 그만큼 지연 → 사용자 종료 대기 (2026-05-26). wait=False + cancel_futures
+            # 로 즉시 반환.
+            try:
+                executor = getattr(loop, "_default_executor", None)
+                if executor is not None:
+                    executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        # 4) loop stop 즉시 — 진행 중 await 끝나면 loop 빠짐.
         self._thread.stop_loop()
+        # 5) thread join 짧게 — 0.5s. 살아있는 채로 두고 진행해도 daemon 이므로 OK.
         self._thread.quit()
-        self._thread.wait(3000)
+        self._thread.wait(500)
         self._started = False
 
     # ---- UI 진입점 ----
@@ -372,10 +404,19 @@ class AgentRuntime(QObject):
 
         loop = self._thread._loop
         same_runtime = old_meta and old_meta.runtime == new_meta.runtime
+        # transformers / ollama 백엔드는 repo_id 가 __init__ 에 hard-coded — 같은 runtime
+        # 안 다른 모델 (예: VL 4B → VL 2B) 로 전환해도 backend 그대로 두면 옛 repo_id 로
+        # 로드. 사용자 보고 회귀 (2026-05-26): "2B 선택했는데 4B 로딩". Claude 백엔드는
+        # model arg 만 바꾸면 됨 → recreate 불필요.
+        repo_id_changed = (
+            same_runtime and old_meta is not None
+            and old_meta.repo_id != new_meta.repo_id
+        )
+        needs_recreate = (not same_runtime) or repo_id_changed
         if loop is not None:
             asyncio.run_coroutine_threadsafe(self._backend.close(), loop)
-        if not same_runtime:
-            # runtime 자체 변경 → 새 backend 생성. factory 가 ModelMetadata 로 분기.
+        if needs_recreate:
+            # runtime 또는 repo_id 변경 → 새 backend 생성. factory 가 ModelMetadata 로 분기.
             self._backend = create_backend(new_meta, cwd=self._cwd)
         # 모델(또는 runtime) 변경 시 tools_dict 재빌드 — tool_strategy 등 meta 변경 반영.
         self._build_tools_dict()

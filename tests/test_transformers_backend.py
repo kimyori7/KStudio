@@ -120,6 +120,15 @@ async def test_close_unloads_model_and_runs_gc(transformers_mock, monkeypatch):
     assert be._model is None
     assert be._processor is None
     assert gc_called, "gc.collect() 호출 안 됨 — VRAM 회수 위험"
+    # torch.cuda.empty_cache() 도 호출돼야 — caching allocator 의 unused block 반환.
+    # gc 만으로는 부족 (PyTorch 가 GPU 메모리 잡고 있어 다음 모델 로드 시 OOM).
+    fake_cuda = transformers_mock["torch"].cuda
+    if hasattr(fake_cuda, "empty_cache"):
+        # MagicMock 이라 call_count 검증 가능 — is_available 가 True 반환하면 호출됨.
+        # mock 기본은 truthy 라 호출 경로 진입.
+        assert fake_cuda.empty_cache.call_count >= 1, (
+            "torch.cuda.empty_cache() 호출 안 됨 — caching allocator 가 VRAM 안 놔줌"
+        )
 
 
 @pytest.mark.asyncio
@@ -711,3 +720,302 @@ async def test_ensure_model_loaded_text_only_with_4bit(transformers_mock):
     _, kwargs = fake_auto_model.from_pretrained.call_args
     assert "quantization_config" in kwargs
     assert "torch_dtype" not in kwargs
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# VL family (Qwen3-VL, Qwen2.5-VL) — Omni 와 다른 클래스/processor.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _setup_vl_mocks(transformers_mock):
+    """transformers_mock 에 VL 경로용 AutoModelForImageTextToText + AutoProcessor 추가.
+
+    apply_chat_template(return_dict=True) 가 dict-like inputs 를 반환하도록 설정.
+    """
+    fake_inputs = MagicMock()
+    fake_inputs.to = MagicMock(return_value=fake_inputs)
+    # **inputs 언패킹용 — generate(**inputs, ...) 가 동작하도록 keys/values mocking.
+    fake_inputs.keys = MagicMock(return_value=["input_ids"])
+    fake_inputs.__getitem__ = MagicMock(return_value="fake_tensor")
+    # apply_chat_template 가 호출 인자에 따라 다른 값 반환:
+    #   tokenize=False → 문자열 (Omni 경로)
+    #   tokenize=True + return_dict=True → dict-like (VL 경로)
+    def _apply(conv, **kw):
+        if kw.get("tokenize") and kw.get("return_dict"):
+            return fake_inputs
+        return "<prompt>"
+    transformers_mock["processor_inst"].apply_chat_template = MagicMock(side_effect=_apply)
+
+    fake_auto_im2txt = MagicMock()
+    fake_auto_im2txt.from_pretrained = MagicMock(return_value=transformers_mock["model_inst"])
+    fake_auto_processor = MagicMock()
+    fake_auto_processor.from_pretrained = MagicMock(return_value=transformers_mock["processor_inst"])
+    transformers_mock["transformers"].AutoModelForImageTextToText = fake_auto_im2txt
+    transformers_mock["transformers"].AutoProcessor = fake_auto_processor
+    return fake_auto_im2txt, fake_auto_processor, fake_inputs
+
+
+def test_is_vl_detects_qwen3_vl_repo_ids():
+    """`_is_vl()` — repo_id 의 '-VL-' 패턴 (Omni 제외) 인식.
+
+    Why: 모델 시리즈에 따라 다른 transformers 클래스/processor 사용. Omni 와 VL
+    분기 잘못되면 load_in_4bit 옵션 / process_mm_info 호출 같은 omni 전용 동작이
+    VL 에 새어 들어가 generate 망가짐.
+    """
+    vl3 = TransformersBackend(repo_id="Qwen/Qwen3-VL-4B-Instruct",
+                              modalities=frozenset({"text", "image", "video"}))
+    vl25 = TransformersBackend(repo_id="Qwen/Qwen2.5-VL-3B-Instruct",
+                               modalities=frozenset({"text", "image", "video"}))
+    omni = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    text_only = TransformersBackend(repo_id="Qwen/Qwen2.5-7B-Instruct",
+                                    modalities=frozenset({"text"}))
+
+    assert vl3._is_vl() is True
+    assert vl25._is_vl() is True
+    assert omni._is_vl() is False
+    assert text_only._is_vl() is False
+
+
+@pytest.mark.asyncio
+async def test_vl_load_uses_auto_image_text_to_text_class(transformers_mock):
+    """VL repo_id 면 AutoModelForImageTextToText + AutoProcessor 호출 — Omni 클래스 X.
+
+    회귀 보호: Qwen3-VL 은 Omni 클래스로 로드하면 architecture mismatch — VL 전용
+    AutoClass 가 HF config 보고 실제 클래스 (Qwen3VLForConditionalGeneration) 자동 선택.
+    """
+    fake_auto_im2txt, fake_auto_proc, _ = _setup_vl_mocks(transformers_mock)
+
+    be = TransformersBackend(
+        repo_id="Qwen/Qwen3-VL-4B-Instruct",
+        modalities=frozenset({"text", "image", "video"}),
+    )
+    await be._ensure_model_loaded()
+
+    assert fake_auto_im2txt.from_pretrained.call_count == 1
+    assert fake_auto_proc.from_pretrained.call_count == 1
+    # Omni 클래스는 호출 안 됨.
+    assert transformers_mock["model_cls"].from_pretrained.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_vl_send_message_uses_apply_chat_template_with_return_dict(transformers_mock):
+    """VL send_message — apply_chat_template(return_dict=True, tokenize=True) 로 한 번에
+    비전 입력 처리 + process_mm_info 호출 안 함.
+
+    회귀 보호: VL family 는 qwen_omni_utils 의존 없음. apply_chat_template 자체가
+    image path 받아서 pixel_values 까지 만들어줌. Omni 경로의 process_mm_info 가
+    VL 에 새면 의존성 에러 (없는 import) 발생.
+    """
+    from screen_recorder.agent.backends import ChatInput
+
+    _setup_vl_mocks(transformers_mock)
+    _setup_streamer_mock(transformers_mock, ["VL 응답"])
+
+    be = TransformersBackend(
+        repo_id="Qwen/Qwen3-VL-4B-Instruct",
+        modalities=frozenset({"text", "image", "video"}),
+    )
+    await be.start_session(system_prompt="sys", tools={}, model="qwen3-vl-4b-instruct")
+    await be.send_message(ChatInput(text="이거 봐"), lambda _: None)
+
+    # apply_chat_template 한 번은 tokenize=True + return_dict=True (VL 경로 시그니처).
+    p = transformers_mock["processor_inst"]
+    vl_calls = [
+        c for c in p.apply_chat_template.call_args_list
+        if c.kwargs.get("tokenize") is True and c.kwargs.get("return_dict") is True
+    ]
+    assert len(vl_calls) >= 1, "VL 경로는 apply_chat_template(tokenize=True, return_dict=True) 호출해야 함"
+
+    # process_mm_info 호출 X — VL 은 qwen_omni_utils 안 씀.
+    assert transformers_mock["process_mm_info"].call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_vl_generate_does_not_pass_omni_kwargs(transformers_mock):
+    """VL generate kwargs 에 return_audio / use_audio_in_video 없음 — Omni 전용 인자.
+
+    회귀 보호: Qwen3VLForConditionalGeneration.generate 는 이 인자 모르므로 TypeError.
+    """
+    from screen_recorder.agent.backends import ChatInput
+
+    _setup_vl_mocks(transformers_mock)
+    _setup_streamer_mock(transformers_mock, ["응답"])
+
+    be = TransformersBackend(
+        repo_id="Qwen/Qwen3-VL-4B-Instruct",
+        modalities=frozenset({"text", "image", "video"}),
+    )
+    await be.start_session(system_prompt="sys", tools={}, model="qwen3-vl-4b-instruct")
+    await be.send_message(ChatInput(text="hi"), lambda _: None)
+
+    m = transformers_mock["model_inst"]
+    assert m.generate.call_count == 1
+    _, gen_kwargs = m.generate.call_args
+    assert "return_audio" not in gen_kwargs
+    assert "use_audio_in_video" not in gen_kwargs
+
+
+def test_history_char_limit_scales_with_model_size():
+    """모델 크기 별 다른 history 한도 — 작을수록 KV cache 여유 많아 길게.
+
+    회귀 보호 (2026-05-26): 4B 가 16K char 면 5060 Ti 한계에 거의 fit, 2B 면 100K
+    까지 가능. Claude 200K 컨텍스트는 cloud 라 비교 불가 — 로컬은 GPU VRAM 천장.
+    """
+    vl2b = TransformersBackend(repo_id="Qwen/Qwen3-VL-2B-Instruct",
+                                modalities=frozenset({"text", "image", "video"}))
+    vl4b = TransformersBackend(repo_id="Qwen/Qwen3-VL-4B-Instruct",
+                                modalities=frozenset({"text", "image", "video"}))
+    omni = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    # 작을수록 더 넉넉.
+    assert vl2b._history_char_limit() > vl4b._history_char_limit()
+    assert vl4b._history_char_limit() >= omni._history_char_limit()
+    # VL-2B 는 적어도 50K (Sonnet 의 4분의 1 정도) 는 보장.
+    assert vl2b._history_char_limit() >= 50_000
+
+
+def test_trim_history_below_limit_keeps_all():
+    """누적 char 가 한도 이하면 trim 안 함."""
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    be._history = [
+        {"role": "user", "content": "안녕"},
+        {"role": "assistant", "content": "네 안녕하세요"},
+    ]
+    be._trim_history()
+    assert len(be._history) == 2
+
+
+def test_trim_history_above_limit_removes_oldest_pairs():
+    """누적 char 가 MAX_HISTORY_CHARS 넘으면 가장 오래된 user-assistant pair 부터 제거.
+
+    회귀 보호 (2026-05-26): 무한 누적 시 KV cache 폭증으로 VRAM spillover → 응답 느려짐.
+    """
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    # Omni-7B 한도 = 16000. 각 3500 char 메시지 6개 → 21000 char (한도 초과).
+    big = "X" * 3500
+    be._history = [
+        {"role": "user", "content": big + "_u1"},
+        {"role": "assistant", "content": big + "_a1"},
+        {"role": "user", "content": big + "_u2"},
+        {"role": "assistant", "content": big + "_a2"},
+        {"role": "user", "content": big + "_u3"},
+        {"role": "assistant", "content": big + "_a3"},
+    ]
+    be._trim_history()
+
+    # 한도 내로 줄어들었어야.
+    limit = be._history_char_limit()
+    total = sum(be._estimate_msg_chars(m) for m in be._history)
+    assert total <= limit, f"trim 후에도 {total} char (한도 {limit})"
+    # 첫 메시지는 user 로 유지.
+    assert be._history[0]["role"] == "user"
+    # 가장 최근 turn (_u3 / _a3) 은 보존됐어야.
+    assistant_texts = [m["content"] for m in be._history if m["role"] == "assistant"]
+    assert any("_a3" in t for t in assistant_texts), "최근 assistant turn 누락"
+
+
+def test_trim_history_pops_tool_result_at_head():
+    """trim 으로 head 가 tool_result (앞 assistant.tool_use 잘림) 되면 추가 pop.
+
+    chat_template strict alternation 보장.
+    """
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    # Omni-7B 한도 16K, 각 3000 char × 6 = 18000 → trim 유발.
+    big = "X" * 3000
+    # tool_result 시퀀스 시뮬레이션 — 5쌍 만들어서 trim 유발.
+    be._history = [
+        {"role": "user", "content": big},
+        {"role": "assistant", "content": big + "tool_use_xml"},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "output": big}]},
+        {"role": "assistant", "content": big},
+        {"role": "user", "content": big},
+        {"role": "assistant", "content": big},
+    ]
+    be._trim_history()
+    # head 가 user 여야.
+    assert be._history[0]["role"] == "user"
+    # 그 head 가 tool_result 가 아니어야 (일반 user message).
+    head_content = be._history[0]["content"]
+    if isinstance(head_content, list):
+        tool_results = [b for b in head_content if isinstance(b, dict) and b.get("type") == "tool_result"]
+        assert not tool_results, f"head 가 여전히 tool_result: {be._history[0]}"
+
+
+@pytest.mark.asyncio
+async def test_send_message_calls_empty_cache_in_finally(transformers_mock):
+    """매 send_message finally 에서 torch.cuda.empty_cache 호출 — KV cache 누적 회수.
+
+    회귀 보호 (2026-05-26): 매 메시지마다 점점 느려지는 spillover.
+    """
+    from screen_recorder.agent.backends import ChatInput
+
+    _setup_streamer_mock(transformers_mock, ["응답"])
+
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    await be.start_session(system_prompt="sys", tools={}, model="qwen25-omni-7b")
+    await be.send_message(ChatInput(text="안녕"), lambda _: None)
+
+    # send_message 의 finally 안에서 empty_cache 한 번 호출됐어야.
+    fake_cuda = transformers_mock["torch"].cuda
+    if hasattr(fake_cuda, "empty_cache"):
+        assert fake_cuda.empty_cache.call_count >= 1, (
+            "send_message finally 에서 empty_cache 미호출 — KV cache 누적 위험"
+        )
+
+
+def test_estimate_msg_chars_handles_text_image_video_blocks():
+    """_estimate_msg_chars — str / list-of-blocks 안전 처리."""
+    be = TransformersBackend(repo_id="Qwen/Qwen2.5-Omni-7B")
+    # str.
+    assert be._estimate_msg_chars({"content": "안녕"}) == 2
+    # list of text.
+    msg = {"content": [{"type": "text", "text": "hello"}]}
+    assert be._estimate_msg_chars(msg) == 5
+    # image block — 어림 1024.
+    msg = {"content": [{"type": "image", "image": "/path/x.png"}]}
+    assert be._estimate_msg_chars(msg) == 1024
+    # video block — 어림 4096.
+    msg = {"content": [{"type": "video", "video": "/path/x.mp4"}]}
+    assert be._estimate_msg_chars(msg) == 4096
+    # tool_result with text output.
+    msg = {"content": [{"type": "tool_result", "tool_use_id": "1", "output": "ABCDE"}]}
+    assert be._estimate_msg_chars(msg) == 5
+    # 빈/이상한 content.
+    assert be._estimate_msg_chars({"content": ""}) == 0
+    assert be._estimate_msg_chars({"content": None}) == 0
+    assert be._estimate_msg_chars({}) == 0
+
+
+def test_registry_has_qwen3_vl_4b_entry():
+    """ModelRegistry 에 qwen3-vl-4b-instruct 항목 존재 — UI 모델 콤보에 노출되도록."""
+    from screen_recorder.agent.models.registry import ModelRegistry
+    reg = ModelRegistry()
+    meta = reg.get("qwen3-vl-4b-instruct")
+    assert meta is not None
+    assert meta.runtime == "transformers"
+    assert meta.repo_id == "Qwen/Qwen3-VL-4B-Instruct"
+    # 비전·영상 OK, audio 는 명시적으로 빠져야 함 (Whisper 로 우회 설계).
+    assert "image" in meta.modalities
+    assert "video" in meta.modalities
+    assert "audio" not in meta.modalities
+    # 도구 호출은 prompted — VL 모델은 official 만으론 형식 안 따라옴 (2026-05-26).
+    assert meta.tool_strategy == "prompted"
+
+
+def test_registry_has_qwen3_vl_2b_entry():
+    """ModelRegistry 에 qwen3-vl-2b-instruct (최경량) 항목 존재.
+
+    회귀 보호 (2026-05-26): 5060 Ti + 다른 process 점유 환경에서 4B 가 spillover →
+    안전 옵션으로 2B 도입. 4B 와 동일 shape 의 메타.
+    """
+    from screen_recorder.agent.models.registry import ModelRegistry
+    reg = ModelRegistry()
+    meta = reg.get("qwen3-vl-2b-instruct")
+    assert meta is not None
+    assert meta.runtime == "transformers"
+    assert meta.repo_id == "Qwen/Qwen3-VL-2B-Instruct"
+    assert "image" in meta.modalities
+    assert "video" in meta.modalities
+    assert "audio" not in meta.modalities
+    assert meta.tool_strategy == "prompted"
+    # VRAM 추정 — 4B (11GB) 보다 작아야.
+    assert meta.estimated_vram_gb < 8.0, "2B 는 4B 보다 작은 VRAM 추정값이어야"

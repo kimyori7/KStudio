@@ -49,9 +49,9 @@ def test_start_session_defaults_when_tools_dict_empty():
 
 
 def test_effective_system_prompt_appends_catalog_in_prompted_mode():
-    """prompted 모드 — system prompt 끝에 build_prompted_tool_catalog 결과 합쳐짐."""
+    """prompted 모드 — with-tools prompt + build_prompted_tool_catalog 결과 합쳐짐."""
     from screen_recorder.agent.backends.transformers_backend import (
-        TransformersBackend, _QWEN_SYSTEM_PROMPT,
+        TransformersBackend, _QWEN_WITH_TOOLS_PROMPT,
     )
     backend = TransformersBackend(repo_id="Qwen/test")
     tools_dict = {
@@ -66,26 +66,30 @@ def test_effective_system_prompt_appends_catalog_in_prompted_mode():
     asyncio.run(backend.start_session(system_prompt="ignored", tools=tools_dict, model="x"))
 
     eff = backend._effective_system_prompt()
-    # 기본 Qwen system prompt 유지 + 카탈로그 추가.
-    assert _QWEN_SYSTEM_PROMPT in eff
+    # with-tools prompt 유지 + 카탈로그 추가.
+    assert _QWEN_WITH_TOOLS_PROMPT in eff
     assert "<tool_call>" in eff
     assert "get_video_state" in eff
 
 
-def test_effective_system_prompt_unchanged_for_none_strategy():
-    """tool_strategy='none' 면 기본 system prompt 그대로 — 카탈로그 미주입."""
+def test_effective_system_prompt_uses_no_tools_for_none_strategy():
+    """tool_strategy='none' 면 no-tools prompt — 도구 호출 못한다고 알림."""
     from screen_recorder.agent.backends.transformers_backend import (
-        TransformersBackend, _QWEN_SYSTEM_PROMPT,
+        TransformersBackend, _QWEN_NO_TOOLS_PROMPT,
     )
     backend = TransformersBackend(repo_id="Qwen/test")
     asyncio.run(backend.start_session(system_prompt="ignored", tools={}, model="x"))
-    assert backend._effective_system_prompt() == _QWEN_SYSTEM_PROMPT
+    assert backend._effective_system_prompt() == _QWEN_NO_TOOLS_PROMPT
 
 
-def test_effective_system_prompt_unchanged_for_official_strategy():
-    """tool_strategy='official' 면 카탈로그 미주입 — chat_template 의 tools= 가 처리."""
+def test_effective_system_prompt_uses_with_tools_for_official_strategy():
+    """tool_strategy='official' + tools 있음 → with-tools prompt 사용 (도구 호출 권장).
+
+    회귀 보호 (2026-05-26 사용자 보고): VL 4B 가 official 인데도 no-tools prompt 받아
+    "도구 호출 못합니다" 라고 거짓말. with-tools prompt 가 적극 호출하라고 명시.
+    """
     from screen_recorder.agent.backends.transformers_backend import (
-        TransformersBackend, _QWEN_SYSTEM_PROMPT,
+        TransformersBackend, _QWEN_WITH_TOOLS_PROMPT,
     )
     backend = TransformersBackend(repo_id="Qwen/test")
     tools_dict = {
@@ -94,7 +98,8 @@ def test_effective_system_prompt_unchanged_for_official_strategy():
         "tool_strategy": "official",
     }
     asyncio.run(backend.start_session(system_prompt="ignored", tools=tools_dict, model="x"))
-    assert backend._effective_system_prompt() == _QWEN_SYSTEM_PROMPT
+    # official 은 chat_template tools= 가 catalog 처리 → effective prompt 는 with-tools 그대로.
+    assert backend._effective_system_prompt() == _QWEN_WITH_TOOLS_PROMPT
 
 
 def test_send_message_passes_tools_to_apply_chat_template_when_official(
