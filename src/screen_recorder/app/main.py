@@ -75,7 +75,7 @@ def main() -> int:
     # 잘못된 값(파일 손상/구버전)은 "image" 로 폴백.
     settings = _settings_module.load(SETTINGS_PATH())
     initial_palette = settings.preferences.last_mode
-    if initial_palette not in ("video", "image"):
+    if initial_palette not in ("video", "image", "document"):
         initial_palette = "image"
     apply_theme(app, initial_palette)
 

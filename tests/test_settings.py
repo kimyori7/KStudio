@@ -98,3 +98,30 @@ def test_editor_shortcuts_defaults():
     assert s.editor_shortcuts.file_save == "Ctrl+S"
     assert s.editor_shortcuts.file_export_png == "Ctrl+E"
     assert s.editor_shortcuts.view_actual_size == "Ctrl+0"
+
+
+def test_preferences_document_dock_and_mode_roundtrip(tmp_path):
+    s = AppSettings()
+    s.preferences.dock_state_document_b64 = "ZG9j"
+    s.preferences.last_mode = "document"
+    p = tmp_path / "settings.json"
+    save(s, p)
+    loaded = load(p)
+    assert loaded.preferences.dock_state_document_b64 == "ZG9j"
+    assert loaded.preferences.last_mode == "document"
+
+
+def test_old_settings_without_document_dock_falls_back(tmp_path):
+    # 구버전 settings.json (dock_state_document_b64 키 없음) → 기본값 "" 폴백
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"preferences": {"last_mode": "image"}}), encoding="utf-8")
+    loaded = load(p)
+    assert loaded.preferences.dock_state_document_b64 == ""
+
+
+def test_last_mode_whitelist_includes_document():
+    # app/main.py 의 화이트리스트가 document 를 허용해야 함 (재시작 테마 폴백 방지)
+    import inspect
+    from screen_recorder.app import main as M
+    src = inspect.getsource(M.main)
+    assert '"document"' in src and 'last_mode' in src

@@ -107,6 +107,7 @@ class PreferencesSettings:
     dock_state_b64: str = ""              # 호환성 (구버전 단일 키) — image 가 비었을 때 fallback
     dock_state_image_b64: str = ""        # 이미지 모드 dock 레이아웃
     dock_state_video_b64: str = ""        # 영상 모드 dock 레이아웃
+    dock_state_document_b64: str = ""     # 문서(Markdown) 모드 dock 레이아웃
     # KStudio UI 자체를 녹화·스크린샷에 포함시킬지. 켜면 minimize_to_tray /
     # use_mini_control 무시 + WDA_EXCLUDEFROMCAPTURE 해제 → 메인 창이 결과에 정상 포함.
     # 글로벌 툴바 ("내 화면에 보이기" 체크박스) 에서 토글.
