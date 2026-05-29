@@ -5,15 +5,18 @@ import logging
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QHBoxLayout, QPushButton, QSplitter,
+    QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QPushButton, QSplitter,
     QVBoxLayout, QWidget,
 )
 
+from .icons import load_icon
 from .markdown.editor import MarkdownEditor
 from .markdown.highlighter import MarkdownHighlighter
 from .markdown.preview import MarkdownPreview
+from .markdown.search_bar import MarkdownSearchBar
 
 _log = logging.getLogger(__name__)
 
@@ -43,11 +46,34 @@ def _read_text_with_fallback(path: Path) -> str:
 
 class MarkdownTab(QWidget):
     save_state_changed = Signal()
+    # 폰트 크기 변경 알림 — (편집기 pt, 미리보기 zoom). main_window 가 받아 영속(디바운스).
+    font_settings_changed = Signal(int, float)
 
-    def __init__(self, *, source_label: str = "new") -> None:
+    # 폰트 크기 한계/기본값 — 편집기는 포인트, 미리보기는 배율.
+    EDITOR_MIN_PT = 8
+    EDITOR_MAX_PT = 32
+    EDITOR_DEFAULT_PT = 11
+    PREVIEW_MIN_ZOOM = 0.5
+    PREVIEW_MAX_ZOOM = 3.0
+    PREVIEW_DEFAULT_ZOOM = 1.0
+    PREVIEW_ZOOM_STEP = 0.1
+
+    def __init__(
+        self, *, source_label: str = "new",
+        editor_font_pt: int = EDITOR_DEFAULT_PT,
+        preview_zoom: float = PREVIEW_DEFAULT_ZOOM,
+    ) -> None:
         super().__init__()
         self._source_label = source_label
         self._saved_path: Path | None = None
+
+        # 폰트 크기 상태 — 단일 출처. 버튼/Ctrl+휠 모두 여기를 거쳐 적용 + 영속.
+        self._editor_pt = max(
+            self.EDITOR_MIN_PT, min(self.EDITOR_MAX_PT, int(editor_font_pt))
+        )
+        self._preview_zoom = max(
+            self.PREVIEW_MIN_ZOOM, min(self.PREVIEW_MAX_ZOOM, float(preview_zoom))
+        )
 
         self._dirty = False
         self.editor = MarkdownEditor()
@@ -70,14 +96,52 @@ class MarkdownTab(QWidget):
             bar.addWidget(btn)
         bar.addStretch(1)
 
+        # 폰트 크기 컨트롤 — 편집/미리보기 각각 A−/A+ + 공용 '기본' 리셋 (우측 정렬).
+        # 편집기 그룹은 편집·나란히, 미리보기 그룹은 미리보기·나란히 모드에서 표시.
+        self._editor_font_group = self._make_font_group(
+            "편집", lambda: self._bump_editor(-1), lambda: self._bump_editor(+1)
+        )
+        self._preview_font_group = self._make_font_group(
+            "미리보기", lambda: self._bump_preview(-1), lambda: self._bump_preview(+1)
+        )
+        reset_btn = QPushButton(" 기본")
+        reset_btn.setIcon(load_icon("rotate-ccw", size=15))
+        reset_btn.setIconSize(QSize(15, 15))
+        reset_btn.setFocusPolicy(Qt.NoFocus)
+        reset_btn.setToolTip("글자 크기를 기본값으로 되돌리기")
+        reset_btn.clicked.connect(self._reset_fonts)
+        bar.addWidget(self._editor_font_group)
+        bar.addWidget(self._preview_font_group)
+        bar.addWidget(reset_btn)
+
         self._splitter = QSplitter(Qt.Horizontal)
         self._splitter.addWidget(self.editor)
         self._splitter.addWidget(self.preview)
         self._splitter.setSizes([500, 500])
 
+        # 찾기/바꾸기 바 — 에디터 기준 검색, 미리보기는 위치만 따라감(on_navigate).
+        # Ctrl+F=찾기 / Ctrl+H=찾기+바꾸기. WidgetWithChildrenShortcut 라 이 탭에 포커스가
+        # 있을 때만 발화(전역 단축키가 다른 모드/위젯의 키를 가로채는 문제 회피).
+        self._search_bar = MarkdownSearchBar(
+            self.editor,
+            on_navigate=self._sync_preview_to_editor,
+            on_query_changed=self._on_search_query,
+        )
+        self._search_bar.hide()
+        self._search_shortcuts: list[QShortcut] = []
+        for seq, slot in (
+            (QKeySequence.StandardKey.Find, self._search_bar.open_find),
+            (QKeySequence.StandardKey.Replace, self._search_bar.open_replace),
+        ):
+            sc = QShortcut(seq, self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
+            self._search_shortcuts.append(sc)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)
+        layout.addWidget(self._search_bar)
         layout.addWidget(self._splitter, stretch=1)
 
         # 편집 → 미리보기 갱신(디바운스) + dirty 추적(즉시).
@@ -93,20 +157,36 @@ class MarkdownTab(QWidget):
         self.editor.verticalScrollBar().valueChanged.connect(self._on_editor_scrolled)
         self.preview.scrolled.connect(self._on_preview_scrolled)
 
+        # Ctrl+휠 줌 — 에디터/미리보기 둘 다 단계 신호를 보내면 여기서 적용 + 영속.
+        self.editor.zoom_requested.connect(self._bump_editor)
+        self.preview.zoom_requested.connect(self._bump_preview)
+
+        # 저장된 초기 크기 적용 (영속 emit 없이 — 생성 시 디스크 쓰기 방지).
+        self.editor.set_font_point_size(self._editor_pt)
+        self.preview.set_zoom(self._preview_zoom)
+
         self.set_view_mode(ViewMode.SPLIT)
         self._refresh_preview(self.editor.toPlainText())
 
     # --- 팩토리 ---
     @classmethod
-    def from_blank(cls) -> "MarkdownTab":
+    def from_blank(
+        cls, *, editor_font_pt: int = EDITOR_DEFAULT_PT,
+        preview_zoom: float = PREVIEW_DEFAULT_ZOOM,
+    ) -> "MarkdownTab":
         # 미저장 blank → saved_path None 이라 needs_save() 가 항상 True.
-        return cls(source_label="new")
+        return cls(source_label="new",
+                   editor_font_pt=editor_font_pt, preview_zoom=preview_zoom)
 
     @classmethod
-    def from_file(cls, path: Path) -> "MarkdownTab":
+    def from_file(
+        cls, path: Path, *, editor_font_pt: int = EDITOR_DEFAULT_PT,
+        preview_zoom: float = PREVIEW_DEFAULT_ZOOM,
+    ) -> "MarkdownTab":
         path = Path(path)
         text = _read_text_with_fallback(path)
-        tab = cls(source_label="opened")
+        tab = cls(source_label="opened",
+                  editor_font_pt=editor_font_pt, preview_zoom=preview_zoom)
         tab.editor.setPlainText(text)   # textChanged → _dirty True 가 되므로
         tab._saved_path = path
         tab._dirty = False              # 막 로드한 파일은 깨끗한 상태
@@ -163,8 +243,67 @@ class MarkdownTab(QWidget):
     # --- 뷰모드 ---
     def set_view_mode(self, mode: ViewMode) -> None:
         self._buttons[mode].setChecked(True)
-        self.editor.setVisible(mode in (ViewMode.EDITOR, ViewMode.SPLIT))
-        self.preview.setVisible(mode in (ViewMode.PREVIEW, ViewMode.SPLIT))
+        edit_on = mode in (ViewMode.EDITOR, ViewMode.SPLIT)
+        preview_on = mode in (ViewMode.PREVIEW, ViewMode.SPLIT)
+        self.editor.setVisible(edit_on)
+        self.preview.setVisible(preview_on)
+        # 보이는 창의 폰트 컨트롤만 노출 — 나란히면 둘 다(각각 조절).
+        self._editor_font_group.setVisible(edit_on)
+        self._preview_font_group.setVisible(preview_on)
+
+    # --- 폰트 크기 ---
+    def _make_font_group(self, label: str, on_minus, on_plus) -> QWidget:
+        """'<라벨> [A−][A+]' 묶음 위젯 — SVG 아이콘 버튼.
+
+        텍스트 'A−/A+' 는 전역 QPushButton padding(6px 14px)에 눌려 좁은 버튼에서
+        글자가 잘려 안 보였다(사용자 보고 2026-05-29) → SVG 아이콘 + padding 축소.
+        버튼은 포커스 안 받음(전역 단축키 영향 회피).
+        """
+        grp = QWidget()
+        lay = QHBoxLayout(grp)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        cap = QLabel(label)
+        cap.setStyleSheet("color:#9a9a9a;")
+        lay.addWidget(cap)
+        for icon_name, slot, tip in (
+            ("font-decrease", on_minus, f"{label} 글자 줄이기"),
+            ("font-increase", on_plus, f"{label} 글자 키우기"),
+        ):
+            btn = QPushButton()
+            btn.setIcon(load_icon(icon_name, size=18))
+            btn.setIconSize(QSize(18, 18))
+            # 전역 padding(6px 14px)이면 아이콘 버튼이 과도하게 넓어짐 → 축소(아이콘 전용).
+            btn.setStyleSheet("QPushButton { padding: 3px 7px; min-height: 0; }")
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            lay.addWidget(btn)
+        return grp
+
+    def _emit_font_settings(self) -> None:
+        self.font_settings_changed.emit(self._editor_pt, self._preview_zoom)
+
+    def _bump_editor(self, steps: int) -> None:
+        self._editor_pt = max(
+            self.EDITOR_MIN_PT, min(self.EDITOR_MAX_PT, self._editor_pt + int(steps))
+        )
+        self.editor.set_font_point_size(self._editor_pt)
+        self._emit_font_settings()
+
+    def _bump_preview(self, steps: int) -> None:
+        z = self._preview_zoom + int(steps) * self.PREVIEW_ZOOM_STEP
+        z = max(self.PREVIEW_MIN_ZOOM, min(self.PREVIEW_MAX_ZOOM, z))
+        self._preview_zoom = round(z, 2)   # 0.1 스텝 부동소수 오차 정리
+        self.preview.set_zoom(self._preview_zoom)
+        self._emit_font_settings()
+
+    def _reset_fonts(self) -> None:
+        self._editor_pt = self.EDITOR_DEFAULT_PT
+        self._preview_zoom = self.PREVIEW_DEFAULT_ZOOM
+        self.editor.set_font_point_size(self._editor_pt)
+        self.preview.set_zoom(self._preview_zoom)
+        self._emit_font_settings()
 
     def _refresh_preview(self, text: str) -> None:
         doc_dir = self._saved_path.parent if self._saved_path else None
@@ -190,6 +329,23 @@ class MarkdownTab(QWidget):
         self._syncing = True
         try:
             vsb.setValue(round(ratio * vsb.maximum()))
+        finally:
+            self._syncing = False
+
+    def _on_search_query(self, query: str, case: bool) -> None:
+        """검색어 변경 → 미리보기에서도 같은 단어를 강조 (사용자 요청 2026-05-29)."""
+        self.preview.highlight_search(query, case)
+
+    def _sync_preview_to_editor(self) -> None:
+        """검색 결과로 에디터가 이동했을 때 미리보기를 같은 세로 비율로 따라가게 한다."""
+        if self._syncing:
+            return
+        vsb = self.editor.verticalScrollBar()
+        mx = vsb.maximum()
+        ratio = vsb.value() / mx if mx > 0 else 0.0
+        self._syncing = True
+        try:
+            self.preview.set_scroll_ratio(ratio)
         finally:
             self._syncing = False
 

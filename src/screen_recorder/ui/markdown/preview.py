@@ -13,9 +13,13 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QUrl, Signal
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor, QTextDocument
+from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
 from .render import pygments_css, render_markdown_to_html
+
+# 검색 매치 배경색 — search_bar 의 에디터 하이라이트와 동일 톤(amber).
+_SEARCH_BG = QColor("#4a3c12")
 
 _log = logging.getLogger(__name__)
 
@@ -95,22 +99,50 @@ class PreviewRenderer:
     def set_scroll_callback(self, cb) -> None:
         """사용자가 미리보기를 스크롤할 때 cb(ratio: float) 로 알림. 기본 no-op."""
 
+    # --- 폰트 줌 ---
+    def set_zoom(self, factor: float) -> None:
+        """미리보기 전체 배율 설정 (1.0 = 기본). 기본 no-op."""
+
+    def set_zoom_callback(self, cb) -> None:
+        """사용자가 Ctrl+휠로 줌을 요청할 때 cb(step: int) 로 알림 (+1/-1). 기본 no-op."""
+
+    # --- 검색 하이라이트 ---
+    def highlight_search(self, query: str, case: bool = False) -> None:
+        """렌더된 본문에서 query 와 일치하는 단어를 강조. 빈 문자열이면 해제. 기본 no-op.
+
+        에디터는 raw 마크다운, 미리보기는 렌더 결과물이라 글자가 다를 수 있어(`**굵게**`
+        의 `*` 등) 매치가 100% 일치하진 않는다 — 평문 단어 검색은 양쪽 모두 잡힌다.
+        """
+
 
 class MarkdownPreview(QWidget):
     # 사용자가 미리보기를 스크롤할 때 비율(0..1) 방출 — MarkdownTab 이 에디터와 동기화.
     scrolled = Signal(float)
+    # 사용자가 Ctrl+휠로 줌을 요청할 때 단계(+1/-1) 방출 — MarkdownTab 이 적용 + 영속.
+    zoom_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._revision = 0
+        self._search_query = ""    # 재렌더 후 복원용 (편집 중 검색 유지)
+        self._search_case = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._renderer = self._make_renderer()
         self._renderer.set_scroll_callback(self.scrolled.emit)
+        self._renderer.set_zoom_callback(self.zoom_requested.emit)
         layout.addWidget(self._renderer.widget())
 
     def set_scroll_ratio(self, ratio: float) -> None:
         self._renderer.set_scroll_ratio(ratio)
+
+    def set_zoom(self, factor: float) -> None:
+        self._renderer.set_zoom(factor)
+
+    def highlight_search(self, query: str, case: bool = False) -> None:
+        self._search_query = query or ""
+        self._search_case = bool(case)
+        self._renderer.highlight_search(self._search_query, self._search_case)
 
     def _make_renderer(self) -> PreviewRenderer:
         # 환경변수로 강제 Fallback — 테스트(Chromium teardown 불안정) 및 WebEngineProcess
@@ -128,6 +160,9 @@ class MarkdownPreview(QWidget):
         html = render_markdown_to_html(markdown_text)
         dd = str(doc_dir) if doc_dir is not None else None
         self._renderer.show_html(html, dd, self._revision)
+        # 재렌더로 사라진 검색 하이라이트 복원 (검색하며 편집 중일 때).
+        if self._search_query:
+            self._renderer.highlight_search(self._search_query, self._search_case)
 
 
 class WebEnginePreviewRenderer(PreviewRenderer):
@@ -148,6 +183,14 @@ class WebEnginePreviewRenderer(PreviewRenderer):
                         except (ValueError, TypeError):
                             pass
                     return
+                # app.js 가 Ctrl+휠을 "KZOOM:<+1|-1>" 로 보냄 — MarkdownTab 이 적용/영속.
+                if isinstance(message, str) and message.startswith("KZOOM:"):
+                    if outer._zoom_cb is not None:
+                        try:
+                            outer._zoom_cb(int(message[len("KZOOM:"):]))
+                        except (ValueError, TypeError):
+                            pass
+                    return
                 _log.info("[preview JS] %s (%s:%s)", message, source, line)
 
             def acceptNavigationRequest(self, url, nav_type, is_main_frame):
@@ -164,6 +207,8 @@ class WebEnginePreviewRenderer(PreviewRenderer):
         self._ready = False
         self._pending: tuple[str, str | None, int] | None = None
         self._scroll_cb = None
+        self._zoom_cb = None
+        self._zoom_factor = 1.0
         self._base_css = load_base_css()
         self._css = pygments_css()
         self._page.loadFinished.connect(self._on_load_finished)
@@ -187,6 +232,9 @@ class WebEnginePreviewRenderer(PreviewRenderer):
             self._page.runJavaScript(build_style_inject_script(self._base_css))
         self._page.runJavaScript(build_style_inject_script(self._css))
         self._ready = True
+        # 줌은 네비게이션(template 로드) 시 1.0 으로 리셋되는 Qt 동작이 있어, 로드 완료
+        # 후 저장된 배율을 다시 적용해야 복원된 크기가 유지된다.
+        self._view.setZoomFactor(self._zoom_factor)
         if self._pending is not None:
             html, dd, rev = self._pending
             self._pending = None
@@ -211,6 +259,28 @@ class WebEnginePreviewRenderer(PreviewRenderer):
         # app.js 의 window.setScrollRatio — 프로그램적 스크롤 시 echo(KSCROLL) 억제 포함.
         self._page.runJavaScript(f"window.setScrollRatio&&window.setScrollRatio({float(ratio)});")
 
+    # --- 폰트 줌 ---
+    def set_zoom_callback(self, cb) -> None:
+        self._zoom_cb = cb
+
+    def set_zoom(self, factor: float) -> None:
+        # Chromium 네이티브 줌 — 본문/코드/표 전체가 비율대로 확대. 로드 전이라도 값을
+        # 저장해 두고 loadFinished 에서 재적용(네비게이션 리셋 방지).
+        self._zoom_factor = float(factor)
+        if self._ready:
+            self._view.setZoomFactor(self._zoom_factor)
+
+    # --- 검색 하이라이트 ---
+    def highlight_search(self, query: str, case: bool = False) -> None:
+        if not self._ready:
+            return
+        from PySide6.QtWebEngineCore import QWebEnginePage
+        # findText 는 렌더된 모든 매치를 강조하고 첫 매치로 스크롤. ""=해제.
+        flags = QWebEnginePage.FindFlag(0)
+        if case:
+            flags |= QWebEnginePage.FindFlag.FindCaseSensitively
+        self._page.findText(query or "", flags)
+
 
 class FallbackPreviewRenderer(PreviewRenderer):
     """QtWebEngine 불가 시 — QTextBrowser 로 degrade (제한적이지만 텍스트는 보임)."""
@@ -228,6 +298,9 @@ class FallbackPreviewRenderer(PreviewRenderer):
             load_base_css() + "\n" + pygments_css()
         )
         self._scroll_cb = None
+        # 줌 기준 폰트 크기 — set_zoom(factor) 가 base*factor 로 위젯 폰트를 조정한다.
+        # CSS body 에 font-size 가 없어 위젯 폰트가 본문 기본 크기를 결정.
+        self._base_pt = max(1.0, self._browser.fontInfo().pointSizeF())
         self._browser.verticalScrollBar().valueChanged.connect(self._on_vsb_changed)
 
     def widget(self):
@@ -250,3 +323,36 @@ class FallbackPreviewRenderer(PreviewRenderer):
     def set_scroll_ratio(self, ratio: float) -> None:
         vsb = self._browser.verticalScrollBar()
         vsb.setValue(round(ratio * vsb.maximum()))
+
+    # --- 폰트 줌 ---
+    def set_zoom_callback(self, cb) -> None:
+        # Fallback 은 Ctrl+휠 줌을 지원하지 않음 (버튼으로 조정). 콜백은 저장만.
+        self._zoom_cb = cb
+
+    def set_zoom(self, factor: float) -> None:
+        # 전역 테마 QSS(QWidget{font})가 setFont() 를 덮어쓰므로 위젯별 stylesheet 로 지정
+        # (편집기와 동일 — 2026-05-29 진단). base*factor 를 절대 pt 로.
+        pt = max(1, round(self._base_pt * float(factor)))
+        self._browser.setStyleSheet(f"QTextBrowser {{ font-size:{pt}pt; }}")
+        self._browser.ensurePolished()
+
+    # --- 검색 하이라이트 ---
+    def highlight_search(self, query: str, case: bool = False) -> None:
+        sels: list = []
+        if query:
+            doc = self._browser.document()
+            flags = QTextDocument.FindFlag(0)
+            if case:
+                flags |= QTextDocument.FindFlag.FindCaseSensitively
+            cur = QTextCursor(doc)
+            while True:
+                cur = doc.find(query, cur, flags)
+                if cur.isNull():
+                    break
+                sel = QTextEdit.ExtraSelection()
+                sel.cursor = cur
+                fmt = QTextCharFormat()
+                fmt.setBackground(_SEARCH_BG)
+                sel.format = fmt
+                sels.append(sel)
+        self._browser.setExtraSelections(sels)

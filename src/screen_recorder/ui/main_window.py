@@ -3106,10 +3106,14 @@ class MainWindow(QMainWindow):
                 self.mode_controller.set_mode(AppMode.DOCUMENT)
                 return
         try:
-            tab = MarkdownTab.from_file(p)
+            md = self.app_settings.markdown
+            tab = MarkdownTab.from_file(
+                p, editor_font_pt=md.editor_font_pt, preview_zoom=md.preview_zoom
+            )
         except OSError as e:
             QMessageBox.warning(self, "열기 실패", str(e))
             return
+        self._wire_markdown_tab(tab)
         existing = self._find_library_entry_for_path(p)
         if existing is not None:
             entry_id = existing.id
@@ -3140,10 +3144,35 @@ class MainWindow(QMainWindow):
     def _on_new_markdown(self) -> None:
         """파일 → 새 Markdown 문서 (Ctrl+Shift+M). 빈 문서 탭 생성."""
         from .markdown_tab import MarkdownTab
-        tab = MarkdownTab.from_blank()
+        md = self.app_settings.markdown
+        tab = MarkdownTab.from_blank(
+            editor_font_pt=md.editor_font_pt, preview_zoom=md.preview_zoom
+        )
+        self._wire_markdown_tab(tab)
         entry_id = self.library_model.next_id()
         self.tab_area.add_markdown(tab, entry_id=entry_id, display_name="untitled.md")
         self.mode_controller.set_mode(AppMode.DOCUMENT)
+
+    def _wire_markdown_tab(self, tab) -> None:
+        """새 MarkdownTab 의 폰트 변경을 settings 영속에 연결."""
+        tab.font_settings_changed.connect(self._on_markdown_font_changed)
+
+    def _on_markdown_font_changed(self, editor_pt: int, preview_zoom: float) -> None:
+        """문서 폰트 크기 변경 → 메모리 즉시 반영, 디스크 쓰기는 디바운스(400ms).
+
+        Ctrl+휠은 한 번 굴릴 때 이벤트가 연속으로 와서 매번 settings.json 전체를
+        재직렬화/기록하면 _persist_settings 의 '자주 안 바뀌는 설정만' 계약을 어긴다.
+        """
+        self.app_settings.markdown.editor_font_pt = int(editor_pt)
+        self.app_settings.markdown.preview_zoom = float(preview_zoom)
+        timer = getattr(self, "_markdown_font_persist_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(400)
+            timer.timeout.connect(self._persist_settings)
+            self._markdown_font_persist_timer = timer
+        timer.start()
 
     # ---------- 드래그 앤 드롭 (외부 파일 → 탭) ----------
     def dragEnterEvent(self, e: QDragEnterEvent) -> None:

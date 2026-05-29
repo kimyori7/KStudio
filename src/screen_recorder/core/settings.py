@@ -215,6 +215,17 @@ class AgentSettings:
 
 
 @dataclass
+class MarkdownSettings:
+    """Markdown 문서 모드 폰트 크기 — 편집기/미리보기 각각 독립 (사용자 요청 2026-05-29).
+
+    전역 설정이라 새로 여는 문서가 이 값을 물려받는다. 이미 열린 다른 탭에는
+    실시간 전파하지 않음(last-writer-wins) — 탭 생성 시 한 번 읽어 적용.
+    """
+    editor_font_pt: int = 11        # 편집기 폰트 포인트 (clamp 8..32)
+    preview_zoom: float = 1.0       # 미리보기 줌 배율 (clamp 0.5..3.0)
+
+
+@dataclass
 class AppSettings:
     general: GeneralSettings = field(default_factory=GeneralSettings)
     video: VideoSettings = field(default_factory=VideoSettings)
@@ -229,6 +240,7 @@ class AppSettings:
     editor_shortcuts: EditorShortcuts = field(default_factory=EditorShortcuts)
     mcp: McpSettings = field(default_factory=McpSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
+    markdown: MarkdownSettings = field(default_factory=MarkdownSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:

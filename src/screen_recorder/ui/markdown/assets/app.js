@@ -39,6 +39,15 @@
     window.scrollTo(0, max > 0 ? max * r : 0);
   };
 
+  // Ctrl+휠 = 폰트 줌 요청. 페이지 기본 동작(스크롤/브라우저 줌) 막고 Python 에 단계 전달.
+  // Python(_LoggingPage.javaScriptConsoleMessage) 이 "KZOOM:" 접두사로 파싱 → setZoomFactor.
+  window.addEventListener("wheel", function (e) {
+    if (e.ctrlKey) {
+      e.preventDefault();
+      console.log("KZOOM:" + (e.deltaY < 0 ? "1" : "-1"));
+    }
+  }, { passive: false });
+
   var ticking = false;
   window.addEventListener("scroll", function () {
     if (Date.now() < suppressUntil) return;   // echo 억제
