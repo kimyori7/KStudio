@@ -124,13 +124,7 @@ class MarkdownTab(QWidget):
     def save(self) -> bool:
         if self._saved_path is None:
             return self.save_as()
-        try:
-            self._saved_path.write_text(self.editor.toPlainText(), encoding="utf-8")
-        except OSError as e:
-            _log.error("Markdown 저장 실패: %s", e)
-            return False
-        self.mark_saved(self._saved_path)
-        return True
+        return self._write_to(self._saved_path)
 
     def save_as(self, path: Path | None = None) -> bool:
         if path is None:
@@ -140,8 +134,17 @@ class MarkdownTab(QWidget):
             if not fn:
                 return False
             path = Path(fn)
-        self._saved_path = Path(path)
-        return self.save()
+        return self._write_to(Path(path))
+
+    def _write_to(self, path: Path) -> bool:
+        """UTF-8 로 기록. 성공 시에만 _saved_path/dirty 갱신 (쓰기 실패 시 상태 불변)."""
+        try:
+            path.write_text(self.editor.toPlainText(), encoding="utf-8")
+        except OSError as e:
+            _log.error("Markdown 저장 실패: %s", e)
+            return False
+        self.mark_saved(path)
+        return True
 
     # --- 뷰모드 ---
     def set_view_mode(self, mode: ViewMode) -> None:

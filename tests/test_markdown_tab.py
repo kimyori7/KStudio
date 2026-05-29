@@ -62,3 +62,22 @@ def test_view_mode_toggle_visibility(qtbot):
     assert tab.preview.isVisible() and not tab.editor.isVisible()
     tab.set_view_mode(ViewMode.SPLIT)
     assert tab.editor.isVisible() and tab.preview.isVisible()
+
+
+def test_save_failure_does_not_corrupt_saved_path(qtbot, tmp_path, monkeypatch):
+    # 회귀 (리뷰 #4): 쓰기 실패 시 _saved_path 가 갱신되면 안 됨 (성공 시에만 mark_saved).
+    import pathlib
+    from screen_recorder.ui.markdown_tab import MarkdownTab
+    tab = MarkdownTab.from_blank()
+    qtbot.addWidget(tab)
+    tab.editor.setPlainText("내용")
+    target = tmp_path / "out.md"
+
+    def boom(self, *a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pathlib.Path, "write_text", boom)
+    ok = tab.save_as(target)
+    assert ok is False
+    assert tab.saved_path() is None      # 실패 시 경로 미갱신
+    assert tab.needs_save() is True

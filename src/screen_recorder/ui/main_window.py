@@ -1614,6 +1614,10 @@ class MainWindow(QMainWindow):
             if mode is AppMode.VIDEO:
                 self._focus_current_video_tab()
             return
+        # 문서 모드는 Phase 1 에서 라이브러리 백킹 entry 가 없다 — 탭이 없으면 빈 문서
+        # 모드 상태만 유지하고 끝낸다 (else 분기로 빠져 스크린샷을 잘못 여는 것 방지).
+        if mode is AppMode.DOCUMENT:
+            return
         # 3) 그 모드 탭이 전혀 없으면 라이브러리에서 첫 entry 로 새로 오픈.
         target_kind = EntryKind.VIDEO if mode is AppMode.VIDEO else EntryKind.SCREENSHOT
         entries = self.library_model.entries(kind=target_kind)
@@ -1650,7 +1654,10 @@ class MainWindow(QMainWindow):
 
     def _on_tab_closed_by_user(self, entry_id: int) -> None:
         # 라이브러리에는 그대로 남겨둔다 (탭만 닫힘).
-        pass
+        # 단, Markdown 문서는 라이브러리에 없고 _markdown_paths 로만 추적하므로 닫힐 때
+        # 제거해야 한다. 안 그러면 같은 파일 재오픈 시 중복-감지 루프가 사라진 탭의
+        # stale eid 를 매칭해 focus_entry(없음) → 조용히 no-op 되어 재오픈이 안 됨.
+        self._markdown_paths.pop(entry_id, None)
 
     def _on_tab_added(self, widget, mode) -> None:
         """새 탭이 추가되면 그 탭의 시그널을 옵션바 등에 연결."""
@@ -2911,6 +2918,7 @@ class MainWindow(QMainWindow):
         )
         self.tab_area.add_image_tab(tab, entry_id=entry.id, display_name=p.name)
         self.mode_controller.set_mode(AppMode.IMAGE)
+        self._restore_window_for_capture()
 
     # ---------- Markdown 문서 ----------
     def _open_markdown_path(self, p: Path) -> None:
@@ -2947,7 +2955,6 @@ class MainWindow(QMainWindow):
         entry_id = self.library_model.next_id()
         self.tab_area.add_markdown(tab, entry_id=entry_id, display_name="untitled.md")
         self.mode_controller.set_mode(AppMode.DOCUMENT)
-        self._restore_window_for_capture()
 
     # ---------- 드래그 앤 드롭 (외부 파일 → 탭) ----------
     def dragEnterEvent(self, e: QDragEnterEvent) -> None:
@@ -2955,7 +2962,8 @@ class MainWindow(QMainWindow):
         if md.hasUrls():
             for u in md.urls():
                 ext = Path(u.toLocalFile()).suffix.lower()
-                if ext in self.IMAGE_EXTS or ext in self.VIDEO_EXTS:
+                if ext in self.IMAGE_EXTS or ext in self.VIDEO_EXTS \
+                        or ext in self.MARKDOWN_EXTS:
                     e.acceptProposedAction()
                     return
         super().dragEnterEvent(e)
@@ -2974,7 +2982,8 @@ class MainWindow(QMainWindow):
             if not p.is_file():
                 continue
             ext = p.suffix.lower()
-            if ext in self.IMAGE_EXTS or ext in self.VIDEO_EXTS:
+            if ext in self.IMAGE_EXTS or ext in self.VIDEO_EXTS \
+                    or ext in self.MARKDOWN_EXTS:
                 self._open_path(p)
                 opened += 1
         if opened > 0:
@@ -3051,7 +3060,20 @@ class MainWindow(QMainWindow):
         from .markdown_tab import MarkdownTab
         md = self.tab_area.currentWidget()
         if isinstance(md, MarkdownTab):
-            md.save()
+            # 빈 문서 → Save As 로 경로 결정 (취소 시 saved_path 가 None 으로 남음).
+            had_path = md.saved_path() is not None
+            ok = md.save()
+            if ok:
+                sp = md.saved_path()
+                if not had_path and sp is not None:
+                    eid = self.tab_area.entry_id_for_widget(md)
+                    if eid is not None:
+                        self._markdown_paths[eid] = sp
+                        self.tab_area.update_tab_base(eid, sp.name)
+            elif md.saved_path() is not None:
+                # 취소가 아니라 실제 쓰기 실패만 경고 (취소는 saved_path None 유지).
+                QMessageBox.warning(self, "저장 실패",
+                                    "문서를 저장하지 못했습니다. 경로/권한을 확인하세요.")
             return
         # 영상 탭 — 사이드카 즉시 저장. 변경 없어도 무조건 디스크 write (사용자
         # 멘탈모델 "Ctrl+S = 저장" — autosave 디바운스 종료 후에도 동일 메시지).
@@ -3121,8 +3143,14 @@ class MainWindow(QMainWindow):
         from .markdown_tab import MarkdownTab
         md = self.tab_area.currentWidget()
         if isinstance(md, MarkdownTab):
-            md.save_as()
-            # Save As 로 경로가 생기면 _markdown_paths 갱신 (중복 열기 감지용).
+            ok = md.save_as()
+            if not ok:
+                # 사용자 취소면 saved_path 변화 없음(조용히), 실제 쓰기 실패면 경고.
+                if md.saved_path() is not None:
+                    QMessageBox.warning(self, "저장 실패",
+                                        "문서를 저장하지 못했습니다. 경로/권한을 확인하세요.")
+                return
+            # 성공 시에만 _markdown_paths 갱신 + 탭 라벨 동기화 (중복 열기 감지용).
             sp = md.saved_path()
             if sp is not None:
                 eid = self.tab_area.entry_id_for_widget(md)
