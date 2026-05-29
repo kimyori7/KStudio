@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict, fields, is_dataclass
 import json
+import os
 from pathlib import Path
 from typing import get_type_hints
 
@@ -277,7 +278,15 @@ def _prune_old_backups(settings_path: Path) -> None:
 
 
 def settings_path() -> Path:
-    """앱 어디서든 동일한 settings.json 경로를 얻기 위한 헬퍼."""
+    """앱 어디서든 동일한 settings.json 경로를 얻기 위한 헬퍼.
+
+    환경변수 `KSTUDIO_SETTINGS_DIR` 가 있으면 그 폴더의 settings.json 을 쓴다 —
+    개발/디버그 시 앱을 실행해도 사용자 실제 설정(라이브러리·기본 폴더 등)을 덮어쓰지
+    않게 하는 격리 훅. 일반 실행(환경변수 없음)은 기존 경로 그대로.
+    """
+    override = os.environ.get("KSTUDIO_SETTINGS_DIR")
+    if override:
+        return Path(override) / "settings.json"
     return Path.home() / "AppData" / "Local" / "KStudio" / "settings.json"
 
 

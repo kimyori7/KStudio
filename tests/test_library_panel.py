@@ -75,17 +75,20 @@ def test_shift_del_emits_delete(qtbot):
     assert blocker.args == [e.id]
 
 
-def test_document_mode_hides_all_entries(qtbot):
-    # 문서 모드에선 이미지/영상 어느 항목도 보이지 않아야 함 (문서 라이브러리는 Phase 3).
+def test_document_mode_shows_only_documents(qtbot):
+    # 문서 모드에선 이미지/영상은 숨고 DOCUMENT 항목만 보여야 함 (문서 라이브러리 통합).
     from screen_recorder.ui.mode_controller import AppMode, ModeController
     m = LibraryModel()
     m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
     m.add(EntryKind.VIDEO, thumbnail=_img(), source_label="rec")
+    doc = m.add(EntryKind.DOCUMENT, thumbnail=_img(), source_label="opened",
+                display_name="d.md")
     mc = ModeController(AppMode.IMAGE)
     p = LibraryPanel(m, mc)
     qtbot.addWidget(p)
     mc.set_mode(AppMode.DOCUMENT)
-    visible = sum(0 if p.list_widget.item(i).isHidden() else 1
-                  for i in range(p.list_widget.count()))
-    assert visible == 0
-    assert LibraryPanel._kind_for_mode(AppMode.DOCUMENT) is None
+    visible = [p.list_widget.item(i) for i in range(p.list_widget.count())
+               if not p.list_widget.item(i).isHidden()]
+    assert len(visible) == 1
+    assert not p._items_by_id[doc.id].isHidden()
+    assert LibraryPanel._kind_for_mode(AppMode.DOCUMENT) is EntryKind.DOCUMENT

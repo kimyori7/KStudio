@@ -43,3 +43,50 @@ def test_disable_webengine_env_uses_fallback(qtbot, monkeypatch):
     assert isinstance(pv._renderer, FallbackPreviewRenderer)
     # fallback 도 set_content 가 예외 없이 동작해야 함.
     pv.set_content("# 제목\n**bold**", None)
+
+
+def test_fallback_applies_base_style(qtbot):
+    # 회귀: Fallback(QTextBrowser)도 style.css 를 입혀야 한다 — 무스타일이면 다크테마
+    # 위 검은 글씨로 "폰트 색상 없음" 증상. defaultStyleSheet 로 body 색이 적용돼야 함.
+    from screen_recorder.ui.markdown.preview import FallbackPreviewRenderer
+    r = FallbackPreviewRenderer()
+    qtbot.addWidget(r.widget())
+    r.show_html("<p>본문</p>", None, 1)
+    css = r.widget().document().defaultStyleSheet()
+    assert "body" in css and "#d4d4d4" in css.lower()
+
+
+def test_preview_emits_scrolled_ratio(qtbot):
+    # Fallback 미리보기를 사용자가 스크롤하면 scrolled(ratio) 방출 (에디터 동기화용).
+    from screen_recorder.ui.markdown.preview import MarkdownPreview
+    pv = MarkdownPreview()
+    qtbot.addWidget(pv)
+    got = []
+    pv.scrolled.connect(got.append)
+    vsb = pv._renderer.widget().verticalScrollBar()
+    vsb.setRange(0, 50)
+    vsb.setValue(25)
+    assert got and abs(got[-1] - 0.5) < 1e-6
+
+
+def test_set_scroll_ratio_moves_fallback(qtbot):
+    from screen_recorder.ui.markdown.preview import MarkdownPreview
+    pv = MarkdownPreview()
+    qtbot.addWidget(pv)
+    vsb = pv._renderer.widget().verticalScrollBar()
+    vsb.setRange(0, 80)
+    pv.set_scroll_ratio(0.25)
+    assert vsb.value() == 20
+
+
+def test_base_css_loads_nonempty():
+    from screen_recorder.ui.markdown.preview import load_base_css
+    css = load_base_css()
+    assert "body" in css and "color" in css
+
+
+def test_template_has_no_dead_stylesheet_link():
+    # style.css 는 JS 주입으로 일원화 — template 의 <link> 는 제거돼야 함.
+    from screen_recorder.ui.markdown.preview import _ASSETS
+    html = (_ASSETS / "template.html").read_text(encoding="utf-8")
+    assert 'rel="stylesheet"' not in html

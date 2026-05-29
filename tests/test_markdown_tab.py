@@ -84,6 +84,40 @@ def test_save_failure_does_not_corrupt_saved_path(qtbot, tmp_path, monkeypatch):
     assert tab.needs_save() is True
 
 
+def _make_scrollable_tab(qtbot):
+    # 실제 스크롤 가능한 에디터 — QPlainTextEdit 는 내용 기반으로 스크롤 범위를 재계산하므로
+    # setRange 수동 설정 대신 충분한 줄 + 작은 고정 높이로 진짜 범위를 만든다.
+    from screen_recorder.ui.markdown_tab import MarkdownTab
+    tab = MarkdownTab.from_blank()
+    qtbot.addWidget(tab)
+    tab.editor.setPlainText("\n".join(f"line {i}" for i in range(300)))
+    tab.editor.setFixedSize(200, 80)
+    tab.show()
+    qtbot.waitUntil(lambda: tab.editor.verticalScrollBar().maximum() > 0, timeout=2000)
+    return tab
+
+
+def test_editor_scroll_drives_preview(qtbot):
+    # 에디터를 끝까지 스크롤하면 미리보기도 같은 비율(1.0)로 이동 요청.
+    tab = _make_scrollable_tab(qtbot)
+    calls = []
+    tab.preview.set_scroll_ratio = lambda r: calls.append(r)
+    vsb = tab.editor.verticalScrollBar()
+    vsb.setValue(vsb.maximum())          # 100% → _on_editor_scrolled → ratio 1.0
+    assert calls and abs(calls[-1] - 1.0) < 1e-6
+
+
+def test_scroll_sync_no_infinite_loop(qtbot):
+    # 미리보기→에디터 동기화가 다시 에디터→미리보기 echo 를 유발하면 안 됨 (_syncing 가드).
+    tab = _make_scrollable_tab(qtbot)
+    vsb = tab.editor.verticalScrollBar()
+    calls = []
+    tab.preview.set_scroll_ratio = lambda r: calls.append(r)
+    tab._on_preview_scrolled(0.5)
+    assert calls == []                                   # echo 차단됨
+    assert vsb.value() == round(0.5 * vsb.maximum())     # 에디터는 이동
+
+
 def test_save_as_cancel_returns_cancelled(qtbot, monkeypatch):
     # 회귀 (검증 워크플로 #4): 다이얼로그 취소는 FAILED 가 아니라 CANCELLED — 경고 X.
     from screen_recorder.ui import markdown_tab as M

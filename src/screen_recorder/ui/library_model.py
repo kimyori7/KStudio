@@ -14,6 +14,7 @@ from PySide6.QtGui import QImage
 class EntryKind(Enum):
     IMAGE = "image"
     VIDEO = "video"
+    DOCUMENT = "document"   # Markdown 문서 (문서 모드 라이브러리)
     # 하위 호환: 코드 베이스 안에서 "screenshot" 문자열로 비교하는 경우가 있을 수 있음.
     # 의미 동일이므로 새로 SCREENSHOT 별칭 유지 (값은 동일).
     SCREENSHOT = "image"
@@ -55,6 +56,23 @@ class LibraryModel(QObject):
             path=path,
             duration_ms=duration_ms,
             origin=origin,
+        )
+        self._entries.append(entry)
+        self.entry_added.emit(entry)
+        return entry
+
+    def add_with_id(self, entry_id: int, kind: EntryKind, *, thumbnail: QImage,
+                    source_label: str, display_name: str = "",
+                    path: Optional[Path] = None, duration_ms: int = 0,
+                    origin: str = "captured") -> LibraryEntry:
+        """이미 next_id() 로 예약한 고유 id 로 entry 등록.
+
+        blank(미저장) 문서가 라이브러리 없이 next_id 만으로 탭에 떠 있다가 저장되면,
+        그 탭의 기존 id 를 유지한 채 라이브러리에 승격시킬 때 사용 (id 재발급 시
+        탭↔entry 매핑이 깨짐 방지)."""
+        entry = LibraryEntry(
+            id=entry_id, kind=kind, thumbnail=thumbnail, source_label=source_label,
+            display_name=display_name, path=path, duration_ms=duration_ms, origin=origin,
         )
         self._entries.append(entry)
         self.entry_added.emit(entry)

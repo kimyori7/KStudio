@@ -19,6 +19,9 @@ from claude_agent_sdk import create_sdk_mcp_server
 from ..adapter import VideoSessionAdapter
 from ..plan_gate import PlanGate
 from ..proposals import EffectProposal, ProposalQueue
+from .document import (
+    DOCUMENT_TOOL_NAMES, DocumentEditCallback, make_document_tools,
+)
 from .mutation import make_mutation_tools, MUTATION_TOOL_NAMES
 from .preview import make_preview_tools, PREVIEW_TOOL_NAMES
 from .read import make_read_tools, READ_TOOL_NAMES
@@ -53,6 +56,8 @@ class VideoTools:
         transcript_ctx: Optional[TranscriptContext] = None,
         on_download_whisper: Optional[DownloadCallback] = None,
         plan_gate: Optional[PlanGate] = None,
+        document_adapter: Optional[Any] = None,
+        on_document_edit: Optional[DocumentEditCallback] = None,
     ) -> None:
         self._adapter = adapter
         self._ffmpeg_path = ffmpeg_path
@@ -61,6 +66,8 @@ class VideoTools:
         self._transcript_ctx = transcript_ctx
         self._on_download_whisper = on_download_whisper
         self._plan_gate = plan_gate or PlanGate()
+        self._document_adapter = document_adapter
+        self._on_document_edit = on_document_edit
 
     def proposal_queue(self) -> ProposalQueue:
         return self._queue
@@ -81,6 +88,10 @@ class VideoTools:
                 self._adapter, self._transcript_ctx,
                 on_download=self._on_download_whisper,
             )
+        if self._document_adapter is not None:
+            tools = tools + make_document_tools(
+                self._document_adapter, self._on_document_edit,
+            )
         return create_sdk_mcp_server(
             name=_MCP_SERVER_NAME, version="0.1.0", tools=tools,
         )
@@ -94,6 +105,8 @@ class VideoTools:
         )
         if self._transcript_ctx is not None:
             base = (*base, *TRANSCRIPT_TOOL_NAMES)
+        if self._document_adapter is not None:
+            base = (*base, *DOCUMENT_TOOL_NAMES)
         return [prefix + name for name in base]
 
     def openai_tools_and_handlers(self) -> tuple[list[dict], dict]:
@@ -116,6 +129,10 @@ class VideoTools:
             raw_tools = raw_tools + make_transcript_tools(
                 self._adapter, self._transcript_ctx,
                 on_download=self._on_download_whisper,
+            )
+        if self._document_adapter is not None:
+            raw_tools = raw_tools + make_document_tools(
+                self._document_adapter, self._on_document_edit,
             )
 
         # SdkMcpTool → MCP dict 형식으로 인터미디어트 변환 후 어댑터로 OpenAI 형식 만듦.

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none'; img-src file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src file: data:;">
-  <link rel="stylesheet" href="style.css">
-  <!-- pygments 코드강조 CSS 는 loadFinished 후 preview.py 가 runJavaScript 로 주입 -->
+  <!-- style.css + pygments 코드강조 CSS 는 loadFinished 후 preview.py 가
+       runJavaScript 로 <style> 주입 (file:// CSP 우회 + 읽기전용 번들 안전). -->
 </head>
 <body>
   <div id="error"></div>

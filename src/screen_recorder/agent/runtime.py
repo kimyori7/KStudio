@@ -158,6 +158,17 @@ SYSTEM_PROMPT = (
     "사용자 보고 '화살표가 어디를 가리키는지 모르겠음' 의 99% 는 get_frame_at 없이 "
     "추측한 좌표 때문. 반드시 위 5단계 (get_frame_at width=960~1280 → 픽셀 위치 묘사 → "
     "정규화 → propose → preview_proposal 검증) 거칠 것.\n"
+    "\n"
+    "**문서(Markdown) 작업** — 사용자가 문서 모드에서 .md 를 열고 '이 문서 ~' 라고 하면:\n"
+    "- 도구: get_document_state(메타) / read_document(전체 텍스트) / "
+    "replace_document(content=전체 교체) / find_replace_in_document(find, replace, count).\n"
+    "- 영상과 달리 문서 수정은 **plan 게이트 없이 즉시 적용** (사용자 선택: 바로 수정/Ctrl+Z). "
+    "잘못되면 사용자가 에디터에서 Ctrl+Z 로 되돌림. 그래도 무엇을 바꿀지 한 줄 알리고 적용.\n"
+    "- 작은 수정은 find_replace_in_document (토큰 효율 + 나머지 보존), 큰 재작성만 "
+    "replace_document. find 는 정규식 아닌 정확 일치 — n_replaced=0 이면 read_document 로 "
+    "실제 내용 확인 후 재시도.\n"
+    "- 문서 도구가 안 보이면(목록에 없음) 활성 문서가 없는 것 — 사용자에게 .md 를 먼저 "
+    "열라고 안내. 영상 도구로 문서를 다루려 하지 말 것.\n"
 )
 
 
@@ -216,6 +227,8 @@ class AgentRuntime(QObject):
     proposals_apply_requested = Signal(object, object)
     # Phase D — (model_size: str, future: concurrent.futures.Future)
     whisper_download_requested = Signal(object, object)
+    # 문서 편집 — (action: dict, future). UI 가 활성 MarkdownTab 에 적용 후 future 해결.
+    document_edit_requested = Signal(object, object)
 
     def __init__(self, video_tools: VideoTools, cwd: Optional[Path] = None,
                  model: Optional[str] = None,
@@ -270,6 +283,15 @@ class AgentRuntime(QObject):
     ) -> None:
         """Phase D — worker → UI 마샬링. UI 가 동의 카드 + 다운로드 후 future 해결."""
         self.whisper_download_requested.emit(model_size, future)
+
+    def emit_document_edit_request(
+        self,
+        action: dict,
+        future: concurrent.futures.Future,
+    ) -> None:
+        """문서 도구(worker) → UI 마샬링. UI 가 활성 MarkdownTab 에 적용 후 future 해결.
+        영상 propose 와 달리 게이트 없이 즉시 적용 (사용자 선택: 바로 수정/Ctrl+Z)."""
+        self.document_edit_requested.emit(action, future)
 
     def plan_gate(self) -> PlanGate:
         return self._plan_gate

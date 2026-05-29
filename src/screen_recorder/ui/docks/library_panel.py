@@ -147,6 +147,7 @@ class LibraryPanel(QWidget):
     _ACCEPTED_DROP_EXTS = {
         ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv", ".gif",
         ".png", ".jpg", ".jpeg",
+        ".md", ".markdown",
     }
 
     def __init__(self, model: LibraryModel,
@@ -227,10 +228,23 @@ class LibraryPanel(QWidget):
         if self._mode is not None:
             wanted = self._kind_for_mode(self._mode.mode())
             item.setHidden(entry.kind is not wanted)
+        # 드롭으로 추가된 항목이 즉시 보이도록 viewport 강제 갱신 — 안 그러면 다음
+        # 모드 전환(_refresh_visibility)까지 새 항목이 안 그려지는 경우가 있었음.
+        self.list_widget.viewport().update()
+
+    # 종류별 라벨 prefix. EntryKind.SCREENSHOT 은 IMAGE 의 별칭(값이 같음)이라
+    # `is` 비교가 위험 → VIDEO/DOCUMENT 를 먼저 거르고 나머지를 이미지로 처리.
+    @staticmethod
+    def _prefix_for_kind(kind: "EntryKind") -> str:
+        if kind is EntryKind.VIDEO:
+            return "🎞"
+        if kind is EntryKind.DOCUMENT:
+            return "📄"
+        return "📸"
 
     @staticmethod
     def _render_text(entry: LibraryEntry) -> str:
-        prefix = "📸" if entry.kind is EntryKind.SCREENSHOT else "🎞"
+        prefix = LibraryPanel._prefix_for_kind(entry.kind)
         if entry.display_name:
             base = entry.display_name
         else:
@@ -372,8 +386,8 @@ class LibraryPanel(QWidget):
             return
         # 사용자가 직접 텍스트 박스 편집을 끝낸 경우만 처리 — _render_text 와 같으면 noop
         new_text = item.text()
-        # prefix 제거: "📸 " 또는 "🎞 " 로 시작
-        for pfx in ("📸 ", "🎞 "):
+        # prefix 제거: "📸 " / "🎞 " / "📄 " 로 시작
+        for pfx in ("📸 ", "🎞 ", "📄 "):
             if new_text.startswith(pfx):
                 new_text = new_text[len(pfx):]
                 break
@@ -468,7 +482,5 @@ class LibraryPanel(QWidget):
         if mode is AppMode.VIDEO:
             return EntryKind.VIDEO
         if mode is AppMode.DOCUMENT:
-            # 문서 라이브러리는 Phase 3 — 그 전엔 문서 모드에서 라이브러리를 비운다
-            # (이미지/영상 어느 항목도 매칭 안 되도록 None 반환 → 전부 hidden).
-            return None
+            return EntryKind.DOCUMENT
         return EntryKind.SCREENSHOT

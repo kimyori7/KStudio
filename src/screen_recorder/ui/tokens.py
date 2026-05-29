@@ -74,7 +74,20 @@ IMAGE_PALETTE: dict[str, str] = {
 }
 
 
+DOCUMENT_PALETTE: dict[str, str] = {
+    # 문서(Markdown) 모드 — IMAGE_PALETTE 와 같은 mono 다크 베이스에 액센트만 amber 로.
+    # 이미지(emerald)·영상(시안)과 한눈에 구분되도록 노랑/호박색 계열로 교체.
+    # (베이스 색은 IMAGE_PALETTE 를 그대로 복사 — 액센트 4키만 swap 하여 키 누락 방지.)
+    **IMAGE_PALETTE,
+    "primary":           "#F59E0B",   # amber-500
+    "primary_hover":     "#FBBF24",   # amber-400
+    "selection_bg":      "#92400E",   # amber-800
+    "selection_pressed": "#78350F",   # amber-900
+}
+
+
 PALETTES: dict[str, dict[str, str]] = {
     "video": VIDEO_PALETTE,
     "image": IMAGE_PALETTE,
+    "document": DOCUMENT_PALETTE,
 }

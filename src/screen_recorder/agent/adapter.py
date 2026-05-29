@@ -21,6 +21,18 @@ class VideoSessionAdapter(Protocol):
     def sidecar(self) -> Optional[Sidecar]: ...
 
 
+class DocumentSessionAdapter(Protocol):
+    """문서 도구가 활성 Markdown 탭을 읽기 위한 인터페이스.
+
+    읽기만 — 수정(QTextDocument 변경)은 UI 스레드 마샬링이 필요해 별도 on_edit
+    콜백+future 로 처리한다 (worker 스레드에서 위젯을 직접 쓰지 않음).
+    """
+    def has_active_document(self) -> bool: ...
+    def read_text(self) -> Optional[str]: ...
+    def document_path(self) -> Optional[str]: ...
+    def is_dirty(self) -> bool: ...
+
+
 def list_video_tabs_safe(adapter: Any) -> list[dict]:
     """adapter.list_video_tabs() 호출 — 메서드 없거나 실패 시 [] 반환.
 

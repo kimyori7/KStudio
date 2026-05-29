@@ -86,6 +86,13 @@ class MarkdownTab(QWidget):
         self.editor.content_changed.connect(self._refresh_preview)
         self.editor.textChanged.connect(self._on_text_changed)
 
+        # 스크롤 동기화 (나란히 모드) — 한쪽을 움직이면 같은 세로 비율로 다른 쪽도 이동.
+        # 폰트 크기/렌더 높이가 달라도 0..1 비율 기준이라 위/아래 끝이 맞는다.
+        # _syncing 플래그로 에디터→미리보기→에디터 무한 루프 차단.
+        self._syncing = False
+        self.editor.verticalScrollBar().valueChanged.connect(self._on_editor_scrolled)
+        self.preview.scrolled.connect(self._on_preview_scrolled)
+
         self.set_view_mode(ViewMode.SPLIT)
         self._refresh_preview(self.editor.toPlainText())
 
@@ -162,6 +169,29 @@ class MarkdownTab(QWidget):
     def _refresh_preview(self, text: str) -> None:
         doc_dir = self._saved_path.parent if self._saved_path else None
         self.preview.set_content(text, doc_dir)
+
+    # --- 스크롤 동기화 ---
+    def _on_editor_scrolled(self, _value: int) -> None:
+        if self._syncing:
+            return
+        vsb = self.editor.verticalScrollBar()
+        mx = vsb.maximum()
+        ratio = vsb.value() / mx if mx > 0 else 0.0
+        self._syncing = True
+        try:
+            self.preview.set_scroll_ratio(ratio)
+        finally:
+            self._syncing = False
+
+    def _on_preview_scrolled(self, ratio: float) -> None:
+        if self._syncing:
+            return
+        vsb = self.editor.verticalScrollBar()
+        self._syncing = True
+        try:
+            vsb.setValue(round(ratio * vsb.maximum()))
+        finally:
+            self._syncing = False
 
     def cleanup(self) -> None:
         """탭 닫힘 시 WebEngine 리소스 정리 (TabArea 가 호출)."""

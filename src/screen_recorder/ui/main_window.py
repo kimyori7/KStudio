@@ -228,6 +228,42 @@ class _MainWindowVideoSession:
         return out
 
 
+class _MainWindowDocumentSession:
+    """문서 도구가 활성 Markdown 탭을 읽기 위한 어댑터 (DocumentSessionAdapter Protocol).
+
+    매 호출마다 tab_area 재조회 — 탭 전환 시 자동 반영. 읽기 전용 — 실제 수정은
+    AgentRuntime.document_edit_requested → MainWindow._on_agent_document_edit (UI 스레드).
+    """
+    def __init__(self, main_window: "MainWindow") -> None:
+        self._mw = main_window
+
+    def _active(self):
+        from .markdown_tab import MarkdownTab
+        tab_area = getattr(self._mw, "tab_area", None)
+        if tab_area is None:
+            return None
+        w = tab_area.currentWidget()
+        return w if isinstance(w, MarkdownTab) else None
+
+    def has_active_document(self) -> bool:
+        return self._active() is not None
+
+    def read_text(self) -> Optional[str]:
+        t = self._active()
+        return t.editor.toPlainText() if t is not None else None
+
+    def document_path(self) -> Optional[str]:
+        t = self._active()
+        if t is None:
+            return None
+        sp = t.saved_path()
+        return str(sp) if sp is not None else None
+
+    def is_dirty(self) -> bool:
+        t = self._active()
+        return bool(t.needs_save()) if t is not None else False
+
+
 class _MainWindowTranscriptContext:
     """자막 도구가 캐시 위치 + 모델 크기 결정용 (TranscriptContext Protocol)."""
     def __init__(self, main_window: "MainWindow") -> None:
@@ -276,6 +312,15 @@ class _DockCloseFilter(QObject):
             if action is not None:
                 action.setChecked(False)
         return False  # 이벤트 자체는 통과 (dock 정상 close)
+
+
+def _palette_name_for_mode(mode: AppMode) -> str:
+    """AppMode → theme.PALETTES 키. 영상=video(시안)/이미지=image(emerald)/문서=document(amber)."""
+    if mode is AppMode.VIDEO:
+        return "video"
+    if mode is AppMode.DOCUMENT:
+        return "document"
+    return "image"
 
 
 class MainWindow(QMainWindow):
@@ -455,6 +500,7 @@ class MainWindow(QMainWindow):
         # 콜백: VideoTools (worker thread) → AgentRuntime.emit_apply_request → UI slot.
         # AgentRuntime 생성 시 콜백 주입 위해 lambda 로 늦은 바인딩.
         self._transcript_ctx = _MainWindowTranscriptContext(self)
+        self._document_session_adapter = _MainWindowDocumentSession(self)
         self._video_tools = VideoTools(
             self._video_session_adapter,
             ffmpeg_path=str(self.ffmpeg_path) if self.ffmpeg_path else None,
@@ -462,6 +508,8 @@ class MainWindow(QMainWindow):
             on_apply=lambda props, fut: self.agent_runtime.emit_apply_request(props, fut),
             transcript_ctx=self._transcript_ctx,
             on_download_whisper=lambda size, fut: self.agent_runtime.emit_whisper_download_request(size, fut),
+            document_adapter=self._document_session_adapter,
+            on_document_edit=lambda action, fut: self.agent_runtime.emit_document_edit_request(action, fut),
         )
         self.agent_runtime = AgentRuntime(
             self._video_tools,
@@ -473,6 +521,9 @@ class MainWindow(QMainWindow):
         )
         self.agent_runtime.whisper_download_requested.connect(
             self._on_agent_whisper_download_requested,
+        )
+        self.agent_runtime.document_edit_requested.connect(
+            self._on_agent_document_edit,
         )
         # 저장된 모델 ID + 추론 표시 토글 복원.
         saved_model_id = getattr(self.app_settings.agent, "model_id", None)
@@ -622,7 +673,7 @@ class MainWindow(QMainWindow):
         self.annotation_toolbar.set_current_thickness_step(self.app_settings.annotation.last_thickness)
 
         # Phase 23: dock 가시성 메뉴 액션 상태를 settings 에서 복원 (X 닫음 영속).
-        # _restore_dock_state 전에 해야 enforce_dock_visibility 가 메뉴 상태를 올바로 본다.
+        # 첫 show 후 _restore_initial_dock_layout 가 enforce_dock_visibility 로 이 상태를 적용.
         prefs = self.app_settings.preferences
         for action, attr, default in (
             (self.menu_bar.library_visible_action, "library_dock_visible", True),
@@ -635,8 +686,9 @@ class MainWindow(QMainWindow):
             action.setChecked(bool(getattr(prefs, attr, default)))
             action.blockSignals(False)
 
-        # dock 레이아웃 복원 — 사용자가 직전 세션에 옮긴 위치/크기/floating 상태 그대로.
-        self._restore_dock_state()
+        # dock 레이아웃 복원은 첫 show *이후* 로 미룬다 (showEvent → _restore_initial_dock_layout).
+        # 첫 show 이전 restoreState 는 일부 저장 레이아웃(특히 문서 모드 저장본)에서 Qt paint
+        # 단계 크래시 유발 (2026-05-29 사용자 보고: 문서 모드로 종료 후 재시작 시 즉시 종료).
 
         # 영속화된 가시성 적용 (2026-05-27):
         # - agent: 메뉴 신호 connection 시점에 이미 토글 처리되므로 setVisible 만 명시.
@@ -667,6 +719,15 @@ class MainWindow(QMainWindow):
         self._mcp_request_store = PendingRequestStore()   # async 도구 결과 보관
         if self.app_settings.mcp.enabled:
             self._start_mcp_bridge()
+
+        # 문서(WebEngine) 미리보기를 처음 만들 때 Chromium 프로세스 spawn + 최상위 창
+        # compositing 전환으로 창 전체가 한 번 깜빡이는 문제(2026-05-29 사용자 보고:
+        # "문서 모드 처음 들어갈 때 창이 닫혔다 열리는 듯"). 1×1 로 *보이는* WebEngine
+        # 자식을 미리 띄워 compositing 을 첫 show 에 묻어가게 한다 → 이후 실제 문서 탭은
+        # 추가 자식이라 재깜빡임이 없다. 상시 Chromium 비용을 영상/이미지 전용 사용자에게
+        # 지우지 않도록 last_mode=="document" 일 때만, 비WebEngine/테스트 환경은 제외.
+        self._webengine_prewarm = None
+        self._maybe_prewarm_webengine()
 
         # 초기화 끝 — 이제부터 사용자 액션에 의한 persist 허용.
         self._initializing = False
@@ -933,20 +994,24 @@ class MainWindow(QMainWindow):
             QKeySequence(self.app_settings.player_hotkeys.snapshot or "Ctrl+Shift+P")
         )
         self._snapshot_shortcut.activated.connect(self._snapshot_current_video_frame)
+        # Ctrl+C/X/A/D 는 이미지 편집 전용이지만 WindowShortcut 컨텍스트라, 켜져 있으면
+        # 포커스가 마크다운 에디터·미리보기(읽기전용)·영상 타임라인에 있어도 키를 가로챈다.
+        # 편집 가능한 에디터는 ShortcutOverride 를 스스로 accept 해 무사하지만, 읽기전용
+        # 미리보기(QTextBrowser/WebEngine)·plain 위젯은 키를 빼앗긴다(2026-05-29 사용자 보고:
+        # 문서/미리보기에서 Ctrl+C 안 됨). → EditTab 활성 시에만 켜도록 모아 토글한다.
+        # 핸들러는 어차피 EditTab 없으면 no-op 이라 이미지 모드 동작은 그대로다.
         # Ctrl+C → selection 이 있으면 그 영역만, 아니면 전체 합성 이미지를 클립보드.
-        QShortcut(QKeySequence("Ctrl+C"), self,
-                  activated=self._copy_current_screenshot)
         # Ctrl+X → selection 영역 잘라내기 (클립보드 복사 후 ImageLayer 에서 지움).
-        QShortcut(QKeySequence("Ctrl+X"), self,
-                  activated=self._cut_current_selection)
-        # Del 처리는 LayerCanvas.keyPressEvent → EditTab.delete_selection 으로 위임.
-        # WindowShortcut 으로 등록하면 LayersPanel 의 Del 을 가로채므로 여기에 추가하지 않는다.
-        # Ctrl+A → 전체 선택. 캔버스 전체 영역을 selection 으로 설정.
-        QShortcut(QKeySequence("Ctrl+A"), self,
-                  activated=self._on_select_all)
-        # Ctrl+D → 선택 해제.
-        QShortcut(QKeySequence("Ctrl+D"), self,
-                  activated=self._on_deselect_all)
+        # Ctrl+A → 전체 선택, Ctrl+D → 선택 해제.
+        # Del 처리는 LayerCanvas.keyPressEvent → EditTab.delete_selection 으로 위임
+        # (WindowShortcut 으로 등록하면 LayersPanel 의 Del 을 가로채므로 제외).
+        self._image_clipboard_shortcuts = [
+            QShortcut(QKeySequence("Ctrl+C"), self, activated=self._copy_current_screenshot),
+            QShortcut(QKeySequence("Ctrl+X"), self, activated=self._cut_current_selection),
+            QShortcut(QKeySequence("Ctrl+A"), self, activated=self._on_select_all),
+            QShortcut(QKeySequence("Ctrl+D"), self, activated=self._on_deselect_all),
+        ]
+        self._update_image_clipboard_shortcuts()
 
         # 도구 팔레트
         self.tool_palette.tool_changed.connect(self._on_tool_changed)
@@ -987,6 +1052,11 @@ class MainWindow(QMainWindow):
             if not self._self_excluded:
                 self._self_excluded = exclude_from_capture(self)
         self._apply_dark_titlebar()
+        # dock 레이아웃 복원을 첫 show 이후로 한 번만 — 첫 show 이전 restoreState 가
+        # 일부 저장본(특히 문서 모드)에서 크래시하므로. singleShot(0) 으로 paint 직후 적용.
+        if not getattr(self, "_did_initial_dock_restore", False):
+            self._did_initial_dock_restore = True
+            QTimer.singleShot(0, self._restore_initial_dock_layout)
 
     def apply_capture_visibility(self, visible_in_capture: bool) -> None:
         """keep_visible_during_capture 토글 시 즉시 affinity 동기화 — 메인 창.
@@ -1058,6 +1128,24 @@ class MainWindow(QMainWindow):
             self.hotkeys.set_bindings(bindings)
         except Exception:
             pass
+
+    def changeEvent(self, event):  # noqa: N802 — Qt signature
+        """창이 다시 활성화될 때 전역 핫키 재등록 보장 — stuck-pause 안전망.
+
+        인라인 단축키 편집기에 포커스가 갔다가 focusOut 없이 숨겨지는 등으로 pause
+        (unregister)가 resume 없이 남는 회귀(2026-05-29) 대비. 창 복귀 시 *편집 중이
+        아니면* 재등록한다 — 편집 중(OneShotKeySequenceEdit 포커스)이면 키 가로채기
+        방지로 건너뜀. set_bindings 는 idempotent 라 정상 상태에서 호출돼도 무해.
+        """
+        super().changeEvent(event)
+        if event.type() != QEvent.ActivationChange or not self.isActiveWindow():
+            return
+        if getattr(self, "hotkeys", None) is None:
+            return   # 초기화 중 (hotkeys 생성 전) 활성화 이벤트 — 무시.
+        from .widgets import OneShotKeySequenceEdit
+        if isinstance(QApplication.focusWidget(), OneShotKeySequenceEdit):
+            return   # 단축키 지정 중 — 재등록하면 입력 키를 가로챔.
+        self._reregister_hotkey()
 
     # ---------- 편집기 단축키 (EditorShortcuts) ----------
     def _clear_menu_shortcuts_owned_by_editor(self) -> None:
@@ -1511,6 +1599,13 @@ class MainWindow(QMainWindow):
         entry = self.library_model.get(entry_id)
         if entry is None:
             return
+        if entry.kind is EntryKind.DOCUMENT:
+            # 문서는 디스크에서 다시 로드 (탭 텍스트는 entry 에 보관하지 않음).
+            if entry.path is not None and entry.path.exists():
+                self._open_markdown_path(entry.path)
+            else:
+                QMessageBox.warning(self, "열기 실패", "문서 파일을 찾을 수 없습니다.")
+            return
         # display_name 이 비어 있으면 path.name 또는 source_label 로 폴백 — 어느 경우든
         # 사용자가 보는 라이브러리 항목 이름과 탭 라벨이 같도록 우선순위 명시.
         display_name = entry.display_name
@@ -1561,10 +1656,7 @@ class MainWindow(QMainWindow):
         # 초기 apply_theme 호출이 이미 끝났으므로 중복 방지.
         if prev_mode is not None and prev_mode is not mode:
             from screen_recorder.ui.theme import apply_theme
-            apply_theme(
-                QApplication.instance(),
-                "video" if mode is AppMode.VIDEO else "image",
-            )
+            apply_theme(QApplication.instance(), _palette_name_for_mode(mode))
         self.global_toolbar.set_mode(mode)
         is_image = (mode is AppMode.IMAGE)
         # ToolPalette: 이미지 모드 + 창 메뉴 체크 둘 다일 때만
@@ -1572,8 +1664,10 @@ class MainWindow(QMainWindow):
         self.tool_palette.setVisible(is_image and tp_checked)
         self.annotation_toolbar.setVisible(is_image)
         # 새 모드의 dock 레이아웃 복원 — 영상↔이미지 전환 시 사용자가 모드별로 떼어둔
-        # 패널 배치를 그대로 유지.
-        self._restore_dock_state_for_mode(mode)
+        # 패널 배치를 그대로 유지. 단, 첫 show 이전(init) 엔 restoreState 를 미룬다 —
+        # 첫 show 전 복원은 일부 저장본에서 Qt paint 크래시. 초기 복원은 showEvent 가 담당.
+        if not getattr(self, "_initializing", False):
+            self._restore_dock_state_for_mode(mode)
         # restoreState 후 dock 가시성을 메뉴 체크 기준으로 강제 — restoreState 가 visibility
         # 도 같이 복원해 사용자가 닫지 않은 dock 도 닫는 부작용 방지.
         self._enforce_dock_visibility()
@@ -1581,6 +1675,8 @@ class MainWindow(QMainWindow):
         self._apply_layers_panel_enabled_state()
         # 모드 전용 dock 의 메뉴 항목 enable/disable 갱신.
         self._apply_mode_aware_menu_enabled()
+        # 이미지 편집용 Ctrl+C/X/A/D 단축키 토글 (탭 변경 없이 모드만 바뀌는 경우 대비).
+        self._update_image_clipboard_shortcuts()
 
     def _on_mode_button_clicked(self, mode: AppMode) -> None:
         """사용자가 모드 토글 버튼을 직접 클릭 — 그 모드의 가장 최근 탭으로 점프.
@@ -1730,6 +1826,67 @@ class MainWindow(QMainWindow):
             self._persist_settings()
         except (AttributeError, RuntimeError):
             logging.exception("agent model persist failed")
+
+    def _on_agent_document_edit(self, action: dict, future) -> None:
+        """문서 도구(worker) → UI 스레드. 활성 MarkdownTab 에 즉시 적용 (Ctrl+Z 가능) 후 future 해결.
+
+        cursor.beginEditBlock 한 묶음으로 적용 → 사용자가 Ctrl+Z 한 번에 되돌릴 수 있음
+        (setPlainText 는 undo 스택을 비워버려 사용 안 함). 영상 propose 와 달리 게이트 없이 즉시.
+        """
+        from PySide6.QtGui import QTextCursor
+        from .markdown_tab import MarkdownTab
+
+        def _replace_all(editor, new_text: str) -> None:
+            # 작은 치환에도 cursor 가 문서 끝으로 가 뷰가 바닥으로 튀는 것 방지 —
+            # 스크롤 위치를 보존(새 길이에 맞게 클램프).
+            vsb = editor.verticalScrollBar()
+            prev_scroll = vsb.value()
+            cursor = editor.textCursor()
+            cursor.beginEditBlock()
+            cursor.select(QTextCursor.Document)
+            cursor.removeSelectedText()
+            cursor.insertText(new_text)
+            cursor.endEditBlock()
+            vsb.setValue(min(prev_scroll, vsb.maximum()))
+
+        try:
+            widget = self.tab_area.currentWidget()
+            if not isinstance(widget, MarkdownTab):
+                future.set_result({"ok": False, "error": "활성 문서 없음 — .md 를 먼저 열어주세요."})
+                return
+            editor = widget.editor
+            op = action.get("op")
+            if op == "replace":
+                content = str(action.get("content", ""))
+                _replace_all(editor, content)
+                future.set_result({"ok": True, "op": "replace", "char_count": len(content)})
+                return
+            if op == "find_replace":
+                find = str(action.get("find", ""))
+                replace = str(action.get("replace", ""))
+                count = int(action.get("count") or 0)
+                if not find:
+                    future.set_result({"ok": False, "error": "find 가 비어 있습니다."})
+                    return
+                text = editor.toPlainText()
+                occurrences = text.count(find)
+                if count > 0:
+                    n = min(count, occurrences)
+                    new_text = text.replace(find, replace, count)
+                else:
+                    n = occurrences
+                    new_text = text.replace(find, replace)
+                if n > 0:
+                    _replace_all(editor, new_text)
+                future.set_result({"ok": True, "op": "find_replace", "n_replaced": n})
+                return
+            future.set_result({"ok": False, "error": f"알 수 없는 편집 op: {op}"})
+        except Exception as e:   # future 를 반드시 해결 (worker 의 await 가 영원히 안 풀리면 hang)
+            logging.exception("문서 편집 적용 실패")
+            try:
+                future.set_result({"ok": False, "error": str(e)})
+            except Exception:
+                pass
 
     def _on_agent_whisper_download_requested(self, model_size, future) -> None:
         """Claude 의 download_whisper_model → UI 동의 카드 표시."""
@@ -2782,6 +2939,16 @@ class MainWindow(QMainWindow):
                     origin="opened",
                 )
                 added += 1
+            elif ext in self.MARKDOWN_EXTS:
+                self.library_model.add(
+                    EntryKind.DOCUMENT,
+                    thumbnail=QImage(),       # 문서는 썸네일 없음 (📄 라벨로 구분)
+                    source_label="dropped",
+                    display_name=p.name,
+                    path=p,
+                    origin="opened",
+                )
+                added += 1
         # 라이브러리 dock 가 숨겨져 있으면 사용자가 결과를 못 봄 → 보여주기.
         if added > 0 and not self.library_dock.isVisible():
             self.library_dock.show()
@@ -2924,8 +3091,8 @@ class MainWindow(QMainWindow):
     def _open_markdown_path(self, p: Path) -> None:
         """.md/.markdown 파일을 새 MarkdownTab 으로 연다 (이미 열려 있으면 포커스).
 
-        Phase 1: 라이브러리 미통합. entry_id 는 library_model.next_id() 로 발급해
-        라이브러리 항목과 충돌하지 않는 고유값만 확보한다.
+        라이브러리에 같은 path 의 DOCUMENT entry 가 있으면 재사용(중복 추가 방지),
+        없으면 새 entry 등록 — 영상/이미지 '열기'처럼 문서도 라이브러리에 남는다.
         """
         from .markdown_tab import MarkdownTab
         # 이미 열린 같은 문서면 그 탭으로 포커스 (중복 생성 방지).
@@ -2943,10 +3110,32 @@ class MainWindow(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, "열기 실패", str(e))
             return
-        entry_id = self.library_model.next_id()
+        existing = self._find_library_entry_for_path(p)
+        if existing is not None:
+            entry_id = existing.id
+        else:
+            entry = self.library_model.add(
+                EntryKind.DOCUMENT, thumbnail=QImage(),
+                source_label="opened", display_name=p.name, path=p, origin="opened",
+            )
+            entry_id = entry.id
         self._markdown_paths[entry_id] = p
         self.tab_area.add_markdown(tab, entry_id=entry_id, display_name=p.name)
         self.mode_controller.set_mode(AppMode.DOCUMENT)
+
+    def _ensure_markdown_library_entry(self, entry_id: int, path: Path) -> None:
+        """문서 저장 후 라이브러리 동기화 — blank(next_id) 문서면 같은 id 로 등록(승격),
+        이미 있으면 path/이름만 갱신. 저장된 문서가 라이브러리에 나타나게 한다."""
+        existing = self.library_model.get(entry_id)
+        if existing is None:
+            self.library_model.add_with_id(
+                entry_id, EntryKind.DOCUMENT, thumbnail=QImage(),
+                source_label="saved", display_name=path.name, path=path, origin="opened",
+            )
+        elif existing.path != path or existing.display_name != path.name:
+            existing.path = path
+            existing.display_name = path.name
+            self.library_model.entry_renamed.emit(entry_id, path.name)
 
     def _on_new_markdown(self) -> None:
         """파일 → 새 Markdown 문서 (Ctrl+Shift+M). 빈 문서 탭 생성."""
@@ -3031,22 +3220,28 @@ class MainWindow(QMainWindow):
         self._restore_window_for_capture()
 
     def _resolve_sidecar_dir(self) -> "Path":
-        """사용자 설정의 사이드카 폴더를 결정. 비어있으면 default_sidecar_dir().
+        """사이드카(.kvedit) 저장 폴더 결정.
 
-        Phase 19.5 — 환경설정 → preferences.sidecar_dir 가 빈 문자열이면 OS 기본
-        (Windows: %APPDATA%\\KStudio\\sidecars). 비어 있지 않으면 그 경로 사용 +
-        없으면 생성 시도.
+        - preferences.sidecar_dir 가 지정돼 있으면 그 경로 사용.
+        - 비어 있으면(기본) **영상 저장 폴더 아래 `sidecars`** (사용자 요청 2026-05-29:
+          %APPDATA% 대신 영상 옆에 두기). 생성 실패 시 OS 기본(default_sidecar_dir)로 폴백.
         """
         from ..effects import default_sidecar_dir
         custom = (self.app_settings.preferences.sidecar_dir or "").strip()
-        if not custom:
-            return default_sidecar_dir()
-        p = Path(custom)
+        if custom:
+            p = Path(custom)
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                return p
+            except OSError:
+                pass   # 사용자 경로 생성 실패 → 아래 기본 경로로 폴백
+        video_dir = self.app_settings.general.output_dir or str(default_video_dir())
+        p = Path(video_dir) / "sidecars"
         try:
             p.mkdir(parents=True, exist_ok=True)
+            return p
         except OSError:
             return default_sidecar_dir()
-        return p
 
     def _on_file_save(self) -> None:
         """현재 편집 탭을 저장.
@@ -3069,6 +3264,7 @@ class MainWindow(QMainWindow):
                     if eid is not None:
                         self._markdown_paths[eid] = sp
                         self.tab_area.update_tab_base(eid, sp.name)
+                        self._ensure_markdown_library_entry(eid, sp)
             elif result is SaveResult.FAILED:
                 QMessageBox.warning(self, "저장 실패",
                                     "문서를 저장하지 못했습니다. 경로/권한을 확인하세요.")
@@ -3155,6 +3351,7 @@ class MainWindow(QMainWindow):
                     if eid is not None:
                         self._markdown_paths[eid] = sp
                         self.tab_area.update_tab_base(eid, sp.name)
+                        self._ensure_markdown_library_entry(eid, sp)
             # SaveResult.CANCELLED → 조용히 통과 (경고 없음).
             return
         if self.tab_area.current_video_tab() is not None:
@@ -3935,6 +4132,39 @@ class MainWindow(QMainWindow):
         emitter.finished.connect(on_finished)
         emitter.failed.connect(on_failed)
 
+    def _maybe_prewarm_webengine(self) -> None:
+        """문서 미리보기(QtWebEngine) compositing 을 startup 에 미리 확정해 첫 진입 깜빡임 제거.
+
+        주의: *숨긴* 위젯은 네이티브 윈도우(HWND)가 안 생겨 compositing 을 확정하지 못한다 →
+        반드시 1×1 로 show() 해야 한다(lower() 로 시각상 가림). 비WebEngine/테스트 환경
+        (KSTUDIO_DISABLE_WEBENGINE)·비문서 사용자(last_mode!=document)는 비용 없이 스킵.
+        """
+        if os.environ.get("KSTUDIO_DISABLE_WEBENGINE") == "1":
+            return
+        if self.app_settings.preferences.last_mode != "document":
+            return
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except Exception:  # QtWebEngine 사용 불가 환경 — 미리보기도 fallback 이므로 무시.
+            return
+        view = QWebEngineView(self)
+        view.setFixedSize(1, 1)
+        view.move(0, 0)
+        view.show()
+        view.lower()
+        self._webengine_prewarm = view
+
+    def _update_image_clipboard_shortcuts(self) -> None:
+        """이미지 편집용 Ctrl+C/X/A/D 단축키를 현재 탭이 EditTab 일 때만 켠다.
+
+        EditTab 이 아니면(문서·영상 모드) 비활성화 → disabled QShortcut 은 shortcut
+        매칭에서 빠지므로 Ctrl+C/X 가 포커스된 텍스트 위젯(마크다운 에디터·미리보기)
+        또는 영상 타임라인 keyPressEvent 로 정상 전달된다.
+        """
+        enabled = self._current_screenshot_tab() is not None
+        for sc in getattr(self, "_image_clipboard_shortcuts", []):
+            sc.setEnabled(enabled)
+
     def _copy_current_screenshot(self) -> None:
         tab = self._current_screenshot_tab()
         if tab is None:
@@ -4232,6 +4462,9 @@ class MainWindow(QMainWindow):
             self._last_entry_per_mode[cur_mode] = eid
         # 2026-05-20: 활성 영상 탭의 사이드카에 맞춰 '효과 적용' 체크 메뉴 동기화.
         self._sync_effects_enabled_menu()
+        # 이미지 편집용 Ctrl+C/X/A/D 단축키는 EditTab 활성 시에만 — 문서/영상 탭에선
+        # 텍스트 위젯·타임라인이 Ctrl+C 를 받도록 비활성화.
+        self._update_image_clipboard_shortcuts()
 
         tab = self._current_screenshot_tab()
         if tab is None:
@@ -4372,15 +4605,23 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
 
-    def _restore_dock_state(self) -> None:
-        """초기 진입 모드의 dock 레이아웃을 복원. fallback: dock_state_b64."""
+    def _restore_initial_dock_layout(self) -> None:
+        """첫 show 이후 호출되는 시작 모드 dock 레이아웃 복원 (showEvent 가 1회 스케줄).
+
+        첫 show *이전* 에 restoreState 하면 일부 저장 레이아웃(특히 문서 모드 저장본)에서
+        Qt 가 paint 단계에 크래시한다 (2026-05-29 사용자: 문서 모드로 종료 후 재시작 시 즉시
+        종료). show 이후 복원은 런타임 모드 전환과 동일 경로라 안전. 모드별 키를 쓰되
+        이미지는 레거시 dock_state_b64 fallback 유지."""
+        mode = self.mode_controller.mode()
         prefs = self.app_settings.preferences
-        b64 = (prefs.dock_state_image_b64
-               if self.mode_controller.mode() is AppMode.IMAGE
-               else prefs.dock_state_video_b64)
-        if not self._apply_dock_state_b64(b64):
-            self._apply_dock_state_b64(prefs.dock_state_b64)
-        self._last_mode = self.mode_controller.mode()
+        if mode is AppMode.IMAGE:
+            if not self._apply_dock_state_b64(prefs.dock_state_image_b64):
+                self._apply_dock_state_b64(prefs.dock_state_b64)   # 레거시 fallback
+        else:
+            self._restore_dock_state_for_mode(mode)
+        self._last_mode = mode
+        # restoreState 가 가시성도 복원하므로 메뉴 체크 기준으로 다시 강제.
+        self._enforce_dock_visibility()
 
     def _save_dock_state_for_mode(self, mode: AppMode) -> None:
         try:
@@ -4548,19 +4789,28 @@ class MainWindow(QMainWindow):
         d = queue.pop(0)
         try:
             kind_str = d.get("kind") or "image"
-            kind = EntryKind.IMAGE if kind_str == "image" else EntryKind.VIDEO
+            if kind_str == "video":
+                kind = EntryKind.VIDEO
+            elif kind_str == "document":
+                kind = EntryKind.DOCUMENT
+            else:
+                kind = EntryKind.IMAGE
             p = Path(d["path"])
             display_name = d.get("display_name") or p.name
             duration_ms = int(d.get("duration_ms") or 0)
             origin = d.get("origin") or "opened"
 
-            # 썸네일 — 캐시 hit 시 즉시 사용, miss 시 placeholder + 백그라운드 재추출.
-            cached = self._load_thumb_from_cache(p)
-            if cached is not None:
-                thumb = cached
+            # 썸네일 — 문서는 썸네일 없음(📄 라벨로 구분), 나머지는 캐시 hit/placeholder.
+            if kind is EntryKind.DOCUMENT:
+                cached = None
+                thumb = QImage()
             else:
-                thumb = QImage(64, 36, QImage.Format_ARGB32)
-                thumb.fill(0xFF222222)
+                cached = self._load_thumb_from_cache(p)
+                if cached is not None:
+                    thumb = cached
+                else:
+                    thumb = QImage(64, 36, QImage.Format_ARGB32)
+                    thumb.fill(0xFF222222)
 
             entry = self.library_model.add(
                 kind, thumbnail=thumb,
@@ -4572,10 +4822,11 @@ class MainWindow(QMainWindow):
                 if kind is EntryKind.IMAGE:
                     if p.suffix.lower() != ".kstudio":
                         self._decode_image_thumb_async(p, entry.id)
-                else:
+                elif kind is EntryKind.VIDEO:
                     if duration_ms <= 0:
                         self._probe_duration_async(p, entry.id)
                     self._extract_thumbnail_async(p, entry.id)
+                # DOCUMENT: 썸네일/길이 추출 없음.
         except (KeyError, OSError, ValueError):
             pass
         if queue:

@@ -277,20 +277,25 @@ class TabArea(QTabWidget):
         self.setCurrentIndex(i)
 
     def _refresh_visibility(self, mode: AppMode) -> None:
+        visible_indices: list[int] = []
         for i, (_, m, _) in enumerate(self._tabs):
-            self.setTabVisible(i, m is mode)
-        # 현재 탭이 숨겨졌다면 보이는 첫 탭으로 이동
-        cur_idx = self.currentIndex()
-        if cur_idx >= 0 and not self.isTabVisible(cur_idx):
-            for i in range(self.count()):
-                if self.isTabVisible(i):
-                    self.setCurrentIndex(i)
-                    return
-            # 그 모드의 탭이 하나도 없음 — 위젯 본문도 직접 숨김
-            # (setTabVisible 은 탭 헤더만 숨기고 currentWidget 은 그대로 보이는 Qt 동작)
-            cur_w = self.widget(cur_idx)
-            if cur_w is not None:
-                cur_w.hide()
+            match = m is mode
+            self.setTabVisible(i, match)
+            if match:
+                visible_indices.append(i)
+        if visible_indices:
+            # 현재 탭이 이 모드 소속이 아니면 보이는 첫 탭으로 이동 (Qt 가 본문 교체).
+            if self.currentIndex() not in visible_indices:
+                self.setCurrentIndex(visible_indices[0])
+            return
+        # 그 모드의 탭이 하나도 없음 — 본문이 비치지 않게 모든 탭 위젯을 직접 숨김.
+        # (setTabVisible 은 탭 헤더만 숨기고 위젯 본문은 그대로 보임. 게다가 현재 탭이
+        #  숨겨지면 Qt 가 currentIndex 를 -1 로 바꿔 기존 `cur_idx>=0` 가드가 빗나가
+        #  직전 탭 본문(예: 문서 모드 md)이 다른 모드 화면에 그대로 노출됐음.)
+        for i in range(self.count()):
+            w = self.widget(i)
+            if w is not None:
+                w.hide()
 
     def _on_current_changed(self, idx: int) -> None:
         if idx < 0 or idx >= len(self._tabs):

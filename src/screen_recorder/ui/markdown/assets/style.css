@@ -1,7 +1,12 @@
 :root { color-scheme: dark; }
 body { background:#1e1e1e; color:#d4d4d4; font-family:"Segoe UI","Malgun Gothic",sans-serif;
   line-height:1.6; padding:24px 32px; margin:0; }
+/* 제목은 문서 모드 amber 테마와 어울리는 따뜻한 금색 — 본문(회색)과 대비로 가독성↑ */
+h1,h2,h3,h4,h5,h6 { color:#e8b84b; font-weight:700; }
+h1 { color:#f2c75b; }
 h1,h2 { border-bottom:1px solid #3a3a3a; padding-bottom:.3em; }
+strong,b { color:#f3f3f3; }     /* 굵게는 더 밝게 — 본문에서 도드라지게 */
+em,i { color:#c9b88a; }         /* 기울임은 옅은 금색 톤 */
 a { color:#4ea1ff; }
 code { background:#2b2b2b; padding:.15em .35em; border-radius:4px; font-family:"Consolas",monospace; }
 pre { background:#2b2b2b; padding:12px 14px; border-radius:6px; overflow:auto; }

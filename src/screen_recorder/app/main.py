@@ -62,6 +62,12 @@ def main() -> int:
         sys.__excepthook__(exc_type, exc_value, exc_tb)
     sys.excepthook = _log_uncaught
 
+    # QtWebEngine 위생(권장) — GL 컨텍스트 공유는 QApplication 생성 *전* 에 켜야 한다.
+    # 문서 미리보기(WebEngine)와 영상 GL 표면이 컨텍스트를 공유해 렌더 글리치를 줄인다.
+    # (문서 첫 진입 깜빡임의 핵심 fix 는 MainWindow 의 WebEngine pre-warm 이며 이건 별개.)
+    from PySide6.QtCore import Qt
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+
     app = QApplication(sys.argv)
     app.setApplicationName("KStudio")
     # 트레이로 숨겨도 마지막 윈도우 닫힘 신호로 종료되지 않도록.
@@ -76,9 +82,6 @@ def main() -> int:
     settings = _settings_module.load(SETTINGS_PATH())
     initial_palette = settings.preferences.last_mode
     if initial_palette not in ("video", "image", "document"):
-        initial_palette = "image"
-    # 문서 모드는 전용 팔레트가 아직 없어 이미지 테마를 빌려 쓴다 (런타임 전환과 일관).
-    if initial_palette == "document":
         initial_palette = "image"
     apply_theme(app, initial_palette)
 
