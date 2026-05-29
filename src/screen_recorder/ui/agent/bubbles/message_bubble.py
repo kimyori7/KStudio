@@ -11,7 +11,9 @@ from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QKeySequence, QPixmap, QImage
 from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from .styles import _BUBBLE_STYLES, _LOG_LINE_ROLES
+from .styles import (
+    _BUBBLE_STYLES, _LOG_LINE_ROLES, _SPEAKER_HEADER_STYLES, _SPEAKER_LABELS,
+)
 
 # chat_panel.py 와 같은 logger — getLogger 는 idempotent (동일 인스턴스 반환).
 _chat_log = logging.getLogger("kstudio.chat")
@@ -72,6 +74,18 @@ class MessageBubble(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2 if is_log_line else 4)
+
+        # 화자 헤더 ("🧑 나" / "🤖 에이전트") — user / assistant 만. 본문 위 한 줄로
+        # 누가 말하는지 즉시 구분. 헤더는 선택/포커스 비활성 → 본문 Ctrl+C 동작에 영향 없음.
+        self._header: Optional[QLabel] = None
+        if role in _SPEAKER_HEADER_STYLES:
+            hdr = QLabel(_SPEAKER_LABELS.get(role, ""))
+            hdr.setTextFormat(Qt.PlainText)
+            hdr.setFocusPolicy(Qt.NoFocus)
+            hdr.setStyleSheet(_SPEAKER_HEADER_STYLES[role])
+            lay.addWidget(hdr)
+            self._header = hdr
+
         lay.addWidget(self._label)
 
         # 인라인 이미지 — tool_result 의 frame_at / timeline_strip 결과.

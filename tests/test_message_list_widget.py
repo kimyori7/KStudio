@@ -233,3 +233,31 @@ def test_whisper_card_added_signal_emitted(qapp):
         text="model_size=base",
     ))
     assert len(cards) == 1
+
+
+# ============================================================
+# 화자 헤더 (2026-05-29) — 내 말/AI 말 구분
+# ============================================================
+
+def test_user_assistant_bubbles_have_speaker_header(qapp):
+    """user / assistant 말풍선엔 화자 헤더 라벨(🧑 나 / 🤖 에이전트)이 붙는다."""
+    from screen_recorder.ui.agent.bubbles.message_bubble import MessageBubble
+    u = MessageBubble("user", "안녕")
+    a = MessageBubble("assistant", "반가워요")
+    assert u._header is not None and "나" in u._header.text()
+    assert a._header is not None and "에이전트" in a._header.text()
+
+
+def test_log_and_system_roles_have_no_speaker_header(qapp):
+    """tool_use / tool_result / system / thinking 엔 화자 헤더 없음 (대화 turn 만 표시)."""
+    from screen_recorder.ui.agent.bubbles.message_bubble import MessageBubble
+    for role in ("tool_use", "tool_result", "system", "thinking"):
+        b = MessageBubble(role, "x")
+        assert b._header is None, f"{role} 에 화자 헤더가 붙으면 안 됨"
+
+
+def test_user_assistant_body_colors_clearly_differ(qapp):
+    """본문 색 대비 — user(amber) ≠ assistant(회백). 거의 같은 흰색 두 개였던 회귀 방지."""
+    from screen_recorder.ui.agent.bubbles.styles import _BUBBLE_STYLES
+    assert _BUBBLE_STYLES["user"] != _BUBBLE_STYLES["assistant"]
+    assert "#fde68a" in _BUBBLE_STYLES["user"], "user 본문은 따뜻한 amber 계열로 구분"

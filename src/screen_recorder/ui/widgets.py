@@ -39,20 +39,41 @@ class OneShotKeySequenceEdit(QKeySequenceEdit):
         super().__init__(parent)
         self.setMaximumSequenceLength(1)
         self.setStyleSheet(self._STYLE_IDLE)
+        # editing_started 를 냈으면 반드시 editing_finished_signal 로 짝을 맞춘다 —
+        # main_window 가 전역 핫키를 unregister(started)→register(finished) 하므로,
+        # finished 가 누락되면 핫키가 영구 해제로 남는다 (사용자 보고 2026-05-29:
+        # 편집기에 포커스 준 뒤 모드 전환으로 숨겨져 focusOut 누락 → Ctrl+Shift+R 사망).
+        self._capturing = False
         # 한 번 입력되면 자동 종료 — clearFocus 하면 focusOutEvent 가 발화해 스타일 복귀.
         self.editingFinished.connect(self.clearFocus)
+
+    def _end_capture(self) -> None:
+        """capture 종료를 한 번만 발화 (idempotent) — focusOut/hide 어느 쪽이 먼저 와도 안전."""
+        if not self._capturing:
+            return
+        self._capturing = False
+        self.setStyleSheet(self._STYLE_IDLE)
+        self.setToolTip("")
+        self.editing_finished_signal.emit()
 
     def focusInEvent(self, e) -> None:  # type: ignore[override]
         super().focusInEvent(e)
         self.setStyleSheet(self._STYLE_CAPTURE)
         self.setToolTip("🔴 지정 중입니다 — 단축키 한 번만 누르세요.")
-        self.editing_started.emit()
+        if not self._capturing:
+            self._capturing = True
+            self.editing_started.emit()
 
     def focusOutEvent(self, e) -> None:  # type: ignore[override]
         super().focusOutEvent(e)
-        self.setStyleSheet(self._STYLE_IDLE)
-        self.setToolTip("")
-        self.editing_finished_signal.emit()
+        self._end_capture()
+
+    def hideEvent(self, e) -> None:  # type: ignore[override]
+        # 포커스를 가진 채 숨겨지면 (모드 전환·툴바 재구성 등) focusOutEvent 가 안 올 수
+        # 있어 editing_finished_signal 이 누락된다 → 전역 핫키 영구 해제 회귀. 숨김 시에도
+        # capture 종료를 보장해 짝을 맞춘다.
+        super().hideEvent(e)
+        self._end_capture()
 
 
 class CenteredIconButton(QPushButton):
