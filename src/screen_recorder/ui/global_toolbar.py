@@ -129,12 +129,16 @@ class GlobalToolbar(QWidget):
         self._mode_group.setExclusive(True)
         self.video_btn = self._make_toggle_btn(tr("영상"), min_width=80, icon_name="film")
         self.image_btn = self._make_toggle_btn(tr("이미지"), min_width=80, icon_name="image")
+        self.document_btn = self._make_toggle_btn(tr("문서"), min_width=80, icon_name="type")
         self._mode_group.addButton(self.video_btn)
         self._mode_group.addButton(self.image_btn)
+        self._mode_group.addButton(self.document_btn)
         self.video_btn.clicked.connect(lambda: self.mode_clicked.emit(AppMode.VIDEO))
         self.image_btn.clicked.connect(lambda: self.mode_clicked.emit(AppMode.IMAGE))
+        self.document_btn.clicked.connect(lambda: self.mode_clicked.emit(AppMode.DOCUMENT))
         layout.addWidget(self.video_btn)
         layout.addWidget(self.image_btn)
+        layout.addWidget(self.document_btn)
         self._sep1 = self._make_sep()
         layout.addWidget(self._sep1)
 
@@ -329,6 +333,8 @@ class GlobalToolbar(QWidget):
         self._current_mode = mode
         if mode is AppMode.VIDEO:
             self.video_btn.setChecked(True)
+        elif mode is AppMode.DOCUMENT:
+            self.document_btn.setChecked(True)
         else:
             self.image_btn.setChecked(True)
         self._refresh_widgets_visibility()
@@ -422,8 +428,11 @@ class GlobalToolbar(QWidget):
 
     # ---------- 가시성 통합 관리 ----------
     def _refresh_widgets_visibility(self) -> None:
+        # 문서(DOCUMENT) 모드 추가 후로는 "non-video == image" 가정이 깨지므로
+        # 모드를 명시적으로 구분한다. 문서 모드에선 녹화·캡처 chrome 을 모두 숨긴다.
         is_video = self._current_mode is AppMode.VIDEO
-        is_image = not is_video
+        is_image = self._current_mode is AppMode.IMAGE
+        is_document = self._current_mode is AppMode.DOCUMENT
         state = self._current_state
         idle = state == RecorderState.IDLE
         active = state in (RecorderState.RECORDING, RecorderState.PAUSED)
@@ -439,10 +448,10 @@ class GlobalToolbar(QWidget):
             btn.setVisible(is_video)
         for btn in self._format_btns.values():
             btn.setVisible(is_video)
-        # 모니터 선택은 양쪽 모드에서 모두 의미 있음 (영상=전체화면 녹화 대상,
-        # 이미지=전체 캡처 대상). 항상 표시.
-        self._monitor_label.setVisible(True)
-        self.monitor_combo.setVisible(True)
+        # 모니터 선택은 영상/이미지 모드에서 의미 있음 (영상=전체화면 녹화 대상,
+        # 이미지=전체 캡처 대상). 문서 모드에선 무의미하므로 숨김.
+        self._monitor_label.setVisible(not is_document)
+        self.monitor_combo.setVisible(not is_document)
 
         # 인라인 단축키 — 모드별로 한 쌍만 노출.
         self._video_hotkey_label.setVisible(is_video)

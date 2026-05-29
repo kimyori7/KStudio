@@ -209,3 +209,23 @@ def test_download_progress_label_left_of_preferences_btn(qtbot):
     assert label_idx < btn_idx, (
         f"라벨이 설정 버튼 오른쪽 (label={label_idx} btn={btn_idx})"
     )
+
+
+def test_document_mode_button_emits(qtbot):
+    from screen_recorder.ui.mode_controller import AppMode
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    received = []
+    tb.mode_clicked.connect(received.append)
+    tb.document_btn.click()
+    assert received == [AppMode.DOCUMENT]
+
+
+def test_document_mode_hides_recording_and_capture(qtbot):
+    from screen_recorder.ui.mode_controller import AppMode
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    tb.show()
+    tb.set_mode(AppMode.DOCUMENT)
+    assert not tb.record_btn.isVisible()
+    assert not tb.capture_region_btn.isVisible()
