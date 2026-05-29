@@ -114,12 +114,25 @@ class PreviewRenderer:
         의 `*` 등) 매치가 100% 일치하진 않는다 — 평문 단어 검색은 양쪽 모두 잡힌다.
         """
 
+    # --- 선택 범위 동기화 (data-source-line 기반) ---
+    def set_selection_callback(self, cb) -> None:
+        """미리보기에서 선택이 바뀔 때 cb(start_line, end_line, text) 로 알림. 기본 no-op.
+        (start_line < 0 이면 선택 해제.)"""
+
+    def highlight_source_lines(self, start_line: int, end_line: int) -> None:
+        """편집기 선택에 대응하는 원문 줄 범위를 미리보기에서 강조. 기본 no-op."""
+
+    def clear_source_highlight(self) -> None:
+        """미리보기의 줄범위 강조 해제. 기본 no-op."""
+
 
 class MarkdownPreview(QWidget):
     # 사용자가 미리보기를 스크롤할 때 비율(0..1) 방출 — MarkdownTab 이 에디터와 동기화.
     scrolled = Signal(float)
     # 사용자가 Ctrl+휠로 줌을 요청할 때 단계(+1/-1) 방출 — MarkdownTab 이 적용 + 영속.
     zoom_requested = Signal(int)
+    # 미리보기 선택 변경 — (start_line, end_line, text). start_line<0 = 해제.
+    selection_changed = Signal(int, int, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -131,7 +144,14 @@ class MarkdownPreview(QWidget):
         self._renderer = self._make_renderer()
         self._renderer.set_scroll_callback(self.scrolled.emit)
         self._renderer.set_zoom_callback(self.zoom_requested.emit)
+        self._renderer.set_selection_callback(self.selection_changed.emit)
         layout.addWidget(self._renderer.widget())
+
+    def highlight_source_lines(self, start_line: int, end_line: int) -> None:
+        self._renderer.highlight_source_lines(start_line, end_line)
+
+    def clear_source_highlight(self) -> None:
+        self._renderer.clear_source_highlight()
 
     def set_scroll_ratio(self, ratio: float) -> None:
         self._renderer.set_scroll_ratio(ratio)
@@ -191,6 +211,19 @@ class WebEnginePreviewRenderer(PreviewRenderer):
                         except (ValueError, TypeError):
                             pass
                     return
+                # app.js 가 선택을 "KSEL:{json}" / "KSELCLEAR:" 로 보냄 — 줄범위 선택 동기화.
+                if isinstance(message, str) and message.startswith("KSEL:"):
+                    if outer._sel_cb is not None:
+                        try:
+                            d = json.loads(message[len("KSEL:"):])
+                            outer._sel_cb(int(d["s"]), int(d["e"]), str(d.get("t", "")))
+                        except (ValueError, TypeError, KeyError):
+                            pass
+                    return
+                if isinstance(message, str) and message.startswith("KSELCLEAR:"):
+                    if outer._sel_cb is not None:
+                        outer._sel_cb(-1, -1, "")
+                    return
                 _log.info("[preview JS] %s (%s:%s)", message, source, line)
 
             def acceptNavigationRequest(self, url, nav_type, is_main_frame):
@@ -208,6 +241,7 @@ class WebEnginePreviewRenderer(PreviewRenderer):
         self._pending: tuple[str, str | None, int] | None = None
         self._scroll_cb = None
         self._zoom_cb = None
+        self._sel_cb = None
         self._zoom_factor = 1.0
         self._base_css = load_base_css()
         self._css = pygments_css()
@@ -280,6 +314,20 @@ class WebEnginePreviewRenderer(PreviewRenderer):
         if case:
             flags |= QWebEnginePage.FindFlag.FindCaseSensitively
         self._page.findText(query or "", flags)
+
+    # --- 선택 범위 동기화 ---
+    def set_selection_callback(self, cb) -> None:
+        self._sel_cb = cb
+
+    def highlight_source_lines(self, start_line: int, end_line: int) -> None:
+        if self._ready:
+            self._page.runJavaScript(
+                f"window.highlightSourceLines&&window.highlightSourceLines({int(start_line)},{int(end_line)});"
+            )
+
+    def clear_source_highlight(self) -> None:
+        if self._ready:
+            self._page.runJavaScript("window.clearSourceHighlight&&window.clearSourceHighlight();")
 
 
 class FallbackPreviewRenderer(PreviewRenderer):

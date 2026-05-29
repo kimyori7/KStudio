@@ -20,3 +20,5 @@ img { max-width:100%; }
 ul.contains-task-list { list-style:none; padding-left:1.2em; }
 hr { border:none; border-top:1px solid #3a3a3a; }
 #error { color:#f48771; white-space:pre-wrap; font-family:"Consolas",monospace; padding:8px 0; }
+/* 편집기 선택 ↔ 미리보기 동기화 강조 (선택 동기화) */
+.ksel-hl { background:rgba(245,158,11,0.20); border-radius:3px; }

@@ -62,6 +62,55 @@
     });
   }, { passive: true });
 
+  // --- 선택 범위 동기화 (미리보기 ↔ 편집기) ---
+  // 렌더 블록에 박힌 data-source-line(원문 줄번호)로 양방향 매핑.
+  function nearestSourceLine(node) {
+    var el = (node && node.nodeType === 3) ? node.parentElement : node;
+    while (el && !(el.hasAttribute && el.hasAttribute("data-source-line"))) {
+      el = el.parentElement;
+    }
+    return (el && el.hasAttribute) ? parseInt(el.getAttribute("data-source-line"), 10) : null;
+  }
+
+  var selTicking = false, lastSelKey = "";
+  function reportSelection() {
+    var sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      if (lastSelKey !== "") { lastSelKey = ""; console.log("KSELCLEAR:"); }
+      return;
+    }
+    var r = sel.getRangeAt(0);
+    var s = nearestSourceLine(r.startContainer);
+    if (s === null) return;
+    var e = nearestSourceLine(r.endContainer);
+    if (e === null) e = s;
+    if (e < s) { var t = s; s = e; e = t; }
+    var key = s + ":" + e + ":" + sel.toString();
+    if (key === lastSelKey) return;   // 동일 선택 중복 억제
+    lastSelKey = key;
+    // Python(_LoggingPage) 이 "KSEL:" 접두사로 파싱 (JSON 직렬화 — 콜론/줄바꿈 안전).
+    console.log("KSEL:" + JSON.stringify({ s: s, e: e, t: sel.toString() }));
+  }
+  document.addEventListener("selectionchange", function () {
+    if (selTicking) return;
+    selTicking = true;
+    window.requestAnimationFrame(function () { selTicking = false; reportSelection(); });
+  });
+
+  // 편집기 선택 → 미리보기에서 해당 줄 블록을 강조 (Python 이 호출).
+  window.highlightSourceLines = function (start, end) {
+    window.clearSourceHighlight();
+    var els = document.querySelectorAll("[data-source-line]");
+    for (var i = 0; i < els.length; i++) {
+      var ln = parseInt(els[i].getAttribute("data-source-line"), 10);
+      if (ln >= start && ln <= end) els[i].classList.add("ksel-hl");
+    }
+  };
+  window.clearSourceHighlight = function () {
+    var els = document.querySelectorAll(".ksel-hl");
+    for (var i = 0; i < els.length; i++) els[i].classList.remove("ksel-hl");
+  };
+
   window.updateMarkdown = function (html, docDir, revision) {
     if (revision < latestRevision) return; // stale drop
     latestRevision = revision;

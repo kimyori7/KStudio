@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QPushButton, QSplitter,
     QVBoxLayout, QWidget,
@@ -161,6 +161,14 @@ class MarkdownTab(QWidget):
         self.editor.zoom_requested.connect(self._bump_editor)
         self.preview.zoom_requested.connect(self._bump_preview)
 
+        # 선택 범위 동기화 (data-source-line 매핑) — 편집기↔미리보기 양방향.
+        # _sel_syncing 으로 편집기→미리보기→편집기 루프 차단. _last_preview_sel 은
+        # 미리보기 모드에서 선택 후 편집 모드로 전환 시 그 선택을 유지하기 위한 저장.
+        self._sel_syncing = False
+        self._last_preview_sel: tuple[int, int, str] | None = None
+        self.editor.selectionChanged.connect(self._on_editor_selection)
+        self.preview.selection_changed.connect(self._on_preview_selection)
+
         # 저장된 초기 크기 적용 (영속 emit 없이 — 생성 시 디스크 쓰기 방지).
         self.editor.set_font_point_size(self._editor_pt)
         self.preview.set_zoom(self._preview_zoom)
@@ -250,6 +258,15 @@ class MarkdownTab(QWidget):
         # 보이는 창의 폰트 컨트롤만 노출 — 나란히면 둘 다(각각 조절).
         self._editor_font_group.setVisible(edit_on)
         self._preview_font_group.setVisible(preview_on)
+        # 미리보기에서 선택한 뒤 편집 모드로 오면 그 범위를 편집기에 한 번 선택 유지.
+        # consume-once: 적용 후 비운다 — 안 그러면 이후 편집/모드전환마다 옛 선택이
+        # 재적용돼 커서·포커스를 빼앗는다(테스트가 못 잡는 회귀, advisor 지적 2026-05-29).
+        if mode is ViewMode.EDITOR and self._last_preview_sel is not None:
+            rng = self._editor_range_for_lines(*self._last_preview_sel)
+            self._last_preview_sel = None
+            if rng is not None:
+                self._apply_editor_selection(*rng)
+                self.editor.setFocus()
 
     # --- 폰트 크기 ---
     def _make_font_group(self, label: str, on_minus, on_plus) -> QWidget:
@@ -335,6 +352,86 @@ class MarkdownTab(QWidget):
     def _on_search_query(self, query: str, case: bool) -> None:
         """검색어 변경 → 미리보기에서도 같은 단어를 강조 (사용자 요청 2026-05-29)."""
         self.preview.highlight_search(query, case)
+
+    # --- 선택 범위 동기화 (data-source-line 매핑, 2026-05-29) ---
+    def _on_editor_selection(self) -> None:
+        """편집기에서 선택하면 미리보기의 해당 원문 줄 블록을 강조 (나란히 양방향)."""
+        if self._sel_syncing:
+            return
+        cur = self.editor.textCursor()
+        if not cur.hasSelection():
+            self.preview.clear_source_highlight()
+            return
+        doc = self.editor.document()
+        s = doc.findBlock(cur.selectionStart()).blockNumber()
+        e = doc.findBlock(cur.selectionEnd()).blockNumber()
+        self.preview.highlight_source_lines(s, e)
+
+    def _on_preview_selection(self, start_line: int, end_line: int, text: str) -> None:
+        """미리보기에서 선택하면 편집기에서 대응 텍스트를 실제 선택.
+
+        편집 모드로 전환해도 유지되도록 _last_preview_sel 에 저장(숨은 편집기에도 적용).
+        start_line<0 = 선택 해제.
+        """
+        if start_line < 0:                       # KSELCLEAR — 미리보기 선택 해제
+            self._last_preview_sel = None
+            if self._sel_syncing:
+                return
+            # 편집기 선택도 함께 해제 (대칭 — 사용자 보고 2026-05-29: 미리보기에서
+            # 선택 취소가 편집기에 안 먹힘). KSELCLEAR 는 미리보기에 선택이 있었을 때만
+            # 오므로 그 편집기 선택은 미리보기 미러 → 함께 해제가 맞다.
+            cur = self.editor.textCursor()
+            if cur.hasSelection():
+                self._sel_syncing = True
+                try:
+                    cur.clearSelection()
+                    self.editor.setTextCursor(cur)
+                finally:
+                    self._sel_syncing = False
+            return
+        self._last_preview_sel = (start_line, end_line, text)
+        if self._sel_syncing:
+            return
+        rng = self._editor_range_for_lines(start_line, end_line, text)
+        if rng is not None:
+            self._apply_editor_selection(*rng)
+
+    def _editor_range_for_lines(
+        self, start_line: int, end_line: int, text: str
+    ) -> tuple[int, int] | None:
+        """원문 줄 범위 → 편집기 문자 위치 범위. 가능하면 그 줄 안에서 선택 텍스트로 정밀화.
+
+        source-line 매핑으로 '어느 줄'인지는 정확히 알고(중복 단어 구분), 그 줄 구간 안에서
+        선택 텍스트를 찾아 글자 단위로 좁힌다. 못 찾으면(서식 기호 차이 등) 줄 전체를 선택.
+        """
+        doc = self.editor.document()
+        sb = doc.findBlockByNumber(start_line)
+        if not sb.isValid():
+            return None
+        line_start = sb.position()
+        eb = doc.findBlockByNumber(end_line)
+        if eb.isValid():
+            line_end = eb.position() + eb.length() - 1   # length 는 블록 구분자 포함 → -1
+        else:
+            line_end = doc.characterCount() - 1
+        if text:
+            seg = doc.toPlainText()[line_start:line_end]
+            idx = seg.find(text.strip())
+            if idx >= 0:
+                s = line_start + idx
+                return (s, s + len(text.strip()))
+        return (line_start, line_end)
+
+    def _apply_editor_selection(self, start_pos: int, end_pos: int) -> None:
+        self._sel_syncing = True
+        try:
+            cur = self.editor.textCursor()
+            cur.setPosition(start_pos)
+            cur.setPosition(end_pos, QTextCursor.KeepAnchor)
+            self.editor.setTextCursor(cur)
+            self.editor.ensureCursorVisible()
+        finally:
+            self._sel_syncing = False
 
     def _sync_preview_to_editor(self) -> None:
         """검색 결과로 에디터가 이동했을 때 미리보기를 같은 세로 비율로 따라가게 한다."""

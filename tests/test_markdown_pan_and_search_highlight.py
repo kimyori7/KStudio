@@ -1,62 +1,82 @@
-"""편집기 가운데 버튼 hand-pan + 미리보기 검색 하이라이트 (2026-05-29 사용자 요청).
+"""편집기 가운데 버튼 autoscroll + 미리보기 검색 하이라이트 (2026-05-29 사용자 요청).
 
-- 가운데(휠) 버튼을 누른 채 끌면 상하좌우로 내용이 이동.
+- 가운데(휠) 버튼을 누르면 미리보기(Chromium)처럼 연속 스크롤(autoscroll) — 커서를
+  anchor 에서 멀리 둘수록 그 방향으로 계속 이동, 다시 누르면 종료.
 - 검색하면 편집기뿐 아니라 미리보기에서도 같은 단어가 강조됨.
   (conftest KSTUDIO_DISABLE_WEBENGINE=1 → 미리보기는 Fallback QTextBrowser 로 검증.
    WebEngine findText 경로는 헤드리스 미검증 — 사용자 재시작 확인 필요.)
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 
 
-# ---------- 가운데 버튼 hand-pan ----------
-def test_middle_button_drag_pans(qtbot):
+def _press(ed, pt, button):
+    ed.mousePressEvent(QMouseEvent(
+        QEvent.Type.MouseButtonPress, QPointF(*pt), button, button, Qt.NoModifier))
+
+
+# ---------- 가운데 버튼 autoscroll ----------
+def test_middle_button_starts_and_toggles_autoscroll(qtbot):
     from screen_recorder.ui.markdown.editor import MarkdownEditor
     ed = MarkdownEditor()
     qtbot.addWidget(ed)
-    ed.setPlainText("\n".join(
-        f"line {i} aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb" for i in range(300)))
+    ed.setPlainText("\n".join(f"line {i} aaaa bbbb" for i in range(300)))
     ed.setFixedSize(200, 100)
     ed.show()
     qtbot.waitUntil(lambda: ed.verticalScrollBar().maximum() > 50, timeout=2000)
+    _press(ed, (100, 50), Qt.MiddleButton)
+    assert ed._autoscrolling is True
+    _press(ed, (100, 50), Qt.MiddleButton)   # 다시 누르면 토글 OFF
+    assert ed._autoscrolling is False
+
+
+def test_autoscroll_follows_cursor_direction(qtbot):
+    # 커서를 anchor 아래·오른쪽에 두면 그 방향(viewport-follow)으로 연속 스크롤.
+    from screen_recorder.ui.markdown.editor import MarkdownEditor
+    ed = MarkdownEditor()
+    qtbot.addWidget(ed)
+    ed.setPlainText("\n".join(f"line {i} aaaaaaaaaaaa bbbbbbbbbbbb" for i in range(300)))
+    ed.setFixedSize(200, 100)
+    ed.show()
+    qtbot.waitUntil(lambda: ed.verticalScrollBar().maximum() > 50, timeout=2000)
+    _press(ed, (100, 50), Qt.MiddleButton)
+    ed._autoscroll_anchor = QPoint(100, 50)
+    ed._autoscroll_pos = QPoint(140, 90)     # 오른쪽 40 · 아래 40 (deadzone 초과)
+    vsb, hsb = ed.verticalScrollBar(), ed.horizontalScrollBar()
+    v0, h0 = vsb.value(), hsb.value()
+    ed._autoscroll_tick()
+    assert vsb.value() > v0                   # 아래로
+    if hsb.maximum() > 0:
+        assert hsb.value() > h0               # 오른쪽으로
+
+
+def test_autoscroll_deadzone_no_move(qtbot):
+    from screen_recorder.ui.markdown.editor import MarkdownEditor
+    ed = MarkdownEditor()
+    qtbot.addWidget(ed)
+    ed.setPlainText("\n".join(f"line {i}" for i in range(300)))
+    ed.setFixedSize(200, 100)
+    ed.show()
+    qtbot.waitUntil(lambda: ed.verticalScrollBar().maximum() > 50, timeout=2000)
+    _press(ed, (100, 50), Qt.MiddleButton)
+    ed._autoscroll_anchor = QPoint(100, 50)
+    ed._autoscroll_pos = QPoint(105, 55)     # deadzone(12) 안 → 스크롤 X
     vsb = ed.verticalScrollBar()
-    vsb.setValue(120)
     v0 = vsb.value()
-
-    def mouse(kind, pt, button, buttons):
-        ed_method = {
-            "press": ed.mousePressEvent,
-            "move": ed.mouseMoveEvent,
-            "release": ed.mouseReleaseEvent,
-        }[kind]
-        ev_type = {
-            "press": QEvent.Type.MouseButtonPress,
-            "move": QEvent.Type.MouseMove,
-            "release": QEvent.Type.MouseButtonRelease,
-        }[kind]
-        ed_method(QMouseEvent(ev_type, QPointF(*pt), button, buttons, Qt.NoModifier))
-
-    mouse("press", (50, 50), Qt.MiddleButton, Qt.MiddleButton)
-    assert ed._panning is True
-    mouse("move", (50, 20), Qt.NoButton, Qt.MiddleButton)   # 위로 30 끌기
-    assert vsb.value() == v0 + 30                            # 내용이 위로 → 값 증가
-    mouse("release", (50, 20), Qt.MiddleButton, Qt.NoButton)
-    assert ed._panning is False
+    ed._autoscroll_tick()
+    assert vsb.value() == v0
 
 
-def test_left_button_does_not_pan(qtbot):
-    """좌클릭은 pan 모드 진입 안 함 (텍스트 선택 정상)."""
+def test_left_button_no_autoscroll(qtbot):
     from screen_recorder.ui.markdown.editor import MarkdownEditor
     ed = MarkdownEditor()
     qtbot.addWidget(ed)
     ed.setPlainText("hello world")
     ed.show()
-    ed.mousePressEvent(QMouseEvent(
-        QEvent.Type.MouseButtonPress, QPointF(10, 10),
-        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
-    assert ed._panning is False
+    _press(ed, (10, 10), Qt.LeftButton)
+    assert ed._autoscrolling is False
 
 
 # ---------- 미리보기 검색 하이라이트 ----------

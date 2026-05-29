@@ -33,11 +33,25 @@ def _highlight(code: str, lang: str, _attrs) -> str:
     return f'<pre class="highlight"><code>{highlighted}</code></pre>'
 
 
+def _inject_source_lines(state) -> None:
+    """블록 토큰에 ``data-source-line``(0-based 시작 줄)을 부여 — 미리보기↔편집기 위치 매핑.
+
+    VS Code/Joplin 과 동일한 기법: markdown-it 의 ``token.map`` 을 렌더 태그 속성으로
+    노출해, 미리보기 DOM 요소 ↔ 에디터 줄 번호를 양방향으로 매핑할 수 있게 한다
+    (선택 범위 동기화·스크롤 동기화의 토대). close 토큰엔 부여하지 않는다.
+    """
+    for token in state.tokens:
+        if token.map is not None and token.nesting != -1:
+            token.attrSet("data-source-line", str(token.map[0]))
+
+
 _md = (
     MarkdownIt("commonmark", {"html": False, "linkify": True, "highlight": _highlight})
     .enable("table")
     .enable("strikethrough")
 )
+# core 파이프라인 끝(블록·인라인 파싱 후)에 줄번호 주입 규칙 추가 — 이때 token.map 이 확정됨.
+_md.core.ruler.push("source_line", _inject_source_lines)
 
 
 def render_markdown_to_html(md_text: str) -> str:

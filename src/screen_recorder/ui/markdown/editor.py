@@ -1,8 +1,8 @@
 """Markdown 코드 에디터 — 줄번호 거터 + 디바운스 변경 알림."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
 
 
@@ -27,6 +27,10 @@ class MarkdownEditor(QPlainTextEdit):
     _DEBOUNCE_MS = 300
     _MIN_PT = 8
     _MAX_PT = 32
+    # autoscroll(가운데 버튼 연속 스크롤) 튜닝.
+    _AUTOSCROLL_INTERVAL_MS = 16    # ~60fps
+    _AUTOSCROLL_DEADZONE = 12       # anchor 근처 px: 스크롤 안 함
+    _AUTOSCROLL_DIVISOR = 8         # 클수록 느림 (변위 / divisor = tick 당 스크롤 px)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -42,8 +46,14 @@ class MarkdownEditor(QPlainTextEdit):
         self.updateRequest.connect(self._on_update_request)
         self._update_gutter_width()
 
-        # 가운데(휠) 버튼 hand-pan 상태.
-        self._panning = False
+        # 가운데(휠) 버튼 autoscroll 상태 — 미리보기(Chromium)식 연속 스크롤.
+        self._autoscrolling = False
+        self._autoscroll_anchor = QPoint(0, 0)
+        self._autoscroll_moved = False
+        self._autoscroll_pos: QPoint | None = None   # 테스트 주입용; None 이면 QCursor 폴링
+        self._autoscroll_timer = QTimer(self)
+        self._autoscroll_timer.setInterval(self._AUTOSCROLL_INTERVAL_MS)
+        self._autoscroll_timer.timeout.connect(self._autoscroll_tick)
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -81,35 +91,65 @@ class MarkdownEditor(QPlainTextEdit):
             return
         super().wheelEvent(event)
 
-    # --- 가운데(휠) 버튼 누른 채 끌어서 상하좌우 이동 (PDF/이미지 뷰어식 hand-pan) ---
+    # --- 가운데(휠) 버튼 autoscroll (미리보기 Chromium 식 연속 스크롤) ---
+    # 가운데 버튼을 누르면 4방향 커서가 뜨고, 커서를 anchor 에서 멀리 둘수록 그 방향으로
+    # *계속* 스크롤된다(마우스를 멈춰도 변위가 있으면 쭉 이어짐). 한 번 더 누르거나
+    # (눌러서 끈 경우) 떼면 종료 — 브라우저 autoscroll 과 동일.
+    def _start_autoscroll(self, anchor: QPoint) -> None:
+        self._autoscrolling = True
+        self._autoscroll_anchor = anchor
+        self._autoscroll_moved = False
+        self.viewport().setCursor(Qt.SizeAllCursor)
+        self._autoscroll_timer.start()
+
+    def _stop_autoscroll(self) -> None:
+        if not self._autoscrolling:
+            return
+        self._autoscrolling = False
+        self._autoscroll_timer.stop()
+        self.viewport().setCursor(Qt.IBeamCursor)
+
+    def _autoscroll_tick(self) -> None:
+        pos = self._autoscroll_pos
+        if pos is None:
+            pos = self.viewport().mapFromGlobal(QCursor.pos())
+        dx = pos.x() - self._autoscroll_anchor.x()
+        dy = pos.y() - self._autoscroll_anchor.y()
+        if abs(dx) > self._AUTOSCROLL_DEADZONE or abs(dy) > self._AUTOSCROLL_DEADZONE:
+            self._autoscroll_moved = True
+        # viewport-follow: 커서를 둔 방향으로 뷰가 이동 (아래→아래로, 오른쪽→오른쪽).
+        if abs(dy) > self._AUTOSCROLL_DEADZONE:
+            vsb = self.verticalScrollBar()
+            vsb.setValue(vsb.value() + int(dy / self._AUTOSCROLL_DIVISOR))
+        if abs(dx) > self._AUTOSCROLL_DEADZONE:
+            hsb = self.horizontalScrollBar()
+            hsb.setValue(hsb.value() + int(dx / self._AUTOSCROLL_DIVISOR))
+
     def mousePressEvent(self, e) -> None:  # type: ignore[override]
         if e.button() == Qt.MiddleButton:
-            self._panning = True
-            self._pan_anchor = e.position().toPoint()
-            self._pan_h0 = self.horizontalScrollBar().value()
-            self._pan_v0 = self.verticalScrollBar().value()
-            self.viewport().setCursor(Qt.ClosedHandCursor)
+            if self._autoscrolling:
+                self._stop_autoscroll()          # 토글 OFF (다시 누르면 종료)
+            else:
+                self._start_autoscroll(e.position().toPoint())
+            e.accept()
+            return
+        if self._autoscrolling:
+            self._stop_autoscroll()              # 다른 버튼 클릭 → 종료
             e.accept()
             return
         super().mousePressEvent(e)
 
-    def mouseMoveEvent(self, e) -> None:  # type: ignore[override]
-        if self._panning:
-            delta = e.position().toPoint() - self._pan_anchor
-            # 손으로 잡아끄는 느낌: 끈 방향과 반대로 스크롤바를 움직여 내용이 따라오게.
-            self.horizontalScrollBar().setValue(self._pan_h0 - delta.x())
-            self.verticalScrollBar().setValue(self._pan_v0 - delta.y())
-            e.accept()
-            return
-        super().mouseMoveEvent(e)
-
     def mouseReleaseEvent(self, e) -> None:  # type: ignore[override]
-        if self._panning and e.button() == Qt.MiddleButton:
-            self._panning = False
-            self.viewport().setCursor(Qt.IBeamCursor)
+        # 눌러서 끈(hold-drag) 경우엔 떼면 종료. 제자리 클릭이면 토글 모드로 유지.
+        if e.button() == Qt.MiddleButton and self._autoscrolling and self._autoscroll_moved:
+            self._stop_autoscroll()
             e.accept()
             return
         super().mouseReleaseEvent(e)
+
+    def hideEvent(self, e) -> None:  # type: ignore[override]
+        self._stop_autoscroll()                  # 숨겨지면(모드 전환 등) autoscroll 중단
+        super().hideEvent(e)
 
     # --- 거터 ---
     def line_number_area_width(self) -> int:
