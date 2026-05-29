@@ -30,3 +30,16 @@ def test_set_content_increments_revision(qtbot):
     pv.set_content("# a", None)
     pv.set_content("# b", None)
     assert pv._revision == r0 + 2
+
+
+def test_disable_webengine_env_uses_fallback(qtbot, monkeypatch):
+    # KSTUDIO_DISABLE_WEBENGINE=1 → Chromium 안 띄우고 QTextBrowser fallback 사용.
+    monkeypatch.setenv("KSTUDIO_DISABLE_WEBENGINE", "1")
+    from screen_recorder.ui.markdown.preview import (
+        FallbackPreviewRenderer, MarkdownPreview,
+    )
+    pv = MarkdownPreview()
+    qtbot.addWidget(pv)
+    assert isinstance(pv._renderer, FallbackPreviewRenderer)
+    # fallback 도 set_content 가 예외 없이 동작해야 함.
+    pv.set_content("# 제목\n**bold**", None)

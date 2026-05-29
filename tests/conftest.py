@@ -7,6 +7,11 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # MainWindow 의 첫 실행 단축키 프리셋 다이얼로그가 테스트를 블로킹하지 않게 차단.
 os.environ.setdefault("KSTUDIO_NO_FIRST_RUN_DIALOG", "1")
+# Markdown 미리보기는 테스트에서 QtWebEngine(Chromium) 대신 경량 Fallback 렌더러 사용.
+# 한 프로세스에서 여러 QWebEngineView 를 만들고 해제하면 Qt WebEngine teardown 이
+# 불안정해 세그폴트가 나므로(offscreen 환경에서 특히), 단위 테스트는 Chromium 을 띄우지
+# 않는다. 실제 WebEngine 렌더는 빌드된 .exe 수동 검증(진단 스크립트)으로 확인.
+os.environ.setdefault("KSTUDIO_DISABLE_WEBENGINE", "1")
 
 import pytest
 from screen_recorder.core import ffmpeg_check
