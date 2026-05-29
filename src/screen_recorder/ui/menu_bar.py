@@ -11,6 +11,7 @@ from ..core.i18n import tr
 class KStudioMenuBar(QMenuBar):
     # 파일
     new_requested = Signal()
+    new_markdown_requested = Signal()
     open_requested = Signal()
     save_requested = Signal()
     save_as_requested = Signal()
@@ -59,6 +60,11 @@ class KStudioMenuBar(QMenuBar):
         self.new_action.setShortcut(QKeySequence("Ctrl+N"))
         self.new_action.triggered.connect(self.new_requested.emit)
         m_file.addAction(self.new_action)
+
+        self.new_markdown_action = QAction(tr("새 Markdown 문서"), self)
+        self.new_markdown_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        self.new_markdown_action.triggered.connect(self.new_markdown_requested.emit)
+        m_file.addAction(self.new_markdown_action)
 
         self.open_action = QAction(tr("열기…"), self)
         self.open_action.setShortcut(QKeySequence("Ctrl+O"))

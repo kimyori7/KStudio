@@ -77,6 +77,9 @@ def main() -> int:
     initial_palette = settings.preferences.last_mode
     if initial_palette not in ("video", "image", "document"):
         initial_palette = "image"
+    # 문서 모드는 전용 팔레트가 아직 없어 이미지 테마를 빌려 쓴다 (런타임 전환과 일관).
+    if initial_palette == "document":
+        initial_palette = "image"
     apply_theme(app, initial_palette)
 
     # Windows 작업표시줄에서 어플 아이콘이 별도로 잡히도록 AppUserModelID 설정

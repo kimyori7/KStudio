@@ -324,6 +324,8 @@ class MainWindow(QMainWindow):
 
         # ---------- 모델 / 컨트롤러 멤버 ----------
         self.library_model = LibraryModel()
+        # 열린 Markdown 문서 탭의 entry_id → 경로 (Phase 1: 라이브러리 미통합, 자체 추적).
+        self._markdown_paths: dict[int, Path] = {}
         # settings 에 저장된 마지막 모드로 시작 — 잘못된 값이면 IMAGE 폴백.
         try:
             saved_mode = AppMode(self.app_settings.preferences.last_mode)
@@ -864,6 +866,7 @@ class MainWindow(QMainWindow):
         # 메뉴
         self.menu_bar.new_requested.connect(self._on_file_new)
         self.menu_bar.open_requested.connect(self._on_file_open)
+        self.menu_bar.new_markdown_requested.connect(self._on_new_markdown)
         self.menu_bar.save_requested.connect(self._on_file_save)
         self.menu_bar.save_as_requested.connect(self._on_file_save_as)
         self.menu_bar.export_requested.connect(self._on_export)
@@ -2670,6 +2673,7 @@ class MainWindow(QMainWindow):
     # 지원하는 확장자 (드래그 앤 드롭 / 메뉴 열기 공통).
     IMAGE_EXTS = {".kstudio", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
     VIDEO_EXTS = {".mp4", ".gif", ".webm", ".mov", ".avi", ".mkv"}
+    MARKDOWN_EXTS = {".md", ".markdown"}
 
     def _on_file_new(self) -> None:
         """파일 → 새로 만들기. 클립보드 크기 또는 사용자 입력 사이즈로 빈 EditTab 생성.
@@ -2709,7 +2713,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "파일 열기", initial,
             "지원 파일 (*.kstudio *.png *.jpg *.jpeg *.webp *.bmp "
-            "*.mp4 *.gif *.webm *.mov *.avi *.mkv);;모든 파일 (*.*)",
+            "*.mp4 *.gif *.webm *.mov *.avi *.mkv *.md *.markdown);;모든 파일 (*.*)",
         )
         if not path:
             return
@@ -2789,6 +2793,8 @@ class MainWindow(QMainWindow):
             self._open_image_path(p)
         elif ext in self.VIDEO_EXTS:
             self._open_video_path(p)
+        elif ext in self.MARKDOWN_EXTS:
+            self._open_markdown_path(p)
         else:
             QMessageBox.warning(
                 self, "지원하지 않는 파일",
@@ -2905,6 +2911,42 @@ class MainWindow(QMainWindow):
         )
         self.tab_area.add_image_tab(tab, entry_id=entry.id, display_name=p.name)
         self.mode_controller.set_mode(AppMode.IMAGE)
+
+    # ---------- Markdown 문서 ----------
+    def _open_markdown_path(self, p: Path) -> None:
+        """.md/.markdown 파일을 새 MarkdownTab 으로 연다 (이미 열려 있으면 포커스).
+
+        Phase 1: 라이브러리 미통합. entry_id 는 library_model.next_id() 로 발급해
+        라이브러리 항목과 충돌하지 않는 고유값만 확보한다.
+        """
+        from .markdown_tab import MarkdownTab
+        # 이미 열린 같은 문서면 그 탭으로 포커스 (중복 생성 방지).
+        for eid, path in self._markdown_paths.items():
+            try:
+                same = Path(path).resolve() == p.resolve()
+            except OSError:
+                same = path == p
+            if same:
+                self.tab_area.focus_entry(eid)
+                self.mode_controller.set_mode(AppMode.DOCUMENT)
+                return
+        try:
+            tab = MarkdownTab.from_file(p)
+        except OSError as e:
+            QMessageBox.warning(self, "열기 실패", str(e))
+            return
+        entry_id = self.library_model.next_id()
+        self._markdown_paths[entry_id] = p
+        self.tab_area.add_markdown(tab, entry_id=entry_id, display_name=p.name)
+        self.mode_controller.set_mode(AppMode.DOCUMENT)
+
+    def _on_new_markdown(self) -> None:
+        """파일 → 새 Markdown 문서 (Ctrl+Shift+M). 빈 문서 탭 생성."""
+        from .markdown_tab import MarkdownTab
+        tab = MarkdownTab.from_blank()
+        entry_id = self.library_model.next_id()
+        self.tab_area.add_markdown(tab, entry_id=entry_id, display_name="untitled.md")
+        self.mode_controller.set_mode(AppMode.DOCUMENT)
         self._restore_window_for_capture()
 
     # ---------- 드래그 앤 드롭 (외부 파일 → 탭) ----------
@@ -3005,6 +3047,12 @@ class MainWindow(QMainWindow):
           편집 모드의 📤 출력 버튼 / 메뉴로만 (Phase 19.5 hotfix).
         - 이미지(스크린샷) 탭이면 기존 자동 저장 흐름.
         """
+        # Markdown 문서 탭 — UTF-8 로 저장 (blank 면 Save As 다이얼로그).
+        from .markdown_tab import MarkdownTab
+        md = self.tab_area.currentWidget()
+        if isinstance(md, MarkdownTab):
+            md.save()
+            return
         # 영상 탭 — 사이드카 즉시 저장. 변경 없어도 무조건 디스크 write (사용자
         # 멘탈모델 "Ctrl+S = 저장" — autosave 디바운스 종료 후에도 동일 메시지).
         cur = self.tab_area.current_video_tab()
@@ -3070,6 +3118,18 @@ class MainWindow(QMainWindow):
 
         영상 탭은 export 다이얼로그로 (편집 결과를 새 mp4 로 저장).
         """
+        from .markdown_tab import MarkdownTab
+        md = self.tab_area.currentWidget()
+        if isinstance(md, MarkdownTab):
+            md.save_as()
+            # Save As 로 경로가 생기면 _markdown_paths 갱신 (중복 열기 감지용).
+            sp = md.saved_path()
+            if sp is not None:
+                eid = self.tab_area.entry_id_for_widget(md)
+                if eid is not None:
+                    self._markdown_paths[eid] = sp
+                    self.tab_area.update_tab_base(eid, sp.name)
+            return
         if self.tab_area.current_video_tab() is not None:
             self._on_export_video()
             return
@@ -4300,6 +4360,7 @@ class MainWindow(QMainWindow):
             import base64
             state = bytes(self.saveState())
             attr = ("dock_state_image_b64" if mode is AppMode.IMAGE
+                    else "dock_state_document_b64" if mode is AppMode.DOCUMENT
                     else "dock_state_video_b64")
             setattr(self.app_settings.preferences, attr,
                     base64.b64encode(state).decode("ascii"))
@@ -4309,6 +4370,7 @@ class MainWindow(QMainWindow):
     def _restore_dock_state_for_mode(self, mode: AppMode) -> None:
         prefs = self.app_settings.preferences
         b64 = (prefs.dock_state_image_b64 if mode is AppMode.IMAGE
+               else prefs.dock_state_document_b64 if mode is AppMode.DOCUMENT
                else prefs.dock_state_video_b64)
         # 영상 모드는 기본적으로 layers 가 숨김 — 영상 모드 첫 진입에 저장된 게 없으면
         # restoreState 안 하고 _on_mode_changed 의 layers_dock.setVisible 이 알아서 처리.

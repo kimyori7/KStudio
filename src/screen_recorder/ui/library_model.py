@@ -81,6 +81,11 @@ class LibraryModel(QObject):
             return items
         return [e for e in items if e.kind is kind]
 
+    def next_id(self) -> int:
+        """라이브러리 항목을 만들지 않고 고유 id 만 발급 (예: 문서 탭 — Phase 1 에선
+        문서가 라이브러리에 들어가지 않지만 탭 추적용 고유 id 가 필요)."""
+        return next(self._id_seq)
+
     def get(self, entry_id: int) -> Optional[LibraryEntry]:
         for e in self._entries:
             if e.id == entry_id:
