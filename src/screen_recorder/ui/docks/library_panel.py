@@ -464,5 +464,11 @@ class LibraryPanel(QWidget):
             self.list_widget.setUpdatesEnabled(True)
 
     @staticmethod
-    def _kind_for_mode(mode: AppMode) -> EntryKind:
-        return EntryKind.VIDEO if mode is AppMode.VIDEO else EntryKind.SCREENSHOT
+    def _kind_for_mode(mode: AppMode) -> "Optional[EntryKind]":
+        if mode is AppMode.VIDEO:
+            return EntryKind.VIDEO
+        if mode is AppMode.DOCUMENT:
+            # 문서 라이브러리는 Phase 3 — 그 전엔 문서 모드에서 라이브러리를 비운다
+            # (이미지/영상 어느 항목도 매칭 안 되도록 None 반환 → 전부 hidden).
+            return None
+        return EntryKind.SCREENSHOT
