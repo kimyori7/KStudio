@@ -3057,23 +3057,22 @@ class MainWindow(QMainWindow):
         - 이미지(스크린샷) 탭이면 기존 자동 저장 흐름.
         """
         # Markdown 문서 탭 — UTF-8 로 저장 (blank 면 Save As 다이얼로그).
-        from .markdown_tab import MarkdownTab
+        from .markdown_tab import MarkdownTab, SaveResult
         md = self.tab_area.currentWidget()
         if isinstance(md, MarkdownTab):
-            # 빈 문서 → Save As 로 경로 결정 (취소 시 saved_path 가 None 으로 남음).
             had_path = md.saved_path() is not None
-            ok = md.save()
-            if ok:
+            result = md.save()
+            if result is SaveResult.SAVED:
                 sp = md.saved_path()
-                if not had_path and sp is not None:
+                if not had_path and sp is not None:   # blank→Save As 로 새 경로 생김
                     eid = self.tab_area.entry_id_for_widget(md)
                     if eid is not None:
                         self._markdown_paths[eid] = sp
                         self.tab_area.update_tab_base(eid, sp.name)
-            elif md.saved_path() is not None:
-                # 취소가 아니라 실제 쓰기 실패만 경고 (취소는 saved_path None 유지).
+            elif result is SaveResult.FAILED:
                 QMessageBox.warning(self, "저장 실패",
                                     "문서를 저장하지 못했습니다. 경로/권한을 확인하세요.")
+            # SaveResult.CANCELLED → 조용히 통과.
             return
         # 영상 탭 — 사이드카 즉시 저장. 변경 없어도 무조건 디스크 write (사용자
         # 멘탈모델 "Ctrl+S = 저장" — autosave 디바운스 종료 후에도 동일 메시지).
@@ -3140,23 +3139,23 @@ class MainWindow(QMainWindow):
 
         영상 탭은 export 다이얼로그로 (편집 결과를 새 mp4 로 저장).
         """
-        from .markdown_tab import MarkdownTab
+        from .markdown_tab import MarkdownTab, SaveResult
         md = self.tab_area.currentWidget()
         if isinstance(md, MarkdownTab):
-            ok = md.save_as()
-            if not ok:
-                # 사용자 취소면 saved_path 변화 없음(조용히), 실제 쓰기 실패면 경고.
-                if md.saved_path() is not None:
-                    QMessageBox.warning(self, "저장 실패",
-                                        "문서를 저장하지 못했습니다. 경로/권한을 확인하세요.")
+            result = md.save_as()
+            if result is SaveResult.FAILED:
+                QMessageBox.warning(self, "저장 실패",
+                                    "문서를 저장하지 못했습니다. 경로/권한을 확인하세요.")
                 return
-            # 성공 시에만 _markdown_paths 갱신 + 탭 라벨 동기화 (중복 열기 감지용).
-            sp = md.saved_path()
-            if sp is not None:
-                eid = self.tab_area.entry_id_for_widget(md)
-                if eid is not None:
-                    self._markdown_paths[eid] = sp
-                    self.tab_area.update_tab_base(eid, sp.name)
+            if result is SaveResult.SAVED:
+                # 성공 시에만 _markdown_paths 갱신 + 탭 라벨 동기화 (중복 열기 감지용).
+                sp = md.saved_path()
+                if sp is not None:
+                    eid = self.tab_area.entry_id_for_widget(md)
+                    if eid is not None:
+                        self._markdown_paths[eid] = sp
+                        self.tab_area.update_tab_base(eid, sp.name)
+            # SaveResult.CANCELLED → 조용히 통과 (경고 없음).
             return
         if self.tab_area.current_video_tab() is not None:
             self._on_export_video()

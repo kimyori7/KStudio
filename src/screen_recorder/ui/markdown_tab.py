@@ -18,6 +18,13 @@ from .markdown.preview import MarkdownPreview
 _log = logging.getLogger(__name__)
 
 
+class SaveResult(Enum):
+    """저장 결과 — 호출자가 취소(조용히)와 실제 쓰기 실패(경고)를 구분하기 위함."""
+    SAVED = "saved"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
 class ViewMode(Enum):
     EDITOR = "editor"
     PREVIEW = "preview"
@@ -121,20 +128,20 @@ class MarkdownTab(QWidget):
             self.save_state_changed.emit()
 
     # --- 저장 ---
-    def save(self) -> bool:
+    def save(self) -> SaveResult:
         if self._saved_path is None:
             return self.save_as()
-        return self._write_to(self._saved_path)
+        return SaveResult.SAVED if self._write_to(self._saved_path) else SaveResult.FAILED
 
-    def save_as(self, path: Path | None = None) -> bool:
+    def save_as(self, path: Path | None = None) -> SaveResult:
         if path is None:
             fn, _ = QFileDialog.getSaveFileName(
                 self, "Markdown 저장", "", "Markdown (*.md *.markdown)"
             )
             if not fn:
-                return False
+                return SaveResult.CANCELLED   # 사용자 취소 — 쓰기 시도 안 함
             path = Path(fn)
-        return self._write_to(Path(path))
+        return SaveResult.SAVED if self._write_to(Path(path)) else SaveResult.FAILED
 
     def _write_to(self, path: Path) -> bool:
         """UTF-8 로 기록. 성공 시에만 _saved_path/dirty 갱신 (쓰기 실패 시 상태 불변)."""

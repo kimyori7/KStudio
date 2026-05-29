@@ -27,8 +27,9 @@ def test_save_writes_utf8_and_clears_dirty(qtbot, tmp_path):
     p.write_text("x", encoding="utf-8")
     tab = MarkdownTab.from_file(p)
     qtbot.addWidget(tab)
+    from screen_recorder.ui.markdown_tab import SaveResult
     tab.editor.setPlainText("새 내용")
-    assert tab.save() is True
+    assert tab.save() is SaveResult.SAVED
     assert p.read_text(encoding="utf-8") == "새 내용"
     assert tab.needs_save() is False
 
@@ -76,8 +77,20 @@ def test_save_failure_does_not_corrupt_saved_path(qtbot, tmp_path, monkeypatch):
     def boom(self, *a, **k):
         raise OSError("disk full")
 
+    from screen_recorder.ui.markdown_tab import SaveResult
     monkeypatch.setattr(pathlib.Path, "write_text", boom)
-    ok = tab.save_as(target)
-    assert ok is False
+    assert tab.save_as(target) is SaveResult.FAILED
     assert tab.saved_path() is None      # 실패 시 경로 미갱신
     assert tab.needs_save() is True
+
+
+def test_save_as_cancel_returns_cancelled(qtbot, monkeypatch):
+    # 회귀 (검증 워크플로 #4): 다이얼로그 취소는 FAILED 가 아니라 CANCELLED — 경고 X.
+    from screen_recorder.ui import markdown_tab as M
+    from screen_recorder.ui.markdown_tab import MarkdownTab, SaveResult
+    tab = MarkdownTab.from_blank()
+    qtbot.addWidget(tab)
+    monkeypatch.setattr(M.QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: ("", "")))
+    assert tab.save_as() is SaveResult.CANCELLED
+    assert tab.saved_path() is None
