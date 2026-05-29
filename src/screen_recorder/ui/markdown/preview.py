@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
@@ -16,8 +17,29 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from .render import pygments_css, render_markdown_to_html
 
-_ASSETS = Path(__file__).parent / "assets"
 _log = logging.getLogger(__name__)
+
+
+def _resolve_assets_dir() -> Path:
+    """소스 실행과 PyInstaller 빌드 양쪽에서 assets 폴더를 찾는다 (app_icon 패턴)."""
+    candidates = [Path(__file__).resolve().parent / "assets"]
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        candidates.append(
+            exe_dir / "_internal" / "screen_recorder" / "ui" / "markdown" / "assets"
+        )
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(
+                Path(meipass) / "screen_recorder" / "ui" / "markdown" / "assets"
+            )
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[0]
+
+
+_ASSETS = _resolve_assets_dir()
 
 
 def build_inject_script(html: str, doc_dir: str | None, revision: int) -> str:

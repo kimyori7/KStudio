@@ -3,7 +3,16 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 ROOT = Path(".").resolve()
+
+# Markdown 미리보기 웹 에셋 (template.html / app.js / style.css / Phase2 vendor/*).
+# screen_recorder/ui/markdown/assets/** 를 동일 구조로 동봉 → preview._resolve_assets_dir()
+# 의 frozen 후보(_internal/screen_recorder/ui/markdown/assets)와 일치.
+_markdown_assets = collect_data_files(
+    "screen_recorder", includes=["ui/markdown/assets/**"]
+)
 
 a = Analysis(
     [str(ROOT / "src" / "screen_recorder" / "__main__.py")],
@@ -14,7 +23,7 @@ a = Analysis(
     ],
     datas=[
         (str(ROOT / "resources" / "app_icon.ico"), "resources"),
-    ],
+    ] + _markdown_assets,
     hiddenimports=[
         "dxcam",
         "pyaudiowpatch",
@@ -26,6 +35,14 @@ a = Analysis(
         "win32com",
         "win32com.client",
         "pywintypes",
+        # QtWebEngine — Markdown 미리보기. preview.py 가 메서드 내부에서 import 하므로
+        # PyInstaller 정적 분석이 놓침 → 명시. 이게 있어야 PySide6 hook 이 WebEngine
+        # 런타임(QtWebEngineProcess.exe / *.pak / icudtl.dat / locales)을 동봉한다.
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebEngineCore",
+        # Markdown→HTML 렌더 (preview/render 가 사용).
+        "markdown_it",
+        "pygments",
     ],
     hookspath=[],
     hooksconfig={},
