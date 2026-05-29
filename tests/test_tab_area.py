@@ -70,3 +70,27 @@ def test_focus_entry_switches_to_existing_tab(qtbot):
     ta.add_screenshot(image=_img(), source_label="full", entry_id=20)
     ta.focus_entry(10)
     assert ta.current_entry_id() == 10
+
+
+def test_add_markdown_registers_document_tab(qtbot):
+    from screen_recorder.ui.markdown_tab import MarkdownTab
+    mc = ModeController(AppMode.IMAGE)
+    area = TabArea(mc, PlayerSettings())
+    qtbot.addWidget(area)
+    tab = MarkdownTab.from_blank()
+    idx = area.add_markdown(tab, entry_id=1, display_name="memo.md")
+    assert idx >= 0
+    assert mc.mode() is AppMode.DOCUMENT
+    assert "📄" in area.tabText(idx)
+    assert "memo.md" in area.tabText(idx)
+
+
+def test_markdown_tab_dirty_marker(qtbot):
+    from screen_recorder.ui.markdown_tab import MarkdownTab
+    mc = ModeController(AppMode.IMAGE)
+    area = TabArea(mc, PlayerSettings())
+    qtbot.addWidget(area)
+    tab = MarkdownTab.from_blank()
+    idx = area.add_markdown(tab, entry_id=2, display_name="memo.md")
+    # blank 은 needs_save True → ● 마커
+    assert "●" in area.tabText(idx)

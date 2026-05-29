@@ -11,6 +11,7 @@ from ..core.settings import PlayerHotkeys, PlayerSettings
 from .mode_controller import AppMode, ModeController
 from .edit_tab import EditTab
 from .icons import load_icon
+from .markdown_tab import MarkdownTab
 from .video_tab import VideoTab
 
 
@@ -89,9 +90,21 @@ class TabArea(QTabWidget):
         tab.save_state_changed.connect(lambda t=tab: self._refresh_tab_label(t))
         return idx
 
+    def add_markdown(self, tab: "MarkdownTab", *, entry_id: int,
+                     display_name: str | None = None) -> int:
+        base = display_name if display_name else "untitled.md"
+        self._tab_base_labels[tab] = base
+        idx = self._add_tab(tab, AppMode.DOCUMENT, entry_id,
+                            label=self._format_tab_label(tab))
+        tab.save_state_changed.connect(lambda t=tab: self._refresh_tab_label(t))
+        return idx
+
     # ---------- 통합 탭 라벨 포맷 ----------
     def _format_tab_label(self, tab: QWidget) -> str:
         base = self._tab_base_labels.get(tab, "")
+        if isinstance(tab, MarkdownTab):
+            marker = " ●" if tab.needs_save() else ""
+            return f"📄 {base}{marker}"
         if isinstance(tab, EditTab):
             # 미저장(또는 저장 후 변경됨) 이면 ● 마커.
             marker = " ●" if tab.needs_save() else ""
@@ -308,6 +321,12 @@ class TabArea(QTabWidget):
             try:
                 widget.player.stop()
                 widget.player.release_file_handles()
+            except (RuntimeError, AttributeError):
+                pass
+        if isinstance(widget, MarkdownTab):
+            # WebEngine page/profile/render-process 정리 (앱 누수 방지).
+            try:
+                widget.cleanup()
             except (RuntimeError, AttributeError):
                 pass
         widget.deleteLater()
