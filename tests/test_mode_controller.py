@@ -18,3 +18,13 @@ def test_setting_same_mode_does_not_emit(qtbot):
     mc.set_mode(AppMode.VIDEO)
     with qtbot.assertNotEmitted(mc.mode_changed, wait=200):
         mc.set_mode(AppMode.VIDEO)
+
+
+def test_document_mode_set_and_get(qtbot):
+    mc = ModeController(initial_mode=AppMode.IMAGE)
+    received = []
+    mc.mode_changed.connect(received.append)
+    mc.set_mode(AppMode.DOCUMENT)
+    assert mc.mode() is AppMode.DOCUMENT
+    assert received == [AppMode.DOCUMENT]
+    assert AppMode.DOCUMENT.value == "document"

@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Signal
 class AppMode(Enum):
     VIDEO = "video"
     IMAGE = "image"
+    DOCUMENT = "document"
 
 
 class ModeController(QObject):
