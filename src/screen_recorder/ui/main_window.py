@@ -1184,6 +1184,7 @@ class MainWindow(QMainWindow):
         # 가 발생한다. 여기서는 Crop 만 등록 (ToolPalette 에 없는 도구).
         _add(es.tool_crop,   lambda: self._activate_editor_tool("crop"))
         _add(es.op_background_removal, self._on_remove_background)
+        _add(es.op_auto_trim, self._on_auto_trim)
         _add(es.op_image_scale, self._on_image_scale)
         _add(es.file_save,    self._on_file_save)
         _add(es.file_save_as, self._on_file_save_as)
@@ -1220,6 +1221,23 @@ class MainWindow(QMainWindow):
         # 새 인스턴스로 갈아 끼워 깨끗한 상태로 다시 활성 — 사용자가 곧바로 다시 크롭 가능.
         if isinstance(tab.canvas.current_tool(), CropTool):
             self._apply_tool_to_current_tab("crop")
+
+    def _on_auto_trim(self) -> None:
+        """테두리 자동 자르기 — 합성본에서 균일 여백을 감지해 CropCommand 로 트림."""
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        from image_editor.operations.autotrim import compute_trim_rect
+        from image_editor.operations.crop import CropCommand
+        from .toast import show_toast
+        rect = compute_trim_rect(tab.canvas.composite())
+        if rect is None:
+            show_toast(self, "잘라낼 균일한 여백이 없습니다", duration_ms=1800)
+            return
+        tab.selection.clear()
+        tab.undo_stack.push(CropCommand(tab.stack, rect))
+        show_toast(self, f"여백을 잘라냈습니다 ({rect.width()}×{rect.height()})",
+                   duration_ms=1500)
 
     def _on_view_actual_size(self) -> None:
         tab = self._current_screenshot_tab()
@@ -2724,6 +2742,8 @@ class MainWindow(QMainWindow):
         """ToolPalette 의 액션 버튼 (one-shot) 라우팅."""
         if action_id == "auto_bg":
             self._on_remove_background()
+        elif action_id == "auto_trim":
+            self._on_auto_trim()
         elif action_id == "image_gen":
             # 2026-05-27: 도구 팔레트에서 진입 → 메뉴 체크 토글 (lazy 생성 + show + persist).
             self.menu_bar.image_gen_visible_action.setChecked(True)
