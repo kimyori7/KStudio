@@ -93,3 +93,40 @@ def test_magnifier_transparent_for_mouse(qtbot):
     mag = CropMagnifier()
     qtbot.addWidget(mag)
     assert mag.testAttribute(Qt.WA_TransparentForMouseEvents) is True
+
+
+# --- Task 3: CropTool 수명주기 ---
+
+def test_magnifier_created_on_activate(qtbot):
+    from image_editor.tools.crop import CropTool
+    from image_editor.tools.crop_magnifier import CropMagnifier
+    canvas = _canvas(qtbot)
+    tool = CropTool()
+    canvas.set_tool(tool)
+    assert isinstance(tool._mag, CropMagnifier)
+    assert tool._mag.parent() is canvas.viewport()
+
+
+def test_no_magnifier_without_view(qtbot):
+    """뷰가 없는 bare scene(헤드리스): 돋보기 없이도 크롭 동작 정상."""
+    from PySide6.QtWidgets import QGraphicsScene
+    from image_editor.tools.crop import CropTool
+    scene = QGraphicsScene()
+    scene.setSceneRect(0, 0, 100, 80)
+    tool = CropTool()
+    tool.activated(scene)
+    assert tool._mag is None
+    tool.mouse_press(scene, QPointF(10, 10))
+    tool.mouse_move(scene, QPointF(40, 40))
+    tool.mouse_release(scene, QPointF(40, 40))
+    assert tool.current_rect().width() == 30 and tool.current_rect().height() == 30
+
+
+def test_magnifier_destroyed_on_deactivate(qtbot):
+    from image_editor.tools.crop import CropTool
+    canvas = _canvas(qtbot)
+    tool = CropTool()
+    canvas.set_tool(tool)
+    assert tool._mag is not None
+    canvas.set_tool(None)   # 크롭 도구 비활성 → deactivated
+    assert tool._mag is None

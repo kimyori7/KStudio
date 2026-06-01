@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QObject, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPen, QBrush
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from .base import Tool
+from .crop_magnifier import CropMagnifier, loupe_position
 
 
 # 핸들 식별자 — (수직, 수평) 위치
@@ -110,6 +111,9 @@ class CropTool(Tool):
         self._committed = False
         # rect 가 한 번이라도 정의된 후엔 핸들 모드.
         self._has_rect = False
+        # 돋보기(확대경) — 뷰가 있을 때만 생성됨.
+        self._mag: CropMagnifier | None = None
+        self._view = None
 
     # --- Tool API ---
     def activated(self, scene: QGraphicsScene) -> None:
@@ -121,6 +125,17 @@ class CropTool(Tool):
             # 활성화 직후엔 영역 미지정 — 사용자가 드래그해야 사각형이 생김.
             self._overlay.setRect(QRectF())
             scene.addItem(self._overlay)
+        # 돋보기 — scene 의 첫 view(LayerCanvas)가 있고 composite 가능할 때만.
+        # headless(뷰 없음) 에선 _mag=None 으로 두어 크롭만 정상 동작.
+        self._view = None
+        self._mag = None
+        views = scene.views()
+        view = views[0] if views else None
+        composite = getattr(view, "composite", None)
+        if view is not None and callable(composite):
+            self._view = view
+            self._mag = CropMagnifier(view.viewport())
+            self._mag.set_source(view.composite())
 
     def deactivated(self, scene: QGraphicsScene) -> None:
         if self._overlay is not None and self._overlay.scene() is scene:
@@ -133,6 +148,13 @@ class CropTool(Tool):
         self._press_pos = None
         self._press_rect = None
         self._has_rect = False
+        # 돋보기 제거 — 위젯 + composite 스냅샷(4K~33MB) 메모리 해제.
+        if self._mag is not None:
+            self._mag.hide()
+            self._mag.setParent(None)
+            self._mag.deleteLater()
+            self._mag = None
+        self._view = None
 
     # --- 외부에서 조회 가능한 상태 ---
     def current_rect(self) -> QRect:
@@ -210,6 +232,26 @@ class CropTool(Tool):
         if r.contains(scene_pos):
             return _H_INSIDE
         return None
+
+    def _update_magnifier(self, scene_pos: QPointF) -> None:
+        """돋보기 위치/중앙픽셀/라벨 갱신. 뷰 없으면 no-op(headless)."""
+        if self._mag is None or self._view is None or self._overlay is None:
+            return
+        vp = self._view.mapFromScene(scene_pos)
+        vp_w = self._view.viewport().width()
+        vp_h = self._view.viewport().height()
+        x, y = loupe_position(vp.x(), vp.y(), vp_w, vp_h)
+        self._mag.move(x, y)
+        r = self._overlay.rect()
+        rect_size = (
+            QSize(round(r.width()), round(r.height()))
+            if r.width() >= 1 and r.height() >= 1 else None
+        )
+        self._mag.update_at(scene_pos.toPoint(), rect_size)
+        # show()/raise_() 는 숨김→보임 전환 시 1회만 (매 move Z-order 연산 절약).
+        if not self._mag.isVisible():
+            self._mag.show()
+            self._mag.raise_()
 
     # --- Mouse (modifiers 인자 없음 — Tool 베이스 시그니처에 맞춤) ---
     def mouse_press(self, scene: QGraphicsScene, scene_pos: QPointF) -> None:
