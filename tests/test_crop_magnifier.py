@@ -65,3 +65,31 @@ def test_loupe_position_flips_near_edges():
     x, y = loupe_position(490, 490, 500, 500)
     assert x == 490 - _MAG_OFFSET - MAG_W
     assert y == 490 - _MAG_OFFSET - MAG_H
+
+
+# --- Task 2: 위젯 ---
+
+def test_magnifier_fixed_size(qtbot):
+    from image_editor.tools.crop_magnifier import CropMagnifier, MAG_W, MAG_H
+    mag = CropMagnifier()
+    qtbot.addWidget(mag)
+    assert mag.width() == MAG_W and mag.height() == MAG_H
+
+
+def test_magnifier_renders_source_color(qtbot):
+    from image_editor.tools.crop_magnifier import CropMagnifier
+    mag = CropMagnifier()
+    qtbot.addWidget(mag)
+    mag.set_source(_solid(100, 80, "#0000FF"))  # 순수 파랑
+    mag.update_at(QPoint(50, 40), None)
+    img = mag.grab().toImage()
+    # 렌즈 안(십자선/테두리 피한 지점)은 파란 소스에서 온 색
+    c = img.pixelColor(20, 20)
+    assert c.blue() > 200 and c.red() < 80
+
+
+def test_magnifier_transparent_for_mouse(qtbot):
+    from image_editor.tools.crop_magnifier import CropMagnifier
+    mag = CropMagnifier()
+    qtbot.addWidget(mag)
+    assert mag.testAttribute(Qt.WA_TransparentForMouseEvents) is True
