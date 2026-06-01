@@ -46,7 +46,9 @@ def compute_trim_rect(
     if image.isNull():
         return None
     h, w = image.height(), image.width()
-    if w < 2 or h < 2:
+    # 코너 패치(_CORNER 변)가 겹치면(이미지가 2×_CORNER 미만) 균일성 게이트가
+    # 무의미해진다. 그렇게 작은 이미지는 자를 여백도 없으므로 일찍 None 반환.
+    if w < 2 * _CORNER or h < 2 * _CORNER:
         return None
 
     buf = _to_bgra(image)  # (h, w, 4) uint8 — 아래 buf - bg 에서 float 로 승격돼 부호 안전.
@@ -65,6 +67,7 @@ def compute_trim_rect(
     if np.any(spread > tolerance):
         return None
     bg = np.median(corner_meds, axis=0)  # (4,) 배경색
+    # bg 와 tolerance 비교는 float64 공간에서 수행된다(정수 반올림 없음).
 
     # 배경 마스크: 모든 채널(알파 포함)이 tolerance 이내.
     is_bg = np.all(np.abs(buf - bg) <= tolerance, axis=2)  # (h, w) bool

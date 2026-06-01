@@ -102,3 +102,16 @@ def test_integration_crop_command_resizes_and_undo_restores(qtbot):
     assert stack.canvas_size == QSize(40, 20)
     cmd.undo()
     assert stack.canvas_size == QSize(80, 40)
+
+
+def test_null_image_returns_none():
+    from image_editor.operations.autotrim import compute_trim_rect
+    assert compute_trim_rect(QImage()) is None
+
+
+def test_tiny_image_returns_none():
+    from image_editor.operations.autotrim import compute_trim_rect
+    # 2×_CORNER(10px) 미만 이미지는 코너 패치가 겹쳐 게이트가 무의미 → None.
+    im = QImage(8, 8, QImage.Format_ARGB32)
+    im.fill(QColor("#1b1b1b"))
+    assert compute_trim_rect(im) is None
