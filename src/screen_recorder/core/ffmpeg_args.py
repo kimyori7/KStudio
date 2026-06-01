@@ -70,12 +70,16 @@ def audio_encode_args(
 
 
 def mux_args(video: str, audio: str, output: str) -> list[str]:
+    # -shortest 는 의도적으로 뺀다. 오디오가 영상보다 짧게 캡처된 경우(예: 중간부터
+    # 소리가 난 녹화) -shortest 가 영상을 오디오 길이로 잘라버려 영상 손실이 발생한다
+    # (실제 사고: 16s 영상이 21ms 로 truncate 될 뻔). 영상이 항상 길이의 기준이 되도록
+    # 두면, 오디오가 짧으면 그만큼만 소리가 나고 나머지는 무음(영상은 온전)으로 남는다.
+    # 오디오가 영상보다 살짝 긴 경우의 꼬리(수십 ms)는 무시 가능한 cosmetic 차이.
     return [
         "ffmpeg", "-y",
         "-i", video,
         "-i", audio,
         "-c", "copy",
-        "-shortest",
         output,
     ]
 

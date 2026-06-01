@@ -143,6 +143,8 @@ class RecorderController(QObject):
                 audio_raw_path=audio_raw,
                 audio_sample_rate=audio_sr,
                 audio_channels=audio_ch,
+                # 인코더가 mux 전에 캡처 스레드를 join 해 raw flush 를 보장하도록 전달.
+                audio_thread=self._audio_thread,
             )
 
         self._encoder.start()
