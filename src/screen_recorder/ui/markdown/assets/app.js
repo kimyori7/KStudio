@@ -111,6 +111,14 @@
     for (var i = 0; i < els.length; i++) els[i].classList.remove("ksel-hl");
   };
 
+  // 편집기에서 선택을 해제(클릭)하면 미리보기의 네이티브 드래그 선택도 해제 (Python 호출).
+  // lastSelKey 를 비워 두면 뒤따르는 selectionchange 가 중복 KSELCLEAR 를 보내지 않는다.
+  window.clearNativeSelection = function () {
+    var sel = window.getSelection();
+    if (sel) sel.removeAllRanges();
+    lastSelKey = "";
+  };
+
   window.updateMarkdown = function (html, docDir, revision) {
     if (revision < latestRevision) return; // stale drop
     latestRevision = revision;

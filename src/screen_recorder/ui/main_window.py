@@ -1677,6 +1677,13 @@ class MainWindow(QMainWindow):
         self._apply_mode_aware_menu_enabled()
         # 이미지 편집용 Ctrl+C/X/A/D 단축키 토글 (탭 변경 없이 모드만 바뀌는 경우 대비).
         self._update_image_clipboard_shortcuts()
+        # 문서 모드로 *전환* 시 WebEngine pre-warm — 이미지/영상으로 켰다가 문서로 들어온
+        # 세션은 startup gate(last_mode==document)를 못 타 첫 문서 열 때 HWND 재생성으로
+        # 창 전체가 깜빡이던 회귀 fix(2026-05-29). idempotent 라 startup 에 이미 했으면 no-op.
+        # init 중(line 670 의 직접 호출)엔 _webengine_prewarm 속성도 startup warm 도 아직이라
+        # 스킵 — 그 경로의 document 시작은 730 의 gated warm 이 담당. runtime 전환만 발동.
+        if mode is AppMode.DOCUMENT and not getattr(self, "_initializing", False):
+            self._maybe_prewarm_webengine(force=True)
 
     def _on_mode_button_clicked(self, mode: AppMode) -> None:
         """사용자가 모드 토글 버튼을 직접 클릭 — 그 모드의 가장 최근 탭으로 점프.
@@ -4161,16 +4168,31 @@ class MainWindow(QMainWindow):
         emitter.finished.connect(on_finished)
         emitter.failed.connect(on_failed)
 
-    def _maybe_prewarm_webengine(self) -> None:
-        """문서 미리보기(QtWebEngine) compositing 을 startup 에 미리 확정해 첫 진입 깜빡임 제거.
+    def _maybe_prewarm_webengine(self, force: bool = False) -> None:
+        """문서 미리보기(QtWebEngine) compositing 을 미리 확정해 첫 진입 깜빡임 제거.
 
-        주의: *숨긴* 위젯은 네이티브 윈도우(HWND)가 안 생겨 compositing 을 확정하지 못한다 →
-        반드시 1×1 로 show() 해야 한다(lower() 로 시각상 가림). 비WebEngine/테스트 환경
-        (KSTUDIO_DISABLE_WEBENGINE)·비문서 사용자(last_mode!=document)는 비용 없이 스킵.
+        깜빡임의 정체(2026-05-29 winId 오라클로 확정): 첫 QWebEngineView 가 실현될 때
+        최상위 창의 네이티브 핸들(HWND)이 *재생성*되어 창 전체가 "닫혔다 열림". 1×1 로
+        *보이는* WebEngine 자식을 미리 띄워 HWND 를 startup/전환 시점에 확정해 두면, 이후
+        실제 문서 탭의 WebEngine 은 추가 자식이라 HWND 재생성이 없다(오라클: 빈 pre-warm
+        만으로도 winId 불변 확인). 주의: *숨긴* 위젯은 HWND 가 안 생겨 무효 → 반드시 show().
+
+        force:
+          False(=startup) — 비문서 사용자에게 상시 Chromium 비용을 안 지우려
+            last_mode=="document" 일 때만 warm.
+          True(=문서 모드 진입) — gate 무시하고 즉시 warm. 이미지/영상으로 켰다가 문서로
+            *전환*한 세션은 startup gate 를 못 타 첫 문서에서 깜빡이던 회귀 fix(2026-05-29).
+            라이브러리는 모드별 필터라 문서는 반드시 이 전환 뒤에 열린다 → 전환 시 warm 이면
+            첫 문서 클릭 전에 HWND 가 확정된다.
+
+        세션당 1회(idempotent) — 이미 warm 했으면 즉시 반환. 비WebEngine/테스트 환경
+        (KSTUDIO_DISABLE_WEBENGINE)은 비용 없이 스킵.
         """
+        if self._webengine_prewarm is not None:
+            return
         if os.environ.get("KSTUDIO_DISABLE_WEBENGINE") == "1":
             return
-        if self.app_settings.preferences.last_mode != "document":
+        if not force and self.app_settings.preferences.last_mode != "document":
             return
         try:
             from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -4181,6 +4203,10 @@ class MainWindow(QMainWindow):
         view.move(0, 0)
         view.show()
         view.lower()
+        # 네이티브 윈도우 실현(HWND 확정)은 이벤트 루프의 다음 paint 가 처리한다 — winId()
+        # 로 동기 강제하면 이 환경에선 블록/행이 관측됨(2026-05-29 오라클). 문서 모드 전환과
+        # 라이브러리 문서 클릭은 별개 사용자 동작이라 그 사이 이벤트 루프가 돌아 자연히
+        # 실현된다(오라클 current 시나리오로 검증: winId 강제 없이도 HWND 재생성 0).
         self._webengine_prewarm = view
 
     def _update_image_clipboard_shortcuts(self) -> None:

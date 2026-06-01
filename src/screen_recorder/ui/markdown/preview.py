@@ -125,6 +125,9 @@ class PreviewRenderer:
     def clear_source_highlight(self) -> None:
         """미리보기의 줄범위 강조 해제. 기본 no-op."""
 
+    def clear_native_selection(self) -> None:
+        """미리보기의 네이티브(드래그) 텍스트 선택 해제. 기본 no-op."""
+
 
 class MarkdownPreview(QWidget):
     # 사용자가 미리보기를 스크롤할 때 비율(0..1) 방출 — MarkdownTab 이 에디터와 동기화.
@@ -152,6 +155,9 @@ class MarkdownPreview(QWidget):
 
     def clear_source_highlight(self) -> None:
         self._renderer.clear_source_highlight()
+
+    def clear_native_selection(self) -> None:
+        self._renderer.clear_native_selection()
 
     def set_scroll_ratio(self, ratio: float) -> None:
         self._renderer.set_scroll_ratio(ratio)
@@ -237,6 +243,11 @@ class WebEnginePreviewRenderer(PreviewRenderer):
         self._view = QWebEngineView()
         self._page = _LoggingPage(self._profile, self._view)
         self._view.setPage(self._page)
+        # 흰색 플래시 위생: style.css(body #1e1e1e)는 loadFinished 후 JS 로 주입되므로, 그
+        # 전까지 WebEngine 기본 흰 배경이 잠깐 보인다("미리보기가 흰색이었다가" — 2026-05-29
+        # 사용자 보고). 페이지 base 배경을 본문색과 같게 두면 콘텐츠/CSS 로드 전에도 다크다.
+        # (창 전체 깜빡임의 HWND 재생성 fix 와는 별개의 위생 — preview 영역 한정.)
+        self._page.setBackgroundColor(QColor("#1e1e1e"))
         self._ready = False
         self._pending: tuple[str, str | None, int] | None = None
         self._scroll_cb = None
@@ -328,6 +339,11 @@ class WebEnginePreviewRenderer(PreviewRenderer):
     def clear_source_highlight(self) -> None:
         if self._ready:
             self._page.runJavaScript("window.clearSourceHighlight&&window.clearSourceHighlight();")
+
+    def clear_native_selection(self) -> None:
+        # 편집기에서 선택 해제(클릭) 시 미리보기의 드래그 선택도 함께 해제 (대칭 완성).
+        if self._ready:
+            self._page.runJavaScript("window.clearNativeSelection&&window.clearNativeSelection();")
 
 
 class FallbackPreviewRenderer(PreviewRenderer):

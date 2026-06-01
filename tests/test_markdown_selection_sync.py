@@ -90,6 +90,24 @@ def test_editor_deselect_clears_preview(qtbot):
     assert cleared
 
 
+def test_editor_deselect_clears_preview_native_selection(qtbot):
+    # 회귀(사용자 2026-05-29): 미리보기에서 드래그 선택 후 편집기를 클릭(선택 해제)하면
+    # 미리보기의 네이티브(드래그) 선택도 함께 풀려야 함 — 반대 방향 대칭 완성.
+    tab = _tab(qtbot, "line0\nline1\nline2")
+    cleared: list[bool] = []
+    tab.preview.highlight_source_lines = lambda s, e: None
+    tab.preview.clear_source_highlight = lambda: None
+    tab.preview.clear_native_selection = lambda: cleared.append(True)
+    cur = tab.editor.textCursor()
+    cur.setPosition(0)
+    cur.setPosition(5, QTextCursor.KeepAnchor)   # 선택 생성
+    tab.editor.setTextCursor(cur)
+    cur2 = tab.editor.textCursor()
+    cur2.clearSelection()                        # 선택 해제(편집기 클릭 상황)
+    tab.editor.setTextCursor(cur2)
+    assert cleared
+
+
 # ---------- 모드 전환 유지 (C1) ----------
 def test_preview_selection_persists_into_editor_mode(qtbot):
     from screen_recorder.ui.markdown_tab import ViewMode

@@ -361,6 +361,8 @@ class MarkdownTab(QWidget):
         cur = self.editor.textCursor()
         if not cur.hasSelection():
             self.preview.clear_source_highlight()
+            # 편집기 클릭으로 선택이 풀리면 미리보기의 네이티브 드래그 선택도 해제 (대칭).
+            self.preview.clear_native_selection()
             return
         doc = self.editor.document()
         s = doc.findBlock(cur.selectionStart()).blockNumber()

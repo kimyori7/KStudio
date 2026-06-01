@@ -70,3 +70,26 @@ def test_webengine_prewarm_guarded_by_disable_flag(qtbot):
     qtbot.addWidget(win)
     assert win._webengine_prewarm is None
     win.close()
+
+
+def test_switch_into_document_triggers_prewarm(qtbot):
+    # 회귀(2026-05-29): pre-warm 이 startup gate(last_mode=="document")라, 이미지/영상으로
+    # 켰다가 문서로 *전환*한 세션은 첫 문서 열 때 최상위 HWND 가 재생성되며 창 전체가
+    # "닫혔다 열림". 문서 모드 진입 시 force pre-warm 을 발동해 전환 시점에 HWND 를 확정한다.
+    # (실제 view 생성은 conftest 의 DISABLE_WEBENGINE 로 막혀 여기선 *배선*만 검증 —
+    #  winId 불변 자체는 scripts/diagnose_webengine_winid.py 오라클로 확인했다.)
+    from screen_recorder.app.main import build_main_window
+    from screen_recorder.core.settings import AppSettings
+    from screen_recorder.ui.mode_controller import AppMode
+    s = AppSettings()
+    s.preferences.last_mode = "image"          # 비문서 시작 → startup pre-warm 스킵
+    win = build_main_window(settings=s)
+    qtbot.addWidget(win)
+    win.show()
+    calls = []
+    win._maybe_prewarm_webengine = lambda force=False: calls.append(force)
+    win.mode_controller.set_mode(AppMode.VIDEO)       # 비문서 전환 → 트리거 안 됨
+    assert calls == []
+    win.mode_controller.set_mode(AppMode.DOCUMENT)    # 문서 진입 → force=True 로 발동
+    assert calls == [True]
+    win.close()
