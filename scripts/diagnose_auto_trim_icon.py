@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PySide6.QtGui import QGuiApplication, QImage, QPainter, QColor
 from PySide6.QtCore import Qt
 
-app = QGuiApplication(sys.argv)
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
 from screen_recorder.ui.icons import load_icon, has_icon
 
 assert has_icon("auto-trim"), "auto-trim 아이콘이 _PATHS 에 없음"
