@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QDrag, QTextCursor, QTextFormat
+from PySide6.QtGui import QColor, QDrag, QPainter, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -80,6 +80,107 @@ def _char_diff(a: str, b: str, aline: int, bline: int,
             lm.chars.append(CharMark(aline, i1, i2))
         if tag in ("insert", "replace") and j2 > j1:
             rm.chars.append(CharMark(bline, j1, j2))
+
+
+_OVERVIEW_MIN_H = 3   # 한 줄짜리 차이도 보이도록 최소 띠 높이(px)
+
+
+def overview_bands(total_lines: int, marks: list[LineMark],
+                   height: int) -> list[tuple[int, int, str]]:
+    """개요 띠에 칠할 색 띠 목록 — 각 항목 (y, h, kind) 픽셀 좌표.
+
+    줄 마크를 문서 전체 높이에 비례 매핑한다. 연속된 같은 종류 줄은 한 덩어리 띠로
+    합치고(예: 20줄 삭제 → 큰 띠 하나), 한 줄짜리도 보이도록 최소 _OVERVIEW_MIN_H,
+    바닥을 넘지 않게 클램프한다. total_lines<=0(빈 문서)면 빈 목록(0 나눗셈 방지).
+    """
+    if total_lines <= 0 or height <= 0 or not marks:
+        return []
+    ordered = sorted(marks, key=lambda m: m.line)
+    # 연속(line+1) + 같은 kind 를 (start, end_inclusive, kind) 런으로 묶는다.
+    runs: list[tuple[int, int, str]] = []
+    s = e = ordered[0].line
+    k = ordered[0].kind
+    for m in ordered[1:]:
+        if m.kind == k and m.line == e + 1:
+            e = m.line
+            continue
+        runs.append((s, e, k))
+        s = e = m.line
+        k = m.kind
+    runs.append((s, e, k))
+
+    bands: list[tuple[int, int, str]] = []
+    for start, end, kind in runs:
+        y0 = int(start * height / total_lines)
+        y1 = int((end + 1) * height / total_lines)
+        h = max(_OVERVIEW_MIN_H, y1 - y0)
+        if y0 + h > height:                 # 바닥 클램프
+            y0 = max(0, height - h)
+        bands.append((y0, h, kind))
+    return bands
+
+
+# ---------- 개요 띠 위젯 ----------
+class DiffOverviewBar(QWidget):
+    """좌/우 패널 사이 세로 개요 띠 — 문서 전체 높이에 차이를 색 눈금으로 매핑.
+
+    띠를 좌/우 2칸으로 나눠 각 문서의 마크를 자기 높이에 비례해 칠한다(줄 맞춤 없음).
+    클릭하면 그 칸의 그 위치(비율)로 점프하라고 jump(side, ratio) 를 낸다.
+    색은 DIFF_COLORS 의 *_tick(진한 채도) — 줄 배경(옅은)색은 16px 폭에서 안 보이므로.
+    """
+    jump = Signal(str, float)   # side("left"/"right"), ratio(0..1)
+
+    _WIDTH = 16
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(self._WIDTH)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("차이 위치 — 클릭하면 그 지점으로 이동")
+        self._left_total = 0
+        self._right_total = 0
+        self._left_marks: list[LineMark] = []
+        self._right_marks: list[LineMark] = []
+
+    def set_marks(self, left_total: int, left_marks: list[LineMark],
+                  right_total: int, right_marks: list[LineMark]) -> None:
+        self._left_total = left_total
+        self._left_marks = left_marks
+        self._right_total = right_total
+        self._right_marks = right_marks
+        self.update()
+
+    def _target_at(self, x: int, y: int) -> tuple[str, float]:
+        side = "left" if x < self.width() / 2 else "right"
+        h = max(1, self.height())
+        ratio = min(1.0, max(0.0, y / h))
+        return side, ratio
+
+    def mousePressEvent(self, e) -> None:  # type: ignore[override]
+        if e.button() == Qt.LeftButton:
+            pos = e.position().toPoint()
+            side, ratio = self._target_at(pos.x(), pos.y())
+            self.jump.emit(side, ratio)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def paintEvent(self, _e) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(DIFF_COLORS["bar_bg"]))
+        w, h = self.width(), self.height()
+        half = w // 2
+        # 왼칸 = 왼쪽 문서 마크, 오른칸 = 오른쪽 문서 마크 (각자 자기 높이에 매핑).
+        self._paint_side(p, 0, half, self._left_total, self._left_marks, h)
+        self._paint_side(p, half, w - half, self._right_total, self._right_marks, h)
+        # 두 칸 구분선(은은하게).
+        p.fillRect(half, 0, 1, h, QColor(0, 0, 0, 90))
+        p.end()
+
+    def _paint_side(self, p: QPainter, x: int, width: int,
+                    total: int, marks: list[LineMark], h: int) -> None:
+        for y, bh, kind in overview_bands(total, marks, h):
+            p.fillRect(x, y, width, bh, QColor(DIFF_COLORS[f"{kind}_tick"]))
 
 
 # ---------- 패널 ----------
@@ -201,12 +302,22 @@ class DiffView(QWidget):
         super().__init__(parent)
         self.left = DiffPane()
         self.right = DiffPane()
+        self.overview = DiffOverviewBar()
         # 오른쪽은 독립 문서 — 문법 강조용 하이라이터 부착(왼쪽은 공유 문서에 이미 있음).
         self._right_hl = MarkdownHighlighter(self.right.document())
 
+        # 오른쪽 컨테이너 = [개요 띠 | 오른쪽 패널] → 띠가 좌/우 패널 사이(가운데)에 놓인다.
+        # (splitter 핸들은 left↔right_box 하나만 유지되어 깔끔.)
+        right_box = QWidget()
+        rb = QHBoxLayout(right_box)
+        rb.setContentsMargins(0, 0, 0, 0)
+        rb.setSpacing(0)
+        rb.addWidget(self.overview)
+        rb.addWidget(self.right)
+
         self._splitter = QSplitter(Qt.Horizontal)
         self._splitter.addWidget(self.left)
-        self._splitter.addWidget(self.right)
+        self._splitter.addWidget(right_box)
         self._splitter.setSizes([500, 500])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -237,6 +348,8 @@ class DiffView(QWidget):
         # 드롭 → 해당 칸 로드.
         self.left.file_dropped.connect(lambda p: self.load_side("left", p))
         self.right.file_dropped.connect(lambda p: self.load_side("right", p))
+        # 개요 띠 눈금 클릭 → 그 칸을 그 위치(비율)로 스크롤(반대쪽은 동기로 따라옴).
+        self.overview.jump.connect(self._on_overview_jump)
 
     # --- 왼쪽: 탭 문서 공유 ---
     def set_left_document(self, doc) -> None:
@@ -295,9 +408,28 @@ class DiffView(QWidget):
 
     # --- 재계산 / 스크롤 ---
     def _recompute(self) -> None:
-        lm, rm = compute_diff(self.left.toPlainText(), self.right.toPlainText())
+        left_text = self.left.toPlainText()
+        right_text = self.right.toPlainText()
+        # 한쪽이 비어 있으면(진입 직후 = 왼쪽 문서 / 오른쪽 빈칸 등) 비교 대상이 없다.
+        # 그때 "전부 삭제/추가"로 빨강·초록 도배는 정보가 아니라 경보로 읽힌다 → 색을 비운다.
+        if not left_text.strip() or not right_text.strip():
+            self.left.apply_marks(SideMarks())
+            self.right.apply_marks(SideMarks())
+            self.overview.set_marks(0, [], 0, [])
+            return
+        lm, rm = compute_diff(left_text, right_text)
         self.left.apply_marks(lm)
         self.right.apply_marks(rm)
+        # 개요 띠도 갱신 — 마크 인덱스 domain(splitlines)에 맞춰 줄 수를 센다.
+        # (document().blockCount() 은 끝 개행 시 +1 차이로 눈금이 미세하게 어긋남.)
+        self.overview.set_marks(
+            len(left_text.splitlines()), lm.lines,
+            len(right_text.splitlines()), rm.lines)
+
+    def _on_overview_jump(self, side: str, ratio: float) -> None:
+        pane = self.right if side == "right" else self.left
+        sb = pane.verticalScrollBar()
+        sb.setValue(int(sb.maximum() * ratio))
 
     def _sync_scroll(self, src: DiffPane, dst: DiffPane) -> None:
         if self._sync:

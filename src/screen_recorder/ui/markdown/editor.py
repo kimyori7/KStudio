@@ -1,6 +1,8 @@
 """Markdown 코드 에디터 — 줄번호 거터 + 디바운스 변경 알림."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QPainter
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
@@ -24,6 +26,11 @@ class MarkdownEditor(QPlainTextEdit):
     # Ctrl+휠 줌 요청 — +1(확대)/-1(축소). 실제 적용/영속은 MarkdownTab 이 담당
     # (상태 단일 출처). 에디터 자신은 폰트를 직접 바꾸지 않는다.
     zoom_requested = Signal(int)
+    # .md/.markdown 파일을 편집기에 드롭 → "새 문서로 열기" 요청(경로). 실제 열기/등록은
+    # MarkdownTab→main_window 가 담당. (기본 QPlainTextEdit 는 파일 URL 을 경로 텍스트로
+    # 삽입해버리므로 문서 파일 드롭만 가로채 신호로 올린다. 그 외 드롭은 기본 동작 유지.)
+    file_open_requested = Signal(object)   # Path
+    _MD_SUFFIXES = (".md", ".markdown")
     _DEBOUNCE_MS = 300
     _MIN_PT = 8
     _MAX_PT = 32
@@ -62,6 +69,39 @@ class MarkdownEditor(QPlainTextEdit):
             lambda: self.content_changed.emit(self.toPlainText())
         )
         self.textChanged.connect(self._debounce.start)
+
+    # --- 파일 드롭: .md 만 "열기" 신호로 가로챔 (그 외는 기본 텍스트 드롭 동작) ---
+    @staticmethod
+    def _dropped_markdown(mime) -> "Path | None":
+        if not mime.hasUrls():
+            return None
+        for u in mime.urls():
+            if not u.isLocalFile():
+                continue
+            p = Path(u.toLocalFile())
+            if p.is_file() and p.suffix.lower() in MarkdownEditor._MD_SUFFIXES:
+                return p
+        return None
+
+    def dragEnterEvent(self, e) -> None:  # type: ignore[override]
+        if self._dropped_markdown(e.mimeData()) is not None:
+            e.acceptProposedAction()
+        else:
+            super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e) -> None:  # type: ignore[override]
+        if self._dropped_markdown(e.mimeData()) is not None:
+            e.acceptProposedAction()
+        else:
+            super().dragMoveEvent(e)
+
+    def dropEvent(self, e) -> None:  # type: ignore[override]
+        p = self._dropped_markdown(e.mimeData())
+        if p is not None:
+            self.file_open_requested.emit(p)
+            e.acceptProposedAction()
+            return
+        super().dropEvent(e)
 
     # --- 폰트 크기 ---
     def set_font_point_size(self, pt: int) -> None:

@@ -49,6 +49,12 @@ class MarkdownTab(QWidget):
     save_state_changed = Signal()
     # 폰트 크기 변경 알림 — (편집기 pt, 미리보기 zoom). main_window 가 받아 영속(디바운스).
     font_settings_changed = Signal(int, float)
+    # 드래그-드롭으로 본 파일을 라이브러리에 등록 요청 — DIFF 칸 채움(경로). main_window 가
+    # path 중복 제거 후 DOCUMENT entry 추가.
+    diff_doc_loaded = Signal(object)        # Path
+    # 편집기에 .md 드롭 → 새 문서 탭으로 열기 요청. main_window 가 _open_markdown_path 로
+    # (열기 + 라이브러리 등록).
+    open_document_requested = Signal(object)  # Path
 
     # 폰트 크기 한계/기본값 — 편집기는 포인트, 미리보기는 배율.
     EDITOR_MIN_PT = 8
@@ -78,6 +84,8 @@ class MarkdownTab(QWidget):
 
         self._dirty = False
         self.editor = MarkdownEditor()
+        # 편집기에 .md 드롭 → 새 문서로 열기 요청을 위로 전달.
+        self.editor.file_open_requested.connect(self.open_document_requested.emit)
         self._highlighter = MarkdownHighlighter(self.editor.document())
         self.preview = MarkdownPreview()
 
@@ -343,11 +351,16 @@ class MarkdownTab(QWidget):
             self._diff_view.load_side(side, Path(fn))
 
     def _on_diff_pane_filled(self, side: str, path) -> None:
-        """왼쪽(=탭 문서)이 파일로 채워지면 빈 탭이 그 파일이 된다 — saved_path 연결."""
+        """왼쪽(=탭 문서)이 파일로 채워지면 빈 탭이 그 파일이 된다 — saved_path 연결.
+
+        어느 칸이든 파일로 채워졌으면(드롭/파일창) 라이브러리 등록을 요청한다 — 라이브러리
+        클릭으로 온 파일은 main_window 가 path 로 중복 제거하므로 안전.
+        """
         if side == "left":
             self._saved_path = Path(path)
             self._dirty = False
             self.save_state_changed.emit()
+        self.diff_doc_loaded.emit(Path(path))
 
     # --- 폰트 크기 ---
     def _make_font_group(self, label: str, on_minus, on_plus) -> QWidget:

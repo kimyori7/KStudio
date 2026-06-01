@@ -3170,8 +3170,30 @@ class MainWindow(QMainWindow):
         self.mode_controller.set_mode(AppMode.DOCUMENT)
 
     def _wire_markdown_tab(self, tab) -> None:
-        """새 MarkdownTab 의 폰트 변경을 settings 영속에 연결."""
+        """새 MarkdownTab 의 폰트 변경 + 드래그-드롭 라이브러리 등록을 연결."""
         tab.font_settings_changed.connect(self._on_markdown_font_changed)
+        # DIFF 칸에 올린 파일 → 라이브러리 등록(path 중복 제거).
+        tab.diff_doc_loaded.connect(self._register_dropped_document)
+        # 편집기에 .md 드롭 → 새 문서 탭으로 열기 + 등록(_open_markdown_path 가 둘 다).
+        tab.open_document_requested.connect(
+            lambda p: self._open_markdown_path(Path(p))
+        )
+
+    def _register_dropped_document(self, path) -> None:
+        """드롭/파일창으로 본 .md 를 라이브러리에 DOCUMENT 로 등록.
+
+        이미 같은 path 가 있으면 건너뛴다. 새로 추가했을 때만 라이브러리 dock 를 보여줘
+        사용자가 등록 결과를 확인하게 한다(외부 파일 라이브러리 드롭과 동일 UX).
+        """
+        p = Path(path)
+        if not p.is_file() or self._find_library_entry_for_path(p) is not None:
+            return
+        self.library_model.add(
+            EntryKind.DOCUMENT, thumbnail=QImage(),
+            source_label="dropped", display_name=p.name, path=p, origin="opened",
+        )
+        if not self.library_dock.isVisible():
+            self.library_dock.show()
 
     def _on_markdown_font_changed(self, editor_pt: int, preview_zoom: float) -> None:
         """문서 폰트 크기 변경 → 메모리 즉시 반영, 디스크 쓰기는 디바운스(400ms).
