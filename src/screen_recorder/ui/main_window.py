@@ -1228,7 +1228,6 @@ class MainWindow(QMainWindow):
         if tab is None:
             return
         from image_editor.operations.autotrim import compute_trim_rect
-        from image_editor.operations.crop import CropCommand
         from .toast import show_toast
         rect = compute_trim_rect(tab.canvas.composite())
         if rect is None:
