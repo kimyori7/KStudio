@@ -130,3 +130,29 @@ def test_magnifier_destroyed_on_deactivate(qtbot):
     assert tool._mag is not None
     canvas.set_tool(None)   # 크롭 도구 비활성 → deactivated
     assert tool._mag is None
+
+
+# --- Task 4: 커서 추종 + 크기 라벨 ---
+
+def test_magnifier_follows_cursor_on_hover(qtbot):
+    from image_editor.tools.crop import CropTool
+    canvas = _canvas(qtbot)
+    tool = CropTool()
+    canvas.set_tool(tool)
+    tool.mouse_move(canvas.scene(), QPointF(30, 25))   # 드래그 아님(hover)
+    assert tool._mag._center == QPoint(30, 25)
+    assert tool._mag._rect_size is None                # 사각형 없음 → 크기 라벨 "—"
+    # show() 가 호출됐는지 확인 — isVisible() 은 부모(캔버스) 미표시 시 False 라
+    # isHidden()(명시적 hide 여부, 부모 무관)으로 검증.
+    assert tool._mag.isHidden() is False
+
+
+def test_magnifier_rect_size_during_draw(qtbot):
+    from image_editor.tools.crop import CropTool
+    canvas = _canvas(qtbot)
+    tool = CropTool()
+    canvas.set_tool(tool)
+    tool.mouse_press(canvas.scene(), QPointF(10, 10))
+    tool.mouse_move(canvas.scene(), QPointF(50, 40))   # 드래그로 사각형 그리는 중
+    assert tool._mag._center == QPoint(50, 40)
+    assert tool._mag._rect_size == QSize(40, 30)

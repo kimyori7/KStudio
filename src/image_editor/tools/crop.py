@@ -286,6 +286,7 @@ class CropTool(Tool):
                     Qt.CrossCursor
                 )
                 self.cursor_requested.emit(shape.value)
+            self._update_magnifier(scene_pos)
             return
         if self._drag_handle is None or not self._has_rect:
             # 새 사각형 그리기 모드
@@ -311,6 +312,8 @@ class CropTool(Tool):
                 new_rect.setHeight(1.0)
             self._overlay.setRect(new_rect)
             self._layout_handles()
+        # 사각형 갱신 후 돋보기(위치 + 크기 라벨) 갱신.
+        self._update_magnifier(scene_pos)
 
     @staticmethod
     def _apply_handle_drag(rect: QRectF, handle: str, dx: float, dy: float) -> QRectF:
