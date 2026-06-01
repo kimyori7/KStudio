@@ -86,18 +86,20 @@ class _TwoLineDelegate(QStyledItemDelegate):
         rect = option.rect.adjusted(self._PADDING, self._PADDING,
                                      -self._PADDING, -self._PADDING)
 
-        # 2. 아이콘.
+        # 2. 아이콘. 썸네일 없는 문서(.md) 항목은 아이콘 칸(48px)을 0 폭으로 접어
+        #    텍스트를 왼쪽 끝에 붙인다 — 빈 썸네일 플레이스홀더 제거.
         icon = index.data(Qt.DecorationRole)
-        icon_w = option.decorationSize.width()
+        has_icon = icon is not None and not icon.isNull()
+        icon_w = option.decorationSize.width() if has_icon else 0
         icon_h = option.decorationSize.height()
         icon_rect = QRect(rect.left(),
                           rect.top() + (rect.height() - icon_h) // 2,
                           icon_w, icon_h)
-        if icon is not None and not icon.isNull():
+        if has_icon:
             icon.paint(painter, icon_rect, Qt.AlignCenter)
 
-        # 3. 텍스트 영역.
-        text_left = icon_rect.right() + self._ICON_TEXT_GAP
+        # 3. 텍스트 영역. 아이콘이 있을 때만 아이콘+gap 만큼 들여쓰고, 없으면 왼쪽 끝.
+        text_left = (icon_rect.right() + self._ICON_TEXT_GAP) if has_icon else rect.left()
         text_rect = QRect(text_left, rect.top(),
                           max(0, rect.right() - text_left), rect.height())
 

@@ -101,6 +101,45 @@ def test_shift_del_emits_delete(qtbot):
     assert blocker.args == [e.id]
 
 
+def test_document_item_text_flush_left_no_thumbnail_placeholder(qtbot):
+    # 회귀: 문서(.md)는 썸네일이 없어 아이콘 칸(48px)이 빈다. _TwoLineDelegate 가 그
+    # 빈 칸을 0폭으로 접어 텍스트를 왼쪽 끝(≈PADDING)에 붙여야 한다. 접지 않으면
+    # 텍스트가 ~57px 밀린 빈 플레이스홀더가 생긴다(사용자 보고).
+    from PySide6.QtGui import QColor
+    m = LibraryModel()
+    # 썸네일 있는 이미지(아이콘 칸 유지) + 썸네일 없는 문서(아이콘 칸 접힘) 대비.
+    thumb = QImage(48, 32, QImage.Format_RGB32)
+    thumb.fill(QColor("#c0392b"))
+    img_e = m.add(EntryKind.SCREENSHOT, thumbnail=thumb, source_label="region",
+                  display_name="shot.png")
+    doc_e = m.add(EntryKind.DOCUMENT, thumbnail=QImage(), source_label="d",
+                  display_name="문서.md")
+    p = LibraryPanel(m)
+    qtbot.addWidget(p)
+    p.resize(240, 200)
+    p.show()
+    qtbot.waitExposed(p)
+
+    def _content_left(item):
+        rect = p.list_widget.visualItemRect(item)
+        image = p.list_widget.viewport().grab().toImage()
+        bg = image.pixelColor(rect.left() + 2, rect.top() + 2)
+        for xx in range(max(rect.left(), 0), min(rect.right(), image.width() - 1)):
+            for yy in range(max(rect.top(), 0), min(rect.bottom(), image.height() - 1)):
+                c = image.pixelColor(xx, yy)
+                if (abs(c.red()-bg.red()) + abs(c.green()-bg.green())
+                        + abs(c.blue()-bg.blue())) > 50:
+                    return xx - rect.left()
+        return None
+
+    doc_indent = _content_left(p._items_by_id[doc_e.id])
+    img_indent = _content_left(p._items_by_id[img_e.id])
+    # 문서 텍스트는 왼쪽 끝(< 20px). 빈 48px 플레이스홀더가 남아 있으면 ~57px.
+    assert doc_indent is not None and doc_indent < 20, f"doc_indent={doc_indent}"
+    # 이미지는 썸네일(아이콘)이 여전히 왼쪽 끝에 그려진다(회귀 아님 확인).
+    assert img_indent is not None and img_indent < 20, f"img_indent={img_indent}"
+
+
 def test_document_mode_shows_only_documents(qtbot):
     # 문서 모드에선 이미지/영상은 숨고 DOCUMENT 항목만 보여야 함 (문서 라이브러리 통합).
     from screen_recorder.ui.mode_controller import AppMode, ModeController
