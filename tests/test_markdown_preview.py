@@ -85,6 +85,15 @@ def test_base_css_loads_nonempty():
     assert "body" in css and "color" in css
 
 
+def test_base_css_has_webkit_scrollbar_pill():
+    # 미리보기(Chromium)는 Qt QSS 가 안 닿아 style.css 의 ::-webkit-scrollbar 로 앱 pill 을
+    # 맞춘다. 이 규칙이 주입되는 base CSS 에 실려야(loadFinished 에서 inject) 미리보기
+    # 스크롤바도 에디터/라이브러리와 같은 모양이 된다.
+    from screen_recorder.ui.markdown.preview import load_base_css
+    css = load_base_css()
+    assert "::-webkit-scrollbar" in css and "::-webkit-scrollbar-thumb" in css
+
+
 def test_template_has_no_dead_stylesheet_link():
     # style.css 는 JS 주입으로 일원화 — template 의 <link> 는 제거돼야 함.
     from screen_recorder.ui.markdown.preview import _ASSETS

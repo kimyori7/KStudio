@@ -22,3 +22,13 @@ hr { border:none; border-top:1px solid #3a3a3a; }
 #error { color:#f48771; white-space:pre-wrap; font-family:"Consolas",monospace; padding:8px 0; }
 /* 편집기 선택 ↔ 미리보기 동기화 강조 (선택 동기화) */
 .ksel-hl { background:rgba(245,158,11,0.20); border-radius:3px; }
+/* 스크롤바 — 앱 Qt 스크롤바(theme.py)와 같은 미니멀 pill. Chromium 미리보기라 Qt QSS 가
+   안 닿으므로 여기서 ::-webkit-scrollbar 로 동일 모양(반투명 흰 8px, hover 시 또렷)을 맞춘다.
+   본문 스크롤·코드블록(pre overflow:auto) 양쪽에 적용. */
+::-webkit-scrollbar { width:12px; height:12px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.18); border-radius:6px;
+  border:2px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.34); background-clip:padding-box; }
+::-webkit-scrollbar-thumb:active { background:rgba(255,255,255,0.46); background-clip:padding-box; }
+::-webkit-scrollbar-corner { background:transparent; }

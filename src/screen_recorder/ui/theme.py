@@ -259,19 +259,25 @@ QHeaderView::section {{
     font-weight: bold;
 }}
 
-/* ----- 스크롤바 ----- */
+/* ----- 스크롤바 — 미니멀 얇은 pill (반투명 흰색, hover 시 또렷) -----
+   12px 트랙 안에 2px inset 으로 ≈8px 알약형 핸들. 색은 팔레트 독립(반투명 흰색)
+   이라 영상/이미지/문서 어느 모드 다크 배경에서도 일관되게 보인다. */
 QScrollBar:vertical {{
     background: transparent;
-    width: 10px;
-    margin: 2px;
+    width: 12px;
+    margin: 0;
 }}
 QScrollBar::handle:vertical {{
-    background: {p["border"]};
-    min-height: 24px;
-    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.18);
+    min-height: 36px;
+    border-radius: 4px;
+    margin: 2px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {p["button_hover_bg"]};
+    background: rgba(255, 255, 255, 0.34);
+}}
+QScrollBar::handle:vertical:pressed {{
+    background: rgba(255, 255, 255, 0.46);
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
@@ -281,19 +287,29 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 }}
 QScrollBar:horizontal {{
     background: transparent;
-    height: 10px;
-    margin: 2px;
+    height: 12px;
+    margin: 0;
 }}
 QScrollBar::handle:horizontal {{
-    background: {p["border"]};
-    min-width: 24px;
-    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.18);
+    min-width: 36px;
+    border-radius: 4px;
+    margin: 2px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {p["button_hover_bg"]};
+    background: rgba(255, 255, 255, 0.34);
+}}
+QScrollBar::handle:horizontal:pressed {{
+    background: rgba(255, 255, 255, 0.46);
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: transparent;
+}}
+QAbstractScrollArea::corner {{
+    background: transparent;
 }}
 
 /* ----- 툴팁 ----- */
