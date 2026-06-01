@@ -92,3 +92,17 @@ def test_preset_button_emits_request(qtbot):
     qtbot.addWidget(panel)
     with qtbot.waitSignal(panel.preset_dialog_requested, timeout=500):
         panel.preset_btn.click()
+
+
+def test_auto_trim_shortcut_defaults_empty():
+    from screen_recorder.core.settings import EditorShortcuts
+    assert EditorShortcuts().op_auto_trim == ""
+
+
+def test_auto_trim_shortcut_row_present_in_panel(qtbot):
+    from screen_recorder.core.settings import EditorShortcuts, HotkeySettings
+    from screen_recorder.ui.panels.shortcuts_panel import ShortcutsPanel
+    panel = ShortcutsPanel(HotkeySettings(), EditorShortcuts())
+    qtbot.addWidget(panel)
+    # 패널이 op_auto_trim 행(편집 위젯)을 만들었는지
+    assert "op_auto_trim" in panel._editors

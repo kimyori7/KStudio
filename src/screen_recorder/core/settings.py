@@ -187,6 +187,8 @@ class EditorShortcuts:
     # 연산
     op_background_removal: str = "Ctrl+Shift+B"
     op_image_scale: str = "Ctrl+Shift+I"
+    # 테두리 자동 자르기 — 기본 단축키 없음(사용자가 설정에서 지정).
+    op_auto_trim: str = ""
     # 파일
     file_save: str = "Ctrl+S"
     file_save_as: str = "Ctrl+Shift+S"
