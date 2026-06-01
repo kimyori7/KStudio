@@ -60,6 +60,15 @@ _PATHS: dict[str, str] = {
         '<path d="M6 2v14a2 2 0 0 0 2 2h14"/>'
         '<path d="M18 22V8a2 2 0 0 0-2-2H2"/>'
     ),
+    # 테두리 자동 자르기 — 네 모서리 코너 브래킷(감지 프레임) + 안쪽 내용물 박스.
+    # "내용을 자동 감지해 프레임을 딱 맞게 조인다". crop(2 브래킷)과 구분.
+    "auto-trim": (
+        '<path d="M3 8V5a2 2 0 0 1 2-2h3"/>'
+        '<path d="M16 3h3a2 2 0 0 1 2 2v3"/>'
+        '<path d="M21 16v3a2 2 0 0 1-2 2h-3"/>'
+        '<path d="M8 21H5a2 2 0 0 1-2-2v-3"/>'
+        '<rect x="9" y="9" width="6" height="6" rx="1"/>'
+    ),
     "chevron-left": '<path d="m15 18-6-6 6-6"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
     "camera": (
