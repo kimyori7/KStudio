@@ -66,6 +66,7 @@ class ToolPalette(QWidget):
         layout.setSpacing(4)
 
         self._buttons: dict[str, QToolButton] = {}
+        self._action_buttons: dict[str, QToolButton] = {}
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
 
@@ -79,6 +80,13 @@ class ToolPalette(QWidget):
             if shortcut:
                 QShortcut(QKeySequence(shortcut), self,
                           activated=lambda t=tid: self._on_clicked(t))
+
+        # 자르기 바로 아래 — 테두리 자동 자르기 (one-shot 액션, 토글 안 됨)
+        layout.addWidget(self._make_action_button(
+            "auto-trim",
+            "테두리 자동 자르기 — 가장자리의 균일한 색 여백을 자동 감지해 내용에 딱 맞게 캔버스를 줄임",
+            "auto_trim",
+        ))
 
         layout.addWidget(self._make_separator())
 
@@ -108,18 +116,9 @@ class ToolPalette(QWidget):
 
         layout.addWidget(self._make_separator())
 
-        # 그룹 3 — 액션 (one-shot)
-        self._action_buttons: dict[str, QToolButton] = {}
+        # 그룹 4 — 액션 (one-shot)
         for aid, icon_name, tip, _shortcut in _ACTIONS:
-            btn = QToolButton()
-            btn.setIcon(load_icon(icon_name, size=_PALETTE_ICON_PX))
-            btn.setIconSize(QSize(_PALETTE_ICON_PX, _PALETTE_ICON_PX))
-            btn.setCheckable(False)
-            btn.setFixedSize(40, 40)
-            btn.setToolTip(tip)
-            btn.clicked.connect(lambda _chk=False, a=aid: self.action_triggered.emit(a))
-            self._action_buttons[aid] = btn
-            layout.addWidget(btn)
+            layout.addWidget(self._make_action_button(icon_name, tip, aid))
 
         layout.addStretch(1)
         self._current = "select"
@@ -144,6 +143,18 @@ class ToolPalette(QWidget):
         btn.setAutoExclusive(True)
         btn.setFixedSize(40, 40)
         btn.setToolTip(tip)
+        return btn
+
+    def _make_action_button(self, icon_name: str, tip: str, aid: str) -> QToolButton:
+        """one-shot 액션 버튼 — 토글 안 됨, 클릭 시 action_triggered(aid) 발화."""
+        btn = QToolButton()
+        btn.setIcon(load_icon(icon_name, size=_PALETTE_ICON_PX))
+        btn.setIconSize(QSize(_PALETTE_ICON_PX, _PALETTE_ICON_PX))
+        btn.setCheckable(False)
+        btn.setFixedSize(40, 40)
+        btn.setToolTip(tip)
+        btn.clicked.connect(lambda _chk=False, a=aid: self.action_triggered.emit(a))
+        self._action_buttons[aid] = btn
         return btn
 
     def _make_separator(self) -> QFrame:
