@@ -38,6 +38,32 @@ def test_clicking_item_emits_open(qtbot):
     assert blocker.args == [e.id]
 
 
+def test_document_item_drag_carries_file_url(qtbot, tmp_path):
+    # 비교(DIFF) 뷰로 드래그하려면 항목 드래그 시 mimeData 에 파일 URL 이 실려야 한다.
+    from pathlib import Path
+    p = Path(tmp_path) / "doc.md"
+    p.write_text("x", encoding="utf-8")
+    m = LibraryModel()
+    e = m.add(EntryKind.DOCUMENT, thumbnail=QImage(), source_label="d",
+              display_name="doc", path=p)
+    panel = LibraryPanel(m)
+    qtbot.addWidget(panel)
+    item = panel._items_by_id[e.id]
+    mime = panel._mime_for_item(item)
+    assert mime is not None and mime.hasUrls()
+    assert mime.urls()[0].toLocalFile().endswith("doc.md")
+
+
+def test_pathless_item_has_no_drag_mime(qtbot):
+    # 경로 없는 항목(예: 미저장 캡처)은 드래그 mime 가 없어 드래그되지 않는다.
+    m = LibraryModel()
+    e = m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    panel = LibraryPanel(m)
+    qtbot.addWidget(panel)
+    item = panel._items_by_id[e.id]
+    assert panel._mime_for_item(item) is None
+
+
 def _send_key(qtbot, widget, key, modifier=None):
     from PySide6.QtCore import QEvent, Qt
     from PySide6.QtGui import QKeyEvent

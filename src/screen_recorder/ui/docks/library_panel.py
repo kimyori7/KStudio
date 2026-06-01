@@ -4,15 +4,41 @@ from typing import Optional
 
 from pathlib import Path as _Path
 
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent, QRect
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent, QRect, QMimeData, QUrl
 from PySide6.QtGui import (
-    QPixmap, QIcon, QAction, QPainter, QFont, QFontMetrics, QColor,
+    QPixmap, QIcon, QAction, QPainter, QFont, QFontMetrics, QColor, QDrag,
     QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent,
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QMenu,
     QProxyStyle, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QApplication,
 )
+
+
+class _DragOutListWidget(QListWidget):
+    """라이브러리 항목을 파일 URL 로 드래그아웃(비교 뷰 등 외부 칸으로). 외부→라이브러리
+    드롭은 부모 LibraryPanel 이 처리(여기선 드래그 *시작*만 담당)."""
+
+    def __init__(self, path_for_item) -> None:
+        super().__init__()
+        self._path_for_item = path_for_item
+        self.setDragEnabled(True)
+
+    def mime_for_item(self, item) -> "QMimeData | None":
+        p = self._path_for_item(item) if item is not None else None
+        if p is None:
+            return None
+        m = QMimeData()
+        m.setUrls([QUrl.fromLocalFile(str(p))])
+        return m
+
+    def startDrag(self, supportedActions) -> None:  # type: ignore[override]
+        mime = self.mime_for_item(self.currentItem())
+        if mime is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.CopyAction)
 
 
 class _FastTooltipStyle(QProxyStyle):
@@ -165,7 +191,7 @@ class LibraryPanel(QWidget):
         title.setStyleSheet("color: #A0A4AB; font-weight: bold; padding: 2px 4px;")
         layout.addWidget(title)
 
-        self.list_widget = QListWidget()
+        self.list_widget = _DragOutListWidget(self._path_for_item)
         self.list_widget.setIconSize(QSize(48, 32))
         # PySide6 — delegate Python 참조 유지 필수. 인스턴스 속성으로 보관해야 GC 안 됨.
         self._item_delegate = _TwoLineDelegate(self.list_widget)
@@ -315,6 +341,23 @@ class LibraryPanel(QWidget):
         finally:
             self.list_widget.blockSignals(False)
 
+    # ---------- 항목 드래그아웃 (비교 뷰 등 외부 칸으로) ----------
+    def _path_for_item(self, item) -> "Optional[_Path]":
+        """list item → 그 항목의 파일 경로(없으면 None — 드래그 안 함)."""
+        if item is None:
+            return None
+        eid = item.data(Qt.UserRole)
+        if eid is None:
+            return None
+        entry = self._model.get(int(eid))
+        if entry is None or entry.path is None:
+            return None
+        return entry.path
+
+    def _mime_for_item(self, item) -> "Optional[QMimeData]":
+        """드래그 mime(파일 URL) 빌더 — list_widget 에 위임(테스트/외부용)."""
+        return self.list_widget.mime_for_item(item)
+
     # ---------- UI → 외부 ----------
     # ---------- 외부 파일 드래그-드롭 (라이브러리에만 추가) ----------
     def _accepted_paths(self, mime) -> list[str]:
@@ -343,15 +386,19 @@ class LibraryPanel(QWidget):
         self._drop_hint.raise_()
         self._drop_hint.show()
 
+    def _is_own_drag(self, event) -> bool:
+        # 자기 항목을 드래그아웃하다 패널 위로 돌아온 경우 — 라이브러리에 재추가하지 않는다.
+        return event.source() is self.list_widget
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if self._accepted_paths(event.mimeData()):
+        if not self._is_own_drag(event) and self._accepted_paths(event.mimeData()):
             event.acceptProposedAction()
             self._show_drop_hint(event.position().toPoint())
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        if self._accepted_paths(event.mimeData()):
+        if not self._is_own_drag(event) and self._accepted_paths(event.mimeData()):
             event.acceptProposedAction()
             self._show_drop_hint(event.position().toPoint())
         else:
@@ -363,6 +410,9 @@ class LibraryPanel(QWidget):
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._drop_hint.hide()
+        if self._is_own_drag(event):
+            event.ignore()
+            return
         paths = self._accepted_paths(event.mimeData())
         if not paths:
             event.ignore()

@@ -32,6 +32,7 @@ class ViewMode(Enum):
     EDITOR = "editor"
     PREVIEW = "preview"
     SPLIT = "split"
+    DIFF = "diff"
 
 
 def _read_text_with_fallback(path: Path) -> str:
@@ -87,7 +88,8 @@ class MarkdownTab(QWidget):
         self._buttons: dict[ViewMode, QPushButton] = {}
         for mode, label in ((ViewMode.EDITOR, "✎ 편집"),
                             (ViewMode.PREVIEW, "👁 미리보기"),
-                            (ViewMode.SPLIT, "⊟ 나란히")):
+                            (ViewMode.SPLIT, "⊟ 나란히"),
+                            (ViewMode.DIFF, "⇄ 비교")):
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.clicked.connect(lambda _=False, m=mode: self.set_view_mode(m))
@@ -169,6 +171,10 @@ class MarkdownTab(QWidget):
         self.editor.selectionChanged.connect(self._on_editor_selection)
         self.preview.selection_changed.connect(self._on_preview_selection)
 
+        # 비교(DIFF) 뷰 — lazy 생성(처음 DIFF 진입 시). 모드 전환에도 살아 있어 오른쪽 유지.
+        self._view_mode = ViewMode.SPLIT
+        self._diff_view = None
+
         # 저장된 초기 크기 적용 (영속 emit 없이 — 생성 시 디스크 쓰기 방지).
         self.editor.set_font_point_size(self._editor_pt)
         self.preview.set_zoom(self._preview_zoom)
@@ -210,7 +216,9 @@ class MarkdownTab(QWidget):
         return self._saved_path
 
     def needs_save(self) -> bool:
-        return (self._saved_path is None) or self._dirty
+        # 왼쪽(탭 문서) 미저장 OR 비교(DIFF) 오른쪽 칸 미저장 → 탭 ● 마커.
+        right_dirty = self._diff_view is not None and self._diff_view.right_dirty
+        return (self._saved_path is None) or self._dirty or right_dirty
 
     def mark_saved(self, path: Path) -> None:
         self._saved_path = path
@@ -224,9 +232,32 @@ class MarkdownTab(QWidget):
 
     # --- 저장 ---
     def save(self) -> SaveResult:
+        # 비교 모드에서 오른쪽 칸에 포커스가 있으면 그 칸을 자기 파일로 저장(포커스 칸 저장 규칙).
+        if (self._view_mode is ViewMode.DIFF and self._diff_view is not None
+                and self._diff_view.right_has_focus()):
+            return self._save_diff_right()
         if self._saved_path is None:
             return self.save_as()
         return SaveResult.SAVED if self._write_to(self._saved_path) else SaveResult.FAILED
+
+    def _save_diff_right(self) -> SaveResult:
+        """비교 뷰 오른쪽 칸을 자기 파일로 저장(경로 없으면 Save As)."""
+        dv = self._diff_view
+        path = dv.right_path
+        if path is None:
+            fn, _ = QFileDialog.getSaveFileName(
+                self, "오른쪽 문서 저장", "", "Markdown (*.md *.markdown)"
+            )
+            if not fn:
+                return SaveResult.CANCELLED
+            path = Path(fn)
+        try:
+            path.write_text(dv.right_text(), encoding="utf-8")
+        except OSError as e:
+            _log.error("DIFF 오른쪽 저장 실패: %s", e)
+            return SaveResult.FAILED
+        dv.mark_right_saved(path)
+        return SaveResult.SAVED
 
     def save_as(self, path: Path | None = None) -> SaveResult:
         if path is None:
@@ -250,7 +281,19 @@ class MarkdownTab(QWidget):
 
     # --- 뷰모드 ---
     def set_view_mode(self, mode: ViewMode) -> None:
+        self._view_mode = mode
         self._buttons[mode].setChecked(True)
+        # 비교(DIFF) 모드 — 편집/미리보기 splitter 를 숨기고 DiffView 만 표시.
+        if mode is ViewMode.DIFF:
+            dv = self._ensure_diff_view()
+            self._splitter.setVisible(False)
+            dv.setVisible(True)
+            self._editor_font_group.setVisible(False)
+            self._preview_font_group.setVisible(False)
+            return
+        if self._diff_view is not None:
+            self._diff_view.setVisible(False)
+        self._splitter.setVisible(True)
         edit_on = mode in (ViewMode.EDITOR, ViewMode.SPLIT)
         preview_on = mode in (ViewMode.PREVIEW, ViewMode.SPLIT)
         self.editor.setVisible(edit_on)
@@ -267,6 +310,44 @@ class MarkdownTab(QWidget):
             if rng is not None:
                 self._apply_editor_selection(*rng)
                 self.editor.setFocus()
+
+    # --- 비교(DIFF) 뷰 ---
+    def _ensure_diff_view(self):
+        """DiffView 를 lazy 생성하고 레이아웃에 추가(처음 숨김). 왼쪽은 탭 문서 공유."""
+        if self._diff_view is None:
+            from .markdown.diff_view import DiffView
+            dv = DiffView()
+            dv.set_left_document(self.editor.document())   # 왼쪽 = 현재 문서(공유)
+            dv.right_dirty_changed.connect(self.save_state_changed.emit)
+            dv.request_fill.connect(self._on_diff_request_fill)
+            dv.pane_filled.connect(self._on_diff_pane_filled)
+            dv.hide()
+            self.layout().addWidget(dv, stretch=1)
+            self._diff_view = dv
+        return self._diff_view
+
+    def diff_has_empty_pane(self) -> bool:
+        """라이브러리 클릭 라우팅용 — DIFF 모드이고 채울 빈 칸이 있는가."""
+        return (self._view_mode is ViewMode.DIFF and self._diff_view is not None
+                and self._diff_view.has_empty_pane())
+
+    def fill_diff_next(self, path: Path) -> None:
+        self._ensure_diff_view().fill_next(Path(path))
+
+    def _on_diff_request_fill(self, side: str) -> None:
+        """빈 칸 클릭 → 파일 선택창에서 고른 .md 를 그 칸에 로드."""
+        fn, _ = QFileDialog.getOpenFileName(
+            self, "비교할 문서 선택", "", "Markdown (*.md *.markdown)"
+        )
+        if fn and self._diff_view is not None:
+            self._diff_view.load_side(side, Path(fn))
+
+    def _on_diff_pane_filled(self, side: str, path) -> None:
+        """왼쪽(=탭 문서)이 파일로 채워지면 빈 탭이 그 파일이 된다 — saved_path 연결."""
+        if side == "left":
+            self._saved_path = Path(path)
+            self._dirty = False
+            self.save_state_changed.emit()
 
     # --- 폰트 크기 ---
     def _make_font_group(self, label: str, on_minus, on_plus) -> QWidget:

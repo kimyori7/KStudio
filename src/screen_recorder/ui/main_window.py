@@ -1593,11 +1593,20 @@ class MainWindow(QMainWindow):
         return placeholder
 
     def _open_entry(self, entry_id: int) -> None:
-        if self.tab_area.find_index_by_entry(entry_id) >= 0:
-            self.tab_area.focus_entry(entry_id)
-            return
         entry = self.library_model.get(entry_id)
         if entry is None:
+            return
+        # 비교(DIFF) 채움 라우팅 — 활성 탭이 DIFF 모드이고 빈 칸이 있으면, 탭을 열지 않고
+        # 클릭한 문서를 다음 빈 칸(왼→오)에 채운다. (드래그/파일배치와 함께 채움 4경로 중 하나.)
+        from .markdown_tab import MarkdownTab
+        cur = self.tab_area.currentWidget()
+        if (entry.kind is EntryKind.DOCUMENT and entry.path is not None
+                and entry.path.exists() and isinstance(cur, MarkdownTab)
+                and cur.diff_has_empty_pane()):
+            cur.fill_diff_next(entry.path)
+            return
+        if self.tab_area.find_index_by_entry(entry_id) >= 0:
+            self.tab_area.focus_entry(entry_id)
             return
         if entry.kind is EntryKind.DOCUMENT:
             # 문서는 디스크에서 다시 로드 (탭 텍스트는 entry 에 보관하지 않음).

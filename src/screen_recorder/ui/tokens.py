@@ -91,3 +91,14 @@ PALETTES: dict[str, dict[str, str]] = {
     "image": IMAGE_PALETTE,
     "document": DOCUMENT_PALETTE,
 }
+
+
+# 문서 DIFF(비교) 뷰 색 — 다크 배경에 은은하게(글자색은 유지). DIFF 는 문서 모드 전용이라
+# QSS 에 주입하지 않고 Python extraSelections 에서만 쓴다(모든 팔레트에 키 강제 회피).
+# 줄 마크는 줄 전체 배경(옅게), char 는 변경 글자만 더 진하게(줄 위에 덧칠).
+DIFF_COLORS: dict[str, str] = {
+    "added_line":   "#16361F",   # 초록 옅게 — 추가된 줄(오른쪽)
+    "deleted_line": "#3A1D1F",   # 빨강 옅게 — 삭제된 줄(왼쪽)
+    "changed_line": "#3A330E",   # 호박 옅게 — 변경된 줄(양쪽)
+    "char":         "#8A6A12",   # 변경 글자 강조 — 변경 줄(amber) 위에서 또렷이 보이게 더 밝게
+}
