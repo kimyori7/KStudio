@@ -1,9 +1,11 @@
 """왼쪽 수직 도구 팔레트.
 
-세 그룹:
-1. 주석 도구 — Select / Rect / Arrow / Text (mutually exclusive)
-2. 마스크 도구 — Magic Wand / Mask Brush (mutually exclusive with group 1)
-3. 액션 — 자동 누끼 (one-shot, 도구 아님)
+네 그룹:
+1. 주석 도구 — Select / 영역 선택 / Rect / Arrow / Text / Crop (mutually exclusive)
+   └ 인라인 액션: 테두리 자동 자르기(auto_trim) — 자르기 바로 아래, one-shot
+2. 페인트 도구 — Brush / Eraser
+3. 마스크 도구 — Magic Wand / Mask Brush
+4. 액션 — 자동 누끼 / 이미지 생성 (one-shot, 도구 아님)
 """
 from __future__ import annotations
 
