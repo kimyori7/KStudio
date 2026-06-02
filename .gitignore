@@ -41,6 +41,11 @@ bin/
 # Brainstorming visual companion (mockups + state)
 .superpowers/
 
+# Diagnostic PNG outputs (regenerable by scripts/diagnose_*.py — tools tracked, outputs not)
+/diag_*.png
+/diag_crop_magnifier/
+/diag_diff_colors/
+
 
 # Claude Code local settings
 .claude/

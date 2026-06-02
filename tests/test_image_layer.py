@@ -58,3 +58,22 @@ def test_opacity_affects_render(qtbot):
     out = layer.render(QSize(10, 10))
     a = qAlpha(out.pixel(5, 5))
     assert 100 < a < 160  # 대략 절반
+
+
+def test_high_dpr_image_normalized_to_full_resolution(qtbot):
+    """HiDPI 스크린샷(devicePixelRatio>1)은 device-pixel 전체 해상도로 정규화돼야 한다.
+
+    QScreen.grabWindow().toImage() 는 150% 디스플레이에서 DPR=1.5 인 QImage 를
+    돌려준다. 에디터의 모든 좌표(sceneRect, 삭제 fillRect, composite)는 device px
+    == scene 단위를 가정하므로, 레이어 픽스맵은 항상 DPR 1.0 이어야 그래픽스
+    아이템이 캔버스를 꽉 채우고 삭제 영역이 선택과 일치한다.
+    """
+    from image_editor.layers.image_layer import ImageLayer
+    pix = _solid(60, 40, 0xFFFF0000)
+    pix.setDevicePixelRatio(1.5)
+    layer = ImageLayer(id=1, name="x", pixmap=pix)
+    # 불변식: 픽스맵 DPR 은 1.0 (해상도 손실 없이 device px 그대로 편집)
+    assert layer.pixmap.devicePixelRatio() == 1.0
+    assert layer.pixmap.size() == QSize(60, 40)
+    # 합성 결과도 DPR 1.0 — composed_pixmap 이 캔버스에 1:1 로 매핑된다
+    assert layer.composed_pixmap().devicePixelRatio() == 1.0

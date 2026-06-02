@@ -69,16 +69,26 @@ class MagicWandTool(Tool):
             return
         lx = int(scene_pos.x() - layer.offset.x())
         ly = int(scene_pos.y() - layer.offset.y())
+        old_mask = layer.mask
+        # 크롭은 lazy(pixmap 원본 유지, offset/canvas_size 만 변경)이므로 flood-fill 을
+        # 현재 캔버스 창 안으로 제한한다 — 잘려나간 테두리로 선택이 번지지 않도록.
+        cs = self._stack.canvas_size
+        bounds = QRect(
+            -int(layer.offset.x()), -int(layer.offset.y()), cs.width(), cs.height()
+        )
         new_mask, affected = compute_magic_wand_mask_with_rect(
-            layer.pixmap, layer.mask, lx, ly, self.tolerance,
+            layer.pixmap, old_mask, lx, ly, self.tolerance, bounds=bounds,
         )
         if affected is None:
             # 클릭한 픽셀에서 아무 영역도 못 잡음 — 기존 보류는 유지.
             return
         self._pending_layer_id = layer.id
+        # 확정(commit) 시엔 누적 마스크(new_mask) 를 그대로 적용 — 이전에 지운 영역이
+        # 유지돼야 하므로. 단, 미리보기 오버레이는 이번 클릭으로 '새로' 선택된 픽셀만
+        # 보여 줘야 한다 (이미 지운 영역이 새 선택에 함께 빨갛게 뜨던 버그 수정).
         self._pending_new_mask = new_mask
         self._pending_affected_local = affected
-        self._render_overlay(layer, new_mask)
+        self._render_overlay(layer, _delta_preview_mask(old_mask, new_mask))
         self._emitter.preview_changed.emit(layer.id, QRect(affected))
 
     def key_enter(self, scene: QGraphicsScene) -> None:
@@ -111,7 +121,7 @@ class MagicWandTool(Tool):
         self._emitter.cancelled.emit()
 
     # --- 내부 ---
-    def _render_overlay(self, layer: ImageLayer, new_mask: QImage) -> None:
+    def _render_overlay(self, layer: ImageLayer, preview_mask: QImage) -> None:
         if self._scene is None:
             return
         if self._overlay_item is None:
@@ -119,7 +129,7 @@ class MagicWandTool(Tool):
             self._overlay_item.setZValue(900_000)
             self._overlay_item.setAcceptedMouseButtons(Qt.NoButton)
             self._scene.addItem(self._overlay_item)
-        preview = _build_preview_image(new_mask)
+        preview = _build_preview_image(preview_mask)
         self._overlay_item.setPixmap(QPixmap.fromImage(preview))
         self._overlay_item.setPos(layer.offset)
 
@@ -135,6 +145,37 @@ class MagicWandTool(Tool):
         self._pending_layer_id = None
         if had_pending and emit_preview_change and layer_id is not None:
             self._emitter.preview_changed.emit(layer_id, None)
+
+
+def _delta_preview_mask(old_mask: Optional[QImage], new_mask: QImage) -> QImage:
+    """이번 클릭으로 '새로' 선택된 픽셀만 0(=하이라이트) 으로 둔 미리보기용 마스크.
+
+    new_mask 는 기존 마스크 위에 누적된 결과(0=선택). 그 중 기존 마스크에서 이미
+    0 이던 픽셀(=이미 지운 영역)은 255 로 되돌려, 미리보기 오버레이가 이번에 새로
+    선택된 영역만 빨갛게 칠하도록 한다. 마스크 자체(commit 대상)는 누적이 맞고,
+    오버레이만 delta 로 보여 주는 것 — 이미 지운 영역이 새 선택에 함께 표시되던 버그 수정.
+
+    old_mask 가 None 이거나 크기가 다르면 누적 분리가 불가능하므로 new_mask 전체를
+    미리보기로 사용 (첫 클릭은 정확히 이번 선택 = 전체).
+    """
+    nm = new_mask.convertToFormat(QImage.Format_Grayscale8)
+    w, h = nm.width(), nm.height()
+    bpl = nm.bytesPerLine()
+    new_arr = np.frombuffer(bytes(nm.constBits())[: bpl * h], dtype=np.uint8).reshape(
+        h, bpl
+    )[:, :w]
+    if old_mask is None or old_mask.size() != nm.size():
+        return nm.copy()
+    om = old_mask.convertToFormat(QImage.Format_Grayscale8)
+    obpl = om.bytesPerLine()
+    old_arr = np.frombuffer(bytes(om.constBits())[: obpl * h], dtype=np.uint8).reshape(
+        h, obpl
+    )[:, :w]
+    delta = new_arr.copy()
+    # 기존에 이미 0(지움) 이던 픽셀은 미리보기에서 제외 → 255.
+    delta[(new_arr == 0) & (old_arr == 0)] = 255
+    out = QImage(delta.tobytes(), w, h, w, QImage.Format_Grayscale8)
+    return out.copy()
 
 
 def _build_preview_image(new_mask: QImage) -> QImage:

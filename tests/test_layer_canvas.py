@@ -146,6 +146,27 @@ def test_zoom_at_factor_scales_view(qtbot):
     assert abs(canvas.zoom_factor() - 2.0) < 0.001
 
 
+def test_high_dpr_image_fills_canvas(qtbot):
+    """HiDPI 스크린샷(DPR>1)을 캔버스 크기와 같은 device-pixel 로 로드하면
+    그래픽스 아이템이 sceneRect 를 꽉 채워야 한다.
+
+    DPR 정규화가 없으면 QGraphicsPixmapItem 이 1/DPR 로 축소돼 캔버스 우·하단에
+    빈 체커가 드러나고(이미지가 캔버스를 못 채움), 삭제 영역도 어긋난다.
+    """
+    from image_editor.layer_model import LayerStack
+    from image_editor.layers.image_layer import ImageLayer
+    from image_editor.canvas import LayerCanvas
+    pix = _solid(60, 40, 0xFFFF0000)
+    pix.setDevicePixelRatio(1.5)
+    stack = LayerStack(QSize(60, 40))
+    canvas = LayerCanvas(stack)
+    qtbot.addWidget(canvas)
+    stack.add_layer(ImageLayer(id=1, name="x", pixmap=pix))
+    item = [i for i in canvas.scene().items() if isinstance(i, QGraphicsPixmapItem)][0]
+    br = item.boundingRect()
+    assert (round(br.width()), round(br.height())) == (60, 40)
+
+
 def test_active_layer_signal_propagated(qtbot):
     from image_editor.layer_model import LayerStack
     from image_editor.canvas import LayerCanvas

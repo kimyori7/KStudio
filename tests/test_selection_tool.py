@@ -90,3 +90,61 @@ def test_overlay_removes_items_when_cleared(qtbot):
     model.clear()
     items = [it for it in canvas.scene().items() if it.zValue() >= 99_999]
     assert items == []
+
+
+def _setup_sized(qtbot, cw, ch):
+    """주어진 캔버스 크기로 캔버스 + selection 모델을 만든다."""
+    from image_editor.layer_model import LayerStack
+    from image_editor.layers.image_layer import ImageLayer
+    from image_editor.canvas import LayerCanvas
+    from image_editor.selection import SelectionModel
+    stack = LayerStack(QSize(cw, ch))
+    stack.add_layer(ImageLayer(id=1, name="bg", pixmap=_solid(cw, ch)))
+    canvas = LayerCanvas(stack)
+    qtbot.addWidget(canvas)
+    model = SelectionModel()
+    canvas.attach_selection(model)
+    return canvas, model, stack
+
+
+def test_selection_clamped_when_canvas_shrinks(qtbot):
+    """캔버스가 줄어들면 기존 selection 도 새 경계 안으로 다시 클램프된다.
+
+    회귀: crop/undo·redo 등으로 canvas_size 가 작아질 때 옛 selection 이
+    이미지 밖으로 삐져나가던 버그.
+    """
+    canvas, model, stack = _setup_sized(qtbot, 200, 140)
+    model.set_rect(QRect(20, 20, 160, 100))   # 큰 캔버스 안 — (180,120) 까지
+    stack.set_canvas_size(QSize(100, 80))      # 캔버스 축소
+    r = model.rect()
+    assert r is not None
+    # selection 의 우/하단이 새 경계를 넘지 않아야 한다.
+    assert r.right() <= 99 and r.bottom() <= 79, f"out of bounds: {r}"
+    # 좌상단은 보존, 새 경계와의 교집합으로 클램프.
+    assert r.x() == 20 and r.y() == 20
+    assert r.width() == 80 and r.height() == 60
+
+
+def test_selection_cleared_when_canvas_shrinks_past_it(qtbot):
+    """축소된 캔버스와 더 이상 겹치지 않는 selection 은 해제된다."""
+    canvas, model, stack = _setup_sized(qtbot, 200, 140)
+    model.set_rect(QRect(150, 110, 40, 20))   # 우하단 구석
+    stack.set_canvas_size(QSize(100, 80))      # 그 영역이 통째로 잘려나감
+    assert model.has_selection() is False
+
+
+def test_selection_clamped_after_crop_command_shrinks_canvas(qtbot):
+    """사용자가 보고한 실제 트리거: crop(undo→선택→redo 등)으로 캔버스가
+    선택보다 작아지면 선택이 새 경계 안으로 클램프된다.
+
+    crop 도구 시작은 선택을 비우지만, undo 후 다시 선택하고 redo 하면 선택이
+    재크롭된 캔버스를 넘어선다 — CropCommand.redo 가 set_canvas_size 를 부르므로
+    canvas 의 재클램프가 작동해야 한다.
+    """
+    from image_editor.operations.crop import CropCommand
+    canvas, model, stack = _setup_sized(qtbot, 200, 140)
+    model.set_rect(QRect(0, 0, 200, 140))      # 큰 캔버스 전체 선택
+    CropCommand(stack, QRect(0, 0, 100, 80)).redo()   # 캔버스 100×80 으로 축소
+    r = model.rect()
+    assert r is not None
+    assert r.right() <= 99 and r.bottom() <= 79, f"crop 후 out of bounds: {r}"

@@ -106,6 +106,29 @@ class LayerCanvas(QGraphicsView):
     def _sync_scene_rect(self) -> None:
         s = self._stack.canvas_size
         self._scene.setSceneRect(QRectF(0, 0, s.width(), s.height()))
+        self._clamp_selection_to_canvas()
+
+    def _clamp_selection_to_canvas(self) -> None:
+        """캔버스 크기가 바뀌면 기존 selection 을 새 경계 안으로 다시 클램프.
+
+        crop·undo/redo 등으로 canvas_size 가 작아질 때, set_rect 시점엔 유효했던
+        옛 selection 이 이미지 밖으로 삐져나가는 것을 막는다. 더 이상 캔버스와
+        겹치지 않으면 해제. (attach_selection 전 __init__ 호출에서는 model 이 없음.)
+        """
+        model = getattr(self, "_selection_model", None)
+        if model is None:
+            return
+        rect = model.rect()
+        if rect is None:
+            return
+        s = self._stack.canvas_size
+        clamped = rect.intersected(QRectF(0, 0, s.width(), s.height()).toRect())
+        if clamped == rect:
+            return
+        if clamped.width() <= 0 or clamped.height() <= 0:
+            model.clear()
+        else:
+            model.set_rect(clamped)
 
     def _rebuild_items(self) -> None:
         # 단순 전략: 매번 전체 동기화 (성능 충분, 1차 단순성 우선)

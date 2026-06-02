@@ -21,6 +21,7 @@ def compute_magic_wand_mask(
     start_x: int,
     start_y: int,
     tolerance: int,
+    bounds: Optional[QRect] = None,
 ) -> QImage:
     """클릭 픽셀과 비슷한 색 영역을 BFS 로 찾아 마스크에서 빼기.
 
@@ -28,7 +29,7 @@ def compute_magic_wand_mask(
     영향 영역의 bounding rect 가 필요하면 `compute_magic_wand_mask_with_rect` 사용.
     """
     new_mask, _ = compute_magic_wand_mask_with_rect(
-        pixmap, current_mask, start_x, start_y, tolerance,
+        pixmap, current_mask, start_x, start_y, tolerance, bounds=bounds,
     )
     return new_mask
 
@@ -39,10 +40,16 @@ def compute_magic_wand_mask_with_rect(
     start_x: int,
     start_y: int,
     tolerance: int,
+    bounds: Optional[QRect] = None,
 ) -> tuple[QImage, Optional[QRect]]:
     """`compute_magic_wand_mask` + 영향 픽셀의 bounding rect 반환 (marching ants 용).
 
     rect 는 layer-local 좌표. 영향 픽셀이 없으면 None.
+
+    bounds (layer-local QRect) 를 주면 flood-fill 을 그 영역 안으로 제한한다.
+    크롭은 lazy — pixmap 은 원본 크기 그대로이고 offset/canvas_size 만 바뀌므로, 캔버스
+    밖(잘려나간 테두리) 픽셀이 색으로 연결돼 있어도 선택에 끌려들어오지 않도록 캔버스 창
+    (= QRect(-offset, canvas_size)) 을 bounds 로 넘긴다. None 이면 pixmap 전체가 대상.
     """
     src = pixmap.convertToFormat(QImage.Format_ARGB32)
     w, h = src.width(), src.height()
@@ -73,6 +80,18 @@ def compute_magic_wand_mask_with_rect(
     sr, sg, sb = int(r[start_y, start_x]), int(g[start_y, start_x]), int(b[start_y, start_x])
     tol_sq = max(0, tolerance) ** 2 * 3
     similar = (r - sr) ** 2 + (g - sg) ** 2 + (b - sb) ** 2 <= tol_sq
+
+    if bounds is not None:
+        # 캔버스 창(layer-local) 밖 픽셀은 후보에서 제외 → connected-component 가 캔버스
+        # 경계에서 멈춰 잘려나간 테두리로 번지지 않는다. (pixmap 범위로 클램프해 안전 인덱싱.)
+        x0 = max(0, bounds.left())
+        y0 = max(0, bounds.top())
+        x1 = min(w, bounds.left() + bounds.width())
+        y1 = min(h, bounds.top() + bounds.height())
+        in_bounds = np.zeros((h, w), dtype=bool)
+        if x1 > x0 and y1 > y0:
+            in_bounds[y0:y1, x0:x1] = True
+        similar = similar & in_bounds
 
     # connected-component 라벨링 후 시작 픽셀이 속한 컴포넌트만 추출 — BFS 와 동일
     # 동작이지만 C 구현이라 1080p 가 수십 ms.
@@ -158,8 +177,14 @@ class MagicWandCommand(QUndoCommand):
             return
         layer = self._stack.get_layer(self._layer_id)
         assert isinstance(layer, ImageLayer)
+        # flood-fill 을 현재 캔버스 창(layer-local) 안으로 제한 — 크롭으로 잘려나간
+        # 테두리(pixmap 에는 남아 있음)로 선택이 번지지 않도록.
+        cs = self._stack.canvas_size
+        bounds = QRect(
+            -int(layer.offset.x()), -int(layer.offset.y()), cs.width(), cs.height()
+        )
         self._new_mask, self._affected_local = compute_magic_wand_mask_with_rect(
-            layer.pixmap, layer.mask, self._x, self._y, self._tolerance,
+            layer.pixmap, layer.mask, self._x, self._y, self._tolerance, bounds=bounds,
         )
         self._computed = True
 

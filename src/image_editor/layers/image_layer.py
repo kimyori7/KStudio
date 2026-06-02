@@ -44,6 +44,13 @@ class ImageLayer(Layer):
     ) -> None:
         super().__init__(id, name, visible=visible, opacity=opacity)
         self.pixmap = pixmap.convertToFormat(QImage.Format_ARGB32)
+        # devicePixelRatio 정규화 — HiDPI 스크린샷(QScreen.grabWindow().toImage())은
+        # 150% 디스플레이에서 DPR=1.5 인 QImage 를 준다. 에디터의 모든 좌표(sceneRect,
+        # 삭제 fillRect, composite)는 device px == scene 단위를 가정하므로, DPR 을 1.0
+        # 으로 고정해야 그래픽스 아이템이 캔버스를 꽉 채우고 삭제 영역이 선택과 일치한다.
+        # (픽셀 수는 그대로 — 메타데이터만 바뀜, 해상도 손실 없음.)
+        if self.pixmap.devicePixelRatio() != 1.0:
+            self.pixmap.setDevicePixelRatio(1.0)
         self.mask = mask
         self.offset = QPoint(offset)
 

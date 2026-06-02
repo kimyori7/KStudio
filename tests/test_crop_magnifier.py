@@ -37,18 +37,37 @@ def test_effective_src_size_small_image():
     assert effective_src_size(0, 0) == 1
 
 
-def test_clamp_src_origin_center():
-    from image_editor.tools.crop_magnifier import clamp_src_origin
-    # 중앙 근처는 center - src//2
-    assert clamp_src_origin(50, 40, 15, 100, 80) == (43, 33)
+def test_lens_blit_rects_interior():
+    from image_editor.tools.crop_magnifier import lens_blit_rects
+    # 가장자리에서 충분히 먼 커서: 창 전체가 이미지 안 → 렌즈 꽉 채움, offset 없음
+    src, dest = lens_blit_rects(50, 40, 15, 100, 80, 120)
+    assert src == (43, 33, 15, 15)
+    assert dest == (0.0, 0.0, 120.0, 120.0)
 
 
-def test_clamp_src_origin_edges():
-    from image_editor.tools.crop_magnifier import clamp_src_origin
-    # 좌상단 밖으로 못 나감
-    assert clamp_src_origin(0, 0, 15, 100, 80) == (0, 0)
-    # 우하단: img_w/h - src_size 로 클램프
-    assert clamp_src_origin(100, 80, 15, 100, 80) == (85, 65)
+def test_lens_blit_rects_follows_near_edge():
+    """가장자리 7px 안쪽의 서로 다른 커서는 서로 다른 dest offset 을 만든다.
+
+    예전 clamp_src_origin 은 둘 다 src 원점 (0,0) 으로 접혀(=내용 고정) '안 따라감'
+    버그를 냈다. 이 테스트가 바로 그 회귀를 막는다.
+    """
+    from image_editor.tools.crop_magnifier import lens_blit_rects
+    src4, dest4 = lens_blit_rects(4, 4, 15, 100, 80, 120)
+    src6, dest6 = lens_blit_rects(6, 6, 15, 100, 80, 120)
+    # 커서가 움직이면 dest offset 이 달라져야 함(내용이 따라옴).
+    assert dest4[0] != dest6[0]
+    # center=4 → sx=-3, 클리핑으로 3px(=24px) 어둡게 밀림
+    assert src4 == (0, 0, 12, 12)
+    assert dest4 == (24.0, 24.0, 96.0, 96.0)
+    # center=6 → sx=-1, 1px(=8px) 만 밀림
+    assert src6 == (0, 0, 14, 14)
+    assert dest6 == (8.0, 8.0, 112.0, 112.0)
+
+
+def test_lens_blit_rects_fully_off_image():
+    from image_editor.tools.crop_magnifier import lens_blit_rects
+    # 커서가 이미지 완전히 바깥(스크린샷의 -12,-13): 겹침 없음 → None
+    assert lens_blit_rects(-12, -13, 15, 100, 80, 120) is None
 
 
 def test_loupe_position_default_offset():

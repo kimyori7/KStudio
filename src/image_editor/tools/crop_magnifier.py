@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QPoint, QRect, QSize
+from PySide6.QtCore import Qt, QPoint, QRect, QRectF, QSize
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont
 from PySide6.QtWidgets import QWidget
 
@@ -25,14 +25,31 @@ def effective_src_size(img_w: int, img_h: int) -> int:
     return max(1, min(SRC_SIZE, img_w, img_h))
 
 
-def clamp_src_origin(center_x: int, center_y: int, src_size: int,
-                     img_w: int, img_h: int) -> tuple[int, int]:
-    """src_rect 좌상단을 이미지 경계 안으로 클램프."""
+def lens_blit_rects(center_x: int, center_y: int, src_size: int,
+                    img_w: int, img_h: int, lens_size: int):
+    """커서 픽셀을 렌즈 정중앙에 고정한 채 이미지 경계로 클리핑한 (source, dest) 반환.
+
+    예전 clamp_src_origin 은 샘플링 창 전체를 경계 안으로 밀어 넣어, 커서가 가장자리
+    7px 안으로 들어오면 내용이 고정되고 십자선이 실제 커서 픽셀을 벗어났다("줌이
+    안 따라감"). 여기서는 창을 밀지 않고 **클리핑**한다 — 커서 픽셀은 항상 렌즈 중앙,
+    경계 밖은 dest offset 만큼 비워 둔다(어두운 배경).
+
+    반환: (src(x,y,w,h), dest(x,y,w,h))  — dest 는 렌즈 좌표(0..lens_size).
+          창이 이미지와 전혀 겹치지 않으면 None.
+    """
+    scale = lens_size / src_size
     sx = center_x - src_size // 2
     sy = center_y - src_size // 2
-    sx = max(0, min(sx, img_w - src_size))
-    sy = max(0, min(sy, img_h - src_size))
-    return sx, sy
+    cx0 = max(sx, 0)
+    cy0 = max(sy, 0)
+    cx1 = min(sx + src_size, img_w)
+    cy1 = min(sy + src_size, img_h)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return None
+    src = (cx0, cy0, cx1 - cx0, cy1 - cy0)
+    dest = ((cx0 - sx) * scale, (cy0 - sy) * scale,
+            (cx1 - cx0) * scale, (cy1 - cy0) * scale)
+    return src, dest
 
 
 def loupe_position(vp_x: int, vp_y: int, vp_w: int, vp_h: int,
@@ -79,11 +96,14 @@ class CropMagnifier(QWidget):
         lens_rect = QRect(0, 0, LENS_SIZE, LENS_SIZE)
         p.fillRect(lens_rect, QColor(20, 20, 20))
         # 확대 영역 — painter 에 SmoothPixmapTransform 미설정 → nearest-neighbor(픽셀 또렷)
+        # 커서 픽셀을 항상 렌즈 중앙에 고정(클리핑)하므로 가장자리/바깥에서도 줌이 커서를 따라감.
         if self._source is not None and not self._source.isNull():
             ss = effective_src_size(self._source.width(), self._source.height())
-            sx, sy = clamp_src_origin(self._center.x(), self._center.y(), ss,
-                                      self._source.width(), self._source.height())
-            p.drawImage(lens_rect, self._source, QRect(sx, sy, ss, ss))
+            blit = lens_blit_rects(self._center.x(), self._center.y(), ss,
+                                   self._source.width(), self._source.height(), LENS_SIZE)
+            if blit is not None:
+                (sx, sy, sw, sh), (dx, dy, dw, dh) = blit
+                p.drawImage(QRectF(dx, dy, dw, dh), self._source, QRectF(sx, sy, sw, sh))
         cx = LENS_SIZE // 2
         cy = LENS_SIZE // 2
         # 십자선(노랑)
