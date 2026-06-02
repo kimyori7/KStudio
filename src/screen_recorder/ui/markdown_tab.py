@@ -5,11 +5,11 @@ import logging
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QPushButton, QSplitter,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+    QSplitter, QVBoxLayout, QWidget,
 )
 
 from .icons import load_icon
@@ -148,6 +148,23 @@ class MarkdownTab(QWidget):
             sc.activated.connect(slot)
             self._search_shortcuts.append(sc)
 
+        # 외부 변경 반영 — 열린 파일을 감시(QFileSystemWatcher). 디스크가 외부 에디터로
+        # 바뀌면 "최신 내용으로 불러올까요?" 확인 팝업을 띄우고, 사용자가 [예] 를 눌렀을 때만
+        # 반영한다(조용히 덮어쓰지 않음 — 사용자 요청 2026-06-01).
+        # _disk_text = 마지막으로 디스크와 동기화한 내용(로드/저장/reload/거절 시 갱신). 외부
+        # 변경 판별 기준 — 편집기 현재 텍스트가 아니라 이 값과 비교해야 '저장 직후 타이핑'
+        # 오탐을 피한다(advisor 2026-06-01). fileChanged 는 버스트로 오므로 150ms 디바운스.
+        # _reload_prompt_open = 모달 팝업이 떠 있는 동안 재진입 차단(exec 의 중첩 루프에서
+        # 디바운스 타이머가 _reload_check 를 다시 부를 수 있음).
+        self._disk_text: str | None = None
+        self._reload_prompt_open = False
+        self._fs_watcher = QFileSystemWatcher(self)
+        self._fs_debounce = QTimer(self)
+        self._fs_debounce.setSingleShot(True)
+        self._fs_debounce.setInterval(150)
+        self._fs_debounce.timeout.connect(self._reload_check)
+        self._fs_watcher.fileChanged.connect(lambda _p: self._fs_debounce.start())
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)
@@ -210,7 +227,8 @@ class MarkdownTab(QWidget):
         tab = cls(source_label="opened",
                   editor_font_pt=editor_font_pt, preview_zoom=preview_zoom)
         tab.editor.setPlainText(text)   # textChanged → _dirty True 가 되므로
-        tab._saved_path = path
+        tab._disk_text = text           # 외부 변경 판별 기준
+        tab._set_saved_path(path)       # _saved_path 갱신 + 파일 감시 시작
         tab._dirty = False              # 막 로드한 파일은 깨끗한 상태
         tab.save_state_changed.emit()
         tab._refresh_preview(text)
@@ -229,9 +247,21 @@ class MarkdownTab(QWidget):
         return (self._saved_path is None) or self._dirty or right_dirty
 
     def mark_saved(self, path: Path) -> None:
-        self._saved_path = path
+        self._set_saved_path(path)
         self._dirty = False
         self.save_state_changed.emit()
+
+    def _set_saved_path(self, path: Path | None) -> None:
+        """_saved_path 를 갱신하고 QFileSystemWatcher 가 정확히 그 파일만 감시하게 한다.
+
+        모든 _saved_path 할당의 단일 길목 — 열기/저장/비교칸 채움 어디로 와도 감시가
+        새 경로로 따라간다."""
+        watched = self._fs_watcher.files()
+        if watched:
+            self._fs_watcher.removePaths(watched)
+        self._saved_path = Path(path) if path is not None else None
+        if self._saved_path is not None and self._saved_path.exists():
+            self._fs_watcher.addPath(str(self._saved_path))
 
     def _on_text_changed(self) -> None:
         if not self._dirty:
@@ -279,11 +309,13 @@ class MarkdownTab(QWidget):
 
     def _write_to(self, path: Path) -> bool:
         """UTF-8 로 기록. 성공 시에만 _saved_path/dirty 갱신 (쓰기 실패 시 상태 불변)."""
+        text = self.editor.toPlainText()
         try:
-            path.write_text(self.editor.toPlainText(), encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
         except OSError as e:
             _log.error("Markdown 저장 실패: %s", e)
             return False
+        self._disk_text = text   # 자기 저장 → 외부 변경 오탐 방지(이 값과 비교)
         self.mark_saved(path)
         return True
 
@@ -357,7 +389,11 @@ class MarkdownTab(QWidget):
         클릭으로 온 파일은 main_window 가 path 로 중복 제거하므로 안전.
         """
         if side == "left":
-            self._saved_path = Path(path)
+            try:
+                self._disk_text = _read_text_with_fallback(Path(path))
+            except OSError:
+                self._disk_text = self.editor.toPlainText()
+            self._set_saved_path(Path(path))   # 감시 시작
             self._dirty = False
             self.save_state_changed.emit()
         self.diff_doc_loaded.emit(Path(path))
@@ -419,6 +455,75 @@ class MarkdownTab(QWidget):
     def _refresh_preview(self, text: str) -> None:
         doc_dir = self._saved_path.parent if self._saved_path else None
         self.preview.set_content(text, doc_dir)
+
+    # --- 외부 변경 반영 (QFileSystemWatcher) ---
+    def _reload_check(self) -> None:
+        """감시 중인 파일이 외부에서 바뀌었으면 확인 팝업을 띄우고, [예] 일 때만 반영한다.
+
+        - 디스크 == 마지막 동기화 내용(_disk_text): 우리 저장/허위 이벤트 → no-op
+        - 외부 변경: "최신 내용으로 불러올까요?" 팝업 → 예=reload / 아니오=현재 유지
+          (미저장 편집이 있으면 팝업에 '편집 내용이 사라집니다' 경고)
+        """
+        if self._reload_prompt_open:
+            return   # 이미 팝업이 떠 있음(중첩 루프 재진입 방지)
+        p = self._saved_path
+        if p is None:
+            return
+        # 아토믹 저장(temp→rename)은 watcher 가 경로를 놓치므로 다시 등록.
+        if p.exists() and str(p) not in self._fs_watcher.files():
+            self._fs_watcher.addPath(str(p))
+        if not p.exists():
+            return   # 삭제는 범위 밖 — 열린 탭/편집 보존
+        try:
+            disk = _read_text_with_fallback(p)
+        except OSError:
+            return
+        if disk == self._disk_text:
+            return   # 자기 저장 또는 동일 내용 — 반영할 외부 변경 없음
+        self._reload_prompt_open = True
+        try:
+            confirmed = self._confirm_external_reload(self._dirty)
+        finally:
+            self._reload_prompt_open = False
+        if confirmed:
+            self._apply_external_reload(disk)
+        else:
+            # 거절한 버전을 기억 — 같은 내용으로 다시 묻지 않음(허위 이벤트 반복 차단).
+            self._disk_text = disk
+
+    def _confirm_external_reload(self, dirty: bool) -> bool:
+        """'최신 내용으로 불러올까요?' 모달 확인. 테스트에서 patch 가능하게 분리.
+
+        반환 True = 사용자가 [예](최신화) 선택.
+        """
+        if dirty:
+            msg = ("이 문서가 외부에서 변경되었습니다.\n"
+                   "미저장 편집이 있습니다 — 최신 내용으로 불러오면 편집한 내용이 사라집니다.\n\n"
+                   "최신 내용으로 불러올까요?")
+        else:
+            msg = "이 문서가 외부에서 변경되었습니다.\n\n최신 내용으로 불러올까요?"
+        ans = QMessageBox.question(
+            self, "외부 변경 감지", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return ans == QMessageBox.StandardButton.Yes
+
+    def _apply_external_reload(self, text: str) -> None:
+        """디스크 내용으로 편집기를 교체 — 커서 위치와 세로 스크롤 비율을 보존."""
+        vsb = self.editor.verticalScrollBar()
+        mx = vsb.maximum()
+        ratio = vsb.value() / mx if mx > 0 else 0.0
+        cur_pos = self.editor.textCursor().position()
+        self.editor.setPlainText(text)   # textChanged → _dirty True 가 되므로 아래서 복구
+        self._disk_text = text
+        self._dirty = False
+        cur = self.editor.textCursor()
+        cur.setPosition(min(cur_pos, len(text)))
+        self.editor.setTextCursor(cur)
+        vsb.setValue(round(ratio * vsb.maximum()))
+        self.save_state_changed.emit()
+        self._refresh_preview(text)
 
     # --- 스크롤 동기화 ---
     def _on_editor_scrolled(self, _value: int) -> None:
