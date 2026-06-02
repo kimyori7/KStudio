@@ -19,7 +19,7 @@ from typing import Optional
 import pygetwindow as gw
 
 from PySide6.QtCore import (
-    Qt, QMimeData, QRect, QSize, QTimer, QUrl, Slot,
+    Qt, QFileSystemWatcher, QMimeData, QRect, QSize, QTimer, QUrl, Slot,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QGuiApplication,
@@ -84,6 +84,7 @@ from screen_recorder.screenshot.controller import ScreenshotController
 from screen_recorder.screenshot.capture import save_png
 from screen_recorder.core.filename import build_filename, resolve_collision
 
+from .clipboard_image import image_from_clipboard
 from .edit_tab import EditTab
 from .video_tab import VideoTab
 from .panels.inspector_panel import InspectorPanel
@@ -708,6 +709,9 @@ class MainWindow(QMainWindow):
         # 라이브러리 변경 시 자동 저장 (디바운스). 외부 삭제 시 정리도 같은 경로로.
         self._setup_library_persistence()
 
+        # Phase 60: 라이브러리 파일들의 부모 디렉터리를 감시 — 외부 삭제 시 취소선 표시.
+        self._setup_library_file_watcher()
+
         # MCP HTTP 브리지 — 환경설정에서 토글된 경우만 시작. 토큰이 비어 있으면
         # 자동 생성해 settings 에 영속화 (다음 실행에도 같은 토큰 유지 — CLI 가
         # 매번 재등록 안 해도 됨). 회귀 fix: 이전엔 이 블록이 _enable_perf_diag 안에
@@ -1002,12 +1006,14 @@ class MainWindow(QMainWindow):
         # 핸들러는 어차피 EditTab 없으면 no-op 이라 이미지 모드 동작은 그대로다.
         # Ctrl+C → selection 이 있으면 그 영역만, 아니면 전체 합성 이미지를 클립보드.
         # Ctrl+X → selection 영역 잘라내기 (클립보드 복사 후 ImageLayer 에서 지움).
+        # Ctrl+V → 클립보드 이미지를 새 레이어로 붙여넣기 (좌측 상단 0,0).
         # Ctrl+A → 전체 선택, Ctrl+D → 선택 해제.
         # Del 처리는 LayerCanvas.keyPressEvent → EditTab.delete_selection 으로 위임
         # (WindowShortcut 으로 등록하면 LayersPanel 의 Del 을 가로채므로 제외).
         self._image_clipboard_shortcuts = [
             QShortcut(QKeySequence("Ctrl+C"), self, activated=self._copy_current_screenshot),
             QShortcut(QKeySequence("Ctrl+X"), self, activated=self._cut_current_selection),
+            QShortcut(QKeySequence("Ctrl+V"), self, activated=self._paste_to_current_screenshot),
             QShortcut(QKeySequence("Ctrl+A"), self, activated=self._on_select_all),
             QShortcut(QKeySequence("Ctrl+D"), self, activated=self._on_deselect_all),
         ]
@@ -2926,12 +2932,15 @@ class MainWindow(QMainWindow):
         self._open_path(p)
 
     def _on_library_files_dropped(self, paths: list) -> None:
-        """라이브러리 패널에 외부 파일 드롭 → 라이브러리에만 추가 (탭 자동 열림 X).
+        """라이브러리 패널에 외부 파일 드롭 → 라이브러리에 추가(탭 자동 열림 X) 후,
+        그 파일로 데려간다.
 
-        이미 라이브러리에 있는 파일은 건너뜀. 추가된 entry 의 썸네일/duration 은
-        백그라운드 probe 로 채워짐 (탭 열 때와 동일 흐름).
+        드롭한 파일이 새 파일이든 이미 있는 중복이든, **마지막으로 처리한 파일**의
+        종류에 맞춰 모드를 전환하고(영상 모드에서 이미지를 떨어뜨리면 이미지 모드로)
+        그 항목을 라이브러리 패널에서 선택(하이라이트)한다 — "내가 넣은 파일이 어디
+        있지?"를 바로 보이게. 새 entry 의 썸네일/duration 은 백그라운드 probe 로 채워짐.
         """
-        added = 0
+        target = None    # 선택·모드 전환 대상 (마지막으로 처리한 파일 — 새것 또는 중복).
         for path_str in paths:
             try:
                 p = Path(str(path_str))
@@ -2940,12 +2949,14 @@ class MainWindow(QMainWindow):
             if not p.is_file():
                 continue
             ext = p.suffix.lower()
-            if self._find_library_entry_for_path(p) is not None:
-                continue   # 중복 — 라이브러리에 이미 있음
+            existing = self._find_library_entry_for_path(p)
+            if existing is not None:
+                target = existing    # 중복 — 새로 추가하지 않고 그 기존 항목을 대상으로.
+                continue
             if ext in self.VIDEO_EXTS:
                 placeholder = QImage(64, 36, QImage.Format_ARGB32)
                 placeholder.fill(0xFF222222)
-                entry = self.library_model.add(
+                target = self.library_model.add(
                     EntryKind.VIDEO,
                     thumbnail=placeholder,
                     source_label="dropped",
@@ -2954,9 +2965,8 @@ class MainWindow(QMainWindow):
                     duration_ms=0,
                     origin="opened",
                 )
-                self._probe_duration_async(p, entry.id)
-                self._extract_thumbnail_async(p, entry.id)
-                added += 1
+                self._probe_duration_async(p, target.id)
+                self._extract_thumbnail_async(p, target.id)
             elif ext in self.IMAGE_EXTS:
                 try:
                     img = QImage(str(p))
@@ -2964,7 +2974,7 @@ class MainWindow(QMainWindow):
                         continue
                 except (OSError, ValueError):
                     continue
-                self.library_model.add(
+                target = self.library_model.add(
                     EntryKind.SCREENSHOT,
                     thumbnail=img,
                     source_label="dropped",
@@ -2973,9 +2983,8 @@ class MainWindow(QMainWindow):
                     duration_ms=0,
                     origin="opened",
                 )
-                added += 1
             elif ext in self.MARKDOWN_EXTS:
-                self.library_model.add(
+                target = self.library_model.add(
                     EntryKind.DOCUMENT,
                     thumbnail=QImage(),       # 문서는 썸네일 없음 (📄 라벨로 구분)
                     source_label="dropped",
@@ -2983,10 +2992,28 @@ class MainWindow(QMainWindow):
                     path=p,
                     origin="opened",
                 )
-                added += 1
-        # 라이브러리 dock 가 숨겨져 있으면 사용자가 결과를 못 봄 → 보여주기.
-        if added > 0 and not self.library_dock.isVisible():
+        if target is None:
+            return
+        # 드롭한 파일의 종류에 맞춰 모드 전환 → dock 표시 → 그 항목 선택.
+        # set_mode 가 기존 탭으로 currentChanged 를 일으켜 라이브러리 포커스를 덮어쓸 수
+        # 있으므로(_on_active_tab_changed), focus_entry 는 반드시 set_mode '다음'에 호출.
+        self.mode_controller.set_mode(self._mode_for_kind(target.kind))
+        if not self.library_dock.isVisible():
             self.library_dock.show()
+        self.library_panel.focus_entry(target.id)
+
+    @staticmethod
+    def _mode_for_kind(kind: EntryKind) -> AppMode:
+        """라이브러리 항목 종류 → 그 항목이 보이는 앱 모드.
+
+        EntryKind.SCREENSHOT 은 IMAGE 의 별칭(값 동일)이라 `is` 비교가 위험 →
+        VIDEO/DOCUMENT 를 먼저 거르고 나머지를 이미지로 처리.
+        """
+        if kind is EntryKind.VIDEO:
+            return AppMode.VIDEO
+        if kind is EntryKind.DOCUMENT:
+            return AppMode.DOCUMENT
+        return AppMode.IMAGE
 
     def _open_path(self, p: Path) -> None:
         """확장자 기준 분기 + .kstudio 는 magic 으로 zip(이미지)/JSON(영상 사이드카) 구분."""
@@ -3201,18 +3228,23 @@ class MainWindow(QMainWindow):
     def _register_dropped_document(self, path) -> None:
         """드롭/파일창으로 본 .md 를 라이브러리에 DOCUMENT 로 등록.
 
-        이미 같은 path 가 있으면 건너뛴다. 새로 추가했을 때만 라이브러리 dock 를 보여줘
-        사용자가 등록 결과를 확인하게 한다(외부 파일 라이브러리 드롭과 동일 UX).
+        새 문서면 등록하고, 이미 같은 path 가 있으면 새로 추가하지 않는다. 어느 쪽이든
+        그 항목을 라이브러리에서 선택(focus)하고 dock 를 보여줘 사용자가 위치를 바로
+        확인하게 한다(라이브러리 드롭과 동일한 '그 파일로 데려가기' UX). 이 경로는 DIFF
+        칸(문서 모드) 안에서만 일어나므로 모드 전환은 불필요.
         """
         p = Path(path)
-        if not p.is_file() or self._find_library_entry_for_path(p) is not None:
+        if not p.is_file():
             return
-        self.library_model.add(
-            EntryKind.DOCUMENT, thumbnail=QImage(),
-            source_label="dropped", display_name=p.name, path=p, origin="opened",
-        )
+        entry = self._find_library_entry_for_path(p)
+        if entry is None:
+            entry = self.library_model.add(
+                EntryKind.DOCUMENT, thumbnail=QImage(),
+                source_label="dropped", display_name=p.name, path=p, origin="opened",
+            )
         if not self.library_dock.isVisible():
             self.library_dock.show()
+        self.library_panel.focus_entry(entry.id)
 
     def _on_markdown_font_changed(self, editor_pt: int, preview_zoom: float) -> None:
         """문서 폰트 크기 변경 → 메모리 즉시 반영, 디스크 쓰기는 디바운스(400ms).
@@ -4276,6 +4308,21 @@ class MainWindow(QMainWindow):
             return
         self._set_clipboard_image_with_filename(self._image_for_clipboard(tab), tab)
 
+    def _paste_to_current_screenshot(self) -> None:
+        """Ctrl+V — 클립보드 이미지를 현재 캔버스에 새 레이어로 붙여넣는다.
+
+        클립보드에 이미지 데이터가 있으면 그것, 없으면 파일 URL 의 이미지(탐색기 복사)
+        를 시도. 둘 다 없으면 no-op. 붙여넣기 자체와 DPR 정규화는 EditTab/ImageLayer
+        가 담당.
+        """
+        tab = self._current_screenshot_tab()
+        if tab is None:
+            return
+        img = image_from_clipboard(QApplication.clipboard().mimeData())
+        if img.isNull():
+            return
+        tab.paste_image(img)
+
     def _image_for_clipboard(self, tab: "EditTab") -> QImage:
         """selection 이 있으면 그 영역만, 없으면 전체 합성 이미지를 반환."""
         full = tab.image()
@@ -4956,6 +5003,63 @@ class MainWindow(QMainWindow):
         self.library_model.entry_renamed.connect(_schedule)
         self.library_model.entry_removed.connect(self._on_library_entry_removed_for_cache)
         self.library_model.entry_removed.connect(_schedule)
+
+    def _setup_library_file_watcher(self) -> None:
+        """라이브러리 항목 파일들의 부모 디렉터리를 감시 — 외부 삭제 시 취소선 표시(자동 제거 X).
+
+        개별 파일 watch 는 삭제 시 watcher 가 경로를 drop 하므로 디렉터리 directoryChanged
+        를 쓴다. 디렉터리 변화마다 모든 라이브러리 항목의 파일 존재 여부를 재평가해 missing
+        을 토글한다(삭제→취소선, 재생성/재저장→해제). 예전 폴더 스캔 watcher 와 달리 *기존
+        항목의 존재 확인만* 하며 새 파일을 라이브러리에 add 하지 않는다(Phase 23 회귀 방지).
+        """
+        self._lib_dir_watcher = QFileSystemWatcher(self)
+        self._lib_recheck_timer = QTimer(self)
+        self._lib_recheck_timer.setSingleShot(True)
+        self._lib_recheck_timer.setInterval(200)
+        self._lib_recheck_timer.timeout.connect(self._recheck_library_files)
+        self._lib_dir_watcher.directoryChanged.connect(
+            lambda _d: self._lib_recheck_timer.start()
+        )
+        # missing 토글 → 탭 취소선. (라이브러리 패널은 모델 시그널에 직접 연결돼 있음.)
+        self.library_model.entry_missing_changed.connect(self.tab_area.set_entry_deleted)
+        self.library_model.entry_added.connect(
+            lambda _e: self._resync_library_watch_dirs()
+        )
+        self.library_model.entry_removed.connect(
+            lambda _id: self._resync_library_watch_dirs()
+        )
+        self._resync_library_watch_dirs()
+
+    def _resync_library_watch_dirs(self) -> None:
+        """현재 라이브러리 항목들의 부모 디렉터리를 watcher 에 동기화(없는 건 추가, 빈 건 해제)."""
+        want: set[str] = set()
+        for entry in self.library_model.entries():
+            if entry.path is None:
+                continue
+            parent = entry.path.parent
+            try:
+                if parent.exists():
+                    want.add(str(parent))
+            except OSError:
+                continue
+        cur = set(self._lib_dir_watcher.directories())
+        add = list(want - cur)
+        if add:
+            self._lib_dir_watcher.addPaths(add)
+        stale = list(cur - want)
+        if stale:
+            self._lib_dir_watcher.removePaths(stale)
+
+    def _recheck_library_files(self) -> None:
+        """감시 디렉터리 변화 → 모든 라이브러리 항목의 파일 존재 여부 재평가, missing 토글."""
+        for entry in list(self.library_model.entries()):
+            if entry.path is None:
+                continue
+            try:
+                exists = entry.path.exists()
+            except OSError:
+                exists = False
+            self.library_model.set_missing(entry.id, not exists)
 
     def _on_library_entry_added_for_persist(self, entry) -> None:
         """entry_added 직후 path 매핑 갱신 — 나중 remove 시 캐시 정리에 사용."""

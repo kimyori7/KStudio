@@ -32,12 +32,14 @@ class LibraryEntry:
     duration_ms: int = 0
     origin: str = "captured"   # "captured" | "opened"
     filmstrip: list = field(default_factory=list)   # list[QImage] — 트림 레인 배경 캐시
+    missing: bool = False      # 디스크 파일이 외부에서 삭제됨 → 취소선 + X 정리 (Phase 60)
 
 
 class LibraryModel(QObject):
     entry_added = Signal(object)    # LibraryEntry
     entry_removed = Signal(int)     # entry id
     entry_renamed = Signal(int, str)   # (entry_id, new_display_name) — 모델이 갱신된 후 emit
+    entry_missing_changed = Signal(int, bool)  # (entry_id, missing) — 외부 삭제/복구 감지
 
     def __init__(self) -> None:
         super().__init__()
@@ -84,6 +86,15 @@ class LibraryModel(QObject):
             if e.id == entry_id:
                 e.display_name = new_name
                 self.entry_renamed.emit(entry_id, new_name)
+                return
+
+    def set_missing(self, entry_id: int, missing: bool) -> None:
+        """디스크 파일 삭제/복구 상태 토글. 값이 바뀔 때만 entry_missing_changed emit."""
+        for e in self._entries:
+            if e.id == entry_id:
+                if e.missing != missing:
+                    e.missing = missing
+                    self.entry_missing_changed.emit(entry_id, missing)
                 return
 
     def remove(self, entry_id: int) -> None:

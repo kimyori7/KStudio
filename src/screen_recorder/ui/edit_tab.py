@@ -11,6 +11,7 @@ from image_editor.format import read_kstudio
 from image_editor.layer_model import LayerStack
 from image_editor.layers.annotation_layer import AnnotationLayer
 from image_editor.layers.image_layer import ImageLayer
+from image_editor.operations.add_layer import AddLayerCommand
 from image_editor.operations.raster_paint import RasterPaintCommand
 from image_editor.selection import SelectionModel
 
@@ -129,6 +130,19 @@ class EditTab(QWidget):
         self._saved_path = path
         self.undo_stack.setClean()
         self._check_needs_save_changed()
+
+    # --- 붙여넣기 ---
+    def paste_image(self, image: QImage, *, name: str = "붙여넣기") -> None:
+        """클립보드 이미지를 새 ImageLayer 로 캔버스 좌측 상단(0,0)에 추가 (undo 가능).
+
+        ImageLayer 생성자가 devicePixelRatio 를 1.0 으로 정규화하므로 HiDPI 클립보드
+        이미지도 좌표 어긋남 없이 들어온다. 빈/널 이미지는 no-op.
+        """
+        if image is None or image.isNull():
+            return
+        layer = ImageLayer(id=self.stack.next_id(), name=name, pixmap=image)
+        cmd = AddLayerCommand(self.stack, layer, text="붙여넣기")
+        self.undo_stack.push(cmd)
 
     # --- 영역 삭제 ---
     def delete_selection(self, *, command_text: str = "삭제") -> None:

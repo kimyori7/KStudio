@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QTabWidget, QToolButton, QWidget
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtWidgets import QTabBar, QTabWidget, QToolButton, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
 from .mode_controller import AppMode, ModeController
@@ -17,6 +17,36 @@ from .video_tab import VideoTab
 
 _SCROLL_BTN_PX = 32       # 스크롤 버튼 가로/세로
 _SCROLL_ICON_PX = 20      # 그 안에 들어가는 chevron 아이콘 크기
+_DELETED_TAB_COLOR = "#d08770"   # 취소선/dim 색 (외부 삭제된 파일)
+
+
+class _StrikeThroughTabBar(QTabBar):
+    """삭제된 파일 탭에 VSCode 식 취소선을 덧그린다.
+
+    기본 paint 를 그대로 두고(close 버튼·이모지·스크롤 등 회귀 위험 0) 그 위에 가로선만
+    오버레이한다. 어떤 탭이 삭제 상태인지는 부모 TabArea 의 `_is_tab_index_deleted` 가
+    판단(위젯↔인덱스는 indexOf 로 안전 매핑)."""
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        super().paintEvent(event)
+        ta = self.parent()
+        is_deleted = getattr(ta, "_is_tab_index_deleted", None)
+        if is_deleted is None:
+            return
+        painter = QPainter(self)
+        pen = QPen(QColor(_DELETED_TAB_COLOR))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        for i in range(self.count()):
+            if not self.isTabVisible(i) or not is_deleted(i):
+                continue
+            r = self.tabRect(i)
+            if r.isNull():
+                continue
+            y = r.center().y()
+            # 왼쪽 이모지(약 22px)·오른쪽 close 버튼(약 26px) 영역을 피해 텍스트 위만 긋는다.
+            painter.drawLine(r.left() + 22, y, r.right() - 26, y)
+        painter.end()
 
 
 class TabArea(QTabWidget):
@@ -43,6 +73,9 @@ class TabArea(QTabWidget):
         self._tab_base_labels: dict[QWidget, str] = {}
         # 영상 탭의 duration 접미사 (예: " (3s)") — 베이스와 분리 보관.
         self._video_duration_suffix: dict[QWidget, str] = {}
+        # 외부에서 파일이 삭제된 탭 — 취소선 표시 대상 (위젯 기준, 이동/제거에도 안전).
+        self._deleted_widgets: set[QWidget] = set()
+        self.setTabBar(_StrikeThroughTabBar(self))
         self.setTabsClosable(True)
         self.setMovable(True)
         self.tabCloseRequested.connect(self._on_close_requested)
@@ -119,6 +152,28 @@ class TabArea(QTabWidget):
         if idx < 0:
             return
         self.setTabText(idx, self._format_tab_label(tab))
+
+    def set_entry_deleted(self, entry_id: int, deleted: bool = True) -> None:
+        """엔트리의 파일이 외부에서 삭제됨(또는 복구됨)을 탭에 반영 — 취소선 + 글자 dim."""
+        widget = self.tab_widget_for_entry(entry_id)
+        if widget is None:
+            return
+        if deleted:
+            self._deleted_widgets.add(widget)
+        else:
+            self._deleted_widgets.discard(widget)
+        idx = self.indexOf(widget)
+        if idx >= 0:
+            # dim(삭제) / 기본색 복구. 빈 QColor() = 팔레트 기본색으로 리셋.
+            self.tabBar().setTabTextColor(idx, QColor(_DELETED_TAB_COLOR) if deleted else QColor())
+        self.tabBar().update()
+
+    def _is_tab_index_deleted(self, idx: int) -> bool:
+        """그 탭 인덱스가 삭제 상태인가 — 커스텀 tab bar 의 취소선 paint 가 호출."""
+        for w in self._deleted_widgets:
+            if self.indexOf(w) == idx:
+                return True
+        return False
 
     def update_tab_base(self, entry_id: int, new_base: str) -> None:
         """라이브러리 rename / Save As 로 파일명이 바뀌면 베이스 라벨도 갱신.
@@ -311,6 +366,7 @@ class TabArea(QTabWidget):
         del self._tabs[idx]
         self._tab_base_labels.pop(widget, None)
         self._video_duration_suffix.pop(widget, None)
+        self._deleted_widgets.discard(widget)
         # VideoTab 의 player 가 잡고 있는 QMediaPlayer/QMovie 핸들을 즉시 해제.
         # deleteLater 만으로는 closeEvent 가 발화하지 않아 Windows 가 "파일 사용 중"
         # 으로 파일을 계속 잠가둠 → 사용자가 라이브러리에서 곧장 Del 하면 send2trash

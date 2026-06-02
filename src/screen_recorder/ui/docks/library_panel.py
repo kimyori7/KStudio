@@ -15,14 +15,41 @@ from PySide6.QtWidgets import (
 )
 
 
+_ROLE_MISSING = Qt.UserRole + 3   # 외부에서 파일이 삭제됨 → 취소선 + ✕ 표시 (Phase 60)
+_MISSING_COLOR = "#d08770"        # 취소선/dim/✕ 색
+_X_BTN_SIZE = 16
+_X_BTN_RIGHT_PAD = 6
+
+
+def _x_button_rect(row_rect: "QRect") -> "QRect":
+    """삭제된 항목 오른쪽 끝의 ✕ 클릭/그리기 영역 (행 rect 기준). delegate 와 히트테스트가 공유."""
+    top = row_rect.top() + (row_rect.height() - _X_BTN_SIZE) // 2
+    return QRect(row_rect.right() - _X_BTN_SIZE - _X_BTN_RIGHT_PAD, top,
+                 _X_BTN_SIZE, _X_BTN_SIZE)
+
+
 class _DragOutListWidget(QListWidget):
     """라이브러리 항목을 파일 URL 로 드래그아웃(비교 뷰 등 외부 칸으로). 외부→라이브러리
     드롭은 부모 LibraryPanel 이 처리(여기선 드래그 *시작*만 담당)."""
 
-    def __init__(self, path_for_item) -> None:
+    def __init__(self, path_for_item, on_x_clicked=None) -> None:
         super().__init__()
         self._path_for_item = path_for_item
+        self._on_x_clicked = on_x_clicked   # 삭제된 항목 ✕ 클릭 → entry_id 콜백
         self.setDragEnabled(True)
+
+    def mousePressEvent(self, e) -> None:  # type: ignore[override]
+        # 삭제된(취소선) 항목의 오른쪽 ✕ 클릭이면 제거 콜백 후 소비 — 선택/열기/드래그로
+        # 새지 않게 한다(히트테스트가 결정적이라 editorEvent 경로보다 안전).
+        item = self.itemAt(e.position().toPoint())
+        if item is not None and item.data(_ROLE_MISSING):
+            if _x_button_rect(self.visualItemRect(item)).contains(e.position().toPoint()):
+                eid = item.data(Qt.UserRole)
+                if eid is not None and self._on_x_clicked is not None:
+                    self._on_x_clicked(int(eid))
+                e.accept()
+                return
+        super().mousePressEvent(e)
 
     def mime_for_item(self, item) -> "QMimeData | None":
         p = self._path_for_item(item) if item is not None else None
@@ -106,10 +133,29 @@ class _TwoLineDelegate(QStyledItemDelegate):
         folder = index.data(_ROLE_FOLDER) or ""
         filename = index.data(Qt.DisplayRole) or ""
 
+        # 외부 삭제된 항목 — 파일명 취소선 + dim + 오른쪽 ✕. ✕ 영역만큼 텍스트 폭을 줄여
+        # 글자가 ✕ 위에 겹치지 않게 한다.
+        missing = bool(index.data(_ROLE_MISSING))
+        if missing:
+            text_rect = QRect(
+                text_rect.left(), text_rect.top(),
+                max(0, text_rect.width() - (_X_BTN_SIZE + _X_BTN_RIGHT_PAD + 4)),
+                text_rect.height(),
+            )
+
         if option.state & QStyle.State_Selected:
             base_color = option.palette.highlightedText().color()
         else:
             base_color = option.palette.text().color()
+
+        # 파일명 전용 폰트/색 — 삭제 시 취소선 + (비선택 시) dim 색.
+        name_font = QFont(option.font)
+        if missing:
+            name_font.setStrikeOut(True)
+        if missing and not (option.state & QStyle.State_Selected):
+            name_color = QColor(_MISSING_COLOR)
+        else:
+            name_color = base_color
 
         folder_font = QFont(option.font)
         folder_font.setPointSizeF(max(7.0, folder_font.pointSizeF() - 1.0))
@@ -135,8 +181,8 @@ class _TwoLineDelegate(QStyledItemDelegate):
             )
             painter.drawText(text_rect.left(), top + folder_fm.ascent(), folder_elided)
 
-            painter.setFont(option.font)
-            painter.setPen(base_color)
+            painter.setFont(name_font)
+            painter.setPen(name_color)
             name_elided = name_fm.elidedText(
                 filename, Qt.ElideRight, text_rect.width()
             )
@@ -147,12 +193,19 @@ class _TwoLineDelegate(QStyledItemDelegate):
             )
         else:
             top = text_rect.top() + (text_rect.height() - name_h) // 2
-            painter.setFont(option.font)
-            painter.setPen(base_color)
+            painter.setFont(name_font)
+            painter.setPen(name_color)
             name_elided = name_fm.elidedText(
                 filename, Qt.ElideRight, text_rect.width()
             )
             painter.drawText(text_rect.left(), top + name_fm.ascent(), name_elided)
+
+        # 오른쪽 끝 ✕ — 삭제된 항목 정리 버튼(클릭은 _DragOutListWidget 히트테스트).
+        if missing:
+            x_rect = _x_button_rect(option.rect)
+            painter.setFont(option.font)
+            painter.setPen(QColor(_MISSING_COLOR))
+            painter.drawText(x_rect, Qt.AlignCenter, "✕")
 
         painter.restore()
 
@@ -193,7 +246,7 @@ class LibraryPanel(QWidget):
         title.setStyleSheet("color: #A0A4AB; font-weight: bold; padding: 2px 4px;")
         layout.addWidget(title)
 
-        self.list_widget = _DragOutListWidget(self._path_for_item)
+        self.list_widget = _DragOutListWidget(self._path_for_item, self._on_x_remove_clicked)
         self.list_widget.setIconSize(QSize(48, 32))
         # PySide6 — delegate Python 참조 유지 필수. 인스턴스 속성으로 보관해야 GC 안 됨.
         self._item_delegate = _TwoLineDelegate(self.list_widget)
@@ -212,6 +265,7 @@ class LibraryPanel(QWidget):
         model.entry_added.connect(lambda e: self._insert(e, at_top=True))
         model.entry_removed.connect(self._remove_by_id)
         model.entry_renamed.connect(self._on_entry_renamed)
+        model.entry_missing_changed.connect(self._on_entry_missing)
 
         if self._mode is not None:
             self._mode.mode_changed.connect(self._refresh_visibility)
@@ -239,6 +293,7 @@ class LibraryPanel(QWidget):
         item.setData(Qt.UserRole, entry.id)
         item.setData(Qt.UserRole + 1, entry.kind)
         item.setData(_ROLE_FOLDER, self._render_folder(entry))
+        item.setData(_ROLE_MISSING, bool(getattr(entry, "missing", False)))
         item.setText(self._render_text(entry))
         item.setToolTip(self._render_tooltip(entry))
         item.setFlags(item.flags() | Qt.ItemIsEditable)
@@ -322,6 +377,18 @@ class LibraryPanel(QWidget):
         # 즉각 반영되도록 viewport 강제 갱신. 사용자가 Del 후 같은 모드 안에서도 제거를
         # 바로 눈으로 확인할 수 있게 하기 위함.
         self.list_widget.viewport().update()
+
+    def _on_entry_missing(self, entry_id: int, missing: bool) -> None:
+        """모델이 외부 삭제/복구를 알림 → 항목에 취소선(+✕) 토글 후 repaint."""
+        item = self._items_by_id.get(entry_id)
+        if item is None:
+            return
+        item.setData(_ROLE_MISSING, bool(missing))
+        self.list_widget.viewport().update()
+
+    def _on_x_remove_clicked(self, entry_id: int) -> None:
+        """삭제된 항목의 ✕ 클릭 → 라이브러리에서 제거 + 열린 탭 닫기(기존 remove 경로 재사용)."""
+        self.entry_remove_requested.emit(int(entry_id))
 
     def _on_entry_renamed(self, entry_id: int, _new_name: str) -> None:
         item = self._items_by_id.get(entry_id)
