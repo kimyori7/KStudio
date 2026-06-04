@@ -91,6 +91,7 @@ class SDXLBackend(ImageGenBackend):
         height: int = 1024,
         num_inference_steps: int = 30,
         guidance_scale: float = 5.0,
+        negative_prompt: Optional[str] = None,
         seed: Optional[int] = None,
         step_cb: Optional[StepCallback] = None,
         out_path: Optional[Path] = None,
@@ -136,6 +137,7 @@ class SDXLBackend(ImageGenBackend):
             # UI 의 num_inference_steps 는 그대로 두고 strength 만 노출.
             result = pipe(
                 prompt=prompt,
+                negative_prompt=negative_prompt or None,
                 image=ref,
                 strength=float(strength),
                 num_inference_steps=total,
@@ -147,6 +149,7 @@ class SDXLBackend(ImageGenBackend):
             # ---- Text-to-Image ----
             result = self._t2i_pipe(
                 prompt=prompt,
+                negative_prompt=negative_prompt or None,
                 height=int(height),
                 width=int(width),
                 num_inference_steps=total,

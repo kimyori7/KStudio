@@ -83,6 +83,43 @@ def _is_model_cached(repo_id: str, min_size_gb: float = 4.0) -> bool:
         return False
 
 
+_STYLE_PRESETS: tuple[tuple[str, str], ...] = (
+    ("기본", ""),
+    (
+        "실사",
+        "photorealistic, natural lighting, detailed textures, sharp focus",
+    ),
+    (
+        "제품/썸네일",
+        "clean product render, studio lighting, clear subject, commercial composition",
+    ),
+    (
+        "시네마틱",
+        "cinematic lighting, film still, rich contrast, atmospheric depth",
+    ),
+    (
+        "일러스트",
+        "polished digital illustration, clean shapes, cohesive color palette",
+    ),
+    (
+        "아이콘/에셋",
+        "simple centered subject, clean edges, transparent-background friendly, app asset style",
+    ),
+)
+
+_ASPECT_RATIOS: tuple[tuple[str, int, int], ...] = (
+    ("1:1", 1, 1),
+    ("16:9", 16, 9),
+    ("9:16", 9, 16),
+    ("4:3", 4, 3),
+)
+
+_DEFAULT_NEGATIVE_PROMPT = (
+    "low quality, blurry, distorted, deformed, extra fingers, bad hands, "
+    "duplicate, watermark, logo, text artifacts, cropped subject"
+)
+
+
 class _ReadyPanel(QWidget):
     """모드 + 모델 picker + (옵션) reference 이미지 + 프롬프트 + 결과.
 
@@ -218,6 +255,20 @@ class _ReadyPanel(QWidget):
         )
         outer.addWidget(self.prompt_edit)
 
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("용도/스타일:"))
+        self.style_combo = QComboBox()
+        for label, suffix in _STYLE_PRESETS:
+            self.style_combo.addItem(label, suffix)
+        style_row.addWidget(self.style_combo, stretch=1)
+        outer.addLayout(style_row)
+
+        self.negative_edit = QLineEdit()
+        self.negative_edit.setPlaceholderText("Negative prompt")
+        self.negative_edit.setText(_DEFAULT_NEGATIVE_PROMPT)
+        self.negative_edit.setToolTip("결과에서 피할 요소입니다. 비우면 negative prompt를 쓰지 않습니다.")
+        outer.addWidget(self.negative_edit)
+
         translate_row = QHBoxLayout()
         self.auto_translate_check = QCheckBox("한국어 → 영어 자동 번역 (Qwen3-VL 2B)")
         self.auto_translate_check.setChecked(True)
@@ -256,6 +307,11 @@ class _ReadyPanel(QWidget):
             self.res_combo.addItem(f"{value}×{value}", value)
         self.res_combo.setCurrentIndex(0)
         row1.addWidget(self.res_combo, stretch=1)
+        row1.addWidget(QLabel("비율:"))
+        self.aspect_combo = QComboBox()
+        for label, w, h in _ASPECT_RATIOS:
+            self.aspect_combo.addItem(label, (w, h))
+        row1.addWidget(self.aspect_combo)
         opts.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -582,6 +638,22 @@ class _ReadyPanel(QWidget):
 
     # ---- 생성 핸들러 ----
 
+    def _build_prompt(self, prompt: str) -> str:
+        suffix = str(self.style_combo.currentData() or "").strip()
+        if not suffix:
+            return prompt
+        return f"{prompt}, {suffix}"
+
+    def _selected_dimensions(self) -> tuple[int, int]:
+        base = int(self.res_combo.currentData())
+        ratio = self.aspect_combo.currentData() or (1, 1)
+        rw, rh = int(ratio[0]), int(ratio[1])
+        if rw == rh:
+            return base, base
+        if rw > rh:
+            return base, max(8, int(round(base * rh / rw / 8)) * 8)
+        return max(8, int(round(base * rw / rh / 8)) * 8), base
+
     def _on_generate_clicked(self) -> None:
         prompt = self.prompt_edit.toPlainText().strip()
         if not prompt:
@@ -596,22 +668,23 @@ class _ReadyPanel(QWidget):
         # 직전 회 번역 라벨 stale 가능 — 새 generate 시작 시점에 hide. 번역 흐름이
         # 다시 켤 거고, 영어 입력일 땐 hide 상태로 남아도 OK.
         self.translated_label.setVisible(False)
-        res = int(self.res_combo.currentData())
+        width, height = self._selected_dimensions()
         seed_text = self.seed_edit.text().strip()
         try:
             seed = int(seed_text) if seed_text else None
         except ValueError:
             seed = None
         params = dict(
-            width=res, height=res,
+            width=width, height=height,
             num_inference_steps=int(self.steps_spin.value()),
             guidance_scale=float(self.guidance_spin.value()),
+            negative_prompt=self.negative_edit.text().strip() or None,
             seed=seed,
         )
         if self._current_mode == "i2i" and self._reference_path is not None:
             params["reference_image"] = self._reference_path
             params["strength"] = self.strength_slider.value() / 100.0
-        self.generate_requested.emit(prompt, params)
+        self.generate_requested.emit(self._build_prompt(prompt), params)
 
     # ---- 결과 버튼 핸들러 ----
 

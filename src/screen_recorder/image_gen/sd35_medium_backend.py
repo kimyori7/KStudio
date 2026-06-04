@@ -80,6 +80,7 @@ class SD35MediumBackend(ImageGenBackend):
         height: int = 1024,
         num_inference_steps: int = 40,
         guidance_scale: float = 4.5,
+        negative_prompt: Optional[str] = None,
         seed: Optional[int] = None,
         step_cb: Optional[StepCallback] = None,
         out_path: Optional[Path] = None,
@@ -121,6 +122,7 @@ class SD35MediumBackend(ImageGenBackend):
             ref = ref.resize((int(width), int(height)), Image.LANCZOS)
             result = pipe(
                 prompt=prompt,
+                negative_prompt=negative_prompt or None,
                 image=ref,
                 strength=float(strength),
                 num_inference_steps=total,
@@ -131,6 +133,7 @@ class SD35MediumBackend(ImageGenBackend):
         else:
             result = self._t2i_pipe(
                 prompt=prompt,
+                negative_prompt=negative_prompt or None,
                 height=int(height),
                 width=int(width),
                 num_inference_steps=total,

@@ -47,6 +47,7 @@ class ImageGenBackend(Protocol):
         height: int = 1024,
         num_inference_steps: int = 20,
         guidance_scale: float = 4.5,
+        negative_prompt: Optional[str] = None,
         seed: Optional[int] = None,
         step_cb: Optional[StepCallback] = None,
         out_path: Optional[Path] = None,

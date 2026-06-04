@@ -71,6 +71,7 @@ class PixArtSigmaBackend(ImageGenBackend):
         height: int = 1024,
         num_inference_steps: int = 20,
         guidance_scale: float = 4.5,
+        negative_prompt: Optional[str] = None,
         seed: Optional[int] = None,
         step_cb: Optional[StepCallback] = None,
         out_path: Optional[Path] = None,
@@ -119,6 +120,7 @@ class PixArtSigmaBackend(ImageGenBackend):
         t0 = time.time()
         result = self._pipe(
             prompt=prompt,
+            negative_prompt=negative_prompt or None,
             height=int(height),
             width=int(width),
             num_inference_steps=total,

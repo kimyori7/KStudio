@@ -202,6 +202,30 @@ def test_generate_button_calls_runtime(qtbot, monkeypatch):
     assert any(c[0] == "generate" and c[1] == "a cat" for c in rt.calls)
 
 
+def test_generate_uses_style_aspect_and_negative_prompt(qtbot, monkeypatch):
+    from screen_recorder.ui.image_gen import image_gen_dialog as mod
+
+    monkeypatch.setattr(mod, "_is_model_cached", _all_cached)
+    rt = _FakeRuntime()
+    dlg = mod.ImageGenDialog(runtime=rt)
+    qtbot.addWidget(dlg)
+
+    dlg._panel.prompt_edit.setPlainText("a smartwatch on a desk")
+    dlg._panel.style_combo.setCurrentText("제품/썸네일")
+    dlg._panel.aspect_combo.setCurrentText("16:9")
+    dlg._panel.negative_edit.setText("blurry, watermark")
+    dlg._panel._on_generate_clicked()
+
+    gen_calls = [c for c in rt.calls if c[0] == "generate"]
+    assert gen_calls
+    _, prompt, kw = gen_calls[-1]
+    assert "a smartwatch on a desk" in prompt
+    assert "commercial composition" in prompt
+    assert kw["width"] == 1024
+    assert kw["height"] == 576
+    assert kw["negative_prompt"] == "blurry, watermark"
+
+
 def test_empty_prompt_does_not_call_runtime(qtbot, monkeypatch):
     from screen_recorder.ui.image_gen import image_gen_dialog as mod
     from PySide6.QtWidgets import QMessageBox

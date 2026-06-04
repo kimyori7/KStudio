@@ -58,13 +58,13 @@ class _FakeBackend:
 
     def generate(self, prompt, *, width=1024, height=1024,
                  num_inference_steps=20, guidance_scale=4.5,
-                 seed=None, step_cb=None, out_path=None,
+                 negative_prompt=None, seed=None, step_cb=None, out_path=None,
                  reference_image=None, strength=0.7) -> Path:
         self.generate_calls += 1
         self.last_params = dict(
             prompt=prompt, width=width, height=height,
             num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale, seed=seed,
+            guidance_scale=guidance_scale, negative_prompt=negative_prompt, seed=seed,
             reference_image=reference_image, strength=strength,
         )
         if self._fail_msg:
@@ -266,6 +266,7 @@ def test_params_pass_through_to_backend():
         width=512, height=768,
         num_inference_steps=8,
         guidance_scale=3.0,
+        negative_prompt="blurry",
         seed=123,
     )
     _process_events_until(lambda: c.images, timeout_s=2.0)
@@ -276,6 +277,7 @@ def test_params_pass_through_to_backend():
     assert p["height"] == 768
     assert p["num_inference_steps"] == 8
     assert p["guidance_scale"] == 3.0
+    assert p["negative_prompt"] == "blurry"
     assert p["seed"] == 123
 
 
