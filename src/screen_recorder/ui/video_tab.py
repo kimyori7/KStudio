@@ -24,8 +24,8 @@ from .video.timeline import VideoTimeline
 
 
 # 풀스크린 컨트롤 오버레이 동작 상수
-_FS_HIDE_DELAY_MS = 1000          # 재생 중 마우스 idle 시 숨김 지연
-_FS_BOTTOM_BAND_PX = 180          # 하단에서 이 높이 안에 마우스가 들어오면 다시 표시 (controls + timeline 두 줄)
+_FS_HIDE_DELAY_MS = 3000          # 재생 중 마우스 idle 3초 후 모든 바 숨김
+_FS_BOTTOM_BAND_PX = 180          # 하단 이 높이 안(컨트롤 위)에 마우스가 있으면 숨김 보류 (controls + timeline 두 줄)
 
 # ThumbnailService 결과 라우팅 — segment_id 가 이 prefix 로 시작하면 broll PIP 미리보기용.
 _BROLL_THUMB_PREFIX = "broll:"
@@ -1744,7 +1744,7 @@ class VideoTab(QWidget):
 
         holder.showFullScreen()
         self._fullscreen_holder = holder
-        # 진입 직후엔 컨트롤 보임 → 1초 후 (재생 중이면) 숨김 시작
+        # 진입 직후엔 컨트롤 보임 → 3초 후 (재생 중이면) 숨김 시작
         _reposition_controls()
         if self.player.is_playing():
             hide_timer.start()
@@ -1768,18 +1768,22 @@ class VideoTab(QWidget):
         pos = holder.mapFromGlobal(QCursor.pos())
         if not (0 <= pos.x() < holder.width() and 0 <= pos.y() < holder.height()):
             return
-        in_bottom_band = pos.y() >= holder.height() - _FS_BOTTOM_BAND_PX
-        if in_bottom_band:
+        # 어떤 움직임이든 숨겨져 있던 바를 다시 보여줌 (YouTube/VLC 표준 — 하단으로
+        # 내려가야만 보이던 이전 동작 대신 화면 어디서나 움직이면 복원).
+        if self.controls.isHidden() or self.timeline.isHidden():
             self.controls.show()
             self.controls.raise_()
             self.timeline.show()
             self.timeline.raise_()
-            if self._fs_hide_timer is not None:
-                self._fs_hide_timer.stop()
-        else:
-            # 하단 밖 — 재생 중이면 1초 후 숨김. 일시정지 상태면 그대로 둠.
-            if self.player.is_playing() and self._fs_hide_timer is not None:
-                self._fs_hide_timer.start()
+        if self._fs_hide_timer is None:
+            return
+        in_bottom_band = pos.y() >= holder.height() - _FS_BOTTOM_BAND_PX
+        if in_bottom_band:
+            # 컨트롤 위에 마우스가 있으면 조작 중 — 숨김 보류 (계속 표시).
+            self._fs_hide_timer.stop()
+        elif self.player.is_playing():
+            # 그 외 영역 — 재생 중이면 마지막 움직임 후 3초 뒤 숨김 (매 움직임마다 리셋).
+            self._fs_hide_timer.start()
 
     def _fs_maybe_hide_controls(self) -> None:
         if self._fullscreen_holder is None:

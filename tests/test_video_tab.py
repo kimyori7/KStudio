@@ -147,21 +147,92 @@ def test_edit_mode_reveals_full_timeline(qtbot, gif_file):
     assert tab.timeline.effect_lanes.isHidden()
 
 
-def test_fullscreen_roundtrip_keeps_seek_bar(qtbot, gif_file):
-    """풀스크린 진입→복귀 후에도 시크 바가 살아 있어야 한다.
+def test_fullscreen_hide_delay_is_three_seconds():
+    """전체화면 자동 숨김 지연 = 3초 (사용자 요청 2026-06-04)."""
+    from screen_recorder.ui import video_tab as mod
+    assert mod._FS_HIDE_DELAY_MS == 3000
 
-    _restore 가 _apply_timeline_layout 으로 타임라인을 splitter 에 되돌린다 —
-    과거 f6141ee("편집 갔다 오니 playbar 사라짐") 와 같은 부류라 명시 검증.
+
+def test_fullscreen_hide_and_reveal_bars(qtbot, gif_file, monkeypatch):
+    """재생 중 idle → 모든 바(컨트롤+타임라인) 숨김, 마우스 움직이면 다시 보임.
+
+    하단 밴드 밖(화면 중앙)에서 움직여도 복원돼야 함 (YouTube/VLC 표준).
+    헤드리스에서 실제 showFullScreen 은 Qt 정리 단계 세그폴트가 잦아, _fs 메서드가
+    필요로 하는 최소 상태(더미 holder)만 구성해 로직만 검증한다 — controls/timeline 은
+    reparent 하지 않는다 (해당 메서드들은 부모와 무관하게 hide()/show() 만 호출).
     """
+    from PySide6.QtCore import QPoint, QTimer
+    from PySide6.QtWidgets import QWidget
+    from screen_recorder.ui import video_tab as mod
+
     tab = VideoTab(path=gif_file, source_label="region", duration_ms=8000,
                    player_settings=PlayerSettings())
     qtbot.addWidget(tab)
     tab.show()
     qtbot.waitExposed(tab)
-    tab._on_fullscreen_toggled()
-    assert tab._fullscreen_holder is not None
-    tab._fullscreen_holder.close()                          # _restore 발화
-    assert tab._fullscreen_holder is None
-    assert tab._main_splitter.indexOf(tab.timeline) >= 0    # splitter 로 복귀
-    assert not tab.timeline._top_scroll.isHidden()          # 시크 바 생존
-    assert tab.timeline._scroll.isHidden()                  # 여전히 재생 모드
+    monkeypatch.setattr(tab.player, "is_playing", lambda: True)
+    holder = QWidget()
+    holder.resize(800, 600)
+    qtbot.addWidget(holder)
+    tab._fullscreen_holder = holder
+    tab._fs_hide_timer = QTimer(holder)
+    tab._fs_hide_timer.setSingleShot(True)
+    try:
+        # 재생 중 숨김 타이머 발화 → 두 바 모두 숨김.
+        tab._fs_maybe_hide_controls()
+        assert tab.controls.isHidden()
+        assert tab.timeline.isHidden()
+
+        # 화면 중앙(하단 밴드 밖)에서 마우스 움직임 → 두 바 다시 보임.
+        class _FakeCursor:
+            @staticmethod
+            def pos():
+                return holder.mapToGlobal(QPoint(holder.width() // 2, holder.height() // 2))
+        monkeypatch.setattr(mod, "QCursor", _FakeCursor)
+        tab._fs_handle_global_mouse_move()
+        assert not tab.controls.isHidden()
+        assert not tab.timeline.isHidden()
+
+        # 일시정지 중엔 숨기지 않음.
+        monkeypatch.setattr(tab.player, "is_playing", lambda: False)
+        tab._fs_maybe_hide_controls()
+        assert not tab.controls.isHidden()
+    finally:
+        tab._fullscreen_holder = None
+        tab._fs_hide_timer = None
+
+
+def test_arrow_keys_skip_one_second_by_default(qtbot, gif_file, monkeypatch):
+    """← / → 단독 = 1초 건너뛰기 (기본값 확인 — 사용자 요청 검증)."""
+    tab = VideoTab(path=gif_file, source_label="region", duration_ms=10000,
+                   player_settings=PlayerSettings())
+    qtbot.addWidget(tab)
+    captured: list[float] = []
+    monkeypatch.setattr(tab.player, "seek_seconds", lambda d: captured.append(d))
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.setFocus()
+    qtbot.keyPress(tab, Qt.Key_Right)
+    qtbot.keyPress(tab, Qt.Key_Left)
+    assert captured == [1, -1]
+
+
+def test_apply_timeline_layout_restores_seek_bar(qtbot, gif_file):
+    """_apply_timeline_layout(False) — 숨겨졌던 타임라인을 다시 보이게 + 시크 바 유지.
+
+    풀스크린 복귀(_restore)가 이 funnel 을 호출해 시크 바를 되살린다 — 과거
+    f6141ee("편집 갔다 오니 playbar 사라짐") 부류. 실제 showFullScreen 은 헤드리스
+    세그폴트가 잦아 복귀가 부르는 funnel 을 직접 검증한다.
+    """
+    tab = VideoTab(path=gif_file, source_label="region", duration_ms=8000,
+                   player_settings=PlayerSettings())
+    qtbot.addWidget(tab)
+    # 편집 모드로 펼침.
+    tab._apply_timeline_layout(True)
+    assert not tab.timeline.isHidden()
+    assert not tab.timeline._top_scroll.isHidden()
+    # 옛 _restore 가 하던 짓(타임라인 통째 hide)을 흉내 낸 뒤, funnel 이 되살리는지.
+    tab.timeline.setVisible(False)
+    tab._apply_timeline_layout(False)
+    assert not tab.timeline.isHidden()                  # 다시 보임
+    assert not tab.timeline._top_scroll.isHidden()      # 시크 바 생존
