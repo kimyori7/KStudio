@@ -387,6 +387,15 @@ class VideoTab(QWidget):
         self._progress_dlg = None
         self._autoedit_button.clicked.connect(self._start_autoedit)
 
+        # 영상 재생 단축키(←/→ seek)를 포커스가 컨트롤·타임라인·풀스크린 holder 에 있어도
+        # 받도록 앱 전역 이벤트 필터를 영구 설치. VideoTab.keyPressEvent 는 VideoTab 이
+        # 직접 포커스일 때만 발화 → 편집 모드/풀스크린에서 방향키가 안 먹히던 회귀 해결.
+        # (eventFilter 가 mouseMove 풀스크린 자동 숨김도 같이 처리.) QObject 파괴 시
+        # Qt 가 필터를 자동 제거하므로 명시적 해제 불필요.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
     # ---------- API ----------
     def source_label(self) -> str:
         return self._source_label
@@ -1685,9 +1694,8 @@ class VideoTab(QWidget):
 
         # 마우스 위치 추적 — _VideoSurface 까지 mouseTracking 을 전파하고 후크하는
         # 것은 깨지기 쉽다 (페인트만 하던 위젯에 입력 이벤트 흐름이 추가됨). 대신
-        # QApplication 에 eventFilter 를 달아 mouseMove 이벤트를 한 곳에서 처리.
-        # 풀스크린 진입 → 등록, 종료 → 해제하는 lifecycle 이라 비용도 작다.
-        QApplication.instance().installEventFilter(self)
+        # __init__ 에서 이미 영구 설치한 QApplication eventFilter 가 mouseMove 를 한
+        # 곳에서 처리한다 (풀스크린일 때만 _fs_handle_global_mouse_move 동작).
 
         def _restore():
             # player + controls 를 원래 자리에 복귀. 멱등 — 한 번만 실행되도록 가드.
@@ -1695,10 +1703,7 @@ class VideoTab(QWidget):
                 return
             self._fullscreen_holder = None
             self._fs_hide_timer = None
-            try:
-                QApplication.instance().removeEventFilter(self)
-            except (AttributeError, RuntimeError):
-                pass
+            # eventFilter 는 __init__ 에서 영구 설치 — 여기서 제거하지 않는다.
             try:
                 self.player.setParent(None)
                 self.controls.setParent(None)
@@ -1751,13 +1756,55 @@ class VideoTab(QWidget):
 
     # ---------- 풀스크린 컨트롤 오버레이 ----------
     def eventFilter(self, obj, ev) -> bool:  # type: ignore[override]
-        """QApplication 전역 필터 — 풀스크린 동안만 활성. 마우스가 holder 내부에서
-        움직일 때 컨트롤 표시/숨김을 결정한다. 다른 이벤트는 모두 그대로 통과.
+        """QApplication 전역 필터 (영구 설치).
+
+        - MouseMove: 풀스크린일 때만 컨트롤 표시/숨김 결정.
+        - KeyPress: ←/→ 를 활성 영상 탭의 seek 으로 라우팅 — 포커스가 컨트롤·타임라인·
+          풀스크린 holder 안일 때. VideoTab.keyPressEvent 가 VideoTab 직접 포커스에만
+          발화하던 한계(편집 모드/풀스크린에서 방향키 미작동) 보완.
+        다른 이벤트는 모두 그대로 통과.
         """
-        if (self._fullscreen_holder is not None
-                and ev.type() == QEvent.MouseMove):
-            self._fs_handle_global_mouse_move()
+        et = ev.type()
+        if et == QEvent.MouseMove:
+            if self._fullscreen_holder is not None:
+                self._fs_handle_global_mouse_move()
+        elif et == QEvent.KeyPress and self._route_seek_key(obj, ev):
+            return True
         return super().eventFilter(obj, ev)
+
+    def _route_seek_key(self, obj, ev) -> bool:
+        """←/→ 를 이 영상 탭의 seek 으로 라우팅. 처리했으면 True(소비).
+
+        판정 기준은 이벤트 수신 대상(obj = 포커스 위젯) — 키는 포커스 위젯으로 배달되므로
+        focusWidget() 전역 조회보다 정확하고 헤드리스에서도 안정적이다. 포커스가
+        (a) 이 VideoTab subtree(또는 탭 자신) 또는 (b) 풀스크린 holder 안일 때만 작동 —
+        다른 탭·채팅·라이브러리·인스펙터엔 간섭하지 않는다. 텍스트·숫자 입력·목록 위젯엔
+        방향키를 넘겨 커서/선택 이동을 보호한다. keyPressEvent 가 modifier(Shift/Ctrl)에
+        따라 skip 단위를 정하고 accept 한다.
+        """
+        if ev.key() not in (Qt.Key_Left, Qt.Key_Right):
+            return False
+        from PySide6.QtWidgets import (
+            QAbstractItemView, QAbstractSpinBox, QLineEdit, QPlainTextEdit, QTextEdit,
+            QWidget,
+        )
+        # 위젯 단위 배달만 처리 (QWindow 등 비위젯 수신은 위젯 배달에서 다시 잡힘).
+        target = obj if isinstance(obj, QWidget) else None
+        if target is None:
+            return False
+        if isinstance(
+            target,
+            (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QAbstractItemView),
+        ):
+            return False
+        if self._fullscreen_holder is not None:
+            in_context = True   # 풀스크린 — 위 입력 위젯 외엔 항상 seek
+        else:
+            in_context = target is self or self.isAncestorOf(target)
+        if not in_context:
+            return False
+        self.keyPressEvent(ev)
+        return ev.isAccepted()
 
     def _fs_handle_global_mouse_move(self) -> None:
         holder = self._fullscreen_holder

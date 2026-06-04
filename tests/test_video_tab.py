@@ -217,6 +217,60 @@ def test_arrow_keys_skip_one_second_by_default(qtbot, gif_file, monkeypatch):
     assert captured == [1, -1]
 
 
+def test_arrow_seeks_when_child_widget_focused(qtbot, gif_file, monkeypatch):
+    """자식 위젯(컨트롤 버튼 등)이 포커스여도 ← / → 가 seek 해야 한다.
+
+    회귀(2026-06-04): 방향키 처리가 VideoTab.keyPressEvent 에만 있어 VideoTab 이 직접
+    포커스일 때만 동작 → 편집 모드/풀스크린(포커스가 자식·holder)에서 안 먹힘.
+    """
+    tab = VideoTab(path=gif_file, source_label="region", duration_ms=10000,
+                   player_settings=PlayerSettings())
+    qtbot.addWidget(tab)
+    captured: list[float] = []
+    monkeypatch.setattr(tab.player, "seek_seconds", lambda d: captured.append(d))
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.controls.play_btn.setFocus()      # 포커스를 자식 버튼으로
+    qtbot.keyClick(tab.controls.play_btn, Qt.Key_Right)
+    qtbot.keyClick(tab.controls.play_btn, Qt.Key_Left)
+    assert captured == [1, -1]
+
+
+def test_shift_arrow_medium_skip_with_child_focus(qtbot, gif_file, monkeypatch):
+    """Shift + ← / → = 중간 건너뛰기(5초) — 자식 포커스 상태에서도."""
+    tab = VideoTab(path=gif_file, source_label="region", duration_ms=20000,
+                   player_settings=PlayerSettings(skip_seconds=1, skip_medium_seconds=5))
+    qtbot.addWidget(tab)
+    captured: list[float] = []
+    monkeypatch.setattr(tab.player, "seek_seconds", lambda d: captured.append(d))
+    tab.show()
+    qtbot.waitExposed(tab)
+    tab.controls.play_btn.setFocus()
+    qtbot.keyClick(tab.controls.play_btn, Qt.Key_Right, modifier=Qt.ShiftModifier)
+    assert captured == [5]
+
+
+def test_arrow_in_external_text_input_not_hijacked(qtbot, gif_file, monkeypatch):
+    """영상 탭 밖 텍스트 입력에 포커스면 방향키를 가로채지 않는다 (커서 이동 보호)."""
+    from PySide6.QtWidgets import QLineEdit
+    tab = VideoTab(path=gif_file, source_label="region", duration_ms=10000,
+                   player_settings=PlayerSettings())
+    qtbot.addWidget(tab)
+    captured: list[float] = []
+    monkeypatch.setattr(tab.player, "seek_seconds", lambda d: captured.append(d))
+    tab.show()
+    qtbot.waitExposed(tab)
+    edit = QLineEdit()
+    qtbot.addWidget(edit)
+    edit.setText("ab")
+    edit.show()
+    qtbot.waitExposed(edit)
+    edit.setFocus()
+    edit.end(False)                        # 커서 끝으로
+    qtbot.keyClick(edit, Qt.Key_Left)      # 커서만 왼쪽 — seek 발생 금지
+    assert captured == []
+
+
 def test_apply_timeline_layout_restores_seek_bar(qtbot, gif_file):
     """_apply_timeline_layout(False) — 숨겨졌던 타임라인을 다시 보이게 + 시크 바 유지.
 
