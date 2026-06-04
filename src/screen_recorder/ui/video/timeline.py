@@ -441,20 +441,32 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.set_out_ms(out_ms)
 
     def set_edit_mode(self, on: bool) -> None:
-        # 편집 모드 OFF — VideoTimeline 통째로 숨김. splitter 가 player 에 전체 공간 양보 →
-        # 일반 영상 플레이어처럼 보임. 사용자 의도: "편집 모드 끄면 일반 플레이어처럼
-        # 보이게 바도 내려가게."
+        # 시크 바(슬라이더)는 두 모드 모두에서 보여야 한다 — 일반 재생 모드도 곰/팟
+        # 플레이어처럼 위치를 끌 수 있는 시크 바가 필요. 편집 모드에서만 추가로 영상
+        # 트랙 + 효과 줄을 펼친다.
+        # (2026-06-04 회귀 fix: 이전엔 편집 OFF 시 _top_scroll 까지 숨겨 시크 바가
+        #  통째로 사라졌다 — 사용자 보고 "영상 모드에서 재생 바가 어디갔지?")
         # trim_marker_lane 은 Stage D 에서 layout 에서 제외됨 (segment 트랙으로 흡수).
         # parent 없는 widget 이라 setVisible(True) 하면 별도 top-level 창으로 떠 버리는 회귀.
         # → 토글 대상에서 빼고 영구히 숨김 유지.
         self.video_track_lane.setVisible(on)
         self.effect_lanes.setVisible(on)
-        # 편집 OFF 시 top_scroll(슬라이더+영상바) + bottom_scroll(효과 lanes) 모두 hide.
-        # ON 시 top_scroll 만 노출 (effect_lanes 자체는 ON 분기에서 다시 visible).
-        self._top_scroll.setVisible(on)
+        # _top_scroll(슬라이더 + 영상 트랙)은 항상 노출 — 슬라이더는 두 모드 공통이고,
+        # video_track_lane 은 위에서 on 일 때만 visible 이라 OFF 면 _top_scroll 안에
+        # 슬라이더 한 줄만 남는다. _scroll(효과 lanes)은 편집 모드에서만.
+        self._top_scroll.setVisible(True)
         self._scroll.setVisible(on)
         # sticky_top 영역에 video_track 이 추가/제거되므로 높이 갱신.
         self._sync_top_height()
+
+    def playback_height(self) -> int:
+        """재생 모드에서 타임라인이 splitter 에서 차지해야 할 높이 — 시크 바 한 줄.
+
+        VideoTab 이 편집 OFF 시 타임라인의 max 높이를 이 값으로 묶어, player 가 나머지
+        세로 공간을 모두 차지하게 한다 (일반 플레이어 모습 + 시크 바 유지).
+        """
+        h = self.slider_lane.height()
+        return h if h > 0 else _LANE_HEIGHT
 
     # ---------- 내부 ----------
     def _on_trim_in_changed(self, ms: int) -> None:

@@ -30,6 +30,9 @@ _FS_BOTTOM_BAND_PX = 180          # 하단에서 이 높이 안에 마우스가 
 # ThumbnailService 결과 라우팅 — segment_id 가 이 prefix 로 시작하면 broll PIP 미리보기용.
 _BROLL_THUMB_PREFIX = "broll:"
 
+# Qt 의 QWIDGETSIZE_MAX — setMaximumHeight 제한 해제용 (편집 모드 진입 시).
+_WIDGET_MAX_H = 16777215
+
 
 def _format_ms_label(ms: int) -> str:
     s = max(0, ms // 1000)
@@ -200,13 +203,11 @@ class VideoTab(QWidget):
         layout.setSpacing(0)
         layout.addWidget(self._main_splitter)
 
-        # 편집 모드 OFF 일 땐 trim/effects 숨김 (slider 만 보임)
+        # 편집 모드 OFF 일 땐 trim/effects 숨김 (시크 바만 보임 — 일반 플레이어 모습)
         self.timeline.set_edit_mode(False)
-        # 편집 OFF 시 timeline 자체를 hide — splitter 가 timeline 영역을 자동으로
-        # 거둬들임 (handle 도 사라지지 않고 한쪽 끝으로 이동). stretchFactor 는 init 의
-        # 4:1 그대로 유지 — 편집 ON 시 사용자가 드래그로 비율 조절 가능 + 창 리사이즈
-        # 시 양쪽이 비율로 늘어남.
-        self.timeline.setVisible(False)
+        # 타임라인은 항상 visible — 재생 모드엔 시크 바 한 줄만 보이도록 max 높이를 묶고,
+        # 편집 모드 진입 시 그 제한을 풀어 영상 트랙·효과 줄까지 편다 (_apply_timeline_layout).
+        self._apply_timeline_layout(False)
 
         # 모델 → 컨트롤
         self.player.duration_changed.connect(self.duration_resolved.emit)
@@ -392,11 +393,36 @@ class VideoTab(QWidget):
 
     # ---------- 편집 모드 API ----------
     def _on_edit_mode_for_splitter(self, on: bool) -> None:
-        """편집 OFF 시 timeline widget hide → splitter 가 자동으로 영역 거둬들임.
-        편집 ON 시 다시 show. setStretchFactor 는 init 의 4:1 유지 — 사용자가
-        드래그로 조절한 비율은 보존 (탭 전환·창 리사이즈 시 리셋 안 함).
+        """편집 모드 토글 시 타임라인 레이아웃 갱신 — 단일 funnel(_apply_timeline_layout).
+
+        재생 모드: 타임라인 = 시크 바 한 줄(작은 고정 높이). 편집 모드: 영상 트랙 +
+        효과 줄까지 펼침. 시크 바 자체는 두 모드 모두에서 보임.
         """
-        self.timeline.setVisible(on)
+        self._apply_timeline_layout(on)
+
+    def _apply_timeline_layout(self, edit_on: bool) -> None:
+        """편집 모드에 따라 splitter 에서 타임라인이 차지할 세로 공간을 결정한다.
+
+        타임라인 위젯 자체는 항상 visible — 시크 바는 재생/편집 공통이라 숨기면 안 됨.
+        재생 모드에선 타임라인 max 높이를 시크 바 한 줄로 묶어 player 가 나머지 세로를
+        모두 차지하게 하고(일반 플레이어 모습), 편집 모드에선 그 제한을 풀고
+        preview:timeline 을 적당한 비율로 배분한다.
+
+        2026-06-04 회귀 fix: 이전엔 편집 OFF 시 타임라인을 통째로 hide 해 시크 바까지
+        사라졌다. 이 단일 funnel 이 init / 편집 토글 / 풀스크린 복귀 세 진입점을 처리.
+        """
+        self.timeline.setVisible(True)
+        if edit_on:
+            # 높이 제한 해제 + 편집용 비율 배분 (preview 약 2/3, timeline 약 1/3).
+            self.timeline.setMaximumHeight(_WIDGET_MAX_H)
+            total = self._main_splitter.height()
+            if total > 0:
+                tl = max(220, total // 3)
+                tl = min(tl, max(160, total - 160))
+                self._main_splitter.setSizes([total - tl, tl])
+        else:
+            # 시크 바 한 줄 높이로 묶음 — splitter 가 player 에 나머지 공간을 양보.
+            self.timeline.setMaximumHeight(self.timeline.playback_height())
 
     def is_edit_mode_on(self) -> bool:
         return self._edit_controller.is_edit_mode_on()
@@ -1687,9 +1713,9 @@ class VideoTab(QWidget):
             preview_layout.insertWidget(player_index, self.player, stretch=1)
             preview_layout.insertWidget(ctrl_index, self.controls)
             self._main_splitter.insertWidget(timeline_index, self.timeline)
-            # 편집 OFF 일 때 timeline 은 다시 hide 되어야 함 — _on_edit_mode_for_splitter
-            # 가 사이드카 이벤트 의존이라 명시적으로 갱신.
-            self.timeline.setVisible(self.is_edit_mode_on())
+            # 풀스크린 복귀 후 타임라인 레이아웃을 현재 편집 모드에 맞게 재적용 —
+            # 재생 모드면 시크 바 한 줄, 편집 모드면 전체 (_apply_timeline_layout 단일 funnel).
+            self._apply_timeline_layout(self.is_edit_mode_on())
             self.player.show()
             self.controls.show()
             self.player.setFocus()
