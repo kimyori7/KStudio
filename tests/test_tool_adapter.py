@@ -109,6 +109,34 @@ def test_parse_tool_calls_hermes_multiple():
     assert calls[0]["id"] != calls[1]["id"]
 
 
+def test_parse_tool_calls_accepts_bare_json_lines_from_qwen3_vl():
+    """Qwen3-VL 2B often omits <tool_call> tags and emits JSON lines."""
+    from screen_recorder.agent.backends.tool_adapter import parse_tool_calls
+    text = (
+        '{"name": "get_video_state", "arguments": {}}\n'
+        '{"name": "submit_plan", "arguments": {"summary": "cut", "markdown": "remove 10-12s"}}\n'
+        '{"name": "propose_effect", "arguments": {"type": "cut", "payload": {"in_ms": 10000, "out_ms": 12000}}}'
+    )
+    calls = parse_tool_calls(text)
+    assert [c["name"] for c in calls] == [
+        "get_video_state",
+        "submit_plan",
+        "propose_effect",
+    ]
+    assert calls[2]["arguments"]["payload"] == {"in_ms": 10000, "out_ms": 12000}
+
+
+def test_parse_tool_calls_accepts_openai_function_shape():
+    """Some local templates emit an OpenAI-ish function object."""
+    from screen_recorder.agent.backends.tool_adapter import parse_tool_calls
+    calls = parse_tool_calls(
+        '{"function": {"name": "list_proposals", "arguments": "{}"}}'
+    )
+    assert len(calls) == 1
+    assert calls[0]["name"] == "list_proposals"
+    assert calls[0]["arguments"] == {}
+
+
 def test_parse_tool_calls_returns_empty_when_no_tags():
     """일반 텍스트 응답 — 빈 list."""
     from screen_recorder.agent.backends.tool_adapter import parse_tool_calls

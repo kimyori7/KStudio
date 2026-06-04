@@ -503,6 +503,15 @@ class TransformersBackend:
                     conversation.append(result_msg)
                     self._history.append(result_msg)
 
+                terminal_tools = {"list_proposals", "apply_proposals", "discard_proposals"}
+                if (
+                    self._tool_strategy == "prompted"
+                    and len(tool_calls) > 1
+                    and tool_calls[-1].get("name") in terminal_tools
+                ):
+                    emit_fn(AgentEvent(kind="done"))
+                    return
+
             # 루프 한계 초과 — 안전망.
             emit_fn(AgentMessage(
                 role="system",
@@ -550,7 +559,7 @@ class TransformersBackend:
         발생 가능하나 현재 테스트 범위 밖 — 향후 정밀 prefix 감지로 개선 가능.
         """
         from transformers import TextIteratorStreamer
-        from .tool_adapter import parse_tool_calls
+        from .tool_adapter import parse_tool_calls, strip_tool_call_tags
 
         tools_arg = self._openai_tools if self._tool_strategy == "official" else None
 
@@ -644,7 +653,12 @@ class TransformersBackend:
                 continue
             chunks.append(chunk)
             if not tool_call_seen:
-                if "<tool_call>" in (emitted_so_far + chunk):
+                generated_so_far = "".join(chunks)
+                leading = generated_so_far.lstrip()
+                if (
+                    "<tool_call>" in (emitted_so_far + chunk)
+                    or (self._openai_tools and not emitted_so_far and leading.startswith("{"))
+                ):
                     tool_call_seen = True
                 else:
                     emit_fn(AgentMessage(role="assistant", text=chunk))
@@ -681,6 +695,10 @@ class TransformersBackend:
         except Exception:
             pass
         tool_calls = parse_tool_calls(full_text) if self._openai_tools else []
+        if tool_call_seen and not tool_calls:
+            visible = strip_tool_call_tags(full_text)
+            if visible:
+                emit_fn(AgentMessage(role="assistant", text=visible))
         # 진단 — tool_call 파싱 결과 로그.
         if "<tool_call>" in full_text:
             _log.info("parse_tool_calls: %d call(s) parsed from output", len(tool_calls))

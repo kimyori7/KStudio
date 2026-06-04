@@ -23,7 +23,7 @@ from typing import Optional
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QBuffer, QEvent, QIODevice, Signal, Slot
-from PySide6.QtGui import QKeySequence, QKeyEvent, QPixmap, QImage
+from PySide6.QtGui import QKeySequence, QKeyEvent, QPixmap, QImage, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDockWidget, QFrame, QHBoxLayout, QLabel,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -186,6 +186,30 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help",    "사용 가능한 명령 목록"),
 ]
 
+AGENT_PROMPT_PRESETS: tuple[tuple[str, str], ...] = (
+    (
+        "무음 컷",
+        "현재 영상에서 긴 침묵과 의미 없는 공백을 찾아 컷 후보를 제안해줘. "
+        "먼저 영상 상태와 사이드카 요약을 확인하고, 적용 전에는 어떤 구간을 자를지 계획으로 보여줘.",
+    ),
+    (
+        "자막",
+        "현재 영상의 음성을 전사해서 핵심 문장 위주로 읽기 쉬운 자막을 제안해줘. "
+        "너무 긴 문장은 나누고, 적용 전 계획에 자막 구간과 문구를 요약해줘.",
+    ),
+    (
+        "강조",
+        "시청자가 봐야 할 버튼, 메뉴, 텍스트가 있는 구간을 찾아 확대나 화살표 효과를 제안해줘. "
+        "좌표는 프레임을 확인해서 정규화하고, 적용 전 preview로 어긋남을 확인해줘.",
+    ),
+    (
+        "요약",
+        "현재 영상의 길이, 적용된 효과, 컷 예상 출력 길이를 확인해서 편집 상태를 짧게 요약해줘. "
+        "수정은 하지 말고 문제가 될 만한 부분만 알려줘.",
+    ),
+)
+
+
 class ChatPanel(QDockWidget):
     """Claude 와의 대화 패널. MainWindow 에 right-dock 으로 부착."""
 
@@ -301,7 +325,7 @@ class ChatPanel(QDockWidget):
                 display = f"{display} (설치 필요)"
             self._model_combo.addItem(display, userData=meta.id)
         # 초기 인덱스 — initial_model_id (저장된 ID) 매칭, 없으면 agent 의 현재 model,
-        # 그것도 없으면 DEFAULT_MODEL_ID (Sonnet).
+        # 그것도 없으면 DEFAULT_MODEL_ID (로컬 Qwen3-VL 2B).
         desired_id = initial_model_id
         if not desired_id and self._agent is not None:
             desired_id = getattr(self._agent, "_model", None)
@@ -413,6 +437,22 @@ class ChatPanel(QDockWidget):
         v.addWidget(self._attach_row)
 
         # ---- 입력 행 ----
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(6)
+        for label, prompt in AGENT_PROMPT_PRESETS:
+            btn = QPushButton(label)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(prompt)
+            btn.setStyleSheet(
+                "QPushButton{background:#111827;color:#cbd5e1;border:1px solid #334155;"
+                "border-radius:5px;padding:3px 8px;font-size:11px;}"
+                "QPushButton:hover{background:#1f2937;color:#f8fafc;}"
+            )
+            btn.clicked.connect(lambda _checked=False, p=prompt: self._set_quick_prompt(p))
+            quick_row.addWidget(btn)
+        quick_row.addStretch(1)
+        v.addLayout(quick_row)
+
         input_row = QHBoxLayout()
         input_row.setSpacing(6)
         input_row.setAlignment(Qt.AlignBottom)
@@ -940,6 +980,13 @@ class ChatPanel(QDockWidget):
                 text=f"⚠ 설치/다운로드 중단: {msg}. 모델을 이전 선택으로 되돌립니다.",
             ))
             self._fallback_combo_to(fallback_model_id)
+
+    def _set_quick_prompt(self, prompt: str) -> None:
+        self._input.setPlainText(prompt)
+        self._input.setFocus(Qt.OtherFocusReason)
+        cursor = self._input.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self._input.setTextCursor(cursor)
 
     def _on_submit(self) -> None:
         text = self._input.toPlainText().strip()

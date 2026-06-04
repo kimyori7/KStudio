@@ -99,6 +99,55 @@ def openai_to_mcp_name(name: str) -> str:
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
 
+def _as_tool_call(parsed: Any, idx: int) -> dict[str, Any] | None:
+    if not isinstance(parsed, dict):
+        return None
+
+    name = parsed.get("name")
+    args = parsed.get("arguments", {})
+
+    if not isinstance(name, str):
+        name = parsed.get("tool_name")
+    if not isinstance(args, dict):
+        args = parsed.get("parameters", {})
+
+    fn = parsed.get("function")
+    if (not isinstance(name, str) or not isinstance(args, dict)) and isinstance(fn, dict):
+        name = fn.get("name")
+        raw_args = fn.get("arguments", {})
+        if isinstance(raw_args, str):
+            try:
+                raw_args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                raw_args = {}
+        args = raw_args
+
+    if not isinstance(name, str) or not isinstance(args, dict):
+        return None
+    return {"id": f"tu_{idx}", "name": name, "arguments": args}
+
+
+def _json_objects_outside_spans(text: str, spans: list[tuple[int, int]]) -> list[tuple[int, Any]]:
+    decoder = json.JSONDecoder()
+    objects: list[tuple[int, Any]] = []
+    i = 0
+    while i < len(text):
+        if any(start <= i < end for start, end in spans):
+            i += 1
+            continue
+        if text[i] != "{":
+            i += 1
+            continue
+        try:
+            parsed, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        objects.append((i, parsed))
+        i = max(end, i + 1)
+    return objects
+
+
 def parse_tool_calls(text: str) -> list[dict[str, Any]]:
     """Qwen / Hermes 응답 텍스트에서 <tool_call>{...}</tool_call> 추출.
 
@@ -107,21 +156,24 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
 
     'id' 는 호출자가 tool_result 회신 시 매칭용. tu_0, tu_1, ... 순차 부여.
     """
-    calls: list[dict[str, Any]] = []
-    for idx, match in enumerate(_TOOL_CALL_RE.finditer(text)):
+    parsed_items: list[tuple[int, Any]] = []
+    tag_spans: list[tuple[int, int]] = []
+    for match in _TOOL_CALL_RE.finditer(text):
+        tag_spans.append(match.span())
         raw = match.group(1).strip()
         try:
-            parsed = json.loads(raw)
+            parsed_items.append((match.start(), json.loads(raw)))
         except json.JSONDecodeError:
             # 다음 valid 태그 시도 — turn 전체 망치지 않도록.
             continue
-        if not isinstance(parsed, dict):
-            continue
-        name = parsed.get("name")
-        args = parsed.get("arguments", {})
-        if not isinstance(name, str) or not isinstance(args, dict):
-            continue
-        calls.append({"id": f"tu_{idx}", "name": name, "arguments": args})
+    parsed_items.extend(_json_objects_outside_spans(text, tag_spans))
+    parsed_items.sort(key=lambda item: item[0])
+
+    calls: list[dict[str, Any]] = []
+    for _pos, parsed in parsed_items:
+        call = _as_tool_call(parsed, len(calls))
+        if call is not None:
+            calls.append(call)
     return calls
 
 

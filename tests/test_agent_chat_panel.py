@@ -8,7 +8,7 @@ import pytest
 
 from screen_recorder.agent.runtime import AgentEvent, AgentMessage
 from screen_recorder.ui.agent.chat_panel import (
-    SLASH_COMMANDS, ChatPanel, _context_limit_for,
+    AGENT_PROMPT_PRESETS, SLASH_COMMANDS, ChatPanel, _context_limit_for,
 )
 
 
@@ -99,6 +99,12 @@ def test_non_slash_text_emits_user_submitted(panel, qtbot):
 # ============================================================
 # 컨텍스트 사용량 표시
 # ============================================================
+def test_quick_prompt_preset_fills_input(panel):
+    _label, prompt = AGENT_PROMPT_PRESETS[0]
+    panel._set_quick_prompt(prompt)
+    assert panel._input.toPlainText() == prompt
+
+
 def test_context_summary_empty_when_no_response_yet(panel):
     """아직 응답 못 받았으면 context summary 빈 string."""
     assert panel._context_summary() == ""
