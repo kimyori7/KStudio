@@ -264,10 +264,16 @@ def save(settings: AppSettings, path: Path) -> None:
                 _prune_old_backups(path)
     except OSError:
         pass   # 백업 실패해도 메인 저장은 진행.
-    path.write_text(
-        json.dumps(asdict(settings), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    data = json.dumps(asdict(settings), indent=2, ensure_ascii=False)
+    # 원자적 저장: 임시 파일에 먼저 쓰고 flush+fsync 후 os.replace 로 교체한다.
+    # 이렇게 하면 쓰는 도중(절전모드 진입 등) 프로세스가 멈춰도 원본 settings.json
+    # 은 0바이트로 손상되지 않는다. (예전엔 write_text 가 원본을 먼저 비웠다.)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 _MAX_BACKUPS = 24   # ~하루치 백업 (시간당 1개). 그 이상은 prune.
@@ -304,10 +310,50 @@ def settings_path() -> Path:
     return Path.home() / "AppData" / "Local" / "KStudio" / "settings.json"
 
 
+def _read_settings_dict(path: Path) -> dict:
+    """settings.json 을 dict 로 읽는다. 비었거나 깨졌으면 ValueError."""
+    text = path.read_text(encoding="utf-8")
+    raw = json.loads(text)   # 빈 파일이면 JSONDecodeError
+    if not isinstance(raw, dict):
+        raise ValueError("settings 최상위가 dict 가 아님")
+    return raw
+
+
+def _latest_backup(path: Path) -> Path | None:
+    """가장 최근 settings.json.bak.YYYYMMDD_HH 백업 경로 (없으면 None)."""
+    stem = path.name + ".bak."
+    try:
+        cands = sorted(
+            (p for p in path.parent.iterdir() if p.name.startswith(stem)),
+            key=lambda p: p.name,
+        )
+    except OSError:
+        return None
+    return cands[-1] if cands else None
+
+
 def load(path: Path) -> AppSettings:
     if not path.exists():
         return AppSettings()
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = _read_settings_dict(path)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
+        # settings.json 이 비었거나 깨진 경우(절전모드 중 저장 중단 등):
+        # 1) 깨진 원본을 .corrupt 로 백업해 둔다.
+        # 2) 가장 최근 hourly 백업(.bak.*)이 있으면 그걸로 복구한다.
+        # 3) 백업도 없으면 기본 설정으로 시작 (크래시하지 않음).
+        try:
+            path.replace(path.with_suffix(path.suffix + ".corrupt"))
+        except OSError:
+            pass
+        bak = _latest_backup(path)
+        if bak is not None:
+            try:
+                raw = _read_settings_dict(bak)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
+                return AppSettings()
+        else:
+            return AppSettings()
     settings = _from_dict(AppSettings, raw)
     # 마이그레이션: 기존 사용자는 settings.json 이 이미 있는데 preset_name 필드가 없거나
     # 비어 있을 수 있다. 첫 실행 다이얼로그를 안 띄우도록 'custom' 으로 자동 마킹.

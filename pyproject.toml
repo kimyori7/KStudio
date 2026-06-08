@@ -14,6 +14,9 @@ dependencies = [
     "pywin32>=306; sys_platform == 'win32'",
     "scenedetect>=0.6",
     "librosa>=0.10",
+    # 인앱 Claude 에이전트(채팅/도구). 누락 시 앱이 시작 단계에서 ModuleNotFoundError
+    # 로 죽는다 (ui/agent → agent/tools 가 import 단계에서 사용). 빌드 환경에 필수.
+    "claude-agent-sdk>=0.2",
 ]
 
 [project.optional-dependencies]

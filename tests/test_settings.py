@@ -56,6 +56,55 @@ def test_load_partial_file_fills_defaults(tmp_path):
     assert s.gif.fps == 10  # default
 
 
+def test_load_empty_file_returns_defaults_and_backs_up(tmp_path):
+    # 절전모드 중 저장이 끊겨 settings.json 이 0바이트가 된 상황 재현.
+    # 백업이 없으면 크래시 없이 기본값으로 시작하고, 깨진 원본은 .corrupt 로 치워둠.
+    path = tmp_path / "settings.json"
+    path.write_text("", encoding="utf-8")
+
+    s = load(path)
+    assert s == AppSettings()
+    assert not path.exists()
+    assert (tmp_path / "settings.json.corrupt").exists()
+
+
+def test_load_garbage_file_returns_defaults(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    s = load(path)
+    assert s == AppSettings()
+    assert (tmp_path / "settings.json.corrupt").exists()
+
+
+def test_load_corrupt_file_recovers_from_hourly_backup(tmp_path):
+    # settings.json 이 0바이트로 깨졌지만 직전 시각 백업(.bak.*)이 있으면 그걸로 복구.
+    path = tmp_path / "settings.json"
+    good = AppSettings()
+    good.video.fps = 60
+    save(good, path)
+    # 직전 시각 백업을 수동 생성 (save 의 hourly 백업과 동일 형식).
+    (path.with_suffix(path.suffix + ".bak.20260606_09")).write_text(
+        json.dumps({"video": {"fps": 60}}), encoding="utf-8"
+    )
+    # 이제 메인 파일을 손상시킨다.
+    path.write_text("", encoding="utf-8")
+
+    s = load(path)
+    assert s.video.fps == 60          # 백업에서 복구됨
+    assert (tmp_path / "settings.json.corrupt").exists()
+
+
+def test_save_is_atomic_no_tmp_leftover(tmp_path):
+    path = tmp_path / "settings.json"
+    save(AppSettings(), path)
+    assert path.exists()
+    assert not (tmp_path / "settings.json.tmp").exists()  # 임시파일 잔여 없음
+    # 저장된 내용이 유효한 JSON 으로 다시 로드되는지 확인.
+    loaded = load(path)
+    assert loaded.video.fps == AppSettings().video.fps
+
+
 def test_annotation_settings_defaults():
     from screen_recorder.core.settings import AnnotationSettings, AppSettings
     s = AnnotationSettings()
