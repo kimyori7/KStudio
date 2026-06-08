@@ -46,7 +46,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "associatekstudio"; Description: ".kstudio 파일을 KStudio 와 연결"; GroupDescription: "파일 연결:"; Flags: unchecked
-Name: "associatemd"; Description: ".md / .markdown 파일을 KStudio 와 연결"; GroupDescription: "파일 연결:"; Flags: unchecked
+; .md 는 기본 체크 — 사용자 요청. 설치하면 별도 조작 없이 탐색기 .md 더블클릭이
+; KStudio 로 열린다. 원치 않으면 설치 시 체크 해제 가능.
+Name: "associatemd"; Description: ".md / .markdown 파일을 KStudio 와 연결"; GroupDescription: "파일 연결:"
 
 [Dirs]
 ; 기본 저장 폴더 미리 생성 — settings.json 의 save_dir/output_dir 가 빈 문자열일 때
