@@ -74,6 +74,21 @@ def main() -> int:
     # (closeEvent 가 hide() 로 우회하지만, 자동 시작 모드에서는 처음부터 창을
     # 한 번도 보여주지 않으므로 이 보호가 더 중요해진다.)
     app.setQuitOnLastWindowClosed(False)
+
+    # 단일 인스턴스 — 탐색기에서 .md/.kstudio 더블클릭 시 새 KStudio 창이 또 뜨는 대신
+    # 이미 실행 중인 인스턴스가 그 파일을 열도록(라이브러리 추가 + 표시) 한다.
+    # 무거운 초기화(MainWindow/torch/WebEngine) 전에 검사 → 두 번째 프로세스는 빠르게 종료.
+    from screen_recorder.app import single_instance
+    _file_args = [
+        a for a in sys.argv[1:]
+        if a and not a.startswith("-") and Path(a).is_file()
+    ]
+    if single_instance.try_forward(_file_args):
+        return 0  # 이미 실행 중인 인스턴스가 처리 — 이 프로세스는 조용히 종료.
+    # 첫 인스턴스: 파이프를 선점(핸들러는 MainWindow 생성 후 연결). 초기화 도중 들어온
+    # 두 번째 실행의 메시지는 큐에 쌓였다가 set_handler 에서 flush 된다.
+    _si_server = single_instance.SingleInstanceServer(parent=app)
+    _si_server.listen()
     from screen_recorder.ui.app_icon import app_icon
     from screen_recorder.ui.theme import apply_theme
     app.setWindowIcon(app_icon())
@@ -117,6 +132,21 @@ def main() -> int:
     def on_about_to_quit():
         _settings_module.save(win.app_settings, SETTINGS_PATH())
     app.aboutToQuit.connect(on_about_to_quit)
+
+    # 두 번째 실행이 보낸 파일/요청 처리: 그 파일을 열고(라이브러리 추가 + 표시) 창을 앞으로.
+    def _on_forwarded(paths):
+        for sp in paths:
+            p = Path(sp)
+            if p.is_file():
+                win._open_path(p)
+        # 트레이로 숨겼거나 최소화돼 있어도 보이게 + 포그라운드로.
+        win.show()
+        win.setWindowState(
+            (win.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive
+        )
+        win.raise_()
+        win.activateWindow()
+    _si_server.set_handler(_on_forwarded)
 
     # 패키지된 빌드라면 .kstudio 확장자 연결을 한 번 갱신 (HKCU, idempotent).
     windows_assoc.ensure_associated()

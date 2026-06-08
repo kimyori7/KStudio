@@ -40,6 +40,8 @@ a = Analysis(
         # 런타임(QtWebEngineProcess.exe / *.pak / icudtl.dat / locales)을 동봉한다.
         "PySide6.QtWebEngineWidgets",
         "PySide6.QtWebEngineCore",
+        # QtNetwork — 단일 인스턴스(QLocalServer/QLocalSocket). Qt6Network.dll 동봉 보장.
+        "PySide6.QtNetwork",
         # Markdown→HTML 렌더 (preview/render 가 사용).
         "markdown_it",
         "pygments",
