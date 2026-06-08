@@ -46,6 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "associatekstudio"; Description: ".kstudio 파일을 KStudio 와 연결"; GroupDescription: "파일 연결:"; Flags: unchecked
+Name: "associatemd"; Description: ".md / .markdown 파일을 KStudio 와 연결"; GroupDescription: "파일 연결:"; Flags: unchecked
 
 [Dirs]
 ; 기본 저장 폴더 미리 생성 — settings.json 의 save_dir/output_dir 가 빈 문자열일 때
@@ -72,6 +73,15 @@ Root: HKCU; Subkey: "Software\Classes\.kstudio"; ValueType: string; ValueName: "
 Root: HKCU; Subkey: "Software\Classes\KStudio.Document"; ValueType: string; ValueName: ""; ValueData: "KStudio Document"; Flags: uninsdeletekey; Tasks: associatekstudio
 Root: HKCU; Subkey: "Software\Classes\KStudio.Document\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName},0"; Tasks: associatekstudio
 Root: HKCU; Subkey: "Software\Classes\KStudio.Document\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""; Tasks: associatekstudio
+; .md / .markdown 파일 연결 — Tasks 에서 선택했을 때만. .md 는 다른 에디터와
+; 공유하는 흔한 형식이라 앱 첫 실행 자동 등록(windows_assoc) 대상에는 넣지 않고,
+; 설치 시 명시적으로 동의한 경우에만 등록한다. ProgID 는 .kstudio 와 구분된
+; KStudio.Markdown 사용.
+Root: HKCU; Subkey: "Software\Classes\.md"; ValueType: string; ValueName: ""; ValueData: "KStudio.Markdown"; Flags: uninsdeletevalue; Tasks: associatemd
+Root: HKCU; Subkey: "Software\Classes\.markdown"; ValueType: string; ValueName: ""; ValueData: "KStudio.Markdown"; Flags: uninsdeletevalue; Tasks: associatemd
+Root: HKCU; Subkey: "Software\Classes\KStudio.Markdown"; ValueType: string; ValueName: ""; ValueData: "KStudio Markdown Document"; Flags: uninsdeletekey; Tasks: associatemd
+Root: HKCU; Subkey: "Software\Classes\KStudio.Markdown\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName},0"; Tasks: associatemd
+Root: HKCU; Subkey: "Software\Classes\KStudio.Markdown\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""; Tasks: associatemd
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
