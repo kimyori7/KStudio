@@ -140,6 +140,35 @@ def test_document_item_text_flush_left_no_thumbnail_placeholder(qtbot):
     assert img_indent is not None and img_indent < 20, f"img_indent={img_indent}"
 
 
+def test_context_menu_separates_library_remove_and_trash(qtbot):
+    """우클릭 메뉴: '라이브러리에서만 삭제' 와 '휴지통에 넣기' 가 별도 항목으로 분리되고
+    각각 다른 시그널을 발화해야 한다 (사용자 보고: 두 문구가 헷갈림)."""
+    m = LibraryModel()
+    e = m.add(EntryKind.SCREENSHOT, thumbnail=_img(), source_label="region")
+    p = LibraryPanel(m)
+    qtbot.addWidget(p)
+    item = p._items_by_id[e.id]
+    menu = p._build_context_menu(item, e.id)
+    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert "라이브러리에서만 삭제 (Del)" in texts
+    assert "휴지통에 넣기 (Shift+Del)" in texts
+
+    remove_a = next(a for a in menu.actions()
+                    if a.text() == "라이브러리에서만 삭제 (Del)")
+    trash_a = next(a for a in menu.actions()
+                   if a.text() == "휴지통에 넣기 (Shift+Del)")
+    # 라이브러리에서만 삭제 → remove 시그널만 (휴지통 시그널 발화 X).
+    with qtbot.assertNotEmitted(p.entry_delete_requested):
+        with qtbot.waitSignal(p.entry_remove_requested, timeout=300) as b:
+            remove_a.trigger()
+    assert b.args == [e.id]
+    # 휴지통에 넣기 → delete 시그널만 (remove 시그널 발화 X).
+    with qtbot.assertNotEmitted(p.entry_remove_requested):
+        with qtbot.waitSignal(p.entry_delete_requested, timeout=300) as b2:
+            trash_a.trigger()
+    assert b2.args == [e.id]
+
+
 def test_document_mode_shows_only_documents(qtbot):
     # 문서 모드에선 이미지/영상은 숨고 DOCUMENT 항목만 보여야 함 (문서 라이브러리 통합).
     from screen_recorder.ui.mode_controller import AppMode, ModeController

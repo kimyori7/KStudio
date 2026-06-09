@@ -219,7 +219,7 @@ class LibraryPanel(QWidget):
     entry_open_requested = Signal(int)       # entry id
     entry_rename_requested = Signal(int)     # entry id (UI 상에서 인라인 편집 시작 요청)
     entry_delete_requested = Signal(int)     # entry id — 휴지통으로 (Shift+Del / 메뉴)
-    entry_remove_requested = Signal(int)     # entry id — 라이브러리에서만 제외 (Del)
+    entry_remove_requested = Signal(int)     # entry id — 라이브러리에서만 삭제, 디스크 유지 (Del)
     entry_open_folder_requested = Signal(int)  # entry id
     entry_undelete_requested = Signal()       # Ctrl+Z — 마지막 삭제 항목 복원
     # 외부 파일 드롭 → 라이브러리에 추가 (탭 자동 열림 없음). MainWindow 가 받아 처리.
@@ -538,7 +538,7 @@ class LibraryPanel(QWidget):
                 if item is not None:
                     eid = item.data(Qt.UserRole)
                     if eid is not None:
-                        # Shift+Del → 휴지통, Del 단독 → 라이브러리에서만 제외.
+                        # Shift+Del → 휴지통, Del 단독 → 라이브러리에서만 삭제(디스크 유지).
                         if event.modifiers() & Qt.ShiftModifier:
                             self.entry_delete_requested.emit(int(eid))
                         else:
@@ -557,8 +557,17 @@ class LibraryPanel(QWidget):
         eid = item.data(Qt.UserRole)
         if eid is None:
             return
-        eid = int(eid)
+        menu = self._build_context_menu(item, int(eid))
+        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
+
+    def _build_context_menu(self, item: QListWidgetItem, eid: int) -> QMenu:
+        """우클릭 메뉴 구성 (exec 분리 → 테스트 가능).
+
+        파괴적 항목은 사용자 혼동을 막기 위해 문구를 또렷이 가른다:
+        '라이브러리에서만 삭제'(디스크 파일 유지) vs '휴지통에 넣기'(파일 이동).
+        """
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         rename_action = QAction("이름 바꾸기 (F2)", self)
         rename_action.triggered.connect(lambda: self.list_widget.editItem(item))
         menu.addAction(rename_action)
@@ -570,18 +579,21 @@ class LibraryPanel(QWidget):
         menu.addAction(open_folder_action)
 
         menu.addSeparator()
-        remove_action = QAction("라이브러리에서 제외 (Del)", self)
+        # 목록에서만 빼는 비파괴 동작 — 디스크 파일은 건드리지 않는다.
+        remove_action = QAction("라이브러리에서만 삭제 (Del)", self)
+        remove_action.setToolTip("목록에서만 빼고, 디스크 파일은 그대로 둡니다.")
         remove_action.triggered.connect(
             lambda: self.entry_remove_requested.emit(eid)
         )
         menu.addAction(remove_action)
-        delete_action = QAction("삭제 — 휴지통으로 (Shift+Del)", self)
+        # 실제 파일을 휴지통으로 보내는 파괴적 동작 (Ctrl+Z 로 복원).
+        delete_action = QAction("휴지통에 넣기 (Shift+Del)", self)
+        delete_action.setToolTip("디스크 파일을 휴지통으로 보냅니다 (Ctrl+Z 로 복원).")
         delete_action.triggered.connect(
             lambda: self.entry_delete_requested.emit(eid)
         )
         menu.addAction(delete_action)
-
-        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
+        return menu
 
     def _refresh_visibility(self, mode: AppMode) -> None:
         # 항목 N 개에 대해 setHidden 호출 시 Qt 가 매번 layout invalidate 할 수 있어
