@@ -52,7 +52,10 @@ class VideoEncoder(threading.Thread):
         self.audio_sample_rate = audio_sample_rate
         self.audio_channels = audio_channels
         self.audio_thread = audio_thread
+        # error: 사용자에게 팝업으로 알릴 진짜 실패(캡처 실패/ffmpeg 크래시/mux 실패 등).
+        # notice: 녹화는 성공했고 다만 알릴 만한 사실(조용해서 오디오 제외 등) — 팝업 X.
         self.error: Optional[str] = None
+        self.notice: Optional[str] = None
 
     def run(self) -> None:
         log = logging.getLogger(__name__)
@@ -141,6 +144,26 @@ class VideoEncoder(threading.Thread):
                 Path(stderr_log_path).unlink(missing_ok=True)
             except OSError:
                 pass
+
+        # 프레임이 0개면 영상 스트림이 없는 깡통 mp4(헤더만, ~수백 byte)가 남는다 —
+        # 사용자에겐 '저장이 안 된' 것으로 보인다(2026-06-09: 영역이 두 모니터에 걸쳐
+        # 캡처 스레드가 즉사한 경우). 상위에서 막지만, 어떤 이유로든 0프레임이면 여기서
+        # 깡통 파일을 폐기하고 명확한 캡처 실패 에러를 남긴다(오디오 유무와 무관하게
+        # 먼저 처리 — 'audio absent' 같은 엉뚱한 메시지가 나가지 않도록).
+        if frame_count == 0:
+            self.error = (
+                "화면 캡처에 실패해 영상이 저장되지 않았습니다 — 프레임을 받지 못했습니다."
+            )
+            log.error("no frames captured; discarding stream-less output: %s",
+                      self.output_path)
+            for p in (video_only, self.output_path, self.audio_raw_path, stderr_log_path):
+                if p is None:
+                    continue
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return
 
         if not has_audio:
             return
@@ -295,8 +318,9 @@ class VideoEncoder(threading.Thread):
                     pass
             # 사용자 메시지 — 추측 없이 사실만(원인 단정 X).
             if audio_absent:
-                # 영상은 정상. 오디오만 캡처된 소리가 없어 제외 — 'mux 실패'와 구분.
-                self.error = self.error or (
+                # 영상은 정상. 오디오만 캡처된 소리가 없어 제외 — 이건 '실패'가 아니라
+                # 정상 결과이므로 error 가 아니라 notice 로(팝업 X). 진짜 mux 실패와 구분.
+                self.notice = self.notice or (
                     "영상은 저장됐지만 오디오는 캡처된 소리가 없어 제외했습니다 "
                     "(조용한 구간이었거나 선택된 출력 장치에 소리가 없었습니다)."
                 )

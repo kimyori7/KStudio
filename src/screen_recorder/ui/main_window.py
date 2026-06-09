@@ -4838,9 +4838,15 @@ class MainWindow(QMainWindow):
         self.status_bar.set_paused(state == RecorderState.PAUSED)
 
     def _on_finished(self, path: str):
+        # 인코더가 캡처 실패로 파일을 폐기했으면(존재 안 함) 라이브러리/탭에 등록하지
+        # 않는다 — error_occurred 가 이미 사유를 알린다. 창 복귀만 처리한다. (이 시그널은
+        # finalize 완료 신호로도 쓰이므로 항상 발생시키되, 등록만 건너뛴다.)
+        p = Path(path)
+        if not path or not p.exists():
+            self._restore_window_for_capture()
+            return
         # 썸네일은 ffmpeg 호출 (최대 10초 블로킹) — 백그라운드에서 처리하고
         # 우선 placeholder 로 라이브러리/탭 즉시 추가해 UI 응답성 유지.
-        p = Path(path)
         duration_ms = self._estimate_duration_ms(p)
         placeholder = QImage(64, 36, QImage.Format_ARGB32)
         placeholder.fill(0xFF222222)

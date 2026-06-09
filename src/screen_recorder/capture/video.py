@@ -4,7 +4,10 @@ import logging
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from typing import Optional
+
+import numpy as np
 
 try:
     import dxcam  # type: ignore
@@ -12,6 +15,122 @@ except ImportError:
     dxcam = None  # type: ignore
 
 from .targets import CaptureTarget, Rect
+
+
+@dataclass(frozen=True)
+class _OutputRect:
+    """한 모니터(dxcam output)의 데스크톱 사각형 — 가상 데스크톱 물리좌표 (반열린 구간)."""
+    device_idx: int
+    output_idx: int
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+
+@dataclass(frozen=True)
+class CaptureTile:
+    """멀티모니터 합성 캡처의 한 조각.
+
+    한 dxcam output 에서 `region`(그 output 의 로컬 좌표) 을 잡아, 합성 버퍼의
+    (dst_x, dst_y) 위치에 w×h 크기로 붙인다.
+    """
+    device_idx: int
+    output_idx: int
+    region: tuple[int, int, int, int]  # output 로컬 (left, top, right, bottom)
+    dst_x: int
+    dst_y: int
+    w: int
+    h: int
+
+
+def dxcam_output_rects() -> list[_OutputRect]:
+    """dxcam 이 본 모든 output 의 데스크톱 사각형 (DXGI 열거 순서, 물리좌표).
+
+    `output.desc.DesktopCoordinates` 는 가상 데스크톱상의 실제 위치라, output_idx 를
+    화면 순서로 추측하지 않고 **위치로** 매핑할 수 있다(advisor 지적: QScreen 순서 ≠
+    DXGI 순서일 수 있음). dxcam 이 없거나(헤드리스/CI) 접근 실패 시 빈 리스트.
+    """
+    if dxcam is None:
+        return []
+    try:
+        factory = vars(dxcam)["__factory"]
+        rects: list[_OutputRect] = []
+        for didx, outputs in enumerate(factory.outputs):
+            for oidx, out in enumerate(outputs):
+                dc = out.desc.DesktopCoordinates
+                rects.append(_OutputRect(
+                    didx, oidx, int(dc.left), int(dc.top), int(dc.right), int(dc.bottom)
+                ))
+        return rects
+    except Exception:
+        return []
+
+
+def qscreen_output_rects() -> list[_OutputRect]:
+    """QScreen geometry 기반 폴백 — dxcam output 정보를 못 얻을 때(헤드리스/테스트).
+
+    DPR=1.0 환경에서 QScreen.geometry()(논리좌표) == dxcam DesktopCoordinates(물리좌표).
+    """
+    try:
+        from PySide6.QtGui import QGuiApplication
+        rects: list[_OutputRect] = []
+        for i, s in enumerate(QGuiApplication.screens()):
+            g = s.geometry()
+            rects.append(_OutputRect(
+                0, i, g.x(), g.y(), g.x() + g.width(), g.y() + g.height()
+            ))
+        return rects
+    except Exception:
+        return []
+
+
+def resolve_output_rects() -> list[_OutputRect]:
+    """캡처/가드가 함께 쓰는 단일 진실원 — dxcam 우선, 없으면 QScreen 폴백."""
+    rects = dxcam_output_rects()
+    if rects:
+        return rects
+    return qscreen_output_rects()
+
+
+def plan_capture_tiles(rect: Rect, outputs: list[_OutputRect]) -> list[CaptureTile]:
+    """캡처 rect 를 각 output 과 교집합내 조각(tile)으로 분해 (순수 함수, 테스트 가능).
+
+    각 output 의 데스크톱 사각형 [left,right) × [top,bottom) 과 rect 를 교집합해,
+    겹치는 부분마다 tile 하나를 만든다. output 들은 서로 겹치지 않으므로 tile 들도
+    disjoint 하고, 합치면 (모든 부분이 모니터 위에 있을 때) rect 를 정확히 덮는다.
+    어떤 output 과도 안 겹치면 빈 리스트(= rect 전체가 화면 밖).
+    """
+    rx0, ry0 = rect.x, rect.y
+    rx1, ry1 = rect.x + rect.w, rect.y + rect.h
+    tiles: list[CaptureTile] = []
+    for o in outputs:
+        ix0 = max(rx0, o.left)
+        iy0 = max(ry0, o.top)
+        ix1 = min(rx1, o.right)
+        iy1 = min(ry1, o.bottom)
+        if ix1 > ix0 and iy1 > iy0:
+            tiles.append(CaptureTile(
+                device_idx=o.device_idx,
+                output_idx=o.output_idx,
+                region=(ix0 - o.left, iy0 - o.top, ix1 - o.left, iy1 - o.top),
+                dst_x=ix0 - rx0,
+                dst_y=iy0 - ry0,
+                w=ix1 - ix0,
+                h=iy1 - iy0,
+            ))
+    return tiles
+
+
+def tiles_cover_rect(tiles: list[CaptureTile], rect: Rect) -> bool:
+    """tile 들이 rect 전체를 빈틈 없이 덮는지 (tile 들은 disjoint 이므로 면적 합으로 판정).
+
+    빈 리스트(화면 밖)거나 일부만 덮으면(가장자리가 화면 밖) False → 가드가 거부.
+    """
+    if not tiles:
+        return False
+    covered = sum(t.w * t.h for t in tiles)
+    return covered == rect.w * rect.h
 
 
 def _pick_output_for_rect(rect: Rect) -> tuple[int, tuple[int, int]]:
@@ -66,13 +185,148 @@ class VideoCaptureThread(threading.Thread):
             return
         self._fixed_size = (rect.w, rect.h)
 
-        output_idx, (ox, oy) = _pick_output_for_rect(rect)
-        self._cam = dxcam.create(output_idx=output_idx, output_color="BGRA")
-        local_rect = Rect(rect.x - ox, rect.y - oy, rect.w, rect.h)
-        self._cam.start(target_fps=self.fps, region=local_rect.as_dxcam_region())
+        # 영역이 두 모니터에 걸치면 output 별 카메라를 합성하는 multi 경로로.
+        # 한 모니터 안(또는 output 정보를 모르는 헤드리스/테스트)이면 기존 single 경로.
+        tiles = plan_capture_tiles(rect, resolve_output_rects())
+        if len(tiles) >= 2:
+            self._run_multi(rect, tiles, log)
+        else:
+            self._run_single(rect, log)
+
+    def _open_tile_cams(self, tiles: list[CaptureTile]) -> list:
+        """tile 마다 dxcam 카메라를 만들고 캡처 시작 — 실패 시 연 것들 정리 후 재던짐."""
+        cams: list = []
+        try:
+            for t in tiles:
+                cam = dxcam.create(
+                    device_idx=t.device_idx, output_idx=t.output_idx, output_color="BGRA"
+                )
+                cam.start(target_fps=self.fps, region=t.region, video_mode=True)
+                cams.append(cam)
+        except Exception:
+            self._close_tile_cams(cams)
+            raise
+        return cams
+
+    @staticmethod
+    def _close_tile_cams(cams: list) -> None:
+        for cam in cams:
+            try:
+                cam.stop()
+            except Exception:
+                pass
+            try:
+                cam.release()
+            except Exception:
+                pass
+
+    def _run_multi(self, rect: Rect, tiles: list[CaptureTile], log) -> None:
+        """두 모니터에 걸친 영역을 output 별 카메라로 잡아 한 프레임으로 합성한다.
+
+        각 카메라는 자기 output 의 로컬 region 만 캡처(dxcam 제약). 매 프레임 zero 버퍼
+        (rect 크기, BGRA) 에 각 tile 의 최신 프레임을 dst 위치로 붙여 인코더에 넘긴다.
+        grab() 은 캡처 중에는 링버퍼 최신 프레임을 non-blocking 으로 복사 반환한다.
+        """
+        out_w, out_h = rect.w, rect.h
+        try:
+            cams = self._open_tile_cams(tiles)
+        except Exception as e:
+            log.error(
+                "multi-monitor dxcam start failed (tiles=%s): %s",
+                [(t.output_idx, t.region) for t in tiles], e,
+            )
+            return
 
         period = 1.0 / max(self.fps, 1)
         next_tick = time.perf_counter()
+        frames_emitted = 0
+        try:
+            while not self._stop_event.is_set():
+                # 녹화 중 영역 이동 — tile 을 다시 계획하고 카메라 세트를 재구성.
+                if self._pending_origin is not None:
+                    nx, ny = self._pending_origin
+                    self._pending_origin = None
+                    fw, fh = self._fixed_size or (rect.w, rect.h)
+                    new_rect = Rect(nx, ny, fw, fh)
+                    new_tiles = plan_capture_tiles(new_rect, resolve_output_rects())
+                    if new_tiles:
+                        self._close_tile_cams(cams)
+                        try:
+                            cams = self._open_tile_cams(new_tiles)
+                            tiles, rect = new_tiles, new_rect
+                        except Exception as e:
+                            log.error("multi-monitor restart failed: %s", e)
+                            break
+
+                buf = np.zeros((out_h, out_w, 4), dtype=np.uint8)
+                got_any = False
+                for t, cam in zip(tiles, cams):
+                    frame = cam.grab()  # 링버퍼 최신 프레임(복사). 아직 없으면 None.
+                    if frame is None:
+                        continue
+                    ph = min(frame.shape[0], t.h)
+                    pw = min(frame.shape[1], t.w)
+                    if ph <= 0 or pw <= 0:
+                        continue
+                    buf[t.dst_y:t.dst_y + ph, t.dst_x:t.dst_x + pw] = frame[:ph, :pw]
+                    got_any = True
+
+                if not got_any:
+                    time.sleep(period / 2)
+                    continue
+
+                try:
+                    self.output_queue.put_nowait(buf)
+                    frames_emitted += 1
+                except queue.Full:
+                    try:
+                        self.output_queue.get_nowait()
+                        self.output_queue.put_nowait(buf)
+                        frames_emitted += 1
+                        self.dropped_count += 1
+                    except queue.Empty:
+                        pass
+
+                next_tick += period
+                sleep_for = next_tick - time.perf_counter()
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+                else:
+                    next_tick = time.perf_counter()
+        finally:
+            log.info(
+                "multi-monitor capture finished: tiles=%d frames_emitted=%d dropped=%d",
+                len(tiles), frames_emitted, self.dropped_count,
+            )
+            self._close_tile_cams(cams)
+
+    def _run_single(self, rect: Rect, log) -> None:
+        output_idx, (ox, oy) = _pick_output_for_rect(rect)
+        local_rect = Rect(rect.x - ox, rect.y - oy, rect.w, rect.h)
+        try:
+            self._cam = dxcam.create(output_idx=output_idx, output_color="BGRA")
+            # video_mode=True: 화면 변화가 없어도 직전 프레임을 target_fps 로 복제해
+            # 끊김 없는 프레임 스트림을 보장한다(정적 화면에서 0프레임 방지). 영상
+            # 녹화의 표준 사용법.
+            self._cam.start(
+                target_fps=self.fps,
+                region=local_rect.as_dxcam_region(),
+                video_mode=True,
+            )
+        except Exception as e:
+            # 영역이 모니터 경계를 넘는 등으로 dxcam 이 거부하면 여기로 온다. 상위
+            # (controller.start_recording) 에서 이미 막지만, 만약을 위한 방어 — 트레이스백
+            # 으로 스레드가 조용히 죽는 대신 로그를 남기고 깔끔히 종료한다(인코더는
+            # 0프레임 가드로 빈 파일을 폐기한다).
+            log.error(
+                "dxcam start failed (output_idx=%s region=%s): %s",
+                output_idx, local_rect.as_dxcam_region(), e,
+            )
+            return
+
+        period = 1.0 / max(self.fps, 1)
+        next_tick = time.perf_counter()
+        frames_emitted = 0
 
         try:
             while not self._stop_event.is_set():
@@ -96,13 +350,19 @@ class VideoCaptureThread(threading.Thread):
                             del self._cam
                             self._cam = dxcam.create(output_idx=new_idx, output_color="BGRA")
                             output_idx, ox, oy = new_idx, nox, noy
-                        self._cam.start(target_fps=self.fps, region=new_local.as_dxcam_region())
+                        self._cam.start(
+                            target_fps=self.fps,
+                            region=new_local.as_dxcam_region(),
+                            video_mode=True,
+                        )
                     except Exception as e:
                         log.error("dxcam restart failed: %s", e)
                         # 원래 영역으로 복귀
                         try:
                             self._cam.start(
-                                target_fps=self.fps, region=local_rect.as_dxcam_region()
+                                target_fps=self.fps,
+                                region=local_rect.as_dxcam_region(),
+                                video_mode=True,
                             )
                         except Exception:
                             pass
@@ -121,10 +381,12 @@ class VideoCaptureThread(threading.Thread):
 
                 try:
                     self.output_queue.put_nowait(frame)
+                    frames_emitted += 1
                 except queue.Full:
                     try:
                         self.output_queue.get_nowait()
                         self.output_queue.put_nowait(frame)
+                        frames_emitted += 1
                         self.dropped_count += 1
                     except queue.Empty:
                         pass
@@ -136,6 +398,12 @@ class VideoCaptureThread(threading.Thread):
                 else:
                     next_tick = time.perf_counter()
         finally:
+            # 진단용: 0프레임으로 빈 mp4 가 나오는 회귀를 다음 보고에서 즉시 추적할 수
+            # 있도록 캡처 결과를 남긴다.
+            log.info(
+                "video capture finished: output_idx=%s region=%s frames_emitted=%d dropped=%d",
+                output_idx, local_rect.as_dxcam_region(), frames_emitted, self.dropped_count,
+            )
             try:
                 self._cam.stop()
             except Exception:

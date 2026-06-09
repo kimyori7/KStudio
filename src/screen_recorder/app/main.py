@@ -53,6 +53,7 @@ def main() -> int:
     from screen_recorder.core.logging_setup import setup_logging
     setup_logging()
     import logging
+    import threading
     logging.info("KStudio started")
     # 미처리 예외도 로그에 남도록 — 다음 크래시 시 traceback 가 app.log 에 기록되어
     # 같은 자리에서 디버깅 가능 (Qt event loop 안의 슬롯 예외도 default excepthook 경유).
@@ -61,6 +62,19 @@ def main() -> int:
                       exc_info=(exc_type, exc_value, exc_tb))
         sys.__excepthook__(exc_type, exc_value, exc_tb)
     sys.excepthook = _log_uncaught
+
+    # sys.excepthook 은 **메인 스레드** 예외만 잡는다. 백그라운드 스레드(캡처/인코더
+    # 등)에서 터진 예외는 threading.excepthook 로 가고, 기본 동작은 콘솔(stderr)에만
+    # 찍어 app.log 엔 안 남는다 → cmd 창을 닫으면 추적 불가. (2026-06-09 캡처 스레드의
+    # 'Invalid Region' ValueError 가 정확히 이 경우라, 사용자가 cmd 를 직접 복사해야
+    # 원인이 드러났다.) 스레드 크래시도 app.log 에 남겨 같은 일을 안 겪게 한다.
+    def _log_thread_uncaught(args):
+        if args.exc_type is SystemExit:
+            return
+        name = args.thread.name if args.thread is not None else "?"
+        logging.error("UNCAUGHT THREAD EXCEPTION in %s", name,
+                      exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    threading.excepthook = _log_thread_uncaught
 
     # QtWebEngine 위생(권장) — GL 컨텍스트 공유는 QApplication 생성 *전* 에 켜야 한다.
     # 문서 미리보기(WebEngine)와 영상 GL 표면이 컨텍스트를 공유해 렌더 글리치를 줄인다.

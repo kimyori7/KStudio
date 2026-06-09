@@ -12,10 +12,30 @@ from .settings import AppSettings, default_video_dir
 from .state import RecorderState, can_transition, InvalidTransition
 from .filename import build_filename, resolve_collision
 from ..capture.targets import CaptureTarget, Rect
-from ..capture.video import VideoCaptureThread
+from ..capture.video import (
+    VideoCaptureThread,
+    plan_capture_tiles,
+    resolve_output_rects,
+    tiles_cover_rect,
+)
 from ..capture.audio import AudioCaptureThread
 from ..encode.video_encoder import VideoEncoder
 from ..encode.gif_encoder import GifEncoder
+
+
+def _region_off_screen(rect: Rect) -> bool:
+    """캡처 rect 의 일부가 어떤 모니터에도 안 걸쳐 화면 밖에 있으면 True.
+
+    두 모니터에 **걸친** 영역은 이제 output 별 카메라를 합성해 녹화하므로 막지
+    않는다(2026-06-09 사고는 합성 미구현이라 빈 mp4 가 됐던 것). 다만 영역의 일부가
+    어떤 모니터 위에도 없으면(화면 밖/모니터 사이 빈 공간) 그 부분은 검은색으로만
+    찍히므로, 시작 전에 막고 알린다. 출력 정보를 못 얻으면(헤드리스/테스트) 막지 않음.
+    """
+    outputs = resolve_output_rects()
+    if not outputs:
+        return False
+    tiles = plan_capture_tiles(rect, outputs)
+    return not tiles_cover_rect(tiles, rect)
 
 
 class _EvenRectTarget:
@@ -93,6 +113,16 @@ class RecorderController(QObject):
         return resolve_collision(out_dir / name)
 
     def start_recording(self, target: CaptureTarget) -> None:
+        # 영역이 두 모니터에 걸치면 output 별 카메라를 합성해 녹화한다(VideoCaptureThread
+        # 의 multi 경로). 단, 영역의 일부가 어떤 모니터에도 없으면(화면 밖) 그 부분은 검은색
+        # 으로만 찍히므로 시작 전에 막고 비개발자도 이해할 수 있게 알린다.
+        rect0 = target.current_rect()
+        if rect0 is not None and _region_off_screen(rect0):
+            raise ValueError(
+                "선택한 영역의 일부가 화면 밖에 있어 녹화할 수 없습니다.\n"
+                "모니터 화면 안에서 영역을 선택해 주세요."
+            )
+
         self._set_state(RecorderState.RECORDING)
         # h264/x265 등은 짝수 차원만 허용 — 짝수 강제 래퍼로 감싸서
         # 캡처 스레드와 인코더가 같은 (짝수) 해상도를 보게 한다.
