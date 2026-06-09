@@ -144,9 +144,11 @@ def test_zoom_partial_overlap_auto_splits_segment():
         ffmpeg_path="ffmpeg",
     )
     fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 첫(head) sub-segment 는 [0:v]trim 유지, 중간·tail 은 -ss 분리 입력 (2026-06-09 OOM fix).
     assert "trim=0.0:2.0" in fc
-    assert "trim=2.0:5.0" in fc
-    assert "trim=5.0:10.0" in fc
+    assert fc.count("[0:v]") <= 1, "fan-out 금지"
+    assert "-ss" in argv
+    assert "[s0v]" in fc and "[s1v]" in fc and "[s2v]" in fc
     # crop 은 zoom sub-segment 에만 한 번 등장.
     assert fc.count("crop=") == 1
 

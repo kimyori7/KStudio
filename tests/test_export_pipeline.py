@@ -51,6 +51,93 @@ def test_odd_surface_dimensions_floored_to_even():
     assert "scale=1903:" not in fc and ":1005:" not in fc
 
 
+def test_caption_spanning_segment_boundary_drops_seam_fade():
+    """캡션이 세그먼트 경계를 넘으면 조각으로 쪼개지는데, 각 조각이 원래 fade 를 그대로
+    가지면 이음매에서 fade-out+fade-in 이 겹쳐 캡션이 투명해졌다 돌아오며 **깜빡인다**
+    (사용자 보고). 이음매 쪽 fade 를 0 으로 → 조각 사이 연속 표시. 진짜 바깥 가장자리
+    (실제 caption in/out)만 fade 유지."""
+    from screen_recorder.effects.segment import VideoSegment
+    from screen_recorder.effects.types.caption import CaptionEffect, Fade
+    from screen_recorder.encode.export_pipeline import _remap_effects_to_gap_collapsed
+    track = [
+        VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=2000, src_duration_ms=5000,
+                     media_kind="video", start_ms=0),
+        VideoSegment(src="A.mp4", src_in_ms=2000, src_out_ms=5000, src_duration_ms=5000,
+                     media_kind="video", start_ms=2000),
+    ]
+    cap = CaptionEffect(in_ms=1000, out_ms=3000, text="x", fade=Fade(in_ms=300, out_ms=300))
+    pieces = _remap_effects_to_gap_collapsed([cap], track)
+    assert len(pieces) == 2, "경계를 넘는 캡션은 두 조각으로 쪼개진다"
+    p1, p2 = sorted(pieces, key=lambda e: e.in_ms)
+    # 첫 조각: 실제 시작이라 fade_in 유지, 이음매 끝이라 fade_out=0
+    assert p1.fade.in_ms == 300 and p1.fade.out_ms == 0, f"p1 fade={p1.fade}"
+    # 둘째 조각: 이음매 시작이라 fade_in=0, 실제 끝이라 fade_out 유지
+    assert p2.fade.in_ms == 0 and p2.fade.out_ms == 300, f"p2 fade={p2.fade}"
+
+
+def test_alpha_overlay_chain_omits_zero_fade():
+    """fade=0 이면 fade 필터 자체를 빼야 한다 — ffmpeg fade 는 d=0 을 '기본 길이 페이드'
+    로 처리해 이음매 깜빡임을 오히려 만든다."""
+    from screen_recorder.encode.export_pipeline import _alpha_overlay_chain
+    # 양쪽 fade 0 → format=rgba 만, fade 없음
+    c0 = _alpha_overlay_chain(3, "cap0", 2.0, 5.0, 0.0, 0.0)
+    assert "fade=" not in c0
+    assert c0 == "[3:v]format=rgba[cap0]"
+    # in 만 있음
+    c1 = _alpha_overlay_chain(3, "cap0", 2.0, 5.0, 0.3, 0.0)
+    assert "fade=t=in:st=2.0:d=0.3" in c1
+    assert "fade=t=out" not in c1
+    # out 만 있음
+    c2 = _alpha_overlay_chain(3, "cap0", 2.0, 5.0, 0.0, 0.3)
+    assert "fade=t=in" not in c2
+    assert "fade=t=out:st=4.7:d=0.3" in c2
+
+
+def test_caption_within_one_segment_keeps_both_fades():
+    """한 세그먼트 안에 완전히 든 캡션은 쪼개지지 않고 양쪽 fade 그대로 (회귀 가드)."""
+    from screen_recorder.effects.segment import VideoSegment
+    from screen_recorder.effects.types.caption import CaptionEffect, Fade
+    from screen_recorder.encode.export_pipeline import _remap_effects_to_gap_collapsed
+    track = [
+        VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=5000, src_duration_ms=10000,
+                     media_kind="video", start_ms=0),
+        VideoSegment(src="A.mp4", src_in_ms=5000, src_out_ms=10000, src_duration_ms=10000,
+                     media_kind="video", start_ms=5000),
+    ]
+    cap = CaptionEffect(in_ms=1000, out_ms=3000, text="x", fade=Fade(in_ms=300, out_ms=300))
+    pieces = _remap_effects_to_gap_collapsed([cap], track)
+    assert len(pieces) == 1
+    assert pieces[0].fade.in_ms == 300 and pieces[0].fade.out_ms == 300
+
+
+def test_encoder_uses_nvenc_when_available(monkeypatch):
+    """GPU(NVENC) 가 동작하면 -c:v h264_nvenc, 아니면 libx264 로 폴백 (사용자 요청)."""
+    from screen_recorder.encode import export_pipeline as ep
+    sc = Sidecar(source_path="A.mp4", source_hash="h")
+
+    monkeypatch.setattr(ep, "nvenc_available", lambda *a, **k: True)
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080, ffmpeg_path="ffmpeg",
+    )
+    assert "h264_nvenc" in argv
+    assert "libx264" not in argv
+
+    monkeypatch.setattr(ep, "nvenc_available", lambda *a, **k: False)
+    argv2, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080, ffmpeg_path="ffmpeg",
+    )
+    assert "libx264" in argv2
+    assert "h264_nvenc" not in argv2
+
+
+def test_nvenc_available_false_for_dummy_path():
+    """실제 파일 아닌 더미 ffmpeg 경로면 테스트 인코드 안 하고 False (단위 테스트 결정성)."""
+    from screen_recorder.encode.export_pipeline import nvenc_available
+    assert nvenc_available("definitely_not_a_real_ffmpeg_xyz") is False
+
+
 def test_build_args_no_effects_just_copy_main():
     """효과 0 개 — A 만 그대로 (libx264 재인코딩, trim 없음)."""
     sc = Sidecar(source_path="A.mp4", source_hash="h")
@@ -68,7 +155,12 @@ def test_build_args_no_effects_just_copy_main():
 
 
 def test_multi_segment_track_same_src_exports():
-    """같은 src 의 다중 segment (split 케이스) — export 통과 + 각 segment 가 filter graph 에."""
+    """같은 src 의 다중 segment (split 케이스) — export 통과 + 각 segment 가 filter graph 에.
+
+    2026-06-09 OOM fix: 첫 조각만 [0:v]trim 으로 두고, 둘째부터는 -ss/-t 독립 입력으로
+    분리한다(한 디코더 fan-out → concat 버퍼링 폭주 방지). 그래서 둘째 조각은 더 이상
+    [0:v]trim=3.0:10.0 으로 나타나지 않고 별도 입력 [1:v] 로 등장한다.
+    """
     from screen_recorder.effects.segment import VideoSegment
     seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
                          media_kind="video", start_ms=0)
@@ -81,10 +173,52 @@ def test_multi_segment_track_same_src_exports():
         ffmpeg_path="ffmpeg",
     )
     fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
-    # 두 segment: trim=0.0:3.0 + trim=3.0:10.0
-    assert "trim=0.0:3.0" in fc
-    assert "trim=3.0:10.0" in fc
-    # concat 으로 합쳐짐.
+    # 첫 조각은 [0:v]trim 유지 (소비자 1개 → fan-out 없음).
+    assert "[0:v]trim=0.0:3.0" in fc
+    # 둘째 조각의 *비디오* 는 -ss 독립 입력 → [0:v]trim=3.0:10.0 으로는 안 나타남.
+    # (오디오는 전용 오디오 입력에서 atrim=3.0:10.0 — 정상.)
+    assert "[0:v]trim=3.0:10.0" not in fc
+    # [0:v] 소비자는 최대 1개여야 (fan-out 금지 불변식).
+    assert fc.count("[0:v]") <= 1
+    # 둘째 조각용 -ss 분리 입력이 있어야.
+    assert "-ss" in argv
+    assert "[1:v]" in fc
+    # 비디오·오디오 concat 분리 (OOM fix part 2).
+    assert "concat=n=2:v=1:a=0" in fc
+    assert "concat=n=2:v=0:a=1" in fc
+
+
+def test_multiple_main_segments_avoid_decoder_fanout():
+    """2026-06-09 OOM 회귀 가드: 컷으로 main 조각이 ≥2 개면, 한 디코더([0:v])에서
+    여러 trim 이 갈라지고 concat 이 순서대로 소비하는 동안 아직 안 읽힌 가지가 통째로
+    버퍼링된다 → 29분 영상에서 수십 GB → '-12 Cannot allocate memory' 로 죽음(실측:
+    6초만에 14GB 폭증, frame=0). 수정: 첫 조각만 [0:v]trim, 이후 조각은 -ss/-t 로
+    그 지점부터 독립 디코딩하는 별도 입력으로 분리 → 어떤 입력도 trim 소비자 ≤ 1.
+    """
+    from screen_recorder.effects.segment import VideoSegment
+    segs = [
+        VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=30000,
+                     media_kind="video", start_ms=0),
+        VideoSegment(src="A.mp4", src_in_ms=3000, src_out_ms=15000, src_duration_ms=30000,
+                     media_kind="video", start_ms=3000),
+        VideoSegment(src="A.mp4", src_in_ms=15000, src_out_ms=30000, src_duration_ms=30000,
+                     media_kind="video", start_ms=15000),
+    ]
+    sc = Sidecar(source_path="A.mp4", source_hash="h", video_track=segs)
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=30000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 핵심 불변식: [0:v] 를 소비하는 trim 은 최대 1개 (fan-out 금지).
+    assert fc.count("[0:v]") <= 1, f"[0:v] fan-out 발견: {fc}"
+    # 추가 2 조각만큼 -ss 분리 입력이 있어야.
+    assert argv.count("-ss") >= 2
+    # A.mp4 가 원본 입력 + seek 입력 2개 = 최소 3번 -i.
+    i_args = [argv[k + 1] for k in range(len(argv) - 1) if argv[k] == "-i"]
+    assert i_args.count("A.mp4") >= 3
+    # 여전히 concat 으로 합쳐짐.
     assert "concat=" in fc
 
 

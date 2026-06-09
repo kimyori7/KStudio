@@ -15,9 +15,59 @@ filter_complex 빌드.
   - broll audio_mix != 'original_only' → NotImplementedError (v2 audio mixing).
 """
 from __future__ import annotations
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
+
+_NVENC_CACHE: dict[str, bool] = {}
+
+
+def nvenc_available(ffmpeg_path) -> bool:
+    """h264_nvenc(NVIDIA GPU 인코더)가 이 머신에서 **실제로 동작**하는지.
+
+    빌드에 --enable-nvenc 가 있어도 드라이버/GPU 가 없으면 실패하므로, encoders 목록
+    조회로는 부족하고 작은 테스트 인코드(256×256 1프레임)를 실제로 돌려 rc 로 판정한다.
+    (NVENC 는 최소 프레임 크기가 있어 64×64 같은 너무 작은 해상도는 'Frame Dimension
+    less than minimum' 으로 실패 — 256 이면 안전.) 결과는 ffmpeg 경로별로 캐시(세션 1회).
+    ffmpeg_path 가 실제 파일이 아닐 때(단위 테스트의 더미 'ffmpeg')는 테스트하지 않고
+    False — 테스트가 libx264 로 결정적이게.
+    """
+    key = str(ffmpeg_path)
+    if key in _NVENC_CACHE:
+        return _NVENC_CACHE[key]
+    ok = False
+    if Path(ffmpeg_path).exists():
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        try:
+            r = subprocess.run(
+                [str(ffmpeg_path), "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1:r=5",
+                 "-c:v", "h264_nvenc", "-f", "null", "-"],
+                capture_output=True, timeout=20, creationflags=flags,
+            )
+            ok = (r.returncode == 0)
+        except Exception:
+            ok = False
+    _NVENC_CACHE[key] = ok
+    return ok
+
+
+def _alpha_overlay_chain(png_idx, label, in_s, out_s, fade_in, fade_out) -> str:
+    """PNG 입력 → format=rgba + (0보다 큰) alpha fade → [label]. fade 가 0 이면 그
+    필터를 **생략**한다.
+
+    ⚠ ffmpeg 의 fade 는 `d=0` 을 '페이드 없음'이 아니라 **기본 길이 페이드**로 처리한다.
+    그래서 경계를 넘는 캡션이 조각으로 쪼개질 때 이음매 fade 를 0 으로 줘도 `d=0` 필터를
+    그대로 두면 오히려 기본 길이만큼 다시 페이드되어 캡션이 깜빡인다 → 0 이면 필터 자체를 뺀다.
+    """
+    parts = ["format=rgba"]
+    if fade_in > 0:
+        parts.append(f"fade=t=in:st={in_s}:d={fade_in}:alpha=1")
+    if fade_out > 0:
+        parts.append(f"fade=t=out:st={out_s - fade_out}:d={fade_out}:alpha=1")
+    return f"[{png_idx}:v]" + ",".join(parts) + f"[{label}]"
 
 from ..effects import Sidecar
 from ..effects.timeline import TimelineSegment, build_combined_timeline
@@ -372,8 +422,30 @@ def build_export_args(
     argv: list[str] = [str(ffmpeg_path), "-y", "-loglevel", "info"]
     argv.extend(["-i", str(src_path)])
 
-    cut_src_index: dict[str, int] = {}    # cut.id → ffmpeg input index
+    # 2026-06-09 OOM fix: main src 의 segment 가 ≥2 개면 [0:v] 한 디코더에서 여러
+    # trim 이 split 으로 갈라지고 concat 이 순서대로(seg0→seg1→…) 소비한다. 그러면
+    # 아직 차례가 안 온 가지(예: 마지막 25분 구간)에 디코더가 읽는 프레임이 통째로
+    # 버퍼링되어 29분 영상에서 수십 GB → '-12 Cannot allocate memory' 로 죽었다
+    # (실측: 6초만에 14GB, frame=0). 첫 main segment 만 [0:v]trim 으로 두어 [0:v]
+    # 소비자를 1개로 유지(= split fan-out 없음)하고, 나머지 main segment 는 각자
+    # -ss/-t 로 그 구간부터 독립 디코딩하는 별도 입력으로 분리한다. 컷 없는 단일
+    # segment(흔한 경우)는 main_seg_input 이 비어 동작이 전혀 바뀌지 않는다.
     next_input = 1
+    main_seg_input: dict[int, int] = {}   # segments idx → seek 입력 index (첫 조각은 [0] 재사용 → 미포함)
+    _main_seen = False
+    for si, seg in enumerate(segments):
+        if seg.source != "main":
+            continue
+        if not _main_seen:
+            _main_seen = True            # 첫 main 조각: input 0 의 trim 으로 처리 (별도 입력 X)
+            continue
+        seg_in_s = seg.source_start_ms / 1000.0
+        seg_dur_s = max(0.001, (seg.source_end_ms - seg.source_start_ms) / 1000.0)
+        argv.extend(["-ss", f"{seg_in_s:.3f}", "-t", f"{seg_dur_s:.3f}", "-i", str(src_path)])
+        main_seg_input[si] = next_input
+        next_input += 1
+
+    cut_src_index: dict[str, int] = {}    # cut.id → ffmpeg input index
     for cut in cuts:
         if cut.has_insert:
             argv.extend(["-i", cut.src])
@@ -393,6 +465,19 @@ def build_export_args(
     from ..services.media_probe import has_audio_stream
     _audio_srcs = [str(src_path)] + [c.src for c in cuts if c.has_insert] + list(track_extra_srcs)
     audio_available = all(has_audio_stream(s) for s in _audio_srcs)
+
+    # 2026-06-09 OOM fix part 2: 오디오를 비디오와 **다른 디코더**로 분리한다.
+    # concat 이 v/a 를 한 묶음으로 당기는데, 오디오(atempo)는 가볍고 빨라서 공유 디코더를
+    # 앞질러 끌고 간다. 그러면 디코딩된 무거운 비디오 프레임이 느린 caption overlay 체인
+    # 앞에 쌓여 긴 영상(29분)+캡션+오디오에서 수십 GB → OOM (실측: 오디오만 끄면 bounded).
+    # main src 오디오 전용 입력(-i)을 따로 두면 비디오 디코더는 overlay 소비 속도로만
+    # 진행 → 오디오 끈 것과 같은 bounded 상태가 된다. 오디오 프레임은 작아 racing 해도 영향
+    # 미미. (insert/track 오디오는 이미 별도 입력이라 그대로.)
+    main_audio_input = 0
+    if audio_available:
+        argv.extend(["-i", str(src_path)])
+        main_audio_input = next_input
+        next_input += 1
 
     # 캡션 / broll 의 in_ms/out_ms 는 user gap-collapsed ms. setpts 로 압축된 output
     # 스트림의 t 와 일치하려면 segment 별 rate 로 변환해야 함. 이 매핑은 segments +
@@ -492,13 +577,21 @@ def build_export_args(
         if seg.source == "main":
             in_s = seg.source_start_ms / 1000.0
             out_s = seg.source_end_ms / 1000.0
+            # 비디오: 첫 조각은 [0:v]trim, 이후 조각은 -ss 로 이미 잘린 독립 입력 [k:v]
+            # (한 디코더 fan-out → concat 버퍼링 폭주 방지, 위 OOM fix part 1 참조).
+            if i in main_seg_input:
+                v_src = f"[{main_seg_input[i]}:v]"
+            else:
+                v_src = f"[0:v]trim={in_s}:{out_s},"
+            # 오디오: 항상 **전용 오디오 입력**에서 atrim — 비디오 디코더와 분리(part 2).
+            a_src = f"[{main_audio_input}:a]atrim={in_s}:{out_s},"
             fc_parts.append(
-                f"[0:v]trim={in_s}:{out_s},setpts=PTS-STARTPTS{speed_v_filter},"
+                f"{v_src}setpts=PTS-STARTPTS{speed_v_filter},"
                 f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
             if audio_available:
                 fc_parts.append(
-                    f"[0:a]atrim={in_s}:{out_s},asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
+                    f"{a_src}asetpts=PTS-STARTPTS{speed_a_filter}{a_norm}[{a_label}]"
                 )
         else:
             # source_id 가 cut.id 면 cut 의 insert, src 경로면 track 다중 src.
@@ -535,8 +628,14 @@ def build_export_args(
             cur_v, cur_a = "outv0", None
     else:
         if audio_available:
-            concat_inputs = "".join(f"[{v}][{a}]" for v, a in seg_labels)
-            fc_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=1[concv][conca]")
+            # OOM fix part 2: 비디오·오디오 concat 을 **분리**한다. 하나의 concat=v=1:a=1
+            # 은 v/a 를 한 묶음으로 당겨, 빠른 오디오가 전체를 앞질러 끌고 가 무거운 비디오
+            # 프레임이 느린 overlay 앞에 쌓인다 → 긴 영상에서 OOM. 비디오 concat 은 a=0 으로
+            # 두어 오직 비디오 인코더(overlay 체인)에만 끌려가게 하고, 오디오는 독립 concat.
+            v_inputs = "".join(f"[{v}]" for v, _a in seg_labels)
+            a_inputs = "".join(f"[{a}]" for _v, a in seg_labels)
+            fc_parts.append(f"{v_inputs}concat=n={n}:v=1:a=0[concv]")
+            fc_parts.append(f"{a_inputs}concat=n={n}:v=0:a=1[conca]")
             cur_v, cur_a = "concv", "conca"
         else:
             concat_inputs = "".join(f"[{v}]" for v, _a in seg_labels)
@@ -554,13 +653,8 @@ def build_export_args(
         fade_in = cap.fade.in_ms / 1000.0
         fade_out = cap.fade.out_ms / 1000.0
         # PNG input 이 -loop 1 -t <output duration> 로 bound 됐으므로 filter 안 loop 불필요.
-        # alpha fade 채널 — 페이드 인 in~in+fade_in, 페이드 아웃 (out-fade_out)~out (output 시간).
-        alpha_chain = (
-            f"[{png_idx}:v]format=rgba,"
-            f"fade=t=in:st={in_s}:d={fade_in}:alpha=1,"
-            f"fade=t=out:st={out_s - fade_out}:d={fade_out}:alpha=1[cap{i}]"
-        )
-        fc_parts.append(alpha_chain)
+        # alpha fade 채널 — fade=0(경계로 쪼개진 이음매)이면 필터 생략(깜빡임 방지).
+        fc_parts.append(_alpha_overlay_chain(png_idx, f"cap{i}", in_s, out_s, fade_in, fade_out))
         next_v = f"v{i+1}"
         fc_parts.append(
             f"[{cur_v}][cap{i}]overlay=enable='between(t\\,{in_s}\\,{out_s})'[{next_v}]"
@@ -574,11 +668,7 @@ def build_export_args(
         out_s = user_to_output(arr.out_ms) / 1000.0
         fade_in = arr.fade.in_ms / 1000.0
         fade_out = arr.fade.out_ms / 1000.0
-        fc_parts.append(
-            f"[{png_idx}:v]format=rgba,"
-            f"fade=t=in:st={in_s}:d={fade_in}:alpha=1,"
-            f"fade=t=out:st={out_s - fade_out}:d={fade_out}:alpha=1[arr{i}]"
-        )
+        fc_parts.append(_alpha_overlay_chain(png_idx, f"arr{i}", in_s, out_s, fade_in, fade_out))
         next_v = f"va{i}"
         fc_parts.append(
             f"[{cur_v}][arr{i}]overlay=enable='between(t\\,{in_s}\\,{out_s})'[{next_v}]"
@@ -692,9 +782,18 @@ def build_export_args(
     argv.extend(["-map", f"[{cur_v}]"])
     if cur_a is not None:
         argv.extend(["-map", f"[{cur_a}]"])
-    argv.extend([
-        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-    ])
+    # 인코더 — GPU(NVENC) 가 동작하면 그걸로(인코드 단계를 GPU 로 offload, CPU 부담↓
+    # + 일반 영상 export 가속), 없으면 libx264(CPU) 로 자동 폴백. 디코드·overlay 합성은
+    # 여전히 CPU 라, 긴 원본 + 캡션 多 인 경우 체감 가속은 인코드 비중만큼만.
+    if nvenc_available(ffmpeg_path):
+        argv.extend([
+            "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr",
+            "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p",
+        ])
+    else:
+        argv.extend([
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        ])
     if cur_a is not None:
         argv.extend(["-c:a", "aac", "-b:a", "128k"])
     # PNG 는 filter chain 의 loop filter 로 처리 — main video 가 끝나면 overlay
@@ -771,6 +870,7 @@ def _remap_effects_to_gap_collapsed(effects, video_track):
         cursor += s.duration_ms
     out = []
     for eff in effects:
+        has_fade = getattr(eff, "fade", None) is not None
         # 이 effect 와 겹치는 모든 segment 마다 sub-effect 생성.
         for us, ue, exp in ranges:
             if eff.out_ms <= us or eff.in_ms >= ue:
@@ -780,7 +880,16 @@ def _remap_effects_to_gap_collapsed(effects, video_track):
             clipped_out = min(eff.out_ms, ue)
             if clipped_out <= clipped_in:
                 continue
-            out.append(replace(eff, in_ms=int(clipped_in + delta), out_ms=int(clipped_out + delta)))
+            piece = replace(eff, in_ms=int(clipped_in + delta), out_ms=int(clipped_out + delta))
+            # 캡션/화살표가 segment 경계로 쪼개질 때, **이음매(seam) 쪽 fade 를 0** 으로
+            # 만든다. 안 그러면 조각1 의 fade-out 과 조각2 의 fade-in 이 이음매에서 겹쳐
+            # 캡션이 잠깐 투명해졌다 돌아오며 **깜빡인다**(사용자 보고). 진짜 바깥
+            # 가장자리(실제 effect in/out 과 일치하는 쪽)만 fade 유지 → 조각 사이 연속.
+            if has_fade:
+                fin = piece.fade.in_ms if clipped_in == eff.in_ms else 0
+                fout = piece.fade.out_ms if clipped_out == eff.out_ms else 0
+                piece = replace(piece, fade=replace(piece.fade, in_ms=fin, out_ms=fout))
+            out.append(piece)
     return out
 
 

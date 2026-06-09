@@ -197,12 +197,14 @@ def test_speed_partial_overlap_auto_splits_segment():
     )
     # filter_complex 안에 3개 main segment 라벨 (s0/s1/s2) 와 1개에만 setpts=PTS/2.
     fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 첫(head) sub-segment 는 [0:v]trim 유지, 중간·tail 은 -ss 분리 입력 (2026-06-09 OOM fix).
     assert "trim=0.0:2.0" in fc, "head sub-segment missing"
-    assert "trim=2.0:5.0" in fc, "speed sub-segment missing"
-    assert "trim=5.0:10.0" in fc, "tail sub-segment missing"
-    # speed 가 적용된 sub-segment 는 [trim=2.0:5.0,setpts=PTS-STARTPTS,setpts=PTS/2] 식.
+    assert fc.count("[0:v]") <= 1, "fan-out 금지 — main 조각이 [0:v] 한 디코더를 공유하면 안 됨"
+    assert "-ss" in argv, "분할된 뒤 sub-segment 는 -ss 분리 입력이어야"
+    # 3개 sub-segment 라벨이 모두 존재 (효과 경계에서 split 됐다는 증거).
+    assert "[s0v]" in fc and "[s1v]" in fc and "[s2v]" in fc
+    # speed 는 중간 sub-segment 에만 한 번.
     assert "setpts=PTS/2" in fc
-    # head / tail 에는 setpts=PTS/2 가 직접 붙으면 안 됨 (단 한 번만 등장).
     assert fc.count("setpts=PTS/2") == 1
 
 
