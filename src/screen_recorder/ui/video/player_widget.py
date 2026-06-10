@@ -330,6 +330,15 @@ class PlayerWidget(QStackedWidget):
         self._suppress_state_signal: bool = False
         self._media.positionChanged.connect(lambda v: self.position_changed.emit(int(v)))
         self._media.durationChanged.connect(lambda v: self.duration_changed.emit(int(v)))
+        # seek 후 일시정지 프레임 강제 갱신(play/pause 사이클)을 **디바운스**하는 타이머.
+        # 재생바를 빠르게 드래그하면 mouseMove 마다 seek_ms 가 불려 play/pause 가
+        # 연사되는데, 이 WMF 사이클이 연사되면 메인 스레드가 play() 에서 deadlock 한다
+        # (사용자 보고: 드래그/출력 중 재생 시 멈춤). setPosition 은 즉시 적용하고,
+        # 무거운 force-frame 은 스크럽이 ~60ms 멈춘 뒤 한 번만 실행한다.
+        self._seek_frame_timer = QTimer(self)
+        self._seek_frame_timer.setSingleShot(True)
+        self._seek_frame_timer.setInterval(60)
+        self._seek_frame_timer.timeout.connect(self._force_paused_frame)
 
         # GIF 백엔드
         self._gif_label = QLabel()
@@ -494,6 +503,7 @@ class PlayerWidget(QStackedWidget):
             self._overlay.setGeometry(0, 0, self.width(), self.height())
 
     def load(self, path: Path) -> None:
+        self._seek_frame_timer.stop()   # 이전 미디어의 보류된 force-frame 취소
         if self._movie is not None:
             self._movie.stop()
             try:
@@ -534,6 +544,7 @@ class PlayerWidget(QStackedWidget):
         는 deleteLater→destruct 경로에서 발화하지 않으므로 명시 호출 필요.
         """
         try:
+            self._seek_frame_timer.stop()   # 보류된 force-frame 취소 (파일 핸들 해제 직전)
             self._media.stop()
             self._media.setSource(QUrl())
         except (RuntimeError, AttributeError):
@@ -614,6 +625,7 @@ class PlayerWidget(QStackedWidget):
         return self._media.playbackState() == QMediaPlayer.PlayingState
 
     def stop(self) -> None:
+        self._seek_frame_timer.stop()   # 보류된 force-frame 취소 (play() 재기동 방지)
         if self._is_gif and self._movie is not None:
             self._movie.stop()
             self.playing_changed.emit(False)
@@ -646,14 +658,27 @@ class PlayerWidget(QStackedWidget):
         was_paused = self._media.playbackState() != QMediaPlayer.PlayingState
         self._media.setPosition(ms)
         # Qt6/WMF 회귀: 일시정지 상태에서 setPosition 만으론 새 프레임이 video sink
-        # 에 도착하지 않을 때가 있다 → 사용자 입장에선 "재생 바 옮겨도 영상이 안 바뀜".
-        # play()/pause() 한 사이클로 새 프레임 강제. 짧은 사이클이라 audio mute 임시.
-        #
-        # 단, 미디어가 아직 LoadedMedia 상태가 아닐 때 (setSource 직후 비동기 로딩 중)
-        # play 를 호출하면 백엔드가 불안정해질 수 있다 → mediaStatus 확인 후 적용.
+        # 에 도착하지 않을 때가 있다 → "재생 바 옮겨도 영상이 안 바뀜". play()/pause()
+        # 한 사이클로 새 프레임을 강제하는데, 이 사이클을 매 seek 마다(빠른 드래그 =
+        # mouseMove 연사) 호출하면 WMF play() 에서 메인 스레드가 deadlock 한다.
+        # → setPosition 은 위에서 즉시 끝났고, 무거운 force-frame 은 디바운스해서
+        # 스크럽이 멈춘 뒤 한 번만 실행(_force_paused_frame). 재생 중이면 불필요.
         if not was_paused:
+            self._seek_frame_timer.stop()
+            return
+        self._seek_frame_timer.start()
+
+    def _force_paused_frame(self) -> None:
+        """디바운스된 force-frame — 스크럽이 멈춘 뒤 일시정지 프레임을 한 번 갱신.
+
+        타이머 예약과 발화 사이에 미디어가 바뀌거나(load/release) 재생이 시작됐을 수
+        있으므로 발화 시점에 다시 확인한다. setSource 직후 비동기 로딩 중(LoadedMedia
+        이전)에 play() 하면 백엔드가 불안정해지므로 mediaStatus 도 확인."""
+        if not self.is_loaded() or self._is_gif:
             return
         try:
+            if self._media.playbackState() == QMediaPlayer.PlayingState:
+                return
             status = self._media.mediaStatus()
         except (AttributeError, RuntimeError):
             return
