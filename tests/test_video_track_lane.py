@@ -139,3 +139,23 @@ def test_lane_drag_emits_segment_position_changed(qtbot):
         lane.mouseReleaseEvent(release)
     assert blocker.args[0] == "a"
     assert blocker.args[1] > 0   # 오른쪽으로 갔으니 양수 start_ms.
+
+
+# ---------- segment_h_rects 순수 함수 ----------
+
+def test_segment_h_rects_positions():
+    from screen_recorder.ui.video.video_track_lane import segment_h_rects
+    from screen_recorder.effects.segment import VideoSegment
+
+    s0 = VideoSegment(src="a", src_in_ms=0, src_out_ms=0,
+                      src_duration_ms=1000, start_ms=0)
+    s1 = VideoSegment(src="a", src_in_ms=0, src_out_ms=0,
+                      src_duration_ms=1000, start_ms=1000)
+    rects = segment_h_rects([s0, s1], total_ms=2000, body_width=200, header_width=56)
+    assert rects[0]["x"] == 56 and rects[1]["x"] == 56 + 100
+    assert all(r["w"] >= 1 for r in rects)
+
+
+def test_segment_h_rects_empty():
+    from screen_recorder.ui.video.video_track_lane import segment_h_rects
+    assert segment_h_rects([], total_ms=0, body_width=200) == []

@@ -33,6 +33,26 @@ _DURATION_FG = QColor(230, 230, 230)
 _DURATION_BG = QColor(0, 0, 0, 140)
 
 
+def segment_h_rects(segments, total_ms: int, body_width: int,
+                    header_width: int = _HEADER_WIDTH) -> list[dict]:
+    """각 segment 의 가로 좌표 (x, w) — start_ms 기반 (갭 지원). y/height 는 호출자 결정.
+
+    VideoTrackLane 과 AudioTrackLane 의 단일 위치 권위. 둘이 같은 segments/total_ms/
+    body_width 를 받으면 가로 정렬이 구조적으로 일치한다.
+    """
+    if total_ms <= 0 or not segments:
+        return []
+    body_w = max(1, int(body_width))
+    out: list[dict] = []
+    for seg in segments:
+        dur = max(0, seg.duration_ms)
+        x = header_width + int(round(seg.start_ms * body_w / total_ms))
+        w = max(1, int(round(dur * body_w / total_ms)) - _BOX_GAP)
+        out.append({"id": seg.id, "x": x, "w": w,
+                    "start_ms": seg.start_ms, "duration_ms": dur})
+    return out
+
+
 class VideoTrackLane(QWidget):
     """비디오 트랙 lane — segment 들을 가로로 이어붙인 필름스트립.
 
@@ -130,25 +150,14 @@ class VideoTrackLane(QWidget):
         return max(self._duration_ms, seg_max)
 
     def _segment_rects(self) -> list[dict]:
-        """각 segment 의 화면 좌표 rect 와 id. start_ms 기반 (갭 지원). 헤더 폭 제외."""
+        """각 segment 의 화면 좌표 rect 와 id. segment_h_rects 위임 + y/height 적용."""
         total = self._total_duration_ms()
-        if total <= 0 or not self._segments:
-            return []
-        body_w = max(1, self.width() - _HEADER_WIDTH)
-        out: list[dict] = []
         y = (self.height() - _BOX_HEIGHT) // 2
-        for seg in self._segments:
-            dur = max(0, seg.duration_ms)
-            x = _HEADER_WIDTH + int(round(seg.start_ms * body_w / total))
-            w = int(round(dur * body_w / total)) - _BOX_GAP
-            w = max(1, w)
-            out.append({
-                "id": seg.id,
-                "rect": QRect(x, y, w, _BOX_HEIGHT),
-                "duration_ms": dur,
-                "start_ms": seg.start_ms,
-            })
-        return out
+        hrects = segment_h_rects(self._segments, total, self.width() - _HEADER_WIDTH)
+        return [{"id": r["id"],
+                 "rect": QRect(r["x"], y, r["w"], _BOX_HEIGHT),
+                 "duration_ms": r["duration_ms"], "start_ms": r["start_ms"]}
+                for r in hrects]
 
     def _x_to_combined_ms(self, x: int) -> int:
         """x 좌표 → 결합 시간축 ms. 헤더 보정 + 음수 clamp."""
