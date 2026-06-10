@@ -41,6 +41,9 @@ class Sidecar:
     # False 면 모든 effect 의 enabled 값과 무관하게 preview + export 무시.
     # 영상별 (사이드카) 영속화 — 영상 다시 열어도 OFF 상태 유지.
     effects_enabled: bool = True
+    # 2026-06-09 (사용자 요청): 오디오 음소거 토글. True 면 미리보기 재생 무음 +
+    # 내보내기 무음. 영상별 (사이드카) 영속화.
+    audio_muted: bool = False
 
     def active_effects(self) -> list[Effect]:
         """전체 + 개별 토글 둘 다 통과한 효과들. preview / export 의 단일 진입점.
@@ -67,6 +70,7 @@ class Sidecar:
             "trim": _to_plain(self.trim),
             "effects": [_effect_to_dict(e) for e in self.effects],
             "effects_enabled": bool(self.effects_enabled),
+            "audio_muted": bool(self.audio_muted),
         }
 
     @classmethod
@@ -104,6 +108,7 @@ class Sidecar:
         effects = [_effect_from_dict(e) for e in eff_raw if isinstance(e, dict)]
         # 2026-05-20: 신규 필드 effects_enabled (전체 토글). 누락 = True (이전 사이드카 호환).
         effects_enabled = bool(d.get("effects_enabled", True))
+        audio_muted = bool(d.get("audio_muted", False))
         return cls(
             version=CURRENT_VERSION,
             source_path=str(d.get("source_path", "")),
@@ -112,6 +117,7 @@ class Sidecar:
             trim=trim,
             effects=effects,
             effects_enabled=effects_enabled,
+            audio_muted=audio_muted,
         )
 
 
