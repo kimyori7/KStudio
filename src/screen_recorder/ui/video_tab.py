@@ -374,6 +374,18 @@ class VideoTab(QWidget):
             self._preview_overlay.clear_broll_live_frame
         )
 
+        # ---- WaveformService (파형 레인) ----
+        from ..services.waveform_service import WaveformService
+        from ..core.ffmpeg_check import find_ffmpeg
+        _ff = find_ffmpeg()
+        self._waveform_service = WaveformService(
+            ffmpeg_path=str(_ff) if _ff else "ffmpeg", parent=self)
+        self._waveform_service.waveform_ready.connect(
+            lambda src, peaks: self.timeline.audio_track_lane.set_peaks(src, peaks)
+        )
+        # 음소거 토글 — AudioTrackLane 🔇 버튼 → sidecar + 미리보기 동기화.
+        self.timeline.audio_mute_toggled.connect(self._on_audio_mute_toggled)
+
         # 자동편집 — Phase 4: silence + transcript + scene + bpm.
         self._autoedit_coord = AutoEditCoordinator(self)
         self._autoedit_coord.set_analyzers([
@@ -676,6 +688,11 @@ class VideoTab(QWidget):
         except (RuntimeError, AttributeError):
             pass
 
+    def _on_audio_mute_toggled(self, muted: bool) -> None:
+        """파형 레인 🔇 토글 → sidecar.audio_muted 갱신 + 미리보기 음소거 동기화."""
+        if self._edit_controller.set_audio_muted(muted):
+            self._apply_audio_mute()
+
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
         # Phase 28 — 인스펙터에서 zoom.preview 체크박스 등 토글 시점은 position_changed 가
@@ -687,6 +704,9 @@ class VideoTab(QWidget):
         except (AttributeError, RuntimeError):
             pass
         self._apply_audio_mute()
+        # 트랙의 각 소스에 대해 파형 요청 (캐시/dedup 있으므로 반복 호출 cheap).
+        for src in {s.src for s in sc.video_track}:
+            self._waveform_service.request(src)
 
     def _track_last_caption_font(self, sc) -> None:
         """사이드카의 가장 최근 (in_ms 가장 큰) 캡션의 font 를 기록.
