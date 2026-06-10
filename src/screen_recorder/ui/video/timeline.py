@@ -13,6 +13,7 @@ from ...effects import Sidecar
 from .effect_lane import _HEADER_WIDTH
 from .effect_lanes_widget import EffectLanesWidget
 from .trim_lane import TrimLane
+from .audio_track_lane import AudioTrackLane
 from .video_track_lane import VideoTrackLane
 
 
@@ -200,6 +201,7 @@ class VideoTimeline(QWidget):
     effect_selected = Signal(object)        # Effect | None
     effect_changed = Signal(object)         # Effect
     effect_deleted = Signal(str)            # effect_id
+    audio_mute_toggled = Signal(bool)       # AudioTrackLane 음소거 토글 passthrough
 
     # 가로 줌 — 1.0 = fit-to-window, > 1 = 확대 (가로 스크롤 발생). Ctrl+휠 로 조정.
     _ZOOM_MIN = 1.0
@@ -229,9 +231,11 @@ class VideoTimeline(QWidget):
         self.trim_marker_lane.setParent(self)
         self.trim_marker_lane.hide()
         self.video_track_lane = VideoTrackLane()
+        self.audio_track_lane = AudioTrackLane()
 
         top_layout.addWidget(self.slider_lane)
         top_layout.addWidget(self.video_track_lane)
+        top_layout.addWidget(self.audio_track_lane)
 
         self._top_scroll = QScrollArea()
         self._top_scroll.setWidgetResizable(True)
@@ -287,6 +291,8 @@ class VideoTimeline(QWidget):
 
         # ---- 시그널 fan-in ----
         self.slider_lane.seek_request.connect(self.seek_request.emit)
+        self.audio_track_lane.seek_request.connect(self.seek_request.emit)
+        self.audio_track_lane.mute_toggled.connect(self.audio_mute_toggled.emit)
         self.trim_marker_lane.seek_request.connect(self.seek_request.emit)
         self.trim_marker_lane.in_changed.connect(self._on_trim_in_changed)
         self.trim_marker_lane.out_changed.connect(self._on_trim_out_changed)
@@ -301,6 +307,7 @@ class VideoTimeline(QWidget):
         # 초기엔 OFF — 슬라이더만 보임
         self.trim_marker_lane.hide()
         self.video_track_lane.hide()
+        self.audio_track_lane.hide()
         self.effect_lanes.hide()
 
     # ---------- 외부 API ----------
@@ -309,6 +316,7 @@ class VideoTimeline(QWidget):
         self.slider_lane.set_duration_ms(ms)
         self.trim_marker_lane.set_duration_ms(ms)
         self.video_track_lane.set_duration_ms(ms)
+        self.audio_track_lane.set_duration_ms(ms)
         self.effect_lanes.set_duration_ms(ms)
         self.playhead_overlay.set_duration_ms(ms)
         self.playhead_top_overlay.set_duration_ms(ms)
@@ -428,6 +436,8 @@ class VideoTimeline(QWidget):
         self.effect_lanes.set_sidecar(sidecar)
         # video_track 표시 갱신.
         self.video_track_lane.set_segments(sidecar.video_track)
+        self.audio_track_lane.set_segments(sidecar.video_track)
+        self.audio_track_lane.set_muted(sidecar.audio_muted)
         # trim 도 사이드카에서 가져와 표시 (Stage D 에서 제거 예정).
         t = sidecar.trim
         in_ms = t.in_ms if t.in_ms > 0 else None
@@ -450,6 +460,7 @@ class VideoTimeline(QWidget):
         # parent 없는 widget 이라 setVisible(True) 하면 별도 top-level 창으로 떠 버리는 회귀.
         # → 토글 대상에서 빼고 영구히 숨김 유지.
         self.video_track_lane.setVisible(on)
+        self.audio_track_lane.setVisible(on)
         self.effect_lanes.setVisible(on)
         # _top_scroll(슬라이더 + 영상 트랙)은 항상 노출 — 슬라이더는 두 모드 공통이고,
         # video_track_lane 은 위에서 on 일 때만 visible 이라 OFF 면 _top_scroll 안에
