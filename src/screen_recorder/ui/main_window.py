@@ -3652,6 +3652,7 @@ class MainWindow(QMainWindow):
                 main_duration_ms=main_duration,
                 surface_w=surface_w, surface_h=surface_h,
                 ffmpeg_path=self.ffmpeg_path,
+                mute_audio=sidecar.audio_muted,
             )
         except NotImplementedError as e:
             QMessageBox.warning(self, "내보내기", f"미구현 효과: {e}")
