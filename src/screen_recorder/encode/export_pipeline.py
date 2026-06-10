@@ -270,6 +270,7 @@ def build_export_args(
     surface_h: int,
     ffmpeg_path: Path | str,
     png_dir: Path | str | None = None,
+    mute_audio: bool = False,
 ) -> tuple[list[str], list[Path]]:
     """Sidecar → (ffmpeg argv, 임시 PNG 경로 리스트). 호출 측이 PNG 정리 책임.
 
@@ -464,7 +465,10 @@ def build_export_args(
     # 화면 녹화에 마이크 입력 없거나 drag-drop 한 영상에 audio 없을 때 발생.
     from ..services.media_probe import has_audio_stream
     _audio_srcs = [str(src_path)] + [c.src for c in cuts if c.has_insert] + list(track_extra_srcs)
-    audio_available = all(has_audio_stream(s) for s in _audio_srcs)
+    # mute_audio: 사용자 음소거 토글. True 면 오디오를 아예 없는 것으로 취급 →
+    # 아래 OOM fix 의 전용 오디오 입력/분리 concat/-c:a 가 모두 if audio_available:
+    # 게이트로 빠져 무음 mp4. OOM fix 구조는 건드리지 않는다.
+    audio_available = (not mute_audio) and all(has_audio_stream(s) for s in _audio_srcs)
 
     # 2026-06-09 OOM fix part 2: 오디오를 비디오와 **다른 디코더**로 분리한다.
     # concat 이 v/a 를 한 묶음으로 당기는데, 오디오(atempo)는 가볍고 빨라서 공유 디코더를

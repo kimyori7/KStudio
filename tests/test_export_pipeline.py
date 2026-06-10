@@ -381,3 +381,31 @@ def test_default_output_path_with_collision(tmp_path):
     (tmp_path / "video_edited.mp4").write_bytes(b"")
     out = default_output_path(src)
     assert out.name == "video_edited_2.mp4"
+
+
+def test_mute_audio_drops_audio_chain(tmp_path):
+    from screen_recorder.encode.export_pipeline import build_export_args
+    from screen_recorder.effects.sidecar import Sidecar
+    from screen_recorder.effects.segment import VideoSegment
+
+    src = tmp_path / "v.mp4"
+    src.write_bytes(b"x")   # 존재만; has_audio_stream 은 가짜 경로에 낙관 True
+    sc = Sidecar(source_path=str(src),
+                 video_track=[VideoSegment(src=str(src), src_in_ms=0,
+                                           src_out_ms=0, src_duration_ms=1000)])
+
+    argv_muted, _ = build_export_args(
+        sidecar=sc, src_path=str(src), dst_path=str(tmp_path / "o.mp4"),
+        main_duration_ms=1000, surface_w=320, surface_h=240,
+        ffmpeg_path="ffmpeg", mute_audio=True,
+    )
+    joined = " ".join(argv_muted)
+    assert "-c:a" not in argv_muted
+    assert "[0:a]" not in joined and "[conca]" not in joined
+
+    argv_kept, _ = build_export_args(
+        sidecar=sc, src_path=str(src), dst_path=str(tmp_path / "o2.mp4"),
+        main_duration_ms=1000, surface_w=320, surface_h=240,
+        ffmpeg_path="ffmpeg", mute_audio=False,
+    )
+    assert "-c:a" in argv_kept   # 음소거 안 하면 오디오 유지
