@@ -712,6 +712,7 @@ class PlayerWidget(QStackedWidget):
 
     def set_muted(self, muted: bool) -> None:
         self._audio.setMuted(muted)
+        self._insert_audio.setMuted(muted)
 
     def is_muted(self) -> bool:
         return self._audio.isMuted()

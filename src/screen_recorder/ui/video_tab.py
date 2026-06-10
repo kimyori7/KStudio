@@ -669,6 +669,13 @@ class VideoTab(QWidget):
     def _get_position_ms(self) -> int:
         return self.timeline.slider_lane.position_ms() or self.player.position_ms()
 
+    def _apply_audio_mute(self) -> None:
+        """sidecar.audio_muted → 미리보기 플레이어 음소거 동기화."""
+        try:
+            self.player.set_muted(bool(self._edit_controller.sidecar().audio_muted))
+        except (RuntimeError, AttributeError):
+            pass
+
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
         # Phase 28 — 인스펙터에서 zoom.preview 체크박스 등 토글 시점은 position_changed 가
@@ -679,6 +686,7 @@ class VideoTab(QWidget):
             self._on_position_for_zoom(cur_ms)
         except (AttributeError, RuntimeError):
             pass
+        self._apply_audio_mute()
 
     def _track_last_caption_font(self, sc) -> None:
         """사이드카의 가장 최근 (in_ms 가장 큰) 캡션의 font 를 기록.
@@ -1484,6 +1492,7 @@ class VideoTab(QWidget):
         if self._thumbnail_pending is not None:
             self.player.set_thumbnail(self._thumbnail_pending)
         self.controls.set_audio_enabled(self.player.has_audio())
+        self._apply_audio_mute()
         # release 후 reload 라면 마지막 position 으로 복원 — UX 연속성.
         # setSource() 는 비동기 — duration 이 처음 보고될 때 (metadata 로드 완료)
         # 한 번만 seek (즉시 seek 은 duration=0 clamp 로 silent fail).
