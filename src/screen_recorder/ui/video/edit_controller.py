@@ -225,6 +225,19 @@ class EditController(QObject):
         self.update_sidecar(new_sc)
         return True
 
+    def set_audio_muted(self, muted: bool) -> bool:
+        """오디오 음소거 ON/OFF — Sidecar.audio_muted 변경 + history + autosave.
+
+        파형 레인의 🔇 토글에서 호출. True 면 미리보기 재생 무음 + 내보내기 무음.
+        값이 바뀌면 True, no-op 이면 False (set_effects_enabled 와 동일 패턴).
+        """
+        if bool(self._sidecar.audio_muted) == bool(muted):
+            return False
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.audio_muted = bool(muted)
+        self.update_sidecar(new_sc)
+        return True
+
     def set_row_enabled(self, effect_type: str, track_idx: int, enabled: bool) -> bool:
         """특정 lane row (effect_type + track_idx) 의 모든 효과의 enabled 일괄 변경.
 
