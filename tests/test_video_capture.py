@@ -125,6 +125,40 @@ def test_capture_uses_video_mode_for_constant_fps():
         assert call.kwargs.get("video_mode") is True
 
 
+def test_multi_monitor_uses_oneshot_grab_not_start():
+    """멀티모니터(두 output 걸침) 캡처는 내부 캡처 스레드(start())를 띄우지 않고
+    output 별 one-shot grab(new_frame_only=False)으로 합성해야 한다.
+
+    회귀 방지(2026-06-10 재현·확정, Phase 79): output 마다 start()+video_mode 로 내부
+    캡처 스레드를 2개 띄우면 부하(libx264 등) 시 공유 D3D lock 에서 deadlock → 화면이
+    ~수십 초 후 영구 freeze. one-shot 은 동시 DDA 접근이 없어 deadlock 불가."""
+    cam_a = MagicMock(); cam_a.grab.return_value = np.zeros((400, 1079, 4), np.uint8)
+    cam_b = MagicMock(); cam_b.grab.return_value = np.zeros((400, 2559, 4), np.uint8)
+    q = queue.Queue(maxsize=200)
+    target = RegionTarget(Rect(1481, 200, 3638, 400))  # 경계(2560) 넘김 → 2 tiles
+
+    with patch("screen_recorder.capture.video.dxcam") as dx_mod, \
+         patch("screen_recorder.capture.video.resolve_output_rects", return_value=_TWO):
+        dx_mod.create.side_effect = [cam_a, cam_b]
+        t = VideoCaptureThread(target=target, fps=30, output_queue=q)
+        t.start()
+        time.sleep(0.15)
+        t.stop()
+        t.join(timeout=1.0)
+
+    # 핵심: start() 는 절대 호출하지 않는다(내부 스레드 X = deadlock 불가).
+    assert not cam_a.start.called
+    assert not cam_b.start.called
+    # grab 은 one-shot(new_frame_only=False)로 호출.
+    assert cam_a.grab.called and cam_b.grab.called
+    for c in (cam_a, cam_b):
+        for call in c.grab.call_args_list:
+            assert call.kwargs.get("new_frame_only") is False
+    # 합성 프레임이 큐로 흘러간다.
+    assert not q.empty()
+    assert q.get().shape == (400, 3638, 4)
+
+
 def test_capture_drops_oldest_when_queue_full():
     fake_frame = np.zeros((10, 10, 4), dtype=np.uint8)
     fake_cam = MagicMock()

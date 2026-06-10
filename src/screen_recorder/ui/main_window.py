@@ -1338,6 +1338,10 @@ class MainWindow(QMainWindow):
     def _on_region_moved(self, x: int, y: int, w: int, h: int) -> None:
         g = self.app_settings.general
         g.region_x, g.region_y, g.region_w, g.region_h = x, y, w, h
+        # 즉시 디스크에 저장 — aboutToQuit 만 의존하면 터미널 kill·강제 종료·크래시 시
+        # 위치가 손실된다 (target 은 이미 즉시 저장돼 살아남으므로 재시작 후 테두리가
+        # *기본 위치*로 돌아오는 비대칭 버그가 났다). 드래그 release 빈도라 hot path 아님.
+        self._persist_settings()
         if (self.controller.state != RecorderState.IDLE
                 and isinstance(self._border, AdjustableRegionBorder)
                 and self.controller._video_thread is not None):

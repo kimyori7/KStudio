@@ -194,15 +194,21 @@ class VideoCaptureThread(threading.Thread):
             self._run_single(rect, log)
 
     def _open_tile_cams(self, tiles: list[CaptureTile]) -> list:
-        """tile 마다 dxcam 카메라를 만들고 캡처 시작 — 실패 시 연 것들 정리 후 재던짐."""
+        """tile 마다 dxcam 카메라를 만든다 — one-shot 용이라 start() 하지 않는다.
+
+        ⚠ output 마다 start()+video_mode 로 **내부 캡처 스레드를 2개** 띄우면 부하 시
+        (예: libx264 인코더가 CPU 점유) 두 스레드가 공유 D3D multithread lock 에서
+        deadlock → 화면이 ~수십 초 후 **영구 정지**(frame_count 는 계속 늘지만 내용 동결).
+        단일 모니터는 스레드 1개라 같은 부하에도 멀쩡. 그래서 멀티는 내부 스레드 없이
+        우리 루프가 output 별로 **순차 one-shot grab** → 같은 시점 DDA 접근이 하나뿐이라
+        deadlock 이 구조적으로 불가능. (2026-06-10 재현·검증, Phase 79.)
+        """
         cams: list = []
         try:
             for t in tiles:
-                cam = dxcam.create(
+                cams.append(dxcam.create(
                     device_idx=t.device_idx, output_idx=t.output_idx, output_color="BGRA"
-                )
-                cam.start(target_fps=self.fps, region=t.region, video_mode=True)
-                cams.append(cam)
+                ))
         except Exception:
             self._close_tile_cams(cams)
             raise
@@ -221,25 +227,33 @@ class VideoCaptureThread(threading.Thread):
                 pass
 
     def _run_multi(self, rect: Rect, tiles: list[CaptureTile], log) -> None:
-        """두 모니터에 걸친 영역을 output 별 카메라로 잡아 한 프레임으로 합성한다.
+        """두 모니터에 걸친 영역을 output 별 **one-shot grab** 으로 한 프레임에 합성한다.
 
-        각 카메라는 자기 output 의 로컬 region 만 캡처(dxcam 제약). 매 프레임 zero 버퍼
-        (rect 크기, BGRA) 에 각 tile 의 최신 프레임을 dst 위치로 붙여 인코더에 넘긴다.
-        grab() 은 캡처 중에는 링버퍼 최신 프레임을 non-blocking 으로 복사 반환한다.
+        각 카메라는 start() 없이(내부 캡처 스레드 없이) 우리 루프에서 순차로
+        `grab(region, new_frame_only=False)` 한다 — 같은 시점에 DDA 를 건드리는 스레드가
+        하나뿐이라 2-스레드 deadlock(부하 시 영구 freeze) 이 구조적으로 불가능
+        (`_open_tile_cams` 주석 참고, Phase 79). 매 프레임 zero 버퍼(rect 크기, BGRA) 에
+        각 tile 을 dst 위치로 붙인다. grab 이 새 프레임을 못 주면 그 tile 의 직전 프레임을
+        재사용한다.
+
+        emit 은 **벽시계 기준** 정확히 fps 만큼 — grab 이 30fps 를 못 따라가도 직전 합성을
+        복제해 채운다(출력 프레임 수 = 경과×fps). 이렇게 안 하면 CFR `-r fps` 인코더에
+        프레임을 덜 흘려보내 결과 영상이 빨라지고 오디오 싱크가 어긋난다.
         """
         out_w, out_h = rect.w, rect.h
         try:
             cams = self._open_tile_cams(tiles)
         except Exception as e:
             log.error(
-                "multi-monitor dxcam start failed (tiles=%s): %s",
+                "multi-monitor dxcam create failed (tiles=%s): %s",
                 [(t.output_idx, t.region) for t in tiles], e,
             )
             return
 
         period = 1.0 / max(self.fps, 1)
-        next_tick = time.perf_counter()
+        next_emit = time.perf_counter()
         frames_emitted = 0
+        last_good: list = [None] * len(tiles)  # tile 별 최근 성공 프레임
         try:
             while not self._stop_event.is_set():
                 # 녹화 중 영역 이동 — tile 을 다시 계획하고 카메라 세트를 재구성.
@@ -254,14 +268,20 @@ class VideoCaptureThread(threading.Thread):
                         try:
                             cams = self._open_tile_cams(new_tiles)
                             tiles, rect = new_tiles, new_rect
+                            out_w, out_h = rect.w, rect.h
+                            last_good = [None] * len(tiles)
                         except Exception as e:
                             log.error("multi-monitor restart failed: %s", e)
                             break
 
                 buf = np.zeros((out_h, out_w, 4), dtype=np.uint8)
-                got_any = False
-                for t, cam in zip(tiles, cams):
-                    frame = cam.grab()  # 링버퍼 최신 프레임(복사). 아직 없으면 None.
+                for i, (t, cam) in enumerate(zip(tiles, cams)):
+                    # one-shot: 새 프레임 없으면 직전 캐시 반환(new_frame_only=False).
+                    frame = cam.grab(region=t.region, new_frame_only=False)
+                    if frame is None:
+                        frame = last_good[i]
+                    else:
+                        last_good[i] = frame
                     if frame is None:
                         continue
                     ph = min(frame.shape[0], t.h)
@@ -269,33 +289,28 @@ class VideoCaptureThread(threading.Thread):
                     if ph <= 0 or pw <= 0:
                         continue
                     buf[t.dst_y:t.dst_y + ph, t.dst_x:t.dst_x + pw] = frame[:ph, :pw]
-                    got_any = True
 
-                if not got_any:
-                    time.sleep(period / 2)
-                    continue
-
-                try:
-                    self.output_queue.put_nowait(buf)
-                    frames_emitted += 1
-                except queue.Full:
+                # 벽시계 기준 fps 만큼 emit(부족분은 직전 합성 복제). grab 이 빠르면 sleep.
+                now = time.perf_counter()
+                while next_emit <= now:
                     try:
-                        self.output_queue.get_nowait()
                         self.output_queue.put_nowait(buf)
                         frames_emitted += 1
-                        self.dropped_count += 1
-                    except queue.Empty:
-                        pass
-
-                next_tick += period
-                sleep_for = next_tick - time.perf_counter()
+                    except queue.Full:
+                        try:
+                            self.output_queue.get_nowait()
+                            self.output_queue.put_nowait(buf)
+                            frames_emitted += 1
+                            self.dropped_count += 1
+                        except queue.Empty:
+                            pass
+                    next_emit += period
+                sleep_for = next_emit - time.perf_counter()
                 if sleep_for > 0:
                     time.sleep(sleep_for)
-                else:
-                    next_tick = time.perf_counter()
         finally:
             log.info(
-                "multi-monitor capture finished: tiles=%d frames_emitted=%d dropped=%d",
+                "multi-monitor capture finished (one-shot): tiles=%d frames_emitted=%d dropped=%d",
                 len(tiles), frames_emitted, self.dropped_count,
             )
             self._close_tile_cams(cams)
