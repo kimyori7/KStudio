@@ -44,6 +44,8 @@ class AudioTrackLane(QWidget):
 
     # ---------- public ----------
     def set_segments(self, segments: list[VideoSegment]) -> None:
+        active = {s.src for s in segments}
+        self._peaks = {k: v for k, v in self._peaks.items() if k in active}
         self._segments = list(segments)
         self.update()
 
@@ -117,6 +119,8 @@ class AudioTrackLane(QWidget):
 
     def _draw_waveform(self, p, rect, seg, peaks, cy, half, color) -> None:
         """segment 의 [src_in, src_out] 구간 peaks 를 채움형 대칭 파형으로."""
+        if int(seg.src_duration_ms) <= 0:
+            return   # 길이 미확정 segment — 파형 생략 (배경만)
         src_dur = max(1, int(seg.src_duration_ms))
         n = len(peaks)
         i0 = int(seg.src_in_ms / src_dur * n)

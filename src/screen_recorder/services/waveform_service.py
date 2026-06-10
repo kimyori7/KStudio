@@ -46,6 +46,11 @@ class WaveformJob(QObject):
         self._thread.start()
 
     def _run(self) -> None:
+        # no-audio 판정을 워커 스레드에서 (UI 블로킹 방지). 소리 없으면 무거운
+        # PCM decode 건너뛰고 빈 peaks emit — 레인이 '소리 없음' 표시.
+        if not has_audio_stream(self._src):
+            self.finished.emit(self._src, [])
+            return
         argv = build_waveform_args(src=self._src, ffmpeg=self._ffmpeg,
                                    sample_rate=self._sample_rate)
         try:
@@ -104,10 +109,6 @@ class WaveformService(QObject):
             return
         if src in self._jobs:
             return   # 이미 진행 중
-        if not has_audio_stream(src):
-            self._cache[key] = []
-            self.waveform_ready.emit(src, [])
-            return
         job = WaveformJob(ffmpeg_path=self._ffmpeg, src=src,
                           buckets_per_sec=self._buckets_per_sec, parent=self)
         job.finished.connect(self._on_job_finished)

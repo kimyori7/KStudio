@@ -24,13 +24,11 @@ def test_service_cache_hit_emits_without_job(qtbot, tmp_path, monkeypatch):
     assert got == [(str(src), [0.1, 0.2, 0.3])]
 
 
-def test_service_no_audio_short_circuits(qtbot, tmp_path, monkeypatch):
+def test_job_no_audio_emits_empty(qtbot, monkeypatch):
     from screen_recorder.services import waveform_service as ws
     monkeypatch.setattr(ws, "has_audio_stream", lambda s: False)
-    src = tmp_path / "v.mp4"
-    src.write_bytes(b"x")
-    svc = ws.WaveformService(ffmpeg_path="ffmpeg")
+    job = ws.WaveformJob(ffmpeg_path="ffmpeg", src="v.mp4")
     got = []
-    svc.waveform_ready.connect(lambda s, p: got.append((s, p)))
-    svc.request(str(src))
-    assert got == [(str(src), [])]   # 소리 없음 = 빈 peaks, job 안 띄움
+    job.finished.connect(lambda s, p: got.append((s, p)))
+    job._run()   # 동기 호출 — has_audio_stream False → ffmpeg 안 부르고 [] emit
+    assert got == [("v.mp4", [])]
