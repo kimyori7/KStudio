@@ -10,7 +10,10 @@ import json
 import logging
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 from ..core.ffmpeg_check import find_ffmpeg
 
@@ -51,6 +54,7 @@ def has_audio_stream(src: str) -> bool:
                 "-of", "json", src,
             ],
             capture_output=True, timeout=5,
+            creationflags=_NO_WINDOW,
         )
         if result.returncode != 0:
             return True   # ffprobe 실패 — 낙관.
@@ -79,6 +83,7 @@ def probe_video_size(src: str) -> tuple[int, int]:
                 "-of", "json", src,
             ],
             capture_output=True, timeout=5,
+            creationflags=_NO_WINDOW,
         )
         if result.returncode != 0:
             _log.warning("ffprobe (size) failed: %s", result.stderr.decode("utf-8", "replace"))
@@ -113,6 +118,7 @@ def probe_duration_ms(src: str) -> int:
                 "-of", "json", src,
             ],
             capture_output=True, timeout=10,
+            creationflags=_NO_WINDOW,
         )
         if result.returncode != 0:
             _log.warning("ffprobe failed: %s", result.stderr.decode("utf-8", "replace"))

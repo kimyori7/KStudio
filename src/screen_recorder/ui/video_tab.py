@@ -89,8 +89,8 @@ class VideoTab(QWidget):
         # 현재 활성 SpeedEffect 의 id (없으면 None). position_changed 시 갱신해
         # 진입 시 player.set_playback_rate(rate), 이탈 시 1.0 으로 복원.
         self._active_speed_id: Optional[str] = None
-        # 'mute' audio 모드 진입 시 이전 mute 상태를 보존했다가 이탈 시 복원.
-        self._speed_prev_muted: Optional[bool] = None
+        self._speed_muted: bool = False      # 배속 구간(audio='mute') 동안 True
+        self._manual_muted: bool = False     # M키/컨트롤 음소거 토글 상태
         # 배속 효과 일괄 켜기/끄기 — 런타임 플래그, 사이드카 미포함.
         self._speed_effects_enabled: bool = True
 
@@ -681,17 +681,23 @@ class VideoTab(QWidget):
     def _get_position_ms(self) -> int:
         return self.timeline.slider_lane.position_ms() or self.player.position_ms()
 
-    def _apply_audio_mute(self) -> None:
-        """sidecar.audio_muted → 미리보기 플레이어 음소거 동기화."""
+    def _refresh_preview_mute(self) -> None:
+        """미리보기 음소거 = 전역(sidecar.audio_muted) | 수동(M/컨트롤) | 배속 구간 mute.
+
+        세 음소거 소스를 한 곳에서 OR 로 합쳐 player 에 적용 — 한 소스 변경이 다른
+        소스를 덮어쓰던 desync(편집 시 수동 음소거 풀림 등) 방지.
+        """
         try:
-            self.player.set_muted(bool(self._edit_controller.sidecar().audio_muted))
+            muted = (bool(self._edit_controller.sidecar().audio_muted)
+                     or self._manual_muted or self._speed_muted)
+            self.player.set_muted(muted)
         except (RuntimeError, AttributeError):
             pass
 
     def _on_audio_mute_toggled(self, muted: bool) -> None:
         """파형 레인 🔇 토글 → sidecar.audio_muted 갱신 + 미리보기 음소거 동기화."""
         if self._edit_controller.set_audio_muted(muted):
-            self._apply_audio_mute()
+            self._refresh_preview_mute()
 
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
@@ -703,7 +709,7 @@ class VideoTab(QWidget):
             self._on_position_for_zoom(cur_ms)
         except (AttributeError, RuntimeError):
             pass
-        self._apply_audio_mute()
+        self._refresh_preview_mute()
         # 트랙의 각 소스에 대해 파형 요청 (캐시/dedup 있으므로 반복 호출 cheap).
         for src in {s.src for s in sc.video_track}:
             self._waveform_service.request(src)
@@ -1248,9 +1254,8 @@ class VideoTab(QWidget):
             # 끈 즉시 rate 1.0 복원 + HUD 숨김.
             self.player.set_playback_rate(1.0)
             self.player.hide_speed_hud()
-            if self._speed_prev_muted is not None:
-                self.player.set_muted(self._speed_prev_muted)
-                self._speed_prev_muted = None
+            self._speed_muted = False
+            self._refresh_preview_mute()
             self._active_speed_id = None
 
     def _on_position_for_speed(self, ms: int) -> None:
@@ -1273,9 +1278,8 @@ class VideoTab(QWidget):
             if self._active_speed_id is not None:
                 self.player.set_playback_rate(1.0)
                 self.player.hide_speed_hud()
-                if self._speed_prev_muted is not None:
-                    self.player.set_muted(self._speed_prev_muted)
-                    self._speed_prev_muted = None
+                self._speed_muted = False
+                self._refresh_preview_mute()
                 self._active_speed_id = None
             return
         active_eff = None
@@ -1290,23 +1294,16 @@ class VideoTab(QWidget):
                 # 새 구간 진입 — rate 적용 + 지속 HUD (1× 면 hide).
                 self.player.set_playback_rate(active_eff.rate)
                 self.player.show_speed_hud(active_eff.rate, font_pt=active_eff.hud_font_pt)
-                if active_eff.audio == "mute":
-                    if self._speed_prev_muted is None:
-                        self._speed_prev_muted = self.player.is_muted()
-                    self.player.set_muted(True)
-                else:
-                    if self._speed_prev_muted is not None:
-                        self.player.set_muted(self._speed_prev_muted)
-                        self._speed_prev_muted = None
+                self._speed_muted = (active_eff.audio == "mute")
+                self._refresh_preview_mute()
                 self._active_speed_id = active_eff.id
         else:
             if self._active_speed_id is not None:
                 # 구간 이탈 — rate 복원 + HUD 숨김. 1× 토스트는 보이지 않음 (사용자 결정).
                 self.player.set_playback_rate(1.0)
                 self.player.hide_speed_hud()
-                if self._speed_prev_muted is not None:
-                    self.player.set_muted(self._speed_prev_muted)
-                    self._speed_prev_muted = None
+                self._speed_muted = False
+                self._refresh_preview_mute()
                 self._active_speed_id = None
 
     # ---------- 단축키 ----------
@@ -1512,7 +1509,7 @@ class VideoTab(QWidget):
         if self._thumbnail_pending is not None:
             self.player.set_thumbnail(self._thumbnail_pending)
         self.controls.set_audio_enabled(self.player.has_audio())
-        self._apply_audio_mute()
+        self._refresh_preview_mute()
         # release 후 reload 라면 마지막 position 으로 복원 — UX 연속성.
         # setSource() 는 비동기 — duration 이 처음 보고될 때 (metadata 로드 완료)
         # 한 번만 seek (즉시 seek 은 duration=0 clamp 로 silent fail).
@@ -1606,9 +1603,9 @@ class VideoTab(QWidget):
         self.controls.volume_slider.setValue(int(new * 100))
 
     def _toggle_mute(self) -> None:
-        new_muted = not self.player.is_muted()
-        self.player.set_muted(new_muted)
-        self.controls.set_muted(new_muted)
+        self._manual_muted = not self._manual_muted
+        self.controls.set_muted(self._manual_muted)
+        self._refresh_preview_mute()
 
     def _bump_speed(self, direction: int) -> None:
         cur = self.controls.speed_combo.currentIndex()

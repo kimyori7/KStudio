@@ -118,11 +118,15 @@ class WaveformService(QObject):
 
     def _on_job_finished(self, src: str, peaks: list) -> None:
         self._cache[self._cache_key(src)] = peaks
-        self._jobs.pop(src, None)
+        job = self._jobs.pop(src, None)
+        if job is not None:
+            job.deleteLater()
         self.waveform_ready.emit(src, peaks)
 
     def _on_job_error(self, src: str, message: str) -> None:
         _log.warning("waveform failed for %s: %s", src, message)
         self._cache[self._cache_key(src)] = []   # 실패 → 평평선 (재시도 폭주 방지)
-        self._jobs.pop(src, None)
+        job = self._jobs.pop(src, None)
+        if job is not None:
+            job.deleteLater()
         self.waveform_ready.emit(src, [])

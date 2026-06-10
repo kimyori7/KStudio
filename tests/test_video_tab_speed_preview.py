@@ -119,7 +119,7 @@ def test_mute_to_auto_adjacent_regions_restore_mute(qtbot, sample_mp4, tmp_path)
     """인접한 mute → auto SpeedEffect 전환 시 두 번째 구간에서 mute 복원.
 
     이전 버그: mute 구간에서 인접한 auto 구간으로 바로 진입 시, 첫 구간에서 활성
-    인지된 _speed_prev_muted 가 두 번째 구간에서도 풀리지 않아 음소거가 남음.
+    인지된 _speed_muted 가 두 번째 구간에서도 풀리지 않아 음소거가 남음.
     """
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
     rate_calls, mute_calls = _stub_player(tab)
