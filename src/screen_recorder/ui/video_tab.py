@@ -33,6 +33,30 @@ _BROLL_THUMB_PREFIX = "broll:"
 # Qt 의 QWIDGETSIZE_MAX — setMaximumHeight 제한 해제용 (편집 모드 진입 시).
 _WIDGET_MAX_H = 16777215
 
+# 새 효과의 비례 기본 길이 — 영상이 길수록 새 블록도 길게 만들어 타임라인에서 잡기
+# 쉽게 한다. 타임라인은 전체 영상을 폭에 맞춰 그리므로(가로 줌 1.0 기준) "영상 길이의
+# N%" == "화면 폭의 N%". 길이 있는 오버레이/효과에만 적용하고, 정밀해야 하는 cut 류
+# (마커·구간 삭제)는 고정 길이를 유지한다(긴 영상에서 90초짜리 기본 삭제는 위험).
+_PROPORTIONAL_TYPES = frozenset({"caption", "speed", "zoom", "broll", "arrow"})
+_PROPORTIONAL_RATIO = 0.05        # 영상 전체 길이의 5%
+_PROPORTIONAL_CAP_MS = 90_000     # 상한 90초 — 매우 긴 영상의 과도한 기본 길이 방지
+
+
+def default_effect_duration_ms(
+    effect_type: str, total_ms: int, fixed_defaults: dict[str, int]
+) -> int:
+    """새 효과 1개의 기본 길이(ms).
+
+    길이 있는 효과(caption/speed/zoom/broll/arrow)는 `max(효과별 고정 최소값,
+    total*5%)` 를 90초로 상한해 영상이 길수록 블록도 길어지게 한다. 짧은 영상은
+    고정 최소값이 살아 기존 동작 그대로. cut 류 등 나머지는 고정값을 그대로 반환.
+    """
+    floor = fixed_defaults.get(effect_type, 3000)
+    if effect_type not in _PROPORTIONAL_TYPES:
+        return floor
+    scaled = int(max(0, total_ms) * _PROPORTIONAL_RATIO)
+    return max(floor, min(scaled, _PROPORTIONAL_CAP_MS))
+
 
 def _format_ms_label(ms: int) -> str:
     s = max(0, ms // 1000)
@@ -605,7 +629,8 @@ class VideoTab(QWidget):
         duration_ms = self._get_duration_ms()
         if duration_ms <= 0:
             return False
-        default_len = self._DEFAULT_DURATION_MS.get(effect_type, 3000)
+        default_len = default_effect_duration_ms(
+            effect_type, duration_ms, self._DEFAULT_DURATION_MS)
         out_ms = min(in_ms + default_len, duration_ms)
         if out_ms - in_ms < 100:
             return False

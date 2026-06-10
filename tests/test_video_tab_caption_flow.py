@@ -40,6 +40,27 @@ def test_lane_request_add_creates_caption_at_ms(qtbot, sample_mp4, tmp_path):
     assert e.out_ms == 5000 + 3000
 
 
+def test_long_video_caption_default_scales_proportionally(qtbot, sample_mp4, tmp_path):
+    """긴 영상에 캡션 추가 시 기본 길이가 영상 길이 비례로 커진다 (Phase 79).
+
+    10분(600s) 영상 → 5% = 30초 캡션. floor(3초) 가 아니라 비례값이 적용됨을
+    실제 _add_effect_at 경로(getter + clamp_effects_to_track 일관)로 확인.
+    """
+    tab = VideoTab(
+        path=sample_mp4, source_label="v", duration_ms=600_000,
+        player_settings=PlayerSettings(), player_hotkeys=PlayerHotkeys(),
+        sidecar_dir=tmp_path / "sidecars",
+    )
+    qtbot.addWidget(tab)
+    tab.set_edit_mode(True)
+
+    ok = tab._add_effect_at("caption", 0)
+    assert ok
+    e = tab.sidecar().effects[0]
+    assert e.type == "caption"
+    assert e.out_ms - e.in_ms == 30_000  # 600_000 * 5%
+
+
 def test_video_tab_rejects_drops_outside_track_lane(qtbot, sample_mp4, tmp_path):
     """VideoTab 자체는 드롭 거부 — video_track_lane 위 정확한 위치만 수락.
 
