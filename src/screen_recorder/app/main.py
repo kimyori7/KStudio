@@ -148,6 +148,7 @@ def main() -> int:
     app.aboutToQuit.connect(on_about_to_quit)
 
     # 두 번째 실행이 보낸 파일/요청 처리: 그 파일을 열고(라이브러리 추가 + 표시) 창을 앞으로.
+    from screen_recorder.app.window_foreground import force_foreground
     def _on_forwarded(paths):
         for sp in paths:
             p = Path(sp)
@@ -160,6 +161,10 @@ def main() -> int:
         )
         win.raise_()
         win.activateWindow()
+        # Qt 의 activateWindow() 만으로는 다른 프로세스(.md 더블클릭→두 번째 인스턴스)
+        # 에서 온 활성화 요청이 Windows 포그라운드 가로채기 방지에 막혀 작업표시줄만
+        # 깜빡이는 경우가 많다. Win32 로 확실히 창을 최상단으로 끌어올린다(win32 외엔 no-op).
+        force_foreground(int(win.winId()))
     _si_server.set_handler(_on_forwarded)
 
     # 패키지된 빌드라면 .kstudio 확장자 연결을 한 번 갱신 (HKCU, idempotent).
