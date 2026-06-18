@@ -47,6 +47,9 @@ class KStudioMenuBar(QMenuBar):
     record_start_requested = Signal()
     record_stop_requested = Signal()
     record_pause_requested = Signal()
+    # 추가 기능
+    youtube_video_requested = Signal()
+    youtube_mp3_requested = Signal()
     # 도움말
     about_requested = Signal()
 
@@ -249,6 +252,15 @@ class KStudioMenuBar(QMenuBar):
         self.record_pause_action.triggered.connect(self.record_pause_requested.emit)
         m_record.addAction(self.record_pause_action)
 
+        # 추가 기능 — 유튜브 영상 추출 / mp3 변환 (도움말 바로 앞).
+        m_extra = self.addMenu(tr("추가 기능"))
+        self.youtube_video_action = QAction(tr("유튜브 영상 추출"), self)
+        self.youtube_video_action.triggered.connect(self.youtube_video_requested.emit)
+        m_extra.addAction(self.youtube_video_action)
+        self.youtube_mp3_action = QAction(tr("유튜브 mp3 변환"), self)
+        self.youtube_mp3_action.triggered.connect(self.youtube_mp3_requested.emit)
+        m_extra.addAction(self.youtube_mp3_action)
+
         m_help = self.addMenu(tr("도움말"))
         self.about_action = QAction(tr("정보"), self)
         self.about_action.triggered.connect(self.about_requested.emit)
@@ -306,6 +318,10 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
             mb.record_start_action,
             mb.record_stop_action,
             mb.record_pause_action,
+        ],
+        "extra": [
+            mb.youtube_video_action,
+            mb.youtube_mp3_action,
         ],
         "help": [
             mb.about_action,
