@@ -35,7 +35,9 @@ class _DownloadsPopup(QFrame):
         lay.setSpacing(0)
         self.panel = DownloadsPanel()
         lay.addWidget(self.panel)
-        self.setMinimumWidth(560)
+        # 완료 줄(제목+막대+상태+열기+폴더 열기+X)이 안 겹치도록 넉넉히. 좁으면 첫 열기 때
+        # 막대와 '완료' 텍스트가 겹쳐 보인다(폭 부족 + 레이아웃 미활성).
+        self.setMinimumWidth(700)
 
 
 class DownloadsButton(QToolButton):
@@ -137,8 +139,17 @@ class DownloadsButton(QToolButton):
 
     # ---------- 내부: 반짝(펄스) ----------
     def _flash(self) -> None:
+        # 이전 애니메이션 정리. ⚠ DeleteWhenStopped 를 쓰면 끝난 뒤 C++ 객체가 삭제돼
+        # self._flash_anim 이 dangling → 다음 _flash 의 stop() 에서 RuntimeError 로
+        # 펄스가 안 뜬다(연속 추가 땐 안 죽어서 동작, 시간차 두면 실패하는 함정).
+        # → KeepWhenStopped(기본) + 명시적 정리 + try/except 가드.
         if self._flash_anim is not None:
-            self._flash_anim.stop()
+            try:
+                self._flash_anim.stop()
+                self._flash_anim.deleteLater()
+            except RuntimeError:
+                pass
+            self._flash_anim = None
         anim = QVariantAnimation(self)
         anim.setStartValue(0.0)
         anim.setKeyValueAt(0.5, 1.0)
@@ -148,7 +159,7 @@ class DownloadsButton(QToolButton):
         anim.valueChanged.connect(self._apply_glow)
         anim.finished.connect(lambda: self._apply_glow(0.0))
         self._flash_anim = anim
-        anim.start(QVariantAnimation.DeleteWhenStopped)
+        anim.start()                    # KeepWhenStopped — ref 유지(다음 _flash 가 정리)
 
     def _apply_glow(self, t) -> None:
         a = int(200 * float(t))
@@ -165,6 +176,10 @@ class DownloadsButton(QToolButton):
         if self._popup.isVisible():
             self._popup.hide()
             return
+        # 첫 열기 때 레이아웃이 아직 계산 전이라 폭이 좁게 잡혀 막대와 '완료' 텍스트가
+        # 겹치던 문제 → 측정 전에 레이아웃을 강제로 활성화한다.
+        self._panel.layout().activate()
+        self._popup.layout().activate()
         self._popup.adjustSize()
         below = self.mapToGlobal(QPoint(0, self.height()))
         x = below.x() - max(0, self._popup.width() - self.width())

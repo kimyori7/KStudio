@@ -102,3 +102,58 @@ def test_apply_glow_sets_and_reverts(qtbot):
     assert "background-color" in btn.styleSheet()
     btn._apply_glow(0.0)
     assert btn.styleSheet() == ""   # 빈 문자열 = 전역 QSS 복귀
+
+
+def test_flash_survives_deleted_previous_anim(qtbot):
+    # 회귀: 이전 펄스 애니메이션의 C++ 객체가 삭제된 뒤(시간차) 다시 펄스해도 죽지 않아야.
+    from PySide6.QtWidgets import QApplication
+    btn = DownloadsButton()
+    qtbot.addWidget(btn)
+    btn._flash()
+    anim = btn._flash_anim
+    anim.stop()
+    anim.deleteLater()
+    QApplication.processEvents()    # C++ 객체 실제 삭제 → _flash_anim dangling
+    btn._flash()                    # stop() 가드로 RuntimeError 없이 새 펄스 시작
+    assert btn._flash_anim is not None
+
+
+def test_second_download_after_empty_pulses(qtbot):
+    # 회귀(사용자 보고): 받고 X 로 비운 뒤 새 다운로드 시 반짝 안 하던 문제.
+    from PySide6.QtWidgets import QApplication
+    btn = DownloadsButton()
+    qtbot.addWidget(btn)
+    j1 = FakeJob()
+    row = btn.add_job(j1, "a")
+    # 첫 펄스 객체를 강제로 삭제해 '시간이 지나 죽은' 상태 재현
+    btn._flash_anim.stop()
+    btn._flash_anim.deleteLater()
+    QApplication.processEvents()
+    row.close_requested.emit()      # X → 트레이 비움
+    assert btn.isHidden()
+    j2 = FakeJob()
+    btn.add_job(j2, "b")            # 새 다운로드 → 펄스 다시 떠야 함(예외 없이)
+    assert not btn.isHidden()
+    assert btn._flash_anim is not None
+
+
+def test_popup_min_width_fits_finished_row(qtbot):
+    # 회귀: 첫 열기 때 막대와 '완료' 텍스트가 겹치지 않도록 폭이 충분해야.
+    btn = DownloadsButton()
+    qtbot.addWidget(btn)
+    assert btn._popup.minimumWidth() >= 700
+
+
+def test_finished_row_no_overlap_on_first_open(qtbot):
+    # 회귀: 첫 팝업 열기에서 진행률 막대와 상태('완료') 라벨이 가로로 겹치지 않아야.
+    btn = DownloadsButton()
+    qtbot.addWidget(btn)
+    btn.show()
+    job = FakeJob()
+    row = btn.add_job(job, "title")
+    job.finished.emit("C:/out/f.mp4")
+    btn._toggle_popup()   # 첫 열기 — 레이아웃 활성화 포함
+    pb = row.progress_bar.geometry()
+    sl = row.status_label.geometry()
+    # 상태 라벨은 막대 오른쪽에 위치(겹침 없음).
+    assert sl.x() >= pb.x() + pb.width() - 2

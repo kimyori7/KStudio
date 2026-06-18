@@ -107,20 +107,36 @@ def run_download(
     (yt-dlp 는 별도 취소 API 가 없어 hook 예외로 중단하는 게 표준).
     """
     import yt_dlp  # lazy import — 미설치 환경에서도 build_ydl_opts 테스트는 가능
+    from yt_dlp.utils import DownloadCancelled
 
     _ensure_truststore()
 
-    def _hook(d: dict) -> None:
+    def _check_cancel() -> None:
+        # yt-dlp 의 DownloadCancelled 를 던지면 다운로드/후처리가 깔끔히 중단된다
+        # (커스텀 예외는 yt-dlp 가 DownloadError 로 감쌀 수 있어 사용하지 않음).
         if cancel_check is not None and cancel_check():
-            raise CancelledError()
+            raise DownloadCancelled()
+
+    def _dl_hook(d: dict) -> None:
+        _check_cancel()
         progress_hook(d)
 
-    opts = build_ydl_opts(req, ffmpeg_dir, _hook)
+    def _pp_hook(d: dict) -> None:
+        # mp3 추출(FFmpegExtractAudio) 등 후처리 단계 — 다운로드 progress_hook 이
+        # 안 불리는 구간이라 여기서도 취소를 확인해야 변환 중 취소가 먹는다.
+        _check_cancel()
+
+    opts = build_ydl_opts(req, ffmpeg_dir, _dl_hook)
+    opts["postprocessor_hooks"] = [_pp_hook]
+
     final = ""
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(req.url, download=True)
-        try:
-            final = final_output_path(ydl.prepare_filename(info), req.mode)
-        except Exception:  # noqa: BLE001
-            final = ""
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(req.url, download=True)
+            try:
+                final = final_output_path(ydl.prepare_filename(info), req.mode)
+            except Exception:  # noqa: BLE001
+                final = ""
+    except DownloadCancelled as exc:
+        raise CancelledError() from exc
     return final

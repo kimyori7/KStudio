@@ -73,3 +73,37 @@ def test_final_output_path_video_forces_mp4():
 def test_final_output_path_mp3_forces_mp3():
     base = str(Path("/out") / "Me at the zoo.webm")
     assert final_output_path(base, "mp3") == str(Path("/out") / "Me at the zoo.mp3")
+
+
+def test_run_download_sets_pp_hooks_and_converts_cancel(monkeypatch):
+    """취소(DownloadCancelled)가 CancelledError 로 변환되고, postprocessor_hooks 가
+    설정되는지(=후처리 단계 취소 확인 경로) 검증. 실제 다운로드/네트워크 없음."""
+    import pytest
+    import yt_dlp
+    from yt_dlp.utils import DownloadCancelled
+    from screen_recorder.youtube import ytdlp_runner as r
+
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured["opts"] = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download):
+            raise DownloadCancelled()   # 후처리/다운로드 중 취소 흉내
+
+        def prepare_filename(self, info):
+            return "x"
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
+    req = DownloadRequest("u", "mp3", Path("/o"), "192")
+    with pytest.raises(r.CancelledError):
+        r.run_download(req, Path("/ff"), lambda d: None, lambda: True)
+    assert "postprocessor_hooks" in captured["opts"]
+    assert captured["opts"]["postprocessor_hooks"]   # 비어있지 않음
