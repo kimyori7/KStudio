@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from screen_recorder.core.controller import RecorderController
 from screen_recorder.core.settings import (
-    AppSettings, default_image_dir, default_video_dir,
+    AppSettings, default_image_dir, default_video_dir, default_download_dir,
 )
 # NOTE: settings_path / save 를 *이름으로* import 하지 마세요 — 테스트 격리
 # (conftest 의 isolate_user_settings fixture) 가 `core.settings.<name>` 만
@@ -71,6 +71,7 @@ from .docks.layers_panel import LayersPanel
 from .docks.library_panel import LibraryPanel
 from .docks.record_status_panel import RecordStatusPanel
 from .library_model import LibraryModel, EntryKind
+from ..core.media_types import AUDIO_EXTS, is_audio
 from .mode_controller import ModeController, AppMode
 from .preferences_dialog import PreferencesDialog
 from .status_bar import StatusBar
@@ -435,6 +436,13 @@ class MainWindow(QMainWindow):
         center_row.addWidget(self.tab_area, stretch=1)
         outer.addLayout(center_row, stretch=1)
 
+        # 유튜브 다운로드 진행 띠 — 전역(모드 무관). QDockWidget 이 아니라 중앙 레이아웃에
+        # 삽입해 모드별 dock 상태 직렬화/복원 기계장치(+restoreState segfault 위험)를
+        # 건드리지 않는다. 작업이 0개면 자동 숨김.
+        from .youtube.downloads_panel import DownloadsPanel
+        self.downloads_panel = DownloadsPanel()
+        outer.addWidget(self.downloads_panel)
+
         # 상태바
         self.status_bar = StatusBar()
         self.status_bar.setFixedHeight(28)
@@ -483,6 +491,8 @@ class MainWindow(QMainWindow):
         self.inspector_panel.register_inspector("broll", BrollInspector)    # Stage 7
         from .video.inspectors.arrow_inspector import ArrowInspector        # Phase 20.11
         self.inspector_panel.register_inspector("arrow", ArrowInspector)    # Phase 20.11
+        from .video.inspectors.rect_inspector import RectInspector          # 2026-06-17
+        self.inspector_panel.register_inspector("rect", RectInspector)      # 2026-06-17
         self.inspector_dock = QDockWidget("효과 인스펙터", self)
         self.inspector_dock.setObjectName("InspectorDock")
         self.inspector_dock.setWidget(self.inspector_panel)
@@ -975,6 +985,10 @@ class MainWindow(QMainWindow):
         self.menu_bar.record_start_requested.connect(self._on_start_clicked)
         self.menu_bar.record_stop_requested.connect(self._on_stop_clicked)
         self.menu_bar.record_pause_requested.connect(self._on_pause_clicked)
+        self.menu_bar.youtube_video_requested.connect(
+            lambda: self._open_youtube_dialog("video"))
+        self.menu_bar.youtube_mp3_requested.connect(
+            lambda: self._open_youtube_dialog("mp3"))
         self.menu_bar.about_requested.connect(self._show_about)
 
         # 모드 / 탭 / 라이브러리
@@ -1042,13 +1056,33 @@ class MainWindow(QMainWindow):
         self.controller.error_occurred.connect(self._on_error)
 
         # 트레이
-        self.tray.show_main.connect(self.showNormal)
+        self.tray.show_main.connect(self.bring_to_front)
         self.tray.quit_requested.connect(self._force_quit_app)
         self.tray.toggle_record.connect(self._on_hotkey_toggle)
         self.tray.screenshot_region.connect(self._on_shot_region_action)
         self.tray.screenshot_full.connect(self._on_shot_full_action)
 
     # ---------- 메인 창 ----------
+
+    def bring_to_front(self):
+        """창을 확실히 보이게 + 최상단(포그라운드)으로 끌어올린다.
+
+        트레이 아이콘 클릭/더블클릭, 트레이 메뉴 '창 보이기', 두 번째 인스턴스가
+        보낸 파일 열기 요청에서 호출한다. 이미 보이고 활성화된 상태에서 다른 창에
+        가려져 있어도 앞으로 끌어올린다 — `showNormal()` 만으로는 최소화 해제만
+        되고, 이미 떠 있는 창은 앞으로 오지 않기 때문.
+        """
+        self.show()
+        self.setWindowState(
+            (self.windowState() & ~Qt.WindowState.WindowMinimized)
+            | Qt.WindowState.WindowActive
+        )
+        self.raise_()
+        self.activateWindow()
+        # Qt 의 activateWindow() 만으로는 Windows 포그라운드 가로채기 방지에 막혀
+        # 작업표시줄만 깜빡이는 경우가 있다. Win32 로 확실히 끌어올린다(win32 외엔 no-op).
+        from screen_recorder.app.window_foreground import force_foreground
+        force_foreground(int(self.winId()))
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1650,6 +1684,15 @@ class MainWindow(QMainWindow):
                 display_name = entry.path.name
             else:
                 display_name = entry.source_label
+        if entry.kind is EntryKind.AUDIO:
+            if entry.path is None:
+                QMessageBox.warning(self, "열기 실패", "오디오 파일 경로가 없습니다.")
+                return
+            self.tab_area.add_audio(
+                path=entry.path, source_label=entry.source_label,
+                entry_id=entry.id, display_name=display_name,
+            )
+            return
         if entry.kind is EntryKind.SCREENSHOT:
             # path 가 있으면 디스크에서 로드 (origin="opened" 또는 저장된 캡처)
             # — 라이브러리의 thumbnail 은 다운스케일 본일 수 있으므로 원본을 우선.
@@ -1800,8 +1843,12 @@ class MainWindow(QMainWindow):
 
     def _on_tab_added(self, widget, mode) -> None:
         """새 탭이 추가되면 그 탭의 시그널을 옵션바 등에 연결."""
+        from .audio_tab import AudioTab
         if isinstance(widget, EditTab):
             widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
+        elif isinstance(widget, AudioTab):
+            # 오디오 탭의 출력 버튼 → 음성 내보내기(트림+컷 적용 mp3/wav).
+            widget.export_requested.connect(self._on_export_audio)
         elif isinstance(widget, VideoTab):
             widget.trim_requested.connect(self._on_trim_requested)
             self._hookup_video_tab_inspector(widget)
@@ -2791,6 +2838,12 @@ class MainWindow(QMainWindow):
         # menu_bar.undo_action (WindowShortcut) 이 VideoTab.keyPressEvent 보다 먼저
         # 잡아버려, 분기를 안 두면 영상 자르기/삭제가 Ctrl+Z 로 복구되지 않는다.
         cur = self.tab_area.currentWidget()
+        # 오디오 탭도 EditController History — menu 의 Ctrl+Z(WindowShortcut)가 탭보다
+        # 먼저 잡으므로 여기서 라우팅(영상 탭과 동일 이유).
+        from .audio_tab import AudioTab
+        if isinstance(cur, AudioTab):
+            cur._undo()
+            return
         if isinstance(cur, VideoTab):
             if cur._edit_controller.undo():
                 cur.player.flash_action("↶ 되돌리기")
@@ -2801,6 +2854,10 @@ class MainWindow(QMainWindow):
 
     def _on_redo(self) -> None:
         cur = self.tab_area.currentWidget()
+        from .audio_tab import AudioTab
+        if isinstance(cur, AudioTab):
+            cur._redo()
+            return
         if isinstance(cur, VideoTab):
             if cur._edit_controller.redo():
                 cur.player.flash_action("↷ 다시 실행")
@@ -2922,7 +2979,8 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "파일 열기", initial,
             "지원 파일 (*.kstudio *.png *.jpg *.jpeg *.webp *.bmp "
-            "*.mp4 *.gif *.webm *.mov *.avi *.mkv *.md *.markdown);;모든 파일 (*.*)",
+            "*.mp4 *.gif *.webm *.mov *.avi *.mkv "
+            "*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.md *.markdown);;모든 파일 (*.*)",
         )
         if not path:
             return
@@ -2971,6 +3029,14 @@ class MainWindow(QMainWindow):
                 )
                 self._probe_duration_async(p, target.id)
                 self._extract_thumbnail_async(p, target.id)
+            elif ext in AUDIO_EXTS:
+                placeholder = QImage(64, 36, QImage.Format_ARGB32)
+                placeholder.fill(0xFF222222)
+                target = self.library_model.add(
+                    EntryKind.AUDIO, thumbnail=placeholder, source_label="dropped",
+                    display_name=p.name, path=p, duration_ms=0, origin="opened",
+                )
+                self._probe_duration_async(p, target.id)
             elif ext in self.IMAGE_EXTS:
                 try:
                     img = QImage(str(p))
@@ -3013,11 +3079,26 @@ class MainWindow(QMainWindow):
         EntryKind.SCREENSHOT 은 IMAGE 의 별칭(값 동일)이라 `is` 비교가 위험 →
         VIDEO/DOCUMENT 를 먼저 거르고 나머지를 이미지로 처리.
         """
-        if kind is EntryKind.VIDEO:
+        if kind is EntryKind.VIDEO or kind is EntryKind.AUDIO:
             return AppMode.VIDEO
         if kind is EntryKind.DOCUMENT:
             return AppMode.DOCUMENT
         return AppMode.IMAGE
+
+    def _kind_for_path(self, p: Path, *, fallback: EntryKind) -> EntryKind:
+        """파일 확장자 → 라이브러리 EntryKind. 저장된 kind 가 옛 빌드/회귀로 틀려도
+        (예: 오디오가 IMAGE 로 복원되던 버그) **형식에 맞는 모드 라이브러리**로 가게 하는
+        단일 진실원. 모르는 확장자(.kstudio 등)는 fallback(저장된 kind) 사용."""
+        ext = p.suffix.lower()
+        if is_audio(p):
+            return EntryKind.AUDIO
+        if ext in self.VIDEO_EXTS:
+            return EntryKind.VIDEO
+        if ext in self.MARKDOWN_EXTS:
+            return EntryKind.DOCUMENT
+        if ext in self.IMAGE_EXTS:
+            return EntryKind.IMAGE
+        return fallback
 
     def _open_path(self, p: Path) -> None:
         """확장자 기준 분기 + .kstudio 는 magic 으로 zip(이미지)/JSON(영상 사이드카) 구분."""
@@ -3033,6 +3114,8 @@ class MainWindow(QMainWindow):
             self._open_image_path(p)
         elif ext in self.VIDEO_EXTS:
             self._open_video_path(p)
+        elif is_audio(p):
+            self._open_audio_path(p)
         elif ext in self.MARKDOWN_EXTS:
             self._open_markdown_path(p)
         else:
@@ -3341,6 +3424,24 @@ class MainWindow(QMainWindow):
         self.mode_controller.set_mode(AppMode.VIDEO)
         self._restore_window_for_capture()
 
+    def _open_audio_path(self, p: Path) -> None:
+        """오디오 파일을 새 AudioTab(자르기 전용) 으로 연다. 라이브러리 dedupe."""
+        existing = self._find_library_entry_for_path(p)
+        if existing is not None:
+            entry_id = existing.id
+        else:
+            placeholder = QImage(64, 36, QImage.Format_ARGB32)
+            placeholder.fill(0xFF222222)
+            entry = self.library_model.add(
+                EntryKind.AUDIO, thumbnail=placeholder, source_label="opened",
+                display_name=p.name, path=p, duration_ms=0, origin="opened",
+            )
+            entry_id = entry.id
+            self._probe_duration_async(p, entry_id)
+        self.tab_area.add_audio(path=p, source_label="opened", entry_id=entry_id)
+        self.mode_controller.set_mode(AppMode.VIDEO)
+        self._restore_window_for_capture()
+
     def _resolve_sidecar_dir(self) -> "Path":
         """사이드카(.kvedit) 저장 폴더 결정.
 
@@ -3598,6 +3699,12 @@ class MainWindow(QMainWindow):
             return
         if self.mode_controller.mode() != AppMode.VIDEO:
             return
+        # 전용 오디오 탭도 Space 로 재생 토글(영상 모드 영역에 산다).
+        from .audio_tab import AudioTab
+        cur = self.tab_area.currentWidget()
+        if isinstance(cur, AudioTab):
+            cur._toggle_play()
+            return
         tab = self.tab_area.current_video_tab() if hasattr(
             self.tab_area, "current_video_tab"
         ) else None
@@ -3715,12 +3822,18 @@ class MainWindow(QMainWindow):
 
         tab = self.tab_area.current_video_tab() if hasattr(self.tab_area, "current_video_tab") else None
         if tab is None:
+            # 전용 오디오 탭(AudioTab)도 같은 사이드카/소스 인터페이스 — 함께 처리.
+            from .audio_tab import AudioTab
+            cur = self.tab_area.currentWidget()
+            if isinstance(cur, AudioTab):
+                tab = cur
+        if tab is None:
             return
         sidecar = tab._edit_controller.sidecar()
         src_path = tab._source_path
         main_duration = tab.player.duration_ms()
         if main_duration <= 0:
-            QMessageBox.warning(self, "음성 내보내기", "영상 길이가 확정되지 않았습니다.")
+            QMessageBox.warning(self, "음성 내보내기", "길이가 확정되지 않았습니다 (재생을 한 번 시작하면 채워집니다).")
             return
 
         # 1) 사이드카 → keep 구간 (cut 적용).
@@ -3745,8 +3858,16 @@ class MainWindow(QMainWindow):
         settings = settings_dlg.current_settings()
         ext = settings_dlg.suggested_extension()
 
-        # 3) 저장 경로 — 기본은 원본 폴더의 _audio.{ext}.
-        default = Path(src_path).with_name(Path(src_path).stem + "_audio" + ext)
+        # 3) 저장 경로 — 기본 폴더는 환경설정의 오디오 저장 폴더(없으면 ~/KStudio/Audio).
+        #    영상·이미지 내보내기와 일관(빈 값=홈 아래 KStudio 하위 폴더). 폴더 생성
+        #    실패 시에만 원본 옆으로 폴백.
+        from ..core.settings import default_audio_dir
+        audio_dir = Path(self.app_settings.preferences.audio_export_dir or default_audio_dir())
+        try:
+            audio_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            audio_dir = Path(src_path).parent
+        default = audio_dir / (Path(src_path).stem + "_audio" + ext)
         filter_label = "MP3 (*.mp3)" if ext == ".mp3" else "WAV (*.wav)"
         dst, _ = QFileDialog.getSaveFileName(
             self, "음성 파일 저장", str(default), filter_label,
@@ -4497,6 +4618,79 @@ class MainWindow(QMainWindow):
             "<p>© 2026 kimyori</p>",
         )
 
+    # ---------- 추가 기능: 유튜브 영상 추출 / mp3 변환 ----------
+    def _open_youtube_dialog(self, mode: str) -> None:
+        """추가 기능 메뉴 → 통합 팝업 실행 → 백그라운드 다운로드 작업 시작.
+
+        저장 폴더·품질은 영상/mp3 종류별로 분리해 기억한다(기본=다운로드 폴더).
+        진행률은 하단 다운로드 띠(downloads_panel)에 표시되며 앱은 계속 사용 가능.
+        """
+        from .youtube.download_dialog import YouTubeDownloadDialog
+        from ..core.ffmpeg_check import find_ffmpeg
+
+        yt = self.app_settings.youtube
+        if mode == "video":
+            start_dir = yt.video_dir or str(default_download_dir())
+            start_quality = yt.video_quality
+        else:
+            start_dir = yt.mp3_dir or str(default_download_dir())
+            start_quality = yt.mp3_bitrate
+
+        dlg = YouTubeDownloadDialog(mode, Path(start_dir), start_quality, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        req = dlg.build_request()
+        if req is None:
+            return
+
+        # 폴더·품질 기억 (종류별 분리 저장 — 사용자 결정 2026-06-18).
+        if mode == "video":
+            yt.video_dir = dlg.selected_dir()
+            yt.video_quality = dlg.selected_quality()
+        else:
+            yt.mp3_dir = dlg.selected_dir()
+            yt.mp3_bitrate = dlg.selected_quality()
+
+        ffmpeg = find_ffmpeg()
+        if ffmpeg is None:
+            QMessageBox.critical(
+                self, "ffmpeg 없음",
+                "ffmpeg를 찾을 수 없어 다운로드할 수 없습니다.",
+            )
+            return
+        try:
+            req.out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+        self._start_youtube_job(req, Path(ffmpeg).parent)
+
+    def _start_youtube_job(self, req, ffmpeg_dir: Path) -> None:
+        """DownloadRequest 로 새 작업을 만들어 패널에 등록하고 시작한다(재시도 공용)."""
+        from ..youtube.download_job import YouTubeDownloadJob
+        job = YouTubeDownloadJob(req, ffmpeg_dir=ffmpeg_dir)
+        # 작업 객체가 GC 되지 않도록 참조 유지(완료/실패/취소 시 정리).
+        if not hasattr(self, "_youtube_jobs"):
+            self._youtube_jobs = []
+        self._youtube_jobs.append(job)
+
+        def _forget():
+            if job in self._youtube_jobs:
+                self._youtube_jobs.remove(job)
+        job.finished.connect(lambda *_: _forget())
+        job.error.connect(lambda *_: _forget())
+        job.cancelled.connect(_forget)
+
+        row = self.downloads_panel.add_job(job, title_hint="다운로드 준비 중…")
+        row.retry_requested.connect(
+            lambda: self._retry_youtube(req, row, ffmpeg_dir))
+        job.start()
+
+    def _retry_youtube(self, req, old_row, ffmpeg_dir: Path) -> None:
+        """실패한 줄을 닫고 같은 요청으로 새 작업을 시작한다."""
+        self.downloads_panel._remove_row(old_row)
+        self._start_youtube_job(req, ffmpeg_dir)
+
     def _maybe_show_hotkey_preset_dialog(self) -> None:
         """첫 실행(preset_name='') 시 두 차원 프리셋 다이얼로그를 띄움."""
         import os
@@ -4567,6 +4761,18 @@ class MainWindow(QMainWindow):
                 except (RuntimeError, AttributeError):
                     pass
 
+    def _apply_audio_device_to_video_tabs(self, dev_id: str) -> None:
+        """환경설정에서 오디오 출력 장치를 바꾸면 열린 모든 영상 탭 player 에 즉시 적용.
+
+        "" = 시스템 기본 따라가기. 저장은 player_panel 이 PlayerSettings 에 직접 기록한다.
+        """
+        for w, _, _ in self.tab_area._tabs:
+            if isinstance(w, VideoTab):
+                try:
+                    w.set_audio_output_device(dev_id or "")
+                except (RuntimeError, AttributeError):
+                    pass
+
     def _open_preferences(self) -> None:
         dialog = PreferencesDialog(self.app_settings)
         # 환경설정의 사이드카 폴더 변경 → 모든 영상 탭에 즉시 반영.
@@ -4590,6 +4796,11 @@ class MainWindow(QMainWindow):
         pp = getattr(dialog, "preferences_panel", None)
         if pp is not None:
             pp.settings_changed.connect(self._persist_settings)
+        # 영상 플레이어 패널의 오디오 출력 장치 변경 → 열린 모든 영상 탭 player 에 즉시 적용.
+        plp = getattr(dialog, "player_panel", None)
+        if plp is not None:
+            plp.audio_device_changed.connect(self._apply_audio_device_to_video_tabs)
+            plp.settings_changed.connect(self._persist_settings)
         dialog.exec()
         # 단축키가 바뀌었을 수 있으므로 재등록 (글로벌 핫키 + 편집기 단축키).
         self._reregister_hotkey()
@@ -4952,13 +5163,15 @@ class MainWindow(QMainWindow):
         d = queue.pop(0)
         try:
             kind_str = d.get("kind") or "image"
-            if kind_str == "video":
-                kind = EntryKind.VIDEO
-            elif kind_str == "document":
-                kind = EntryKind.DOCUMENT
-            else:
-                kind = EntryKind.IMAGE
+            saved_kind = {
+                "video": EntryKind.VIDEO,
+                "document": EntryKind.DOCUMENT,
+                "audio": EntryKind.AUDIO,
+            }.get(kind_str, EntryKind.IMAGE)
             p = Path(d["path"])
+            # 확장자로 kind 정정 — 저장값이 틀려도(오디오가 IMAGE 로 복원되던 회귀 등)
+            # 형식에 맞는 모드 라이브러리로. 모르는 확장자는 저장값 유지.
+            kind = self._kind_for_path(p, fallback=saved_kind)
             display_name = d.get("display_name") or p.name
             duration_ms = int(d.get("duration_ms") or 0)
             origin = d.get("origin") or "opened"
@@ -4989,6 +5202,10 @@ class MainWindow(QMainWindow):
                     if duration_ms <= 0:
                         self._probe_duration_async(p, entry.id)
                     self._extract_thumbnail_async(p, entry.id)
+                elif kind is EntryKind.AUDIO:
+                    # 오디오는 썸네일 없음(🎵 라벨/placeholder). 길이만 채움.
+                    if duration_ms <= 0:
+                        self._probe_duration_async(p, entry.id)
                 # DOCUMENT: 썸네일/길이 추출 없음.
         except (KeyError, OSError, ValueError):
             pass
