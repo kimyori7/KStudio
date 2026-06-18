@@ -1,10 +1,16 @@
 """사용자가 드래그/리사이즈로 조정하는 영역 테두리.
 
-- 대기(standby): 녹색 실선 + 모서리 굵은 L자 + 라벨 ◇ 대기 중
-- 영상 녹화: 빨강 실선 + 모서리 굵은 L자 + 라벨 ● REC hh:mm:ss
-- GIF 녹화:  주황 "긴 선 + 짧은 간격" 점선 + 모서리 굵은 L자 + 라벨 ◆ GIF hh:mm:ss
+- 대기(standby): 녹색 얇은 사각형 + 라벨 ◇ 대기 중
+- 영상 녹화: 빨강 얇은 사각형 + 라벨 ● REC hh:mm:ss
+- GIF 녹화:  주황 "긴 선 + 짧은 간격" 점선 사각형 + 라벨 ◆ GIF hh:mm:ss
+
+굵은 모서리 L자(꺽쇠)는 캡처 경계를 걸쳐 그려져 "포함/제외"가 헷갈렸기에 제거하고,
+대신 바깥 프레임 모서리에 '살짝 연한 색'의 짧은 L자 손잡이 힌트만 남겼다 — 잡으면
+크기 조절됨을 알리는 신호(캡처 영역 안쪽이 아니라 바깥 프레임에 얹어 헷갈리지 않음).
+캡처 경계는 안쪽 사각형 테두리가 그대로 표시한다.
 
 대기 상태에서는 테두리/타이틀바 영역으로 이동·크기 조절 가능.
+네 모서리 모두 대각선 리사이즈(상단 코너 포함 — 타이틀바 이동보다 우선).
 내부는 투명(클릭 통과)이라 아래 어플과 상호작용 가능.
 녹화 상태에서는 전체 클릭 통과(움직임 봉인) + 화면 캡처 제외.
 """
@@ -26,8 +32,6 @@ class AdjustableRegionBorder(QWidget):
     stop_requested = Signal()                  # 우상단 ⏹ 버튼 클릭 (녹화 중)
 
     BORDER_THICKNESS = 4
-    CORNER_THICKNESS = 8           # 모서리 L자 두께
-    CORNER_LENGTH = 22             # 모서리 L자 길이
     LABEL_HEIGHT = 26              # 좌상단 라벨 영역 높이
     EDGE_GRIP = 8                  # 에지 리사이즈 감지 범위
     CORNER_GRIP = 16               # 코너 리사이즈 감지 범위 (대각선)
@@ -161,8 +165,11 @@ class AdjustableRegionBorder(QWidget):
         self._position_close_button()
 
     def _position_close_button(self) -> None:
+        # 우상단 코너(CORNER_GRIP × CORNER_GRIP)를 'ne' 대각선 리사이즈 손잡이로
+        # 비워두기 위해 버튼을 코너폭만큼 왼쪽으로 들인다. (버튼이 코너를 덮으면
+        # QPushButton 이 마우스를 먼저 먹어 코너 리사이즈가 안 됨.)
         size = self.LABEL_HEIGHT
-        x = self.width() - size
+        x = self.width() - size - self.CORNER_GRIP
         self.close_btn.move(x, 0)
         self.close_btn.raise_()
         self.stop_btn.move(x, 0)
@@ -195,10 +202,13 @@ class AdjustableRegionBorder(QWidget):
         # 녹화 중에는 크기 변경 금지 → 이동만 허용 (인코더 입력 해상도 고정)
         if self._state == "recording":
             return "move"
-        # 하단 코너 (리사이즈 유지)
+        # 네 모서리 코너 리사이즈 — 타이틀바 이동 판정보다 먼저 둬야 상단 코너가
+        # 'move' 에 먹히지 않고 대각선 리사이즈로 동작한다 (상단 코너 우선).
+        if x < cg and y < cg: return "nw"
+        if x > w - cg and y < cg: return "ne"
         if x < cg and y > h - cg: return "sw"
         if x > w - cg and y > h - cg: return "se"
-        # 타이틀바 영역은 항상 이동 (X 버튼 자리는 QPushButton이 먼저 잡음)
+        # 타이틀바 영역(코너 제외)은 이동. ✕/⏹ 버튼은 코너 밖으로 비켜둠.
         if y < lh: return "move"
         # 좌우/하단 에지 리사이즈
         if x < eg: return "w"
@@ -296,13 +306,12 @@ class AdjustableRegionBorder(QWidget):
         w, h = self.width(), self.height()
         bt = self.BORDER_THICKNESS
         lh = self.LABEL_HEIGHT
-        ct = self.CORNER_THICKNESS
-        cl = self.CORNER_LENGTH
 
-        # 1) 전체 폭 상단 타이틀바 (연속되어 보이도록 전체 가로 폭 채움)
+        # 1) 전체 폭 상단 타이틀바 (라벨/버튼 영역)
         p.fillRect(QRect(0, 0, w, lh), color)
 
-        # 2) 좌/우/하단 메인 테두리 — 모서리 L자와 겹치지 않는 '가운데 구간'만
+        # 2) 좌·우·하단 테두리 — 모서리 장식(꺽쇠) 없이 끊김 없는 얇은 사각형.
+        #    안쪽 테두리 모서리가 곧 캡처 경계(current_capture_rect)다.
         if self._use_dash():
             pen = QPen(color, bt)
             pen.setStyle(Qt.CustomDashLine)
@@ -310,32 +319,31 @@ class AdjustableRegionBorder(QWidget):
             pen.setCapStyle(Qt.FlatCap)
             p.setPen(pen)
             half = bt // 2
-            if h - lh - 2 * cl > 0:
-                p.drawLine(half, lh + cl, half, h - cl)                      # 좌
-                p.drawLine(w - 1 - half, lh + cl, w - 1 - half, h - cl)      # 우
-            if w - 2 * cl > 0:
-                p.drawLine(cl, h - 1 - half, w - cl, h - 1 - half)           # 하
+            p.drawLine(half, lh, half, h - 1)                    # 좌
+            p.drawLine(w - 1 - half, lh, w - 1 - half, h - 1)    # 우
+            p.drawLine(0, h - 1 - half, w - 1, h - 1 - half)     # 하
         else:
             # 실선은 fillRect로 (깔끔한 두께 보장)
-            if h - lh - 2 * cl > 0:
-                p.fillRect(0, lh + cl, bt, h - lh - 2 * cl, color)           # 좌
-                p.fillRect(w - bt, lh + cl, bt, h - lh - 2 * cl, color)      # 우
-            if w - 2 * cl > 0:
-                p.fillRect(cl, h - bt, w - 2 * cl, bt, color)                # 하
+            p.fillRect(0, lh, bt, h - lh, color)                 # 좌
+            p.fillRect(w - bt, lh, bt, h - lh, color)            # 우
+            p.fillRect(0, h - bt, w, bt, color)                  # 하
 
-        # 3) 네 귀퉁이 굵은 L자 (상시 실선, 내부 영역 기준)
-        # 좌상
-        p.fillRect(0, lh, cl, ct, color)              # 가로
-        p.fillRect(0, lh, ct, cl, color)              # 세로
-        # 우상
-        p.fillRect(w - cl, lh, cl, ct, color)
-        p.fillRect(w - ct, lh, ct, cl, color)
-        # 좌하
-        p.fillRect(0, h - ct, cl, ct, color)
-        p.fillRect(0, h - cl, ct, cl, color)
-        # 우하
-        p.fillRect(w - cl, h - ct, cl, ct, color)
-        p.fillRect(w - ct, h - cl, ct, cl, color)
+        # 3) 네 모서리 코너 손잡이 힌트 — 테두리보다 살짝 연한 색의 짧은 L자.
+        #    "여기 잡아서 크기 조절" 신호. 캡처 영역(안쪽)이 아니라 바깥 프레임
+        #    모서리에 얹어 캡처 경계와 헷갈리지 않는다. 길이=CORNER_GRIP(잡는
+        #    영역과 일치), 두께=BORDER_THICKNESS. ✕/⏹ 버튼은 코너 밖으로 비켜둬
+        #    우상단 가로 팔이 버튼에 가리지 않는다.
+        accent = color.lighter(150)
+        al = self.CORNER_GRIP
+        at = bt
+        p.fillRect(0, 0, al, at, accent)              # 좌상 가로
+        p.fillRect(0, 0, at, al, accent)              # 좌상 세로
+        p.fillRect(w - al, 0, al, at, accent)         # 우상 가로
+        p.fillRect(w - at, 0, at, al, accent)         # 우상 세로
+        p.fillRect(0, h - at, al, at, accent)         # 좌하 가로
+        p.fillRect(0, h - al, at, al, accent)         # 좌하 세로
+        p.fillRect(w - al, h - at, al, at, accent)    # 우하 가로
+        p.fillRect(w - at, h - al, at, al, accent)    # 우하 세로
 
         # 4) 타이틀바 라벨 텍스트
         inner_w = w - 2 * bt
