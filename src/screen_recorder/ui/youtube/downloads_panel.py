@@ -49,6 +49,7 @@ class DownloadsPanel(QWidget):
         self._rows_layout.addWidget(row)
 
         job.progress.connect(row.on_progress)
+        job.speed.connect(row.on_speed)
         job.title_resolved.connect(row.set_title)
         job.finished.connect(row.on_finished)
         job.error.connect(row.on_error)

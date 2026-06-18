@@ -22,6 +22,28 @@ def test_row_progress_unknown_total_busy(qtbot):
     assert row.progress_bar.maximum() == 0
 
 
+def test_row_shows_received_total_and_speed(qtbot):
+    # % 대신 받은량/총량 + 속도 표시.
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    row.on_progress(3 * 1024 * 1024, 12 * 1024 * 1024)
+    row.on_speed(2.3 * 1024 * 1024)
+    s = row.status_label.text()
+    assert "3.0MB" in s
+    assert "12.0MB" in s
+    assert "MB/s" in s
+    assert "%" not in s
+
+
+def test_row_speed_ignored_after_finished(qtbot):
+    # 완료 후 늦게 온 speed 가 '완료' 텍스트를 덮어쓰지 않아야.
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    row.on_finished("C:/out/f.mp4")
+    row.on_speed(999)
+    assert row.status_label.text() == "완료"
+
+
 def test_row_finished_shows_open(qtbot):
     row = DownloadRow(title="t")
     qtbot.addWidget(row)

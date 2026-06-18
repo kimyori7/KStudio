@@ -5,6 +5,7 @@ from screen_recorder.ui.youtube.downloads_button import DownloadsButton
 
 class FakeJob(QObject):
     progress = Signal(object, object)
+    speed = Signal(object)
     title_resolved = Signal(str)
     finished = Signal(str)
     error = Signal(str)

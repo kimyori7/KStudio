@@ -26,6 +26,7 @@ Runner = Callable[
 class YouTubeDownloadJob(QObject):
     # int 오버플로 회피 위해 object (downloader.py 와 동일 이유 — 큰 파일 bytes).
     progress = Signal(object, object)   # (downloaded_bytes, total_bytes)
+    speed = Signal(object)              # bytes/sec (None 가능)
     title_resolved = Signal(str)
     finished = Signal(str)              # 최종 파일 경로
     error = Signal(str)
@@ -54,6 +55,7 @@ class YouTubeDownloadJob(QObject):
         worker = _Worker(self._req, self._ffmpeg_dir, self._runner, lambda: self._cancel)
         worker.moveToThread(self._thread)
         worker.progress.connect(self.progress)
+        worker.speed.connect(self.speed)
         worker.title_resolved.connect(self.title_resolved)
         worker.done.connect(self._on_done)
         worker.failed.connect(self._on_failed)
@@ -80,6 +82,7 @@ class YouTubeDownloadJob(QObject):
 
 class _Worker(QObject):
     progress = Signal(object, object)
+    speed = Signal(object)
     title_resolved = Signal(str)
     done = Signal(str)
     failed = Signal(str)
@@ -98,6 +101,7 @@ class _Worker(QObject):
                 got = d.get("downloaded_bytes", 0)
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 self.progress.emit(got, total)
+                self.speed.emit(d.get("speed"))
                 info = d.get("info_dict") or {}
                 title = info.get("title")
                 if title:

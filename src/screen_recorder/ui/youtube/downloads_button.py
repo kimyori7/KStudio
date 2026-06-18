@@ -36,8 +36,9 @@ class _DownloadsPopup(QFrame):
         self.panel = DownloadsPanel()
         lay.addWidget(self.panel)
         # 완료 줄(제목+막대+상태+열기+폴더 열기+X)이 안 겹치도록 넉넉히. 좁으면 첫 열기 때
-        # 막대와 '완료' 텍스트가 겹쳐 보인다(폭 부족 + 레이아웃 미활성).
-        self.setMinimumWidth(700)
+        # 막대와 텍스트가 겹쳐 보인다(폭 부족 + 레이아웃 미활성). 상태 텍스트가
+        # "3.2MB / 12.5MB · 2.3MB/s" 로 길어 폭을 더 넓힌다.
+        self.setMinimumWidth(780)
 
 
 class DownloadsButton(QToolButton):

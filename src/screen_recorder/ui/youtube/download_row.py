@@ -11,6 +11,22 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QProgressBar, QPushB
 from ..icons import load_icon
 
 
+def _fmt_bytes(n) -> str:
+    """바이트를 사람이 읽기 좋은 단위로 — B/KB/MB/GB."""
+    n = float(n or 0)
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.1f}GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f}MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f}KB"
+    return f"{int(n)}B"
+
+
+def _fmt_speed(bps) -> str:
+    return _fmt_bytes(bps) + "/s"
+
+
 class DownloadRow(QWidget):
     cancel_requested = Signal()
     retry_requested = Signal()
@@ -19,6 +35,11 @@ class DownloadRow(QWidget):
     def __init__(self, title: str = "다운로드 준비 중…", parent=None) -> None:
         super().__init__(parent)
         self._path = ""
+        # 상태 표시용 누적값 — 진행률 막대는 시각(%)만, 텍스트는 받은량/총량·속도.
+        self._terminal = False
+        self._downloaded = 0
+        self._total = 0
+        self._speed = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 2, 8, 2)
@@ -38,7 +59,8 @@ class DownloadRow(QWidget):
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("")
-        self.status_label.setMinimumWidth(60)
+        # "3.2MB / 12.5MB · 2.3MB/s" 가 안 잘리도록 넉넉히.
+        self.status_label.setMinimumWidth(170)
         layout.addWidget(self.status_label)
 
         self.cancel_btn = QPushButton("취소")
@@ -76,19 +98,37 @@ class DownloadRow(QWidget):
         self.title_label.setToolTip(title)
 
     def on_progress(self, downloaded, total) -> None:
-        d = int(downloaded or 0)
-        t = int(total or 0)
-        if t <= 0:
+        if self._terminal:
+            return
+        self._downloaded = int(downloaded or 0)
+        self._total = int(total or 0)
+        if self._total > 0:
+            self.progress_bar.setRange(0, 100)
+            pct = max(0, min(100, int(self._downloaded * 100 / self._total)))
+            self.progress_bar.setValue(pct)
+        else:
             # 전체 크기 미정 → busy indicator (0,0).
             self.progress_bar.setRange(0, 0)
-            self.status_label.setText(f"{d // (1024 * 1024)}MB")
+        self._render_status()
+
+    def on_speed(self, speed) -> None:
+        if self._terminal:
             return
-        self.progress_bar.setRange(0, 100)
-        pct = max(0, min(100, int(d * 100 / t)))
-        self.progress_bar.setValue(pct)
-        self.status_label.setText(f"{pct}%")
+        self._speed = float(speed) if speed else None
+        self._render_status()
+
+    def _render_status(self) -> None:
+        # % 대신 받은량/총량 + 속도. 막대(시각적 %)는 별도로 채워진다.
+        if self._total > 0:
+            text = f"{_fmt_bytes(self._downloaded)} / {_fmt_bytes(self._total)}"
+        else:
+            text = _fmt_bytes(self._downloaded)
+        if self._speed:
+            text += f" · {_fmt_speed(self._speed)}"
+        self.status_label.setText(text)
 
     def on_finished(self, path: str) -> None:
+        self._terminal = True
         self._path = path
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
@@ -99,6 +139,7 @@ class DownloadRow(QWidget):
         self.close_btn.show()
 
     def on_error(self, msg: str) -> None:
+        self._terminal = True
         self.progress_bar.setRange(0, 100)
         self.status_label.setText("실패")
         self.status_label.setToolTip(msg)
@@ -107,6 +148,7 @@ class DownloadRow(QWidget):
         self.close_btn.show()
 
     def on_cancelled(self) -> None:
+        self._terminal = True
         self.status_label.setText("취소됨")
         self.cancel_btn.hide()
         self.close_btn.show()
