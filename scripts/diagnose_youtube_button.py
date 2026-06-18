@@ -1,4 +1,4 @@
-"""다운로드 트레이 버튼이 설정 버튼 왼쪽에 뜨는지 + 드롭다운 모양 PNG 진단."""
+"""다운로드 버튼: 펄스(반짝) 글로우 + (완료/전체) 카운터 + 줄의 X(지우기) 아이콘 PNG 진단."""
 from __future__ import annotations
 
 import os
@@ -29,19 +29,28 @@ tb = GlobalToolbar()
 tb.set_mode(AppMode.IMAGE)
 tb.resize(1400, 48)
 
-job = FakeJob()
-row = tb.downloads_button.add_job(job, "Me at the zoo")
-job.title_resolved.emit("Me at the zoo")
-job.progress.emit(42, 100)
+btn = tb.downloads_button
+j1, j2 = FakeJob(), FakeJob()
+r1 = btn.add_job(j1, "Me at the zoo")
+r2 = btn.add_job(j2, "두 번째 영상")
+j1.finished.emit("C:/out/a.mp4")   # 1개 완료 → 줄에 열기/폴더/X 버튼 노출
+j2.progress.emit(30, 100)           # 1개 진행 중 → 버튼 "30% (1/2)"
 
 out = Path("logs"); out.mkdir(exist_ok=True)
-tb.grab().save(str(out / "_yt_button_toolbar.png"))
 
-# 팝업 내용(패널) 단독 grab — 줄 모양 확인.
-panel = tb.downloads_button.panel()
-panel.resize(540, 60)
-panel.grab().save(str(out / "_yt_button_popup.png"))
+# 1) 펄스 글로우 최대치 상태로 버튼 영역 grab
+btn._apply_glow(1.0)
+tb.grab().save(str(out / "_yt_btn_glow.png"))
+btn._apply_glow(0.0)
 
-print("button visible:", tb.downloads_button.isVisible() or not tb.downloads_button.isHidden())
-print("button text:", repr(tb.downloads_button.text()))
-print("saved logs/_yt_button_toolbar.png, logs/_yt_button_popup.png")
+# 2) 카운터 텍스트 확인 + 일반 상태 toolbar
+tb.grab().save(str(out / "_yt_btn_counter.png"))
+
+# 3) 팝업 패널(줄 목록) — 완료 줄의 X 아이콘 보이게
+panel = btn.panel()
+panel.resize(560, 100)
+panel.grab().save(str(out / "_yt_btn_popup.png"))
+
+print("button text:", repr(btn.text()))
+print("header:", repr(panel._header.text()))
+print("saved logs/_yt_btn_glow.png, _yt_btn_counter.png, _yt_btn_popup.png")

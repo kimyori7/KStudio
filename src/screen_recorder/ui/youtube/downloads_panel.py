@@ -39,6 +39,10 @@ class DownloadsPanel(QWidget):
     def row_count(self) -> int:
         return len(self._rows)
 
+    def set_header_text(self, text: str) -> None:
+        """헤더 라벨 갱신 — 트레이 버튼이 '받는 중 N · 완료 누적 M' 요약을 넣는다."""
+        self._header.setText(text)
+
     def add_job(self, job, title_hint: str = "다운로드 준비 중…") -> DownloadRow:
         row = DownloadRow(title=title_hint)
         self._rows.append(row)

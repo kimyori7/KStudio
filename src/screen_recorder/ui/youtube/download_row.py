@@ -5,8 +5,10 @@ import os
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QSize
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QProgressBar, QPushButton
+
+from ..icons import load_icon
 
 
 class DownloadRow(QWidget):
@@ -58,8 +60,13 @@ class DownloadRow(QWidget):
         self.retry_btn.hide()
         layout.addWidget(self.retry_btn)
 
-        self.close_btn = QPushButton("✕")
-        self.close_btn.setFixedWidth(28)
+        # 목록에서 지우기 — 텍스트 '✕' 글리프가 일부 폰트에서 안 보여 빈 버튼처럼 보이던
+        # 문제(사용자 보고) → SVG 'x' 아이콘 사용.
+        self.close_btn = QPushButton()
+        self.close_btn.setIcon(load_icon("x", size=14))
+        self.close_btn.setIconSize(QSize(14, 14))
+        self.close_btn.setFixedWidth(30)
+        self.close_btn.setToolTip("목록에서 지우기")
         self.close_btn.clicked.connect(self.close_requested)
         self.close_btn.hide()
         layout.addWidget(self.close_btn)

@@ -52,3 +52,11 @@ def test_row_set_title(qtbot):
     qtbot.addWidget(row)
     row.set_title("실제 제목")
     assert row.title_label.text() == "실제 제목"
+
+
+def test_row_close_button_has_icon_not_text(qtbot):
+    # 회귀: '✕' 텍스트 글리프가 안 보여 빈 버튼처럼 보이던 문제 → SVG 'x' 아이콘 사용.
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    assert row.close_btn.text() == ""
+    assert not row.close_btn.icon().isNull()
