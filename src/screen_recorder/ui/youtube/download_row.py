@@ -30,6 +30,9 @@ class DownloadRow(QWidget):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setFixedWidth(180)
+        # 막대 내장 % 텍스트는 끈다 — 옆 status_label 이 "23%"/"완료"/"실패" 등을 표시하므로
+        # 켜두면 같은 숫자가 두 번 보인다(막대 안 + 라벨). 텍스트 단일 출처 = status_label.
+        self.progress_bar.setTextVisible(False)
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("")

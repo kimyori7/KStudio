@@ -8,6 +8,13 @@ def test_row_progress_updates_bar(qtbot):
     assert row.progress_bar.value() == 50
 
 
+def test_row_progressbar_text_hidden_no_double_percent(qtbot):
+    # 회귀: 막대 내장 % 텍스트를 끄지 않으면 "23% 23%" 처럼 두 번 보임(라벨 + 막대).
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    assert row.progress_bar.isTextVisible() is False
+
+
 def test_row_progress_unknown_total_busy(qtbot):
     row = DownloadRow(title="t")
     qtbot.addWidget(row)
