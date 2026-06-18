@@ -17,6 +17,16 @@ def default_video_dir() -> Path:
     return Path.home() / "KStudio" / "Video"
 
 
+def default_audio_dir() -> Path:
+    """오디오 내보내기 기본 저장 폴더 — 사용자 홈\\KStudio\\Audio."""
+    return Path.home() / "KStudio" / "Audio"
+
+
+def default_download_dir() -> Path:
+    """유튜브 다운로드 기본 저장 폴더 — Windows 다운로드 폴더."""
+    return Path.home() / "Downloads"
+
+
 @dataclass
 class GeneralSettings:
     output_dir: str = ""  # 빈 문자열이면 ~/KStudio/Video
@@ -132,6 +142,8 @@ class PreferencesSettings:
     image_gen_dock_visible: bool = False
     # 사이드카(.kvedit) 저장 폴더. 빈 문자열 = OS 기본 (%APPDATA%\KStudio\sidecars).
     sidecar_dir: str = ""
+    # 오디오 내보내기(mp3/wav) 기본 저장 폴더. 빈 문자열 = ~/KStudio/Audio.
+    audio_export_dir: str = ""
     # 파일 → 열기 다이얼로그의 마지막 사용 폴더. 빈 문자열 = 사용자 홈.
     last_open_dir: str = ""
     # 앱 재시작 시 복원할 마지막 모드. "video" | "image" — 잘못된 값이면 "image" 폴백.
@@ -143,6 +155,10 @@ class PlayerSettings:
     skip_seconds: int = 1            # ← / →
     skip_medium_seconds: int = 5     # Shift + ← / →
     skip_large_seconds: int = 10     # Ctrl + ← / →
+    # 2026-06-17: 미리보기 오디오 출력 장치. 빈 문자열 = 시스템 기본 따라가기(권장).
+    # 특정 장치 선택 시 그 QAudioDevice.id() 문자열을 저장. 장치가 사라지면 자동으로
+    # 기본 따라가기로 폴백(audio_device_list.resolve_current_id).
+    audio_output_device: str = ""
 
 
 @dataclass
@@ -228,6 +244,19 @@ class MarkdownSettings:
 
 
 @dataclass
+class YouTubeSettings:
+    """유튜브 영상 추출 / mp3 변환 설정. 영상·mp3 저장 폴더를 분리해 기억한다.
+
+    *_dir 빈 문자열 = ~/Downloads (default_download_dir). 사용자가 팝업에서 폴더를
+    바꾸면 해당 종류(영상 또는 mp3)의 키만 갱신한다 (사용자 결정 2026-06-18 — 분리).
+    """
+    video_dir: str = ""
+    mp3_dir: str = ""
+    video_quality: str = "best"   # best | 1080 | 720 | 480
+    mp3_bitrate: str = "192"      # 320 | 256 | 192
+
+
+@dataclass
 class AppSettings:
     general: GeneralSettings = field(default_factory=GeneralSettings)
     video: VideoSettings = field(default_factory=VideoSettings)
@@ -243,6 +272,7 @@ class AppSettings:
     mcp: McpSettings = field(default_factory=McpSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
     markdown: MarkdownSettings = field(default_factory=MarkdownSettings)
+    youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:
