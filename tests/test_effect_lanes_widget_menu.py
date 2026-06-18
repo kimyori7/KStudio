@@ -44,12 +44,13 @@ def test_plus_button_shows_5_items_menu(widget, qtbot):
 
 
 def test_all_menu_items_enabled(widget, qtbot):
-    """Phase 21 기준 메뉴는 5개 항목 — 캡션·배속·줌·곁들임·화살표."""
+    """메뉴는 6개 항목 — 캡션·배속·줌·곁들임·화살표·사각형 (2026-06-17 사각형 추가)."""
     menu = _open_menu(widget)
     actions = [a for a in menu.actions() if not a.isSeparator()]
     assert all(a.isEnabled() for a in actions), \
         f"disabled actions: {[a.text() for a in actions if not a.isEnabled()]}"
-    assert len(actions) == 5
+    assert len(actions) == 6
+    assert any("사각형" in a.text() for a in actions)
     menu.close()
 
 

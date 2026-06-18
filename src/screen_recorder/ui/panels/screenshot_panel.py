@@ -15,6 +15,7 @@ from ...core.settings import (
     GeneralSettings,
     PreferencesSettings,
     ScreenshotSettings,
+    default_audio_dir,
     default_image_dir,
     default_video_dir,
 )
@@ -110,6 +111,22 @@ class ScreenshotPanel(QWidget):
             self.vid_dir_edit.editingFinished.connect(self._sync)
             self.vid_pattern_edit.editingFinished.connect(self._sync)
 
+        # ---------- 오디오 저장 (mp3/wav 내보내기 기본 폴더) ----------
+        if self._preferences is not None:
+            aud_box = QGroupBox("🎵 오디오 저장")
+            aud_form = QFormLayout(aud_box)
+            aud_form.setLabelAlignment(Qt.AlignRight)
+            self.aud_dir_edit, aud_dir_row = self._make_dir_row(
+                self._preferences.audio_export_dir, "_browse_audio_dir"
+            )
+            self.aud_dir_edit.setPlaceholderText(f"기본값: {default_audio_dir()}")
+            self.aud_dir_edit.setToolTip(
+                "오디오 자르기/음성 내보내기(mp3·wav)의 기본 저장 폴더. 비워두면 ~/KStudio/Audio."
+            )
+            aud_form.addRow("저장 폴더:", aud_dir_row)
+            root.addWidget(aud_box)
+            self.aud_dir_edit.editingFinished.connect(self._sync)
+
         root.addStretch(1)
 
         # ---------- 시그널 ----------
@@ -160,6 +177,14 @@ class ScreenshotPanel(QWidget):
             self.sidecar_dir_edit.setText(path)
             self._sync()
 
+    def _browse_audio_dir(self) -> None:
+        initial = self.aud_dir_edit.text().strip() or str(default_audio_dir())
+        Path(initial).mkdir(parents=True, exist_ok=True)
+        path = self._pick_directory_native("오디오 저장 폴더", initial)
+        if path:
+            self.aud_dir_edit.setText(path)
+            self._sync()
+
     def _pick_directory_native(self, caption: str, initial: str) -> str:
         """Windows 네이티브 폴더 picker. 윈도우 탐색기 UX 그대로:
         - 주소 표시줄에 경로 직접 입력 / Ctrl+V 로 paste 가능
@@ -185,5 +210,8 @@ class ScreenshotPanel(QWidget):
 
         if self._preferences is not None and hasattr(self, "sidecar_dir_edit"):
             self._preferences.sidecar_dir = self.sidecar_dir_edit.text()
+
+        if self._preferences is not None and hasattr(self, "aud_dir_edit"):
+            self._preferences.audio_export_dir = self.aud_dir_edit.text()
 
         self.settings_changed.emit()

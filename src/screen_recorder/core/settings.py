@@ -136,10 +136,6 @@ class PreferencesSettings:
     library_dock_visible: bool = True
     layers_dock_visible: bool = True
     record_status_dock_visible: bool = True
-    # 에이전트 채팅 패널 (Claude/Qwen 등). 기본 True — 첫 실행 사용자에게 노출.
-    agent_panel_visible: bool = True
-    # 이미지 생성 패널. 기본 False — 옵트인 기능 (~6.3GB 모델 다운로드 필요).
-    image_gen_dock_visible: bool = False
     # 사이드카(.kvedit) 저장 폴더. 빈 문자열 = OS 기본 (%APPDATA%\KStudio\sidecars).
     sidecar_dir: str = ""
     # 오디오 내보내기(mp3/wav) 기본 저장 폴더. 빈 문자열 = ~/KStudio/Audio.
@@ -216,23 +212,6 @@ class EditorShortcuts:
 
 
 @dataclass
-class AgentSettings:
-    """Claude Agent in-app 임베드 설정 (Phase 33).
-
-    - model_id: ChatPanel 드롭다운으로 사용자가 선택. 다음 실행 시 복원.
-    - whisper_model_size: Phase D 자막 추출용 (tiny/base/small/medium/large-v3).
-      large-v3 가 한국어 정확도 가장 높음 (3GB, base 대비 ~5배 느림).
-      사용자 요구 (2026-05-15) — "제일 좋은 걸로". 환경설정에서 변경 가능.
-    """
-    # 기본 모델 — 로컬 Qwen3-VL 2B (사용자 환경 가장 가벼움). Claude 계열은 UI 노출 안 함.
-    model_id: str = "qwen3-vl-2b-instruct"
-    whisper_model_size: str = "large-v3"
-    # 추론(ThinkingBlock) 표시 ON/OFF — 노이즈 줄이고 싶을 때 끔.
-    # OFF 여도 Claude 는 내부적으로 thinking 수행 (응답 품질 유지) — 화면 표시만 가림.
-    show_thinking: bool = True
-
-
-@dataclass
 class MarkdownSettings:
     """Markdown 문서 모드 폰트 크기 — 편집기/미리보기 각각 독립 (사용자 요청 2026-05-29).
 
@@ -270,7 +249,6 @@ class AppSettings:
     player_hotkeys: PlayerHotkeys = field(default_factory=PlayerHotkeys)
     editor_shortcuts: EditorShortcuts = field(default_factory=EditorShortcuts)
     mcp: McpSettings = field(default_factory=McpSettings)
-    agent: AgentSettings = field(default_factory=AgentSettings)
     markdown: MarkdownSettings = field(default_factory=MarkdownSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
 

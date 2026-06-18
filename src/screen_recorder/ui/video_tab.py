@@ -8,16 +8,9 @@ from PySide6.QtGui import QCursor, QImage, QKeyEvent
 from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from ..core.settings import PlayerHotkeys, PlayerSettings
-from .icons import load_icon
-from .widgets import CenteredIconButton
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
-from ..autoedit.coordinator import AutoEditCoordinator
-from ..autoedit.analyzers.silence import SilenceAnalyzer
-from ..autoedit.analyzers.transcript import TranscriptAnalyzer
-from ..autoedit.analyzers.scene import SceneAnalyzer
-from ..autoedit.analyzers.bpm import BPMAnalyzer
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 from .video.timeline import VideoTimeline
@@ -37,7 +30,7 @@ _WIDGET_MAX_H = 16777215
 # 쉽게 한다. 타임라인은 전체 영상을 폭에 맞춰 그리므로(가로 줌 1.0 기준) "영상 길이의
 # N%" == "화면 폭의 N%". 길이 있는 오버레이/효과에만 적용하고, 정밀해야 하는 cut 류
 # (마커·구간 삭제)는 고정 길이를 유지한다(긴 영상에서 90초짜리 기본 삭제는 위험).
-_PROPORTIONAL_TYPES = frozenset({"caption", "speed", "zoom", "broll", "arrow"})
+_PROPORTIONAL_TYPES = frozenset({"caption", "speed", "zoom", "broll", "arrow", "rect"})
 _PROPORTIONAL_RATIO = 0.05        # 영상 전체 길이의 5%
 _PROPORTIONAL_CAP_MS = 90_000     # 상한 90초 — 매우 긴 영상의 과도한 기본 길이 방지
 
@@ -80,7 +73,7 @@ class VideoTab(QWidget):
 
     _DEFAULT_DURATION_MS: dict[str, int] = {
         "caption": 3000, "speed": 5000, "zoom": 2000,
-        "broll": 5000, "cut": 1000, "arrow": 2000,
+        "broll": 5000, "cut": 1000, "arrow": 2000, "rect": 2000,
     }
 
     def __init__(self, *, path: Path, source_label: str, duration_ms: int,
@@ -183,25 +176,6 @@ class VideoTab(QWidget):
             self.timeline.set_duration_ms(duration_ms)
 
         # 영상-수준 액션 헤더 (~32px) — 자동편집 등.
-        from PySide6.QtWidgets import QHBoxLayout
-        self._tab_header = QWidget()
-        self._tab_header.setFixedHeight(32)
-        header_layout = QHBoxLayout(self._tab_header)
-        header_layout.setContentsMargins(8, 4, 8, 4)
-        # CenteredIconButton — QPushButton 의 icon 좌측 고정 동작을 우회해 icon+text 를
-        # 진짜 가운데 정렬. (이모지 / setIcon 사용 시 텍스트가 왼쪽으로 치우쳐 보이는
-        # 문제 — diagnose_autoedit_button.py 로 검증 후 채택.)
-        self._autoedit_button = CenteredIconButton(
-            load_icon("sparkles", size=14), "자동 편집", icon_px=14,
-        )
-        # CenteredIconButton 은 setIcon/setText 를 안 써서 QPushButton 의 기본 sizeHint
-        # 가 0 에 가까움 — layout sizeHint 를 그대로 쓰면 QSS padding 만 반영되어
-        # 폭이 거의 컨텐츠에 fit. 그래서 _하단 헤더 폭_ 만큼 wide 하게 만들지 않음.
-        # (테스트는 diagnose_autoedit_button.py 의 변형 F 로 검증.)
-        self._autoedit_button.setToolTip("무음 컷·자막·씬 감지·BPM 알고리즘으로 1차 편집 자동 생성")
-        header_layout.addWidget(self._autoedit_button)
-        header_layout.addStretch(1)
-
         # QSplitter — preview (player + controls) ↔ timeline 사이 위/아래 핸들.
         # 사용자가 핸들 드래그로 timeline 영역 비중 조절 (긴 효과 라인 / 영상 위주 보기 토글).
         # collapsible 비활성 — 어느 쪽도 0 px 로 접히지 않게 보호.
@@ -209,7 +183,6 @@ class VideoTab(QWidget):
         preview_layout = QVBoxLayout(self._preview_container)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(0)
-        preview_layout.addWidget(self._tab_header)            # 헤더 first
         preview_layout.addWidget(self.player, stretch=1)
         preview_layout.addWidget(self.controls)
 
@@ -258,6 +231,11 @@ class VideoTab(QWidget):
         self.controls.edit_mode_change_requested.connect(self.edit_mode_change_requested.emit)
         # 출력 버튼 → MainWindow 의 _on_export_video 로 bubble.
         self.controls.export_requested.connect(self.export_requested.emit)
+        # 오디오 출력 장치 (2026-06-17) — Qt 가 모니터 HDMI 를 기본으로 잡아 "이 앱만 무음"이
+        # 나는 문제 대응. 저장값(전역 PlayerSettings)을 player 에 복원·적용. 장치 선택 UI 는
+        # 환경설정 → "영상 플레이어" 패널에 있고, 거기서 바뀌면 main_window 가 player 에 적용.
+        # 플러그/기본변경 추종은 player_widget 자체 QMediaDevices 리스너가 처리한다.
+        self.player.set_audio_output_device(self._settings.audio_output_device)
         self._edit_controller.edit_mode_toggled.connect(self.controls.set_edit_mode_button)
         self._edit_controller.edit_mode_toggled.connect(self.timeline.set_edit_mode)
         # 편집 OFF 시 splitter 의 timeline 영역을 0 으로 — 일반 플레이어 모습.
@@ -407,21 +385,12 @@ class VideoTab(QWidget):
         self._waveform_service.waveform_ready.connect(
             lambda src, peaks: self.timeline.audio_track_lane.set_peaks(src, peaks)
         )
+        # 초기 로드 시 파형 요청 — 이게 없으면 첫 진입에서 파형이 안 그려지고, 사용자가
+        # 음소거 토글 등 사이드카를 처음 바꿀 때(_on_sidecar_replaced)서야 요청됐다.
+        # ensure_default_track 은 시그널을 emit 하지 않으므로 init 에서 직접 1회 요청한다.
+        self._request_waveforms(self._edit_controller.sidecar())
         # 음소거 토글 — AudioTrackLane 🔇 버튼 → sidecar + 미리보기 동기화.
         self.timeline.audio_mute_toggled.connect(self._on_audio_mute_toggled)
-
-        # 자동편집 — Phase 4: silence + transcript + scene + bpm.
-        self._autoedit_coord = AutoEditCoordinator(self)
-        self._autoedit_coord.set_analyzers([
-            ("silence", SilenceAnalyzer()),
-            ("transcript", TranscriptAnalyzer(model_size="base")),
-            ("scene", SceneAnalyzer()),
-            ("bpm", BPMAnalyzer()),
-        ])
-        self._autoedit_coord.result_ready.connect(self._on_autoedit_result_ready)
-        self._autoedit_last_raw = None
-        self._progress_dlg = None
-        self._autoedit_button.clicked.connect(self._start_autoedit)
 
         # 영상 재생 단축키(←/→ seek)를 포커스가 컨트롤·타임라인·풀스크린 holder 에 있어도
         # 받도록 앱 전역 이벤트 필터를 영구 설치. VideoTab.keyPressEvent 는 VideoTab 이
@@ -512,100 +481,6 @@ class VideoTab(QWidget):
     def edit_controller(self):
         return self._edit_controller
 
-    def autoedit_button(self):
-        """영상-수준 헤더의 [🪄 자동 편집] 버튼 반환."""
-        from PySide6.QtWidgets import QPushButton  # noqa: F401 — type hint only
-        return self._autoedit_button
-
-    def autoedit_coordinator(self) -> AutoEditCoordinator:
-        """자동편집 코디네이터 반환 — 테스트/외부 연결용."""
-        return self._autoedit_coord
-
-    def _start_autoedit(self) -> None:
-        """[🪄 자동 편집] 버튼 클릭 → 진행률 다이얼로그 표시 → coordinator.run() 호출."""
-        from .autoedit.progress_dialog import AutoEditProgressDialog
-        src = self._source_path
-        sc = self._edit_controller.sidecar()
-        source_hash = getattr(sc, "source_hash", "") or ""
-        # 진행률 다이얼로그 미리 띄움 — modal, 분석 중 다른 UI 차단.
-        self._progress_dlg = AutoEditProgressDialog(parent=self)
-        self._autoedit_coord.progress_updated.connect(self._progress_dlg.update_progress)
-        # 취소 클릭 → (1) worker 에 cancel flag 전파, (2) dialog 즉시 닫음
-        # (worker 가 백그라운드에서 실제 종료될 때까지 사용자 UX 가 멈춰있지 않게).
-        # 그리고 (3) coordinator.cancelled 가 emit 되면 진행 중인 result_ready 도 무시.
-        self._progress_dlg.cancelled.connect(self._autoedit_coord.cancel)
-        self._progress_dlg.cancelled.connect(self._on_autoedit_cancelled)
-        self._progress_dlg.show()
-        # 모델은 MainWindow.app_settings.agent 에서 — 사용자가 환경설정 변경 시 즉시 반영.
-        # MainWindow 없는 단위 테스트 환경엔 default "large-v3" fallback.
-        parent = self.window()
-        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
-        whisper_model = agent_settings.whisper_model_size if agent_settings else "large-v3"
-        # 진행률 다이얼로그 라벨을 모델 다운로드 / 분석 따라 적절히.
-        from .autoedit.review_dialog import _is_model_downloaded
-        self._progress_dlg.set_phase_label(
-            whisper_model=whisper_model,
-            is_download=not _is_model_downloaded(whisper_model),
-        )
-        self._autoedit_coord.run(
-            media_path=src,
-            source_hash=source_hash,
-            whisper_model=whisper_model,
-            cache_dir=self._edit_controller.sidecar_dir(),
-        )
-
-    def _on_autoedit_result_ready(self, raw, failed: list) -> None:
-        """coordinator 분석 완료 → 리뷰 다이얼로그 표시 → 적용."""
-        from PySide6.QtWidgets import QDialog
-        from .autoedit.review_dialog import AutoEditReviewDialog
-        # 진행률 다이얼로그가 떠 있으면 닫음 (캐시 hit 이라 안 떴을 수도).
-        if getattr(self, "_progress_dlg", None) is not None:
-            self._progress_dlg.close()
-            self._progress_dlg = None
-        self._autoedit_last_raw = raw
-        # 현재 모델명 — 다이얼로그가 dropdown 의 기본 선택 표시.
-        parent = self.window()
-        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
-        current_model = agent_settings.whisper_model_size if agent_settings else "large-v3"
-        dlg = AutoEditReviewDialog(raw, parent=self, current_whisper_model=current_model)
-        dlg.reanalyze_requested.connect(self._on_autoedit_reanalyze)
-        # PySide6 에서 enum 은 클래스 통해서만 접근 — `dlg.Accepted` 는 AttributeError.
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            effects = dlg.compute_effects()
-            self._edit_controller.add_effects(effects)
-            self._notify_autoedit_done(len(effects), failed)
-
-    def _on_autoedit_cancelled(self) -> None:
-        """사용자가 진행률 dialog 의 취소 버튼 클릭 → 즉시 dialog 닫고 정리.
-
-        worker 의 cancel flag 는 coordinator.cancel 이 이미 전파. 여기서는 UI 측
-        cleanup 만 — dialog close + 참조 해제. worker 가 cancel flag 보고 종료
-        되기까지 사용자 UX 가 멈춰있지 않게 즉시 응답.
-        """
-        if getattr(self, "_progress_dlg", None) is not None:
-            self._progress_dlg.close()
-            self._progress_dlg = None
-
-    def _notify_autoedit_done(self, n: int, failed: list[str]) -> None:
-        """자동편집 완료 시 사용자 안내 — Task 5.2 에서 main_window 채팅 패널 연동."""
-        parent = self.window()
-        if not hasattr(parent, "append_autoedit_system_message"):
-            return
-        parent.append_autoedit_system_message(n, failed)
-
-    def _on_autoedit_reanalyze(self, new_model: str) -> None:
-        """리뷰 다이얼로그에서 모델 변경 + '재분석' 누름 → 새 모델로 다시 분석.
-
-        MainWindow.app_settings.agent.whisper_model_size 갱신 → settings 영구 저장 +
-        자동편집 캐시 키 다르니 새 분석 자동 트리거.
-        """
-        parent = self.window()
-        agent_settings = getattr(getattr(parent, "app_settings", None), "agent", None)
-        if agent_settings is not None:
-            agent_settings.whisper_model_size = new_model
-        # 분석 재시작 — 새 모델로 캐시 키 달라지므로 자동 새 분석.
-        self._start_autoedit()
-
     # ---------- 효과 추가 흐름 ----------
     def _on_lane_request_add(self, effect_type: str, in_ms: int,
                               track_idx: int = 0) -> None:
@@ -681,6 +556,15 @@ class VideoTab(QWidget):
                 end=Point(x=0.7, y=0.5),
                 track_idx=ti,
             )
+        elif effect_type == "rect":
+            # 기본 — 화면 가운데에 가로로 살짝 넓은 빨간 테두리 사각형.
+            from ..effects.types.rect import RectEffect, Point
+            eff = RectEffect(
+                in_ms=in_ms, out_ms=out_ms,
+                start=Point(x=0.3, y=0.4),
+                end=Point(x=0.7, y=0.6),
+                track_idx=ti,
+            )
         else:
             return False
         ok = self._edit_controller.add_effect(eff)
@@ -705,6 +589,10 @@ class VideoTab(QWidget):
 
     def _get_position_ms(self) -> int:
         return self.timeline.slider_lane.position_ms() or self.player.position_ms()
+
+    def set_audio_output_device(self, dev_id: str) -> None:
+        """외부(환경설정)에서 출력 장치가 바뀌면 이 탭의 player 에 적용. "" = 기본 따라가기."""
+        self.player.set_audio_output_device(dev_id or "")
 
     def _refresh_preview_mute(self) -> None:
         """미리보기 음소거 = 전역(sidecar.audio_muted) | 수동(M/컨트롤) | 배속 구간 mute.
@@ -735,7 +623,15 @@ class VideoTab(QWidget):
         except (AttributeError, RuntimeError):
             pass
         self._refresh_preview_mute()
-        # 트랙의 각 소스에 대해 파형 요청 (캐시/dedup 있으므로 반복 호출 cheap).
+        self._request_waveforms(sc)
+
+    def _request_waveforms(self, sc) -> None:
+        """트랙의 각 소스에 대해 오디오 파형을 요청. 캐시/dedup 있어 반복 호출 cheap.
+
+        init·sidecar 교체·duration 확정 세 시점 모두에서 호출 — 어느 한 시점에 놓쳐도
+        파형이 결국 그려지도록. (예전엔 sidecar_replaced 에서만 요청해, 첫 로드 후
+        사용자가 음소거를 처음 누르기 전까진 파형이 안 보였다.)
+        """
         for src in {s.src for s in sc.video_track}:
             self._waveform_service.request(src)
 
@@ -880,6 +776,9 @@ class VideoTab(QWidget):
         self._segment_ctrl.set_sidecar(sc)
         self.timeline.set_sidecar(sc)
         self._request_all_thumbnails(sc)
+        # duration 이 확정된 뒤 한 번 더 — 파형 그리기는 seg.src_duration_ms>0 을
+        # 요구하므로, init 요청의 peaks 가 dur=0 일 때 도착했어도 여기서 캐시 재emit.
+        self._request_waveforms(sc)
 
     # ---------- Stage B: 트랙 segment 흐름 ----------
     def _on_segment_selected(self, segment_id: str) -> None:
@@ -921,6 +820,12 @@ class VideoTab(QWidget):
             # 효과 타입의 lane 만 선택 강조 + 나머지 lane 은 해제. 영상 위 박스 클릭으로
             # 들어온 경우에도 timeline lane 시각이 자동 따라옴.
             self._sync_effect_lane_selection(eff)
+        # 2026-06-17: 미리보기 overlay 핸들 게이트 동기화 — lane/인스펙터에서 선택해도
+        # 화살표/사각형 끝점·모서리 핸들이 보이고, 해제 시 사라진다(꼭짓점 노출).
+        try:
+            self._preview_overlay.set_selected_effect_id(getattr(eff, "id", None) if eff else None)
+        except (RuntimeError, AttributeError):
+            pass
         self.effect_selected.emit(eff)
 
     def _sync_effect_lane_selection(self, eff) -> None:

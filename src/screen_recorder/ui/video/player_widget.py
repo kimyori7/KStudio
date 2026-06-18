@@ -9,7 +9,7 @@ from PySide6.QtGui import (
     QColor, QFont, QFontMetrics, QImage, QMovie, QPainter, QPainterPath, QPen,
     QPixmap,
 )
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QMediaDevices
 from PySide6.QtWidgets import QStackedWidget, QLabel, QWidget
 
 
@@ -365,6 +365,16 @@ class PlayerWidget(QStackedWidget):
         self._insert_pending_seek_ms: int = -1   # setSource 후 mediaStatus 가 LoadedMedia 되면 seek
         self._insert_pending_play: bool = False
         self.addWidget(self._insert_surface)     # index 2
+
+        # ---- 오디오 출력 장치 선택 (2026-06-17) ----
+        # QAudioOutput 은 생성 시점 장치에 고정돼 이후 Windows 기본 변경을 안 따라간다.
+        # + Qt 가 NVIDIA HDMI(모니터) 를 기본으로 잡아 "이 앱만 무음"이 나기도 한다.
+        # → 선택된 장치 id(빈 문자열=기본 따라가기)를 보관하고, 장치 목록이 바뀔 때마다
+        # 재적용해 follow-default 가 기본 변경/플러그를 따라가게 한다. _audio·_insert_audio 둘 다.
+        self._audio_pref_id: str = ""
+        self._media_devices = QMediaDevices(self)
+        self._media_devices.audioOutputsChanged.connect(self._reapply_audio_device)
+        self.set_audio_output_device("")   # 명시적으로 현재 기본에 바인딩
 
         # PreviewOverlay 자리 — 외부(VideoTab)가 set_overlay() 로 설치
         self._overlay: QWidget | None = None
@@ -741,6 +751,33 @@ class PlayerWidget(QStackedWidget):
 
     def is_muted(self) -> bool:
         return self._audio.isMuted()
+
+    # ---- 오디오 출력 장치 ----
+    def set_audio_output_device(self, id_str: str) -> None:
+        """미리보기 오디오 출력 장치 지정. "" = 시스템 기본 따라가기.
+
+        지정 장치(id_str)가 현재 없으면 기본 장치로 폴백. _audio·_insert_audio 둘 다 적용.
+        audioOutputsChanged 마다 _reapply_audio_device 로 재호출돼, 기본 따라가기는 기본
+        변경/플러그를 추종하고, 사라졌던 지정 장치가 다시 나타나면 다시 매칭된다.
+        """
+        from . import audio_devices_qt
+        self._audio_pref_id = id_str or ""
+        dev = audio_devices_qt.find_output(self._audio_pref_id) if self._audio_pref_id else None
+        if dev is None:
+            dev = QMediaDevices.defaultAudioOutput()
+        try:
+            self._audio.setDevice(dev)
+            self._insert_audio.setDevice(dev)
+        except (RuntimeError, AttributeError):
+            pass
+
+    def audio_output_device_id(self) -> str:
+        """현재 선택된(저장용) 장치 id. "" = 기본 따라가기."""
+        return self._audio_pref_id
+
+    def _reapply_audio_device(self) -> None:
+        """장치 목록 변경 시 현재 선택을 재적용 (follow-default 추종 / 지정 장치 재매칭)."""
+        self.set_audio_output_device(self._audio_pref_id)
 
     def has_audio(self) -> bool:
         return not self._is_gif

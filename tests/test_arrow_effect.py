@@ -24,6 +24,49 @@ def test_arrow_thickness_validation():
         ArrowEffect(in_ms=0, out_ms=2000, thickness=65)
 
 
+def test_arrow_head_scale_default():
+    a = ArrowEffect(in_ms=0, out_ms=2000)
+    assert a.head_scale == 1.0
+
+
+def test_arrow_head_scale_validation():
+    with pytest.raises(ValueError):
+        ArrowEffect(in_ms=0, out_ms=2000, head_scale=0.0)
+    with pytest.raises(ValueError):
+        ArrowEffect(in_ms=0, out_ms=2000, head_scale=9.0)
+
+
+def test_arrow_head_scale_roundtrip():
+    a = ArrowEffect(in_ms=0, out_ms=2000, head_scale=2.5)
+    sc = Sidecar(effects=[a])
+    a2 = Sidecar.from_dict(sc.to_dict()).effects[0]
+    assert a2.head_scale == 2.5
+
+
+def test_arrow_renderer_head_scale_enlarges_head():
+    """head_scale 가 크면 화살촉이 더 커져 색칠 픽셀이 더 많다."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter, QColor
+    from screen_recorder.ui.video.arrow_renderer import draw_arrow
+
+    def _ink(scale: float) -> int:
+        a = ArrowEffect(in_ms=0, out_ms=2000,
+                        start=Point(x=0.2, y=0.5), end=Point(x=0.8, y=0.5),
+                        thickness=6, head_scale=scale)
+        img = QImage(200, 100, QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        try:
+            draw_arrow(p, a, position_ms=1000, surface_w=200, surface_h=100)
+        finally:
+            p.end()
+        return sum(1 for x in range(200) for y in range(100)
+                   if QColor.fromRgba(img.pixel(x, y)).alpha() > 30)
+
+    assert _ink(3.0) > _ink(1.0)
+
+
 def test_arrow_roundtrip_sidecar():
     """사이드카 dict round-trip 시 Point / Fade 가 ArrowEffect 의 것으로 복원되어야.
 

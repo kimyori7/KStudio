@@ -44,5 +44,7 @@ class TrayController(QObject):
         self.tray.show()
 
     def _on_activated(self, reason):
-        if reason == QSystemTrayIcon.Trigger:
+        # Trigger=단일 클릭, DoubleClick=더블 클릭. 둘 다 창을 앞으로 끌어올린다
+        # (show_main 핸들러는 idempotent 하므로 더블클릭으로 둘 다 와도 무방).
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.show_main.emit()

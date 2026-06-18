@@ -29,3 +29,23 @@ def test_player_panel_edits_propagate(qtbot):
     qtbot.addWidget(d)
     d.player_panel.skip_spin.setValue(5)
     assert s.player.skip_seconds == 5
+
+
+def test_audio_export_dir_persists(qtbot):
+    """저장/파일명 패널의 🎵 오디오 저장 폴더 → preferences.audio_export_dir 영속."""
+    s = AppSettings()
+    d = PreferencesDialog(s)
+    qtbot.addWidget(d)
+    d.screenshot_panel.aud_dir_edit.setText(r"D:\MyAudio")
+    d.screenshot_panel._sync()
+    assert s.preferences.audio_export_dir == r"D:\MyAudio"
+
+
+def test_audio_export_dir_round_trips_through_json(tmp_path):
+    """audio_export_dir 가 settings.json 저장→로드로 보존된다."""
+    from screen_recorder.core import settings as st
+    s = AppSettings()
+    s.preferences.audio_export_dir = r"E:\Voices"
+    p = tmp_path / "settings.json"
+    st.save(s, p)
+    assert st.load(p).preferences.audio_export_dir == r"E:\Voices"

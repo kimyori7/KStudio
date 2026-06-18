@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMenu, QPushButton, QVBoxLayout, QWid
 
 from ...effects import Sidecar
 from .arrow_lane import ArrowLane
+from .rect_lane import RectLane
 from .broll_lane import BrollLane
 from .caption_lane import CaptionLane
 from .cut_lane import CutLane
@@ -23,6 +24,7 @@ _TYPE_LABEL = {
     "zoom":    "줌",
     "broll":   "곁들임 영상",   # B-roll: 원본 영상 위에 다른 영상을 띄우는 효과
     "arrow":   "화살표",
+    "rect":    "사각형",
     "cut":     "자르기 (중간)",   # 자르기 lane 과 통일된 이름. 양 끝 자르기 = TrimMarkerLane.
 }
 _TYPE_COLOR = {
@@ -31,6 +33,7 @@ _TYPE_COLOR = {
     "zoom":    "#10b981",   # 초록
     "broll":   "#f59e0b",   # 주황
     "arrow":   "#f43f5e",   # 핑크-빨강
+    "rect":    "#22d3ee",   # 청록
     "cut":     "#ef4444",   # 빨강
 }
 
@@ -39,7 +42,7 @@ _TYPE_COLOR = {
 # Stage D 의 의도 (cut → 트랙 lane 흡수) 는 video_track_lane.py 에 cut 표시 코드 미구현 상태라
 # 사용자가 자동편집/Claude 로 cut 추가해도 시각 피드백 0 → 의도 복구. video_track_lane 에
 # cut 흡수 완성되면 그때 다시 제거.
-_LANE_ORDER = ["cut", "caption", "speed", "zoom", "broll", "arrow"]
+_LANE_ORDER = ["cut", "caption", "speed", "zoom", "broll", "arrow", "rect"]
 
 # type → lane 클래스 dispatch. 누락된 type 은 base EffectLane 으로 fallback.
 EFFECT_LANE_CLASSES: dict[str, type] = {
@@ -49,6 +52,7 @@ EFFECT_LANE_CLASSES: dict[str, type] = {
     "zoom": ZoomLane,
     "broll": BrollLane,
     "arrow": ArrowLane,
+    "rect": RectLane,
 }
 
 
@@ -360,6 +364,8 @@ class EffectLanesWidget(QWidget):
          "여러 곁들임 영상을 PiP 로 동시에 띄울 수 있음"),
         ("+ 화살표 추가 (복수 가능)",        "arrow",   True,
          "여러 화살표를 동시에 띄울 수 있음"),
+        ("+ 사각형 추가 (복수 가능)",        "rect",    True,
+         "여러 테두리 사각형을 동시에 띄울 수 있음"),
     ]
 
     def _show_add_menu_at(self, ms: int) -> None:

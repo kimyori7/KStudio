@@ -25,8 +25,11 @@ from PySide6.QtWidgets import QWidget
 from ...effects import Sidecar
 from ...effects.types.broll import BrollEffect
 from ...effects.types.arrow import ArrowEffect
+from ...effects.types.rect import RectEffect
 from ...effects.types.caption import CaptionEffect, Position
 from . import arrow_renderer
+from . import rect_renderer
+from . import rect_overlay_geometry
 from ...effects.types.zoom import ZoomEffect
 from . import caption_renderer
 
@@ -112,6 +115,11 @@ class PreviewOverlay(QWidget):
         self.setAcceptDrops(True)
         self._sidecar: Optional[Sidecar] = None
         self._position_ms: int = 0
+        # 2026-06-17: 지금 선택된 효과 id. 화살표/사각형의 끝점·모서리 핸들은
+        # 이 값과 일치할 때만 그린다 — 선택 해제 시 핸들이 사라져 화살촉 꼭짓점이
+        # 드러난다. mousePress 에서 직접 갱신(즉시) + set_selected_effect_id 로
+        # lane/인스펙터 선택과도 동기화.
+        self._selected_eff_id: Optional[str] = None
         # paintEvent 마다 모든 캡션의 bounding box 저장 — mousePress/Move hit-test 용.
         self._caption_bboxes: dict[str, "QRect"] = {}
         # 줌·곁들임 가이드의 bbox + effect id — paint 마다 갱신, 드래그 hit-test 용.
@@ -146,6 +154,11 @@ class PreviewOverlay(QWidget):
         # endpoint 드래그 시 한쪽만 변경 (다른쪽 보존). _drag_kind ∈ {arrow, arrow-start, arrow-end}.
         self._arrow_drag_override: Optional[tuple[float, float, float, float]] = None
         self._arrow_drag_start_norm: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+        # 사각형 드래그 override — start/end 둘 다 정규화 4-tuple. body 드래그 시 전체
+        # 평행이동(move_rect), 모서리 드래그 시 잡은 모서리만(resize_corner, 대각 고정).
+        # _drag_kind ∈ {rect, rect-tl, rect-tr, rect-bl, rect-br}.
+        self._rect_drag_override: Optional[tuple[float, float, float, float]] = None
+        self._rect_drag_start_norm: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
         # 영상 프레임 rect provider — letterbox 시 검은 띠를 제외한 실제 영상 영역.
         # None 이면 self.rect() (위젯 전체) 사용. 이 rect 안에서만 그리고 드래그한다.
         self._frame_rect_provider: Optional[Callable[[], QRect]] = None
@@ -173,6 +186,19 @@ class PreviewOverlay(QWidget):
     def set_position_ms(self, ms: int) -> None:
         self._position_ms = max(0, int(ms))
         self._request_paint()
+
+    def set_selected_effect_id(self, eff_id: Optional[str]) -> None:
+        """지금 선택된 효과 id 설정 — 화살표/사각형 핸들 표시 게이트.
+
+        lane 클릭·인스펙터 선택 등 overlay 외부 경로에서 호출 (video_tab 의 단일
+        선택 chokepoint _on_effect_selected). overlay 내부 클릭은 mousePress 가
+        직접 갱신하므로 이 setter 와 중복돼도 무해(같은 값).
+        """
+        new_id = str(eff_id) if eff_id else None
+        if new_id == self._selected_eff_id:
+            return
+        self._selected_eff_id = new_id
+        self.update()
 
     def _request_paint(self) -> None:
         """30Hz 캡 update() — 직전 paint 로부터 33ms 이상 지났으면 즉시,
@@ -265,6 +291,12 @@ class PreviewOverlay(QWidget):
             if eff.type != "arrow":
                 continue
             self._draw_arrow_effect(p, eff)
+
+        # 사각형 — 화살표와 동일 좌표계 패턴.
+        for eff in active:
+            if eff.type != "rect":
+                continue
+            self._draw_rect_effect(p, eff)
 
         # Stage 6 — 활성 ZoomEffect 가 있으면 가이드 사각형 그리기.
         # v1: 실제 픽셀 줌은 export 에서만 적용. 미리보기는 사각형으로 영역 표시.
@@ -462,14 +494,106 @@ class PreviewOverlay(QWidget):
             # 진단: draw_arrow 안에서 예외가 나도 painter state 가 깨지지 않게 항상 restore.
             p.restore()
 
-        # endpoint 핸들 — 시간창 안에서만, 작은 원 두 개. drag 중인 endpoint 는 강조.
-        if in_window:
+        # endpoint 핸들 — 시간창 안 + **선택됐을 때만** 작은 원 두 개. 선택 해제 시
+        # 핸들이 사라져 화살촉 꼭짓점(end 핸들이 가리던 부분)이 드러난다. drag 중인
+        # endpoint 는 강조. 핸들이 안 보여도 본체 hit-test 는 유지되어 다시 클릭하면 선택됨.
+        if in_window and a.id == self._selected_eff_id:
             for px, py, kind in ((start_px_x, start_px_y, "arrow-start"),
                                   (end_px_x, end_px_y, "arrow-end")):
                 is_active = (self._drag_kind == kind and self._drag_eff_id == a.id)
                 p.setPen(QPen(QColor(255, 255, 255, 230), 2))
                 p.setBrush(QColor(0, 0, 0, 180) if not is_active else QColor(255, 215, 0, 220))
                 p.drawEllipse(QPointF(px, py), 6, 6)
+
+    # ---------- 사각형 (2026-06-17) ----------
+    def _draw_rect_effect(self, p: QPainter, r: RectEffect) -> None:
+        """사각형 그리기 — 화살표와 동일하게 예외를 로깅으로 감싼다."""
+        import logging
+        try:
+            self._draw_rect_effect_impl(p, r)
+        except Exception:
+            logging.exception(
+                "preview_overlay: _draw_rect_effect failed r.id=%s pos=%s",
+                getattr(r, "id", "?"), self._position_ms,
+            )
+
+    def _draw_rect_effect_impl(self, p: QPainter, r: RectEffect) -> None:
+        frame = self._frame_rect()
+        src_size = self._source_size_provider() if self._source_size_provider else (0, 0)
+        source_w, source_h = src_size
+        if source_w > 0 and source_h > 0 and frame.width() > 0 and frame.height() > 0:
+            surface_w = source_w
+            surface_h = source_h
+            scale_x = frame.width() / source_w
+            scale_y = frame.height() / source_h
+        else:
+            surface_w = max(1, frame.width())
+            surface_h = max(1, frame.height())
+            scale_x = 1.0
+            scale_y = 1.0
+
+        # 드래그 override 적용.
+        sx_n, sy_n = float(r.start.x), float(r.start.y)
+        ex_n, ey_n = float(r.end.x), float(r.end.y)
+        if (self._drag_kind in ("rect", "rect-tl", "rect-tr", "rect-bl", "rect-br")
+                and self._drag_eff_id == r.id
+                and self._rect_drag_override is not None):
+            sx_n, sy_n, ex_n, ey_n = self._rect_drag_override
+        in_window = r.in_ms <= self._position_ms < r.out_ms
+
+        # widget 좌표계 모서리 픽셀 — 핸들 + hit-test 용 (min/max 정규화).
+        def _to_px(nx, ny):
+            return (frame.x() + nx * surface_w * scale_x,
+                    frame.y() + ny * surface_h * scale_y)
+        cps = rect_overlay_geometry.corner_points(sx_n, sy_n, ex_n, ey_n)
+        corner_px = {c: _to_px(*cps[c]) for c in ("tl", "tr", "bl", "br")}
+        left, top = corner_px["tl"]
+        right, bottom = corner_px["br"]
+
+        selected = (r.id == self._selected_eff_id)
+        if in_window:
+            # body bbox — 사각형 영역(테두리 굵기 inflate).
+            handle_r = 10
+            body_box = QRect(int(left) - 2, int(top) - 2,
+                             int(right - left) + 4, int(bottom - top) + 4)
+            self._overlay_hits.append((body_box, "rect", r.id))
+            # 모서리 핸들 hit — 선택됐을 때만 잡힘(안 보이는 핸들 grab 방지). body 보다
+            # 나중에 append → reversed iteration 시 모서리 우선.
+            if selected:
+                for c in ("tl", "tr", "bl", "br"):
+                    px, py = corner_px[c]
+                    box = QRect(int(px) - handle_r, int(py) - handle_r,
+                                handle_r * 2, handle_r * 2)
+                    self._overlay_hits.append((box, f"rect-{c}", r.id))
+
+        # 본체 그리기 — override 좌표를 effect 에 임시 반영.
+        if (sx_n, sy_n, ex_n, ey_n) != (r.start.x, r.start.y, r.end.x, r.end.y):
+            from ...effects.types.rect import Point as _RPoint
+            r_draw = replace(r, start=_RPoint(x=sx_n, y=sy_n), end=_RPoint(x=ex_n, y=ey_n))
+        else:
+            r_draw = r
+        p.save()
+        try:
+            p.translate(frame.x(), frame.y())
+            p.scale(scale_x, scale_y)
+            rect_renderer.draw_rect(
+                p, r_draw, position_ms=self._position_ms,
+                surface_w=surface_w, surface_h=surface_h,
+            )
+        finally:
+            p.restore()
+
+        # 모서리 핸들 — 시간창 안 + 선택됐을 때만 (선택 해제 시 깔끔한 테두리).
+        if in_window and selected:
+            for c in ("tl", "tr", "bl", "br"):
+                px, py = corner_px[c]
+                is_active = (self._drag_kind == f"rect-{c}" and self._drag_eff_id == r.id)
+                hb = QRect(int(px) - _HANDLE_SIZE // 2, int(py) - _HANDLE_SIZE // 2,
+                           _HANDLE_SIZE, _HANDLE_SIZE)
+                p.fillRect(hb, QColor(255, 215, 0, 230) if is_active else _HANDLE_FILL)
+                p.setPen(QPen(_HANDLE_BORDER, 1))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(hb)
 
     # ---------- zoom guide (Stage 6 / Phase 27) ----------
     def _draw_zoom_guide(self, p: QPainter, eff: ZoomEffect) -> None:
@@ -695,7 +819,10 @@ class PreviewOverlay(QWidget):
         # 화살표 body bbox 가 가로로 길쭉할 때 좌/우 끝점이 body 의 모서리 hit-area 안에
         # 들어가 "arrow body 모서리 resize" 로 잘못 분기되어 endpoint drag 가 막히던 회귀.
         for bbox, kind, eff_id in reversed(self._overlay_hits):
-            if kind in ("arrow", "arrow-start", "arrow-end"):
+            if kind in ("arrow", "arrow-start", "arrow-end",
+                        "rect", "rect-tl", "rect-tr", "rect-bl", "rect-br"):
+                # arrow/rect 는 zoom/broll 식 모서리 resize 머신을 안 씀 — 각자 별도
+                # hit-test 가 step 3 에서 처리. (rect 모서리는 hit kind 자체가 분리됨.)
                 continue
             for c, hr in _corner_rects(bbox).items():
                 if hr.contains(pos):
@@ -758,6 +885,22 @@ class PreviewOverlay(QWidget):
                 self._emit_effect_clicked(eff_id)
                 event.accept()
                 return
+            if kind in ("rect", "rect-tl", "rect-tr", "rect-bl", "rect-br"):
+                # 사각형 — start/end 둘 다 정규화 4-tuple 로 추적. body=평행이동,
+                # rect-XX=모서리 resize. 실제 계산은 mouseMove 에서 geometry 모듈.
+                eff = next((e for e in self._sidecar.effects if e.id == eff_id), None)
+                if eff is None or not isinstance(eff, RectEffect):
+                    self._drag_kind = None
+                    continue
+                self._rect_drag_start_norm = (
+                    float(eff.start.x), float(eff.start.y),
+                    float(eff.end.x), float(eff.end.y),
+                )
+                self._rect_drag_override = self._rect_drag_start_norm
+                self.setCursor(Qt.ClosedHandCursor)
+                self._emit_effect_clicked(eff_id)
+                event.accept()
+                return
             if kind in ("zoom", "zoom-src", "zoom-dst"):
                 # Phase 27 — 두 사각형 모두 중심 좌표를 정규화 norm 으로 추적.
                 cx = (bbox.left() + bbox.right()) / 2.0 - frame.x()
@@ -775,15 +918,24 @@ class PreviewOverlay(QWidget):
             event.accept()
             return
         # hit 없음 → 활성 선택 해제 후 하부 영상 surface 로 통과.
+        # 핸들 게이트 상태도 즉시 해제 → 다음 paint 에서 화살표 끝점 핸들이 사라진다.
+        if self._selected_eff_id is not None:
+            self._selected_eff_id = None
+            self.update()
         self.overlay_effect_clicked.emit(None)
         event.ignore()
 
     def _emit_effect_clicked(self, eff_id: str) -> None:
-        """id 로 effect 찾아 overlay_effect_clicked 발화. 없으면 no-op."""
+        """id 로 effect 찾아 overlay_effect_clicked 발화. 없으면 no-op.
+
+        선택 게이트(_selected_eff_id)도 함께 갱신 — 모든 hit 경로(캡션·화살표·줌·
+        곁들임·리사이즈 핸들)가 이 헬퍼를 거치므로 단일 지점에서 선택을 기록한다.
+        """
         if self._sidecar is None:
             return
         eff = next((e for e in self._sidecar.effects if e.id == eff_id), None)
         if eff is not None:
+            self._selected_eff_id = eff_id
             self.overlay_effect_clicked.emit(eff)
 
     # ---------- drag-and-drop (broll PIP 박스 위 파일 드롭) ----------
@@ -911,7 +1063,14 @@ class PreviewOverlay(QWidget):
             # 코너 핸들 위 호버 → 사이즈 커서 (가장 위 hit 우선).
             # arrow 는 모서리 resize 없음 — endpoint 핸들은 본체 hit 로 처리.
             for bbox, _kind, _id in reversed(self._overlay_hits):
-                if _kind in ("arrow", "arrow-start", "arrow-end"):
+                # 사각형 모서리 핸들 — hit kind 자체가 모서리라 그 위 호버 시 사이즈 커서.
+                if _kind in ("rect-tl", "rect-tr", "rect-bl", "rect-br"):
+                    if bbox.contains(pos):
+                        self.setCursor(_cursor_for_corner(_kind.split("-", 1)[1]))
+                        event.accept()
+                        return
+                    continue
+                if _kind in ("arrow", "arrow-start", "arrow-end", "rect"):
                     continue
                 for c, hr in _corner_rects(bbox).items():
                     if hr.contains(pos):
@@ -1020,6 +1179,20 @@ class PreviewOverlay(QWidget):
                     max(0.0, min(1.0, ex0 + dnx)),
                     max(0.0, min(1.0, ey0 + dny)),
                 )
+        elif self._drag_kind in ("rect", "rect-tl", "rect-tr", "rect-bl", "rect-br"):
+            sx0, sy0, ex0, ey0 = self._rect_drag_start_norm
+            dnx = delta_x / fw
+            dny = delta_y / fh
+            if self._drag_kind == "rect":
+                # body — 전체 평행이동, 벽에 닿으면 크기 보존.
+                self._rect_drag_override = rect_overlay_geometry.move_rect(
+                    sx0, sy0, ex0, ey0, dnx, dny)
+            else:
+                # 모서리 — 잡은 모서리만 이동(대각 고정). 현재 모서리 위치 + delta.
+                corner = self._drag_kind.split("-", 1)[1]
+                cx0, cy0 = rect_overlay_geometry.corner_points(sx0, sy0, ex0, ey0)[corner]
+                self._rect_drag_override = rect_overlay_geometry.resize_corner(
+                    corner, sx0, sy0, ex0, ey0, cx0 + dnx, cy0 + dny)
         else:
             raw = (self._drag_start_norm[0] + delta_x / fw,
                    self._drag_start_norm[1] + delta_y / fh)
@@ -1278,14 +1451,16 @@ class PreviewOverlay(QWidget):
         if self._drag_kind is not None and self._sidecar is not None:
             kind = self._drag_kind
             eff_id = self._drag_eff_id
-            # 화살표 드래그 — 4-tuple override 가 따로 보관됨.
+            # 화살표/사각형 드래그 — 4-tuple override 가 따로 보관됨.
             arrow_override = self._arrow_drag_override
+            rect_override = self._rect_drag_override
             override = self._drag_override_norm
             self._drag_kind = None
             self._drag_eff_id = None
             self._drag_start_pos = None
             self._drag_override_norm = None
             self._arrow_drag_override = None
+            self._rect_drag_override = None
             self.unsetCursor()
             if kind in ("arrow", "arrow-start", "arrow-end") and arrow_override is not None:
                 for eff in self._sidecar.effects:
@@ -1296,6 +1471,18 @@ class PreviewOverlay(QWidget):
                     new_eff = replace(eff,
                                        start=_APoint(x=sx, y=sy),
                                        end=_APoint(x=ex, y=ey))
+                    self.effect_drag_changed.emit(new_eff)
+                    break
+            elif (kind in ("rect", "rect-tl", "rect-tr", "rect-bl", "rect-br")
+                  and rect_override is not None):
+                for eff in self._sidecar.effects:
+                    if eff.id != eff_id or not isinstance(eff, RectEffect):
+                        continue
+                    from ...effects.types.rect import Point as _RPoint
+                    sx, sy, ex, ey = rect_override
+                    new_eff = replace(eff,
+                                       start=_RPoint(x=sx, y=sy),
+                                       end=_RPoint(x=ex, y=ey))
                     self.effect_drag_changed.emit(new_eff)
                     break
             elif override is not None:

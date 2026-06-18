@@ -75,6 +75,8 @@ class PlayerControls(QWidget):
         )
         layout.addWidget(self.volume_slider)
 
+        # 오디오 출력 장치 선택은 환경설정 → "영상 플레이어" 패널로 이동 (2026-06-17).
+        # 컨트롤바는 자주 쓰는 컨트롤만 — 장치 선택은 한 번 정하면 끝이라 옵션이 적합.
         self.speed_combo = QComboBox()
         for label, _ in _SPEEDS:
             self.speed_combo.addItem(label)

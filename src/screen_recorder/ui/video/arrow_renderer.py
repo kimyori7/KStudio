@@ -69,9 +69,11 @@ def draw_arrow(p: QPainter, a: ArrowEffect, *, position_ms: int,
     color = QColor(a.color)
     color.setAlphaF(alpha)
 
-    # arrowhead 길이 = thickness × 3, 너비 = thickness × 2 (양쪽 합 = 4×thickness).
-    head_len = a.thickness * 3
-    head_half_w = a.thickness * 1.4
+    # arrowhead 길이 = thickness × 3, 너비 = thickness × 1.4 — head_scale 로 같이 키움.
+    # head_scale 기본 1.0 = 기존 동작. 굵기와 독립이라 얇은 선에 큰 머리도 가능.
+    head_scale = getattr(a, "head_scale", 1.0)
+    head_len = a.thickness * 3 * head_scale
+    head_half_w = a.thickness * 1.4 * head_scale
     # 본체 끝점 = end - head_len * 방향 (head 가 본체에 매끄럽게 이어지도록).
     bx = ex - ux * head_len
     by = ey - uy * head_len

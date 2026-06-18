@@ -50,6 +50,14 @@ def build_main_window(
 
 
 def main() -> int:
+    # 콘솔 없는 실행(pythonw.exe / PyInstaller console=False)에선 sys.stdout·stderr 가
+    # None 이라, stderr 에 직접 쓰는 서드파티가 즉사한다. 실측: 자동 누끼 모델 다운로드
+    # (rembg→pooch→tqdm 진행률 막대)가 첫 줄을 그리려 sys.stderr.write 를 호출하다
+    # AttributeError → 모델 0바이트 정체("0.0/5MB"). 다른 모든 것보다 먼저 None 스트림을
+    # 안전한 싱크로 교체한다 (콘솔 있으면 무해).
+    from screen_recorder.app.std_streams import ensure_std_streams
+    ensure_std_streams()
+
     from screen_recorder.core.logging_setup import setup_logging
     setup_logging()
     import logging
@@ -148,23 +156,14 @@ def main() -> int:
     app.aboutToQuit.connect(on_about_to_quit)
 
     # 두 번째 실행이 보낸 파일/요청 처리: 그 파일을 열고(라이브러리 추가 + 표시) 창을 앞으로.
-    from screen_recorder.app.window_foreground import force_foreground
     def _on_forwarded(paths):
         for sp in paths:
             p = Path(sp)
             if p.is_file():
                 win._open_path(p)
-        # 트레이로 숨겼거나 최소화돼 있어도 보이게 + 포그라운드로.
-        win.show()
-        win.setWindowState(
-            (win.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive
-        )
-        win.raise_()
-        win.activateWindow()
-        # Qt 의 activateWindow() 만으로는 다른 프로세스(.md 더블클릭→두 번째 인스턴스)
-        # 에서 온 활성화 요청이 Windows 포그라운드 가로채기 방지에 막혀 작업표시줄만
-        # 깜빡이는 경우가 많다. Win32 로 확실히 창을 최상단으로 끌어올린다(win32 외엔 no-op).
-        force_foreground(int(win.winId()))
+        # 트레이로 숨겼거나 최소화돼 있어도 보이게 + 포그라운드로(win.bring_to_front
+        # 안에서 show/raise/activate + Win32 force_foreground 까지 처리).
+        win.bring_to_front()
     _si_server.set_handler(_on_forwarded)
 
     # 패키지된 빌드라면 .kstudio 확장자 연결을 한 번 갱신 (HKCU, idempotent).

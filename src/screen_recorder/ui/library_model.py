@@ -15,6 +15,7 @@ class EntryKind(Enum):
     IMAGE = "image"
     VIDEO = "video"
     DOCUMENT = "document"   # Markdown 문서 (문서 모드 라이브러리)
+    AUDIO = "audio"         # mp3/오디오 — 전용 오디오 탭(자르기). 영상과 같은 모드 영역.
     # 하위 호환: 코드 베이스 안에서 "screenshot" 문자열로 비교하는 경우가 있을 수 있음.
     # 의미 동일이므로 새로 SCREENSHOT 별칭 유지 (값은 동일).
     SCREENSHOT = "image"

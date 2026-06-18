@@ -18,7 +18,6 @@ class KStudioMenuBar(QMenuBar):
     export_requested = Signal(str)        # "png" | "jpg" | "webp"
     export_video_requested = Signal()     # 영상 내보내기 (영상 모드 전용)
     export_audio_requested = Signal()     # 음성만 내보내기 (영상 모드 전용 — 2026-05-20)
-    export_subtitle_requested = Signal()  # 자막 내보내기 (Whisper, 영상 모드 전용 — 2026-05-20)
     open_save_folder_requested = Signal()
     quit_requested = Signal()
     # 편집
@@ -30,7 +29,6 @@ class KStudioMenuBar(QMenuBar):
     # 2026-05-20 (사용자 요청): 사이드카의 effects_enabled 토글 — 전체 효과 ON/OFF.
     toggle_effects_enabled_requested = Signal(bool)
     # 2026-05-20: GPU 가속 1-클릭 설치 (nvidia-cublas-cu12 + nvidia-cudnn-cu12).
-    gpu_acceleration_setup_requested = Signal()
     # 이미지
     background_remove_requested = Signal()
     image_scale_requested = Signal()
@@ -41,8 +39,6 @@ class KStudioMenuBar(QMenuBar):
     tool_palette_visibility_toggled = Signal(bool)
     layers_visibility_toggled = Signal(bool)
     library_visibility_toggled = Signal(bool)
-    agent_panel_visibility_toggled = Signal(bool)   # 에이전트 패널 (2026-05-27)
-    image_gen_visibility_toggled = Signal(bool)     # 이미지 생성 패널 (2026-05-26)
     # 녹화
     record_start_requested = Signal()
     record_stop_requested = Signal()
@@ -115,12 +111,6 @@ class KStudioMenuBar(QMenuBar):
         self.export_audio_action.triggered.connect(self.export_audio_requested.emit)
         m_file.addAction(self.export_audio_action)
 
-        # 자막 내보내기 (2026-05-20) — Whisper 전사 → TXT/SRT.
-        self.export_subtitle_action = QAction(tr("자막 내보내기…"), self)
-        self.export_subtitle_action.setShortcut(QKeySequence("Ctrl+Alt+S"))
-        self.export_subtitle_action.triggered.connect(self.export_subtitle_requested.emit)
-        m_file.addAction(self.export_subtitle_action)
-
         m_file.addSeparator()
         self.open_folder_action = QAction(tr("저장 폴더 열기"), self)
         self.open_folder_action.triggered.connect(self.open_save_folder_requested.emit)
@@ -161,14 +151,6 @@ class KStudioMenuBar(QMenuBar):
         self.open_sidecar_dir_action = QAction(tr("사이드카 폴더 열기"), self)
         self.open_sidecar_dir_action.triggered.connect(self.open_sidecar_dir_requested.emit)
         m_edit.addAction(self.open_sidecar_dir_action)
-
-        m_edit.addSeparator()
-        # 2026-05-20: 자막 내보내기 GPU 가속 1-클릭 설치 — 상태에 따라 라벨 동적 갱신.
-        self.gpu_acceleration_action = QAction(tr("GPU 가속 활성화…"), self)
-        self.gpu_acceleration_action.triggered.connect(
-            self.gpu_acceleration_setup_requested.emit
-        )
-        m_edit.addAction(self.gpu_acceleration_action)
 
         m_edit.addSeparator()
         self.preferences_action = QAction(tr("환경설정…"), self)
@@ -221,24 +203,6 @@ class KStudioMenuBar(QMenuBar):
         self.status_visible_action.toggled.connect(self.record_status_visibility_toggled.emit)
         m_window.addAction(self.status_visible_action)
 
-        # 에이전트 패널 — Ctrl+Shift+A (Agent). 2026-05-27 추가 — 그동안 X 로만 닫을 수
-        # 있고 다시 열려면 재시작 필요했음. 사용자 보고로 토글 추가.
-        self.agent_panel_visible_action = QAction(tr("에이전트"), self)
-        self.agent_panel_visible_action.setCheckable(True)
-        self.agent_panel_visible_action.setChecked(True)
-        self.agent_panel_visible_action.setShortcut(QKeySequence("Ctrl+Shift+A"))
-        self.agent_panel_visible_action.toggled.connect(self.agent_panel_visibility_toggled.emit)
-        m_window.addAction(self.agent_panel_visible_action)
-
-        # 이미지 생성 패널 — Ctrl+Shift+G (Generate). Ctrl+Shift+I 는 이미지 크기 변경에
-        # 점유 중이라 다른 키 사용. 2026-05-26 추가.
-        self.image_gen_visible_action = QAction(tr("이미지 생성"), self)
-        self.image_gen_visible_action.setCheckable(True)
-        self.image_gen_visible_action.setChecked(False)
-        self.image_gen_visible_action.setShortcut(QKeySequence("Ctrl+Shift+G"))
-        self.image_gen_visible_action.toggled.connect(self.image_gen_visibility_toggled.emit)
-        m_window.addAction(self.image_gen_visible_action)
-
         m_record = self.addMenu(tr("녹화"))
         self.record_start_action = QAction(tr("녹화 시작"), self)
         self.record_start_action.triggered.connect(self.record_start_requested.emit)
@@ -289,7 +253,6 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
             mb.export_webp_action,
             mb.export_video_action,
             mb.export_audio_action,
-            mb.export_subtitle_action,
             mb.open_folder_action,
             mb.quit_action,
         ],

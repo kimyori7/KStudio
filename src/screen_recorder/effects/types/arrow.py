@@ -36,9 +36,14 @@ class ArrowEffect(Effect):
     end: Point = field(default_factory=lambda: Point(x=0.7, y=0.5))
     color: str = "#ff4040"
     thickness: int = 6   # source 픽셀 단위
+    # 화살촉(머리) 크기 배율. 1.0 = 기존 (길이 thickness×3, 너비 thickness×1.4).
+    # 굵기와 독립 — 얇은 선에 큰 머리, 굵은 선에 작은 머리도 가능.
+    head_scale: float = 1.0
     fade: Fade = field(default_factory=Fade)
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if not (1 <= self.thickness <= 64):
             raise ValueError(f"thickness must be in [1, 64], got {self.thickness}")
+        if not (0.1 <= self.head_scale <= 8.0):
+            raise ValueError(f"head_scale must be in [0.1, 8.0], got {self.head_scale}")

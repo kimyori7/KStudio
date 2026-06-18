@@ -4,7 +4,7 @@ from screen_recorder.effects.types import EFFECT_CLASSES, effect_class_for
 
 
 def test_dispatch_has_all_types():
-    assert set(EFFECT_CLASSES.keys()) == {"caption", "speed", "zoom", "broll", "cut", "arrow"}
+    assert set(EFFECT_CLASSES.keys()) == {"caption", "speed", "zoom", "broll", "cut", "arrow", "rect"}
 
 
 def test_dispatch_returns_correct_class():

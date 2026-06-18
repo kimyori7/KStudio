@@ -74,3 +74,16 @@ def test_no_signal_during_set_effect(inspector):
     inspector.effect_changed.connect(received.append)
     inspector.set_effect(_make_arrow(thickness=8))
     assert received == []
+
+
+def test_head_scale_loads(inspector):
+    inspector.set_effect(_make_arrow(head_scale=2.5))
+    assert abs(inspector._head_scale_spin.value() - 2.5) < 1e-6
+
+
+def test_head_scale_change_emits(inspector):
+    inspector.set_effect(_make_arrow())
+    received: list = []
+    inspector.effect_changed.connect(received.append)
+    inspector._head_scale_spin.setValue(3.0)
+    assert any(abs(e.head_scale - 3.0) < 1e-6 for e in received)

@@ -60,6 +60,23 @@ a = Analysis(
         "pytest",
         "pytest_qt",
         "pytest_cov",
+        # 2026-06-18: 에이전트(로컬 LLM)·Whisper·자동편집·이미지 생성 기능 제거에 따라
+        # GPU/AI 스택을 번들에서 제외 — 인스톨러 ~2.4GB→~0.7GB. 코드가 더 이상 import 하지
+        # 않으므로 PyInstaller 가 자동으로 빼지만, 전이 의존으로 끌려오지 않도록 명시.
+        # (남는 AI 기능 자동 누끼/업스케일은 CPU onnxruntime 기반 — torch/CUDA 불필요.)
+        "torch",
+        "torchvision",
+        "torchgen",
+        "torchaudio",
+        "transformers",
+        "diffusers",
+        "accelerate",
+        "bitsandbytes",
+        "ctranslate2",
+        "faster_whisper",
+        "nvidia",
+        "triton",
+        "xformers",
     ],
     noarchive=False,
 )

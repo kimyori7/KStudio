@@ -206,20 +206,28 @@ def _coerce_nested(parent_cls: type, f, raw: Any) -> Any:
         from .types.zoom import ZoomPoint, ZoomEffect
         from .types.broll import PipConfig
         from .types.arrow import Point as ArrowPoint, Fade as ArrowFade, ArrowEffect
+        from .types.rect import Point as RectPoint, Fade as RectFade, RectEffect
         # Effect 종류별 nested 필드 → 자식 dataclass 매핑.
         pool: dict[str, type] = {
             "font": Font, "stroke": Stroke, "background": Background,
             "position": Position,
             "pip": PipConfig,
         }
-        # fade — caption.Fade 와 arrow.Fade 가 같은 shape 라 어느 쪽으로 가도 동작
-        # 하나, type annotation 정확성 위해 parent 에 맞춤.
+        # fade — caption/arrow/rect.Fade 가 같은 shape 라 어느 쪽으로 가도 동작하나,
+        # type annotation 정확성 위해 parent 에 맞춤.
         if f.name == "fade":
-            pool["fade"] = ArrowFade if parent_cls is ArrowEffect else CapFade
-        # start/end — ZoomEffect 는 ZoomPoint (cx,cy,scale), ArrowEffect 는 Point (x,y).
+            if parent_cls is ArrowEffect:
+                pool["fade"] = ArrowFade
+            elif parent_cls is RectEffect:
+                pool["fade"] = RectFade
+            else:
+                pool["fade"] = CapFade
+        # start/end — ZoomEffect 는 ZoomPoint (cx,cy,scale), Arrow/Rect 는 Point (x,y).
         if f.name in ("start", "end"):
             if parent_cls is ArrowEffect:
                 pool[f.name] = ArrowPoint
+            elif parent_cls is RectEffect:
+                pool[f.name] = RectPoint
             elif parent_cls is ZoomEffect:
                 pool[f.name] = ZoomPoint
         target_cls = pool.get(f.name)

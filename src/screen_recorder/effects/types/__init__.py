@@ -8,6 +8,7 @@ from .zoom import ZoomEffect
 from .broll import BrollEffect
 from .cut import CutEffect
 from .arrow import ArrowEffect
+from .rect import RectEffect
 
 EFFECT_CLASSES: dict[str, type] = {
     "caption": CaptionEffect,
@@ -16,6 +17,7 @@ EFFECT_CLASSES: dict[str, type] = {
     "broll": BrollEffect,
     "cut": CutEffect,
     "arrow": ArrowEffect,
+    "rect": RectEffect,
 }
 
 

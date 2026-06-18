@@ -66,6 +66,16 @@ class ArrowInspector(InspectorBase):
         self._thickness_spin.valueChanged.connect(self._on_any_change)
         form.addRow("굵기", self._thickness_spin)
 
+        # 화살촉(머리) 크기 배율 — 굵기와 독립. 1.0 = 기본.
+        self._head_scale_spin = QDoubleSpinBox()
+        self._head_scale_spin.setRange(0.2, 5.0)
+        self._head_scale_spin.setSingleStep(0.1)
+        self._head_scale_spin.setDecimals(1)
+        self._head_scale_spin.setValue(1.0)
+        self._head_scale_spin.setSuffix(" ×")
+        self._head_scale_spin.valueChanged.connect(self._on_any_change)
+        form.addRow("머리 크기", self._head_scale_spin)
+
         self._fade_in_spin = QSpinBox()
         self._fade_in_spin.setRange(0, 3000)
         self._fade_in_spin.setSingleStep(50)
@@ -135,6 +145,7 @@ class ArrowInspector(InspectorBase):
             self._color_swatch.setStyleSheet(
                 f"background:{self._color}; border:1px solid #888;")
             self._thickness_spin.setValue(int(effect.thickness))
+            self._head_scale_spin.setValue(float(getattr(effect, "head_scale", 1.0)))
             self._fade_in_spin.setValue(int(effect.fade.in_ms))
             self._fade_out_spin.setValue(int(effect.fade.out_ms))
             self._in_spin.setValue(int(effect.in_ms))
@@ -149,7 +160,7 @@ class ArrowInspector(InspectorBase):
     def _set_form_enabled(self, enabled: bool) -> None:
         for w in (self._start_x_spin, self._start_y_spin,
                   self._end_x_spin, self._end_y_spin,
-                  self._color_btn, self._thickness_spin,
+                  self._color_btn, self._thickness_spin, self._head_scale_spin,
                   self._fade_in_spin, self._fade_out_spin,
                   self._in_spin, self._out_spin, self._delete_btn):
             w.setEnabled(enabled)
@@ -182,6 +193,7 @@ class ArrowInspector(InspectorBase):
                           y=float(self._end_y_spin.value())),
                 color=self._color,
                 thickness=int(self._thickness_spin.value()),
+                head_scale=float(self._head_scale_spin.value()),
                 fade=Fade(in_ms=int(self._fade_in_spin.value()),
                           out_ms=int(self._fade_out_spin.value())),
                 in_ms=in_ms,

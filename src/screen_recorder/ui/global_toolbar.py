@@ -112,7 +112,6 @@ class GlobalToolbar(QWidget):
     save_clicked = Signal()
     copy_clicked = Signal()
     preferences_clicked = Signal()
-    export_video_requested = Signal()   # 영상 내보내기 (영상 모드 전용)
     keep_visible_during_capture_changed = Signal(bool)   # 캡처 중 KStudio UI 보이기 토글
 
     def __init__(self) -> None:
@@ -160,14 +159,6 @@ class GlobalToolbar(QWidget):
         self.stop_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
         self.stop_btn.clicked.connect(self.stop_clicked.emit)
         layout.addWidget(self.stop_btn)
-
-        # ---------- 영상 모드: 내보내기 버튼 ----------
-        self.export_video_btn = QPushButton(tr("내보내기"))
-        self.export_video_btn.setIcon(load_icon("upload", size=_TB_ICON_PX))
-        self.export_video_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
-        self.export_video_btn.setToolTip(tr("현재 영상 탭을 새 MP4 로 내보내기 (Ctrl+Shift+E)"))
-        self.export_video_btn.clicked.connect(self.export_video_requested.emit)
-        layout.addWidget(self.export_video_btn)
 
         # ---------- 이미지 모드: 캡처 버튼 ----------
         self.capture_region_btn = QPushButton(tr("영역 캡처"))
@@ -305,18 +296,6 @@ class GlobalToolbar(QWidget):
         self.downloads_button = DownloadsButton()
         layout.addWidget(self.downloads_button)
 
-        # 모델 다운로드 진행률 라벨 — 설정 버튼 *왼쪽*. 평소 숨김.
-        # 사용자가 ModelDownloadWindow 를 닫아도 진행률을 잃지 않도록 — 백그라운드
-        # snapshot_download 가 살아있는 동안 항상 보이는 영구 인디케이터.
-        # MainWindow 가 ChatPanel.download_progress_changed 시그널을 받아 여기로
-        # 전달 (set_download_progress / clear_download_progress).
-        self.download_progress_label = QLabel("")
-        self.download_progress_label.setStyleSheet(
-            "color:#16a34a;font-size:11px;background:transparent;padding:0px 6px;"
-        )
-        self.download_progress_label.setVisible(False)
-        layout.addWidget(self.download_progress_label)
-
         self.preferences_btn = QPushButton(tr("설정"))
         self.preferences_btn.setIcon(load_icon("settings", size=_TB_ICON_PX))
         self.preferences_btn.setIconSize(QSize(_TB_ICON_PX, _TB_ICON_PX))
@@ -390,37 +369,6 @@ class GlobalToolbar(QWidget):
         data = self.monitor_combo.currentData()
         return int(data) if data is not None else -1
 
-    # ---------- 다운로드 진행률 (설정 버튼 왼쪽 라벨) ----------
-    def set_download_progress(
-        self,
-        received_bytes: int,
-        total_bytes: int,
-        model_name: str,
-    ) -> None:
-        """다운로드 중인 모델의 진행률 표시. ChatPanel 의 download_progress_changed
-        시그널을 MainWindow 가 받아 여기로 위임. 사용자가 ModelDownloadWindow 를
-        닫아도 진행률 잃지 않게 영구 인디케이터.
-
-        total_bytes=0 (예상 크기 미정) 면 받은 양만 표시 + percent 생략.
-        """
-        if total_bytes > 0:
-            pct = int(received_bytes / total_bytes * 100)
-            pct = max(0, min(100, pct))
-            text = (
-                f"{pct}% ({_fmt_size(received_bytes)}/{_fmt_size(total_bytes)})"
-            )
-        else:
-            text = f"{_fmt_size(received_bytes)} 다운로드 중"
-        self.download_progress_label.setText(text)
-        self.download_progress_label.setToolTip(f"{model_name} 다운로드 중")
-        self.download_progress_label.setVisible(True)
-
-    def clear_download_progress(self) -> None:
-        """다운로드 완료 또는 에러 시 — 라벨 숨김."""
-        self.download_progress_label.setVisible(False)
-        self.download_progress_label.setText("")
-        self.download_progress_label.setToolTip("")
-
     def set_inline_hotkey(self, key: str, sequence_text: str) -> None:
         """외부에서 인라인 단축키 표시값 동기화 (환경설정 다이얼로그에서 바뀌었을 때 등)."""
         editor = (self.video_hotkey_edit if key == "toggle_record"
@@ -447,7 +395,6 @@ class GlobalToolbar(QWidget):
         self.record_btn.setVisible(is_video and idle)
         self.pause_btn.setVisible(is_video and active)
         self.stop_btn.setVisible(is_video and active)
-        self.export_video_btn.setVisible(is_video)
 
         # 영상 모드 전용 — 대상 토글, 형식 토글
         for btn in self._target_btns.values():

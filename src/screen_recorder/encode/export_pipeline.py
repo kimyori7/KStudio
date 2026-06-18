@@ -72,17 +72,19 @@ def _alpha_overlay_chain(png_idx, label, in_s, out_s, fade_in, fade_out) -> str:
 from ..effects import Sidecar
 from ..effects.timeline import TimelineSegment, build_combined_timeline
 from ..effects.types.arrow import ArrowEffect
+from ..effects.types.rect import RectEffect
 from ..effects.types.broll import BrollEffect
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
 from ..effects.types.zoom import ZoomEffect
 from .arrow_png import render_arrow_png
+from .rect_png import render_rect_png
 from .caption_png import render_caption_png
 from .speed_hud_png import render_speed_hud_png
 
 
-_SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom", "broll", "arrow"}
+_SUPPORTED_TYPES = {"caption", "cut", "speed", "zoom", "broll", "arrow", "rect"}
 
 
 def _atempo_chain(rate: float) -> str:
@@ -304,6 +306,7 @@ def build_export_args(
     zooms = [e for e in effects_active if isinstance(e, ZoomEffect)]
     brolls = [e for e in effects_active if isinstance(e, BrollEffect)]
     arrows = [e for e in effects_active if isinstance(e, ArrowEffect)]
+    rects = [e for e in effects_active if isinstance(e, RectEffect)]
 
     # 0.7) broll v1 제약 — placement / audio_mix / 다른 효과와의 결합 검증.
     if brolls:
@@ -375,6 +378,7 @@ def build_export_args(
         zooms = _remap_effects_to_gap_collapsed(zooms, sidecar.video_track)
         brolls = _remap_effects_to_gap_collapsed(brolls, sidecar.video_track)
         arrows = _remap_effects_to_gap_collapsed(arrows, sidecar.video_track)
+        rects = _remap_effects_to_gap_collapsed(rects, sidecar.video_track)
     else:
         segments = build_combined_timeline(int(main_duration_ms), cuts)
 
@@ -407,6 +411,13 @@ def build_export_args(
         png = png_dir_path / f"arrow_{arr.id}.png"
         render_arrow_png(arr, surface_w=surface_w, surface_h=surface_h, dst=png)
         arrow_png_paths.append(png)
+
+    # 사각형 PNG — arrow 와 같은 패턴, 별도 overlay 체인.
+    rect_png_paths: list[Path] = []
+    for rc in rects:
+        png = png_dir_path / f"rect_{rc.id}.png"
+        render_rect_png(rc, surface_w=surface_w, surface_h=surface_h, dst=png)
+        rect_png_paths.append(png)
 
     # 배속 HUD ("▶▶ N× 배속") PNG — show_hud=True 인 SpeedEffect 만.
     # font_pt: preview 의 14pt 가 ~800px 위젯에 맞으니 surface_w/800 비례로 잡음 — 4K 도 자연스럽게.
@@ -519,6 +530,21 @@ def build_export_args(
             "-i", str(png),
         ])
         arrow_input_index[i] = next_input
+        next_input += 1
+
+    # 사각형 PNG 입력 — arrow 와 같은 패턴.
+    rect_input_index: dict[int, int] = {}
+    for i, (png, rc) in enumerate(zip(rect_png_paths, rects)):
+        out_in_s = user_to_output(rc.in_ms) / 1000.0
+        out_out_s = user_to_output(rc.out_ms) / 1000.0
+        dur_s = max(0.1, out_out_s - out_in_s)
+        argv.extend([
+            "-loop", "1", "-framerate", "30",
+            "-t", f"{dur_s:.3f}",
+            "-itsoffset", f"{out_in_s:.3f}",
+            "-i", str(png),
+        ])
+        rect_input_index[i] = next_input
         next_input += 1
 
     # 배속 HUD PNG 입력 — 캡션과 같은 패턴. output 시간으로 -t / -itsoffset bound.
@@ -679,6 +705,20 @@ def build_export_args(
         )
         cur_v = next_v
 
+    # 사각형 overlay — 화살표 다음. alpha fade + 시간창 enable.
+    for i, rc in enumerate(rects):
+        png_idx = rect_input_index[i]
+        in_s = user_to_output(rc.in_ms) / 1000.0
+        out_s = user_to_output(rc.out_ms) / 1000.0
+        fade_in = rc.fade.in_ms / 1000.0
+        fade_out = rc.fade.out_ms / 1000.0
+        fc_parts.append(_alpha_overlay_chain(png_idx, f"rect{i}", in_s, out_s, fade_in, fade_out))
+        next_v = f"vr{i}"
+        fc_parts.append(
+            f"[{cur_v}][rect{i}]overlay=enable='between(t\\,{in_s}\\,{out_s})'[{next_v}]"
+        )
+        cur_v = next_v
+
     # 배속 HUD overlay — 화살표 다음. 오른쪽 위 corner + _HUD_MARGIN_PX 마진.
     # preview 의 reposition_huds 가 우측 상단 기본 — export 도 동일 의도로.
     _HUD_MARGIN_PX = 16
@@ -808,7 +848,8 @@ def build_export_args(
     ])
 
     # caller 가 PNG 정리해야 — caption + arrow + (speed HUD 는 위 list 에 별도) 모두 포함.
-    all_pngs = list(png_paths) + list(arrow_png_paths) + [p for p, *_ in speed_hud_pngs]
+    all_pngs = (list(png_paths) + list(arrow_png_paths) + list(rect_png_paths)
+                + [p for p, *_ in speed_hud_pngs])
     return argv, all_pngs
 
 

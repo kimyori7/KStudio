@@ -13,6 +13,7 @@ from .edit_tab import EditTab
 from .icons import load_icon
 from .markdown_tab import MarkdownTab
 from .video_tab import VideoTab
+from .audio_tab import AudioTab
 
 
 _SCROLL_BTN_PX = 32       # 스크롤 버튼 가로/세로
@@ -145,6 +146,8 @@ class TabArea(QTabWidget):
         if isinstance(tab, VideoTab):
             suffix = self._video_duration_suffix.get(tab, "")
             return f"🎞 {base}{suffix}"
+        if isinstance(tab, AudioTab):
+            return f"🎵 {base}"
         return base
 
     def _refresh_tab_label(self, tab: QWidget) -> None:
@@ -218,6 +221,26 @@ class TabArea(QTabWidget):
             lambda ms, t=tab: self._on_video_duration_resolved(t, ms)
         )
         return idx
+
+    def add_audio(self, *, path: Path, source_label: str, entry_id: int,
+                  display_name: str | None = None,
+                  sidecar_dir: "Path | None" = None,
+                  sidecar_path: "Path | None" = None) -> int:
+        """오디오 파일을 새 AudioTab 으로 추가. add_video 미러(영상 프레임 없음·전용 탭).
+
+        오디오 탭도 AppMode.VIDEO 영역에 둔다(별도 모드 추가의 침습성 회피)."""
+        sc_dir = sidecar_dir
+        if sc_dir is None and self._sidecar_dir_provider is not None:
+            try:
+                sc_dir = self._sidecar_dir_provider()
+            except (RuntimeError, OSError):
+                sc_dir = None
+        tab = AudioTab(path=path, player_settings=self._player_settings,
+                       sidecar_dir=sc_dir, sidecar_path=sidecar_path)
+        base = display_name if display_name else source_label
+        self._tab_base_labels[tab] = base
+        return self._add_tab(tab, AppMode.VIDEO, entry_id,
+                             label=self._format_tab_label(tab))
 
     @staticmethod
     def _format_video_duration(ms: int) -> str:

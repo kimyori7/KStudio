@@ -6,11 +6,12 @@ paint 는 peak 배열에서 직접 (미리 렌더한 이미지 X) → 줌/DPR �
 from __future__ import annotations
 from typing import Optional
 
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QPushButton, QWidget
 
 from ...effects.segment import VideoSegment
+from ..icons import load_icon
 from .video_track_lane import _HEADER_WIDTH, segment_h_rects
 
 _LANE_HEIGHT = 44
@@ -36,11 +37,12 @@ class AudioTrackLane(QWidget):
         self._duration_ms = 0
         self._peaks: dict[str, list] = {}   # src → peaks ([] = 소리 없음)
         self._muted = False
-        self._mute_btn = QPushButton("🔇", self)
+        self._current_mute_icon = ""
+        self._mute_btn = QPushButton(self)
         self._mute_btn.setCheckable(True)
         self._mute_btn.setFixedSize(28, 22)
-        self._mute_btn.setToolTip("오디오 끄기 — 미리보기·내보내기 모두 무음")
         self._mute_btn.clicked.connect(self._on_mute_clicked)
+        self._refresh_mute_icon()
 
     # ---------- public ----------
     def set_segments(self, segments: list[VideoSegment]) -> None:
@@ -60,7 +62,24 @@ class AudioTrackLane(QWidget):
     def set_muted(self, muted: bool) -> None:
         self._muted = bool(muted)
         self._mute_btn.setChecked(self._muted)
+        self._refresh_mute_icon()
         self.update()
+
+    def _refresh_mute_icon(self) -> None:
+        """버튼 아이콘·툴팁을 현재 음소거 상태로 갱신 — SVG 아이콘으로 on/off 표시.
+
+        이모지(🔊/🔇)는 일부 Windows/Qt(한국어 cp949) 환경에서 글리프가 없어 □(tofu)로
+        렌더되므로, 컨트롤바와 동일한 SVG 아이콘(volume-2=켜짐 / volume-x=음소거)을 쓴다.
+        툴팁은 '클릭하면 할 동작'.
+        """
+        name = "volume-x" if self._muted else "volume-2"
+        self._current_mute_icon = name
+        self._mute_btn.setIcon(load_icon(name, size=16))
+        self._mute_btn.setIconSize(QSize(16, 16))
+        if self._muted:
+            self._mute_btn.setToolTip("소리 꺼짐(음소거) — 클릭하면 켜기")
+        else:
+            self._mute_btn.setToolTip("소리 켜짐 — 클릭하면 끄기(미리보기·내보내기 모두 무음)")
 
     # ---------- internal ----------
     def _total_duration_ms(self) -> int:
@@ -69,6 +88,7 @@ class AudioTrackLane(QWidget):
 
     def _on_mute_clicked(self) -> None:
         self._muted = self._mute_btn.isChecked()
+        self._refresh_mute_icon()
         self.update()
         self.mute_toggled.emit(self._muted)
 

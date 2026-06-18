@@ -8,13 +8,67 @@ mode_controller 의 mode_changed 시그널에 main_window 가 연결돼 있으�
 """
 from __future__ import annotations
 
+import os
+import tempfile
+from typing import Optional
+
 from PySide6.QtWidgets import QApplication
 
+from screen_recorder.ui import icons
 from screen_recorder.ui.tokens import PALETTES, VIDEO_PALETTE
 
+_ASSET_DIR = os.path.join(tempfile.gettempdir(), "kstudio_theme")
 
-def build_qss(p: dict[str, str]) -> str:
-    """팔레트 dict 에서 전체 QSS 문자열 생성."""
+
+def _chevron_arrow_png(color: str, px: int = 28) -> Optional[str]:
+    """QComboBox down-arrow 용 chevron-down 을 color 로 렌더한 PNG 경로 반환 (forward-slash).
+
+    QSS 의 image:url() 은 파일 경로가 필요하고(데이터 URI 미지원), SVG-url 은 PyInstaller
+    에서 qsvg 이미지 플러그인 누락 시 깨질 수 있어 PNG 로 굽는다. icons._render_pixmap 으로
+    렌더 → 임시 폴더에 color 별 1회 캐시. 쓰기 실패(권한/디스크) 시 None → 호출자가
+    border-삼각형으로 폴백(아무것도 안 그려지는 것보다 안전).
+    """
+    try:
+        os.makedirs(_ASSET_DIR, exist_ok=True)
+        safe = (color or "").lstrip("#") or "default"
+        path = os.path.join(_ASSET_DIR, f"chevron-down-{safe}-{px}.png")
+        if not os.path.exists(path):
+            pm = icons._render_pixmap("chevron-down", int(px), color or icons.COLOR_BASE)
+            if not pm.save(path, "PNG"):
+                return None
+        return path.replace("\\", "/") if os.path.exists(path) else None
+    except OSError:
+        return None
+
+
+def _down_arrow_rule(p: dict[str, str], arrow_icon_path: Optional[str]) -> str:
+    """QComboBox::down-arrow QSS 규칙. PNG 가 있으면 image, 없으면 border-삼각형 폴백."""
+    if arrow_icon_path:
+        return (
+            "QComboBox::down-arrow {\n"
+            f'    image: url("{arrow_icon_path}");\n'
+            "    width: 12px;\n"
+            "    height: 12px;\n"
+            "}"
+        )
+    return (
+        "QComboBox::down-arrow {\n"
+        "    image: none;\n"
+        "    width: 0;\n"
+        "    height: 0;\n"
+        "    border-left: 4px solid transparent;\n"
+        "    border-right: 4px solid transparent;\n"
+        f'    border-top: 5px solid {p["text_sub"]};\n'
+        "}"
+    )
+
+
+def build_qss(p: dict[str, str], arrow_icon_path: Optional[str] = None) -> str:
+    """팔레트 dict 에서 전체 QSS 문자열 생성.
+
+    arrow_icon_path 주어지면 QComboBox 펼침 화살표를 그 PNG 로(권장), 없으면 border 삼각형.
+    """
+    down_arrow_rule = _down_arrow_rule(p, arrow_icon_path)
     return f"""
 /* ----- 기본 ----- */
 QMainWindow, QWidget {{
@@ -113,14 +167,7 @@ QComboBox::drop-down {{
     subcontrol-origin: padding;
     subcontrol-position: top right;
 }}
-QComboBox::down-arrow {{
-    image: none;
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {p["text_sub"]};
-}}
+{down_arrow_rule}
 QComboBox QAbstractItemView {{
     background-color: {p["surface_input"]};
     color: {p["text"]};
@@ -459,4 +506,5 @@ def apply_theme(app: QApplication, palette_name: str = "video") -> None:
     (예: 일부 다이얼로그 단독 테스트) 에서도 안전한 기본값.
     """
     palette = PALETTES.get(palette_name, VIDEO_PALETTE)
-    app.setStyleSheet(build_qss(palette))
+    arrow_path = _chevron_arrow_png(palette.get("text_sub", ""))
+    app.setStyleSheet(build_qss(palette, arrow_path))

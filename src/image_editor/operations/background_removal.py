@@ -1,5 +1,6 @@
 """BackgroundRemovalCommand — rembg 기반 배경 제거 (마스크 추가)."""
 from __future__ import annotations
+import logging
 from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -7,6 +8,26 @@ from PySide6.QtGui import QImage, QUndoCommand
 
 from ..layer_model import LayerStack
 from ..layers.image_layer import ImageLayer
+
+_log = logging.getLogger(__name__)
+
+_truststore_injected = False
+
+
+def _ensure_truststore() -> None:
+    """rembg 모델 다운로드(pooch/HTTPS)가 사내망 TLS 인터셉트나 설치본(.exe)의 certifi
+    경로 문제로 CERTIFICATE_VERIFY_FAILED 나지 않도록, OS(Windows) 인증서 저장소를 쓰게
+    한다. yt-dlp 다운로드와 동일한 패턴 — 프로세스 전역·1회·신뢰 추가만(안전, pip 도 사용)."""
+    global _truststore_injected
+    if _truststore_injected:
+        return
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        _log.debug("truststore inject 건너뜀 (rembg)", exc_info=True)
+    finally:
+        _truststore_injected = True   # 실패해도 매번 재시도하지 않음
 
 
 def _default_remove_bg(image: QImage, *, model_name: str = "u2net") -> QImage:
@@ -19,6 +40,7 @@ def _default_remove_bg(image: QImage, *, model_name: str = "u2net") -> QImage:
     from PIL import Image
     from rembg import new_session, remove
 
+    _ensure_truststore()   # 모델 다운로드 전 OS 인증서 저장소 활성화 (사내망/frozen 대비)
     # QImage → PIL → rembg → PIL(RGBA) → mask QImage(Grayscale8)
     src = image.convertToFormat(QImage.Format_RGBA8888)
     ptr = src.bits()
@@ -45,6 +67,8 @@ class _Worker(QRunnable):
             mask = self._fn(self._image)
             self._cb(mask, None)
         except Exception as e:
+            # 실패 원인을 app.log 에 남긴다 — 그동안 다이얼로그로만 떠 추적이 안 됐음.
+            _log.exception("배경 제거(rembg) 실패: %s", e)
             self._cb(None, e)
 
 

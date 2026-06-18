@@ -228,6 +228,7 @@ class LibraryPanel(QWidget):
     _ACCEPTED_DROP_EXTS = {
         ".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi", ".wmv", ".gif",
         ".png", ".jpg", ".jpeg",
+        ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
         ".md", ".markdown",
     }
 
@@ -309,8 +310,8 @@ class LibraryPanel(QWidget):
             self.list_widget.addItem(item)
         self._items_by_id[entry.id] = item
         if self._mode is not None:
-            wanted = self._kind_for_mode(self._mode.mode())
-            item.setHidden(entry.kind is not wanted)
+            item.setHidden(
+                not self._is_visible_in_mode(entry.kind, self._mode.mode()))
         # 드롭으로 추가된 항목이 즉시 보이도록 viewport 강제 갱신 — 안 그러면 다음
         # 모드 전환(_refresh_visibility)까지 새 항목이 안 그려지는 경우가 있었음.
         self.list_widget.viewport().update()
@@ -321,6 +322,8 @@ class LibraryPanel(QWidget):
     def _prefix_for_kind(kind: "EntryKind") -> str:
         if kind is EntryKind.VIDEO:
             return "🎞"
+        if kind is EntryKind.AUDIO:
+            return "🎵"
         if kind is EntryKind.DOCUMENT:
             return "📄"
         return "📸"
@@ -598,13 +601,12 @@ class LibraryPanel(QWidget):
     def _refresh_visibility(self, mode: AppMode) -> None:
         # 항목 N 개에 대해 setHidden 호출 시 Qt 가 매번 layout invalidate 할 수 있어
         # setUpdatesEnabled(False) 로 paint 일괄 처리. 모드 전환 시 버벅임 방지.
-        wanted = self._kind_for_mode(mode)
         self.list_widget.setUpdatesEnabled(False)
         try:
             for i in range(self.list_widget.count()):
                 it = self.list_widget.item(i)
                 kind = it.data(Qt.UserRole + 1)
-                it.setHidden(kind is not wanted)
+                it.setHidden(not self._is_visible_in_mode(kind, mode))
         finally:
             self.list_widget.setUpdatesEnabled(True)
 
@@ -615,3 +617,15 @@ class LibraryPanel(QWidget):
         if mode is AppMode.DOCUMENT:
             return EntryKind.DOCUMENT
         return EntryKind.SCREENSHOT
+
+    @staticmethod
+    def _is_visible_in_mode(kind: "EntryKind", mode: AppMode) -> bool:
+        """이 종류가 현재 모드 라이브러리에 보여야 하는지.
+
+        오디오(AUDIO)는 영상 모드 라이브러리에 영상과 함께 표시(전용 오디오 탭도
+        AppMode.VIDEO 영역에 살기 때문)."""
+        if kind is LibraryPanel._kind_for_mode(mode):
+            return True
+        if mode is AppMode.VIDEO and kind is EntryKind.AUDIO:
+            return True
+        return False

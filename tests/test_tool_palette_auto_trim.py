@@ -22,9 +22,9 @@ def test_existing_action_buttons_still_emit_after_refactor(qtbot):
     qtbot.addWidget(pal)
     received = []
     pal.action_triggered.connect(received.append)
-    for aid in ("auto_bg", "image_gen"):
+    for aid in ("auto_bg",):
         btn = pal.find_action_button(aid)
         assert btn is not None
         assert not btn.isCheckable()
         btn.click()
-    assert received == ["auto_bg", "image_gen"]
+    assert received == ["auto_bg"]
