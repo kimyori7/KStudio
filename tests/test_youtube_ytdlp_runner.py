@@ -1,11 +1,26 @@
 from pathlib import Path
 
+import pytest
+
 from screen_recorder.youtube.request import DownloadRequest
 from screen_recorder.youtube.ytdlp_runner import build_ydl_opts
 
 
 def _hook(d):
     pass
+
+
+@pytest.mark.parametrize("mode,quality", [("video", "best"), ("video", "720"), ("mp3", "320")])
+def test_opts_accepted_by_real_youtubedl(mode, quality):
+    """build_ydl_opts 결과를 실제 yt_dlp.YoutubeDL 이 받아들이는지(옵션명 오타 방지).
+
+    yt-dlp 미설치 환경은 skip. 다운로드는 하지 않고 생성만 한다.
+    """
+    yt_dlp = pytest.importorskip("yt_dlp")
+    req = DownloadRequest("https://example/x", mode, Path("/out"), quality)
+    opts = build_ydl_opts(req, ffmpeg_dir=Path("/ff"), progress_hook=_hook)
+    with yt_dlp.YoutubeDL(opts):
+        pass  # 생성 성공 = 옵션 키/값 형식 유효
 
 
 def test_video_best_opts():

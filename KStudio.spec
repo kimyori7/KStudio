@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(".").resolve()
 
@@ -24,7 +24,10 @@ a = Analysis(
     datas=[
         (str(ROOT / "resources" / "app_icon.ico"), "resources"),
     ] + _markdown_assets,
-    hiddenimports=[
+    hiddenimports=collect_submodules("yt_dlp") + [
+        # yt-dlp 는 extractor 를 지연 로딩 → PyInstaller 정적 분석이 놓침.
+        # collect_submodules 로 모든 extractor/postprocessor 모듈을 동봉해야
+        # 설치본(.exe)에서 다운로드가 동작한다 (dev 에선 되는데 exe 만 깨지는 함정).
         "dxcam",
         "pyaudiowpatch",
         "send2trash",
