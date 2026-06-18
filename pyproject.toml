@@ -1,6 +1,8 @@
 [project]
 name = "screen-recorder"
-version = "0.1.0"
+# 버전은 단일 소스 src/screen_recorder/__init__.py 의 __version__ 에서 유도(아래 dynamic).
+# 정보창·인스톨러(.iss)도 모두 그 한 줄을 따른다 — 여기서 중복 선언하지 말 것.
+dynamic = ["version"]
 description = "Bandicam-like screen recorder"
 requires-python = ">=3.11"
 dependencies = [
@@ -34,6 +36,9 @@ screen-recorder = "screen_recorder.app.main:main"
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "screen_recorder.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -4606,14 +4606,10 @@ class MainWindow(QMainWindow):
             subprocess.Popen(["xdg-open", str(d)])
 
     def _show_about(self) -> None:
-        """도움말 → 정보. QMessageBox.about 한 줄 설명 + 저작권."""
-        QMessageBox.about(
-            self,
-            "KStudio 정보",
-            "<h3>KStudio 0.1.0</h3>"
-            "<p>Windows 전용 화면 캡처 · 녹화 · 이미지 편집 통합 툴</p>"
-            "<p>© 2026 kimyori</p>",
-        )
+        """도움말 → 정보. 버전은 단일 소스(__version__)에서 유도."""
+        from screen_recorder import __version__
+        from .about import about_html
+        QMessageBox.about(self, "KStudio 정보", about_html(__version__))
 
     # ---------- 추가 기능: 유튜브 영상 추출 / mp3 변환 ----------
     def _open_youtube_dialog(self, mode: str) -> None:

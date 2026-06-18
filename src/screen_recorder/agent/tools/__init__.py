@@ -92,8 +92,9 @@ class VideoTools:
             tools = tools + make_document_tools(
                 self._document_adapter, self._on_document_edit,
             )
+        from screen_recorder import __version__
         return create_sdk_mcp_server(
-            name=_MCP_SERVER_NAME, version="0.1.0", tools=tools,
+            name=_MCP_SERVER_NAME, version=__version__, tools=tools,
         )
 
     def tool_names(self) -> list[str]:

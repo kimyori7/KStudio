@@ -6,7 +6,17 @@
 ; - 코드 서명 안 함 — SmartScreen 경고 발생 가능 (내부 배포 가정)
 
 #define AppName       "KStudio"
-#define AppVersion    "0.1.0"
+; AppVersion 은 하드코딩하지 않고 단일 소스 src\screen_recorder\__init__.py 의
+; __version__ = "x.y.z" 한 줄에서 읽는다. 정보창·pyproject 도 같은 값을 쓰므로
+; 버전 올리기 = bump_version.py 로 그 한 줄만 고치면 인스톨러까지 자동으로 따라온다.
+#define VerFile FileOpen(AddBackslash(SourcePath) + "..\src\screen_recorder\__init__.py")
+#define VerLine FileRead(VerFile)
+#expr FileClose(VerFile)
+#define VerRest Copy(VerLine, Pos('"', VerLine) + 1)
+#define AppVersion Copy(VerRest, 1, Pos('"', VerRest) - 1)
+#if AppVersion == ""
+  #error __version__ 파싱 실패: ..\src\screen_recorder\__init__.py
+#endif
 #define AppPublisher  "kimyori"
 #define AppExeName    "KStudio.exe"
 
