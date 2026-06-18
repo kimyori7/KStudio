@@ -1,0 +1,47 @@
+from screen_recorder.ui.youtube.download_row import DownloadRow
+
+
+def test_row_progress_updates_bar(qtbot):
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    row.on_progress(50, 100)
+    assert row.progress_bar.value() == 50
+
+
+def test_row_progress_unknown_total_busy(qtbot):
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    row.on_progress(123, 0)   # total 미정 → busy(0,0)
+    assert row.progress_bar.maximum() == 0
+
+
+def test_row_finished_shows_open(qtbot):
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    row.on_finished("C:/out/f.mp4")
+    assert not row.open_btn.isHidden()
+    assert not row.folder_btn.isHidden()
+    assert row.progress_bar.value() == row.progress_bar.maximum()
+
+
+def test_row_error_shows_message(qtbot):
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    row.on_error("boom")
+    assert "실패" in row.status_label.text()
+    assert not row.retry_btn.isHidden()
+
+
+def test_row_cancelled_state(qtbot):
+    row = DownloadRow(title="t")
+    qtbot.addWidget(row)
+    row.on_cancelled()
+    assert "취소" in row.status_label.text()
+    assert not row.close_btn.isHidden()
+
+
+def test_row_set_title(qtbot):
+    row = DownloadRow(title="준비")
+    qtbot.addWidget(row)
+    row.set_title("실제 제목")
+    assert row.title_label.text() == "실제 제목"
