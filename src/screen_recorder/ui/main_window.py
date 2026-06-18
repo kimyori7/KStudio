@@ -436,12 +436,9 @@ class MainWindow(QMainWindow):
         center_row.addWidget(self.tab_area, stretch=1)
         outer.addLayout(center_row, stretch=1)
 
-        # 유튜브 다운로드 진행 띠 — 전역(모드 무관). QDockWidget 이 아니라 중앙 레이아웃에
-        # 삽입해 모드별 dock 상태 직렬화/복원 기계장치(+restoreState segfault 위험)를
-        # 건드리지 않는다. 작업이 0개면 자동 숨김.
-        from .youtube.downloads_panel import DownloadsPanel
-        self.downloads_panel = DownloadsPanel()
-        outer.addWidget(self.downloads_panel)
+        # 유튜브 다운로드 진행은 하단 띠가 아니라 글로벌 툴바의 다운로드 버튼(설정 버튼
+        # 왼쪽) + 드롭다운 팝업으로 보여준다(브라우저 다운로드처럼). 팝업이라 본문(캔버스)
+        # 레이아웃을 밀지 않는다 — 하단 고정 띠가 전체화면을 깎던 문제 해소(2026-06-18).
 
         # 상태바
         self.status_bar = StatusBar()
@@ -4681,14 +4678,15 @@ class MainWindow(QMainWindow):
         job.error.connect(lambda *_: _forget())
         job.cancelled.connect(_forget)
 
-        row = self.downloads_panel.add_job(job, title_hint="다운로드 준비 중…")
+        row = self.global_toolbar.downloads_button.add_job(
+            job, title_hint="다운로드 준비 중…")
         row.retry_requested.connect(
             lambda: self._retry_youtube(req, row, ffmpeg_dir))
         job.start()
 
     def _retry_youtube(self, req, old_row, ffmpeg_dir: Path) -> None:
         """실패한 줄을 닫고 같은 요청으로 새 작업을 시작한다."""
-        self.downloads_panel._remove_row(old_row)
+        self.global_toolbar.downloads_button.remove_row(old_row)
         self._start_youtube_job(req, ffmpeg_dir)
 
     def _maybe_show_hotkey_preset_dialog(self) -> None:

@@ -299,7 +299,13 @@ class GlobalToolbar(QWidget):
         self._actions_by_key["remove_bg"] = self._action_remove_bg
 
         # ---------- 양쪽 공통 ----------
-        # 다운로드 진행률 라벨 — 설정 버튼 *왼쪽*. 평소 숨김.
+        # 유튜브 다운로드 트레이 버튼 — 설정 버튼 *왼쪽* (브라우저 다운로드 버튼처럼).
+        # 다운로드가 생기면 나타나고, 클릭하면 아래로 진행 목록 팝업을 띄운다.
+        from .youtube.downloads_button import DownloadsButton
+        self.downloads_button = DownloadsButton()
+        layout.addWidget(self.downloads_button)
+
+        # 모델 다운로드 진행률 라벨 — 설정 버튼 *왼쪽*. 평소 숨김.
         # 사용자가 ModelDownloadWindow 를 닫아도 진행률을 잃지 않도록 — 백그라운드
         # snapshot_download 가 살아있는 동안 항상 보이는 영구 인디케이터.
         # MainWindow 가 ChatPanel.download_progress_changed 시그널을 받아 여기로

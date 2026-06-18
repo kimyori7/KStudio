@@ -71,6 +71,9 @@ _PATHS: dict[str, str] = {
     ),
     "chevron-left": '<path d="m15 18-6-6 6-6"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+    # QComboBox 펼침 표시 — 테마 QSS 의 down-arrow 가 이 PNG 렌더를 쓴다(border 삼각형이
+    # 일부 환경에서 네모로 보이던 문제 대체).
+    "chevron-down": '<path d="m6 9 6 6 6-6"/>',
     "camera": (
         '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>'
         '<circle cx="12" cy="13" r="3"/>'
@@ -198,6 +201,12 @@ _PATHS: dict[str, str] = {
         '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
         '<polyline points="17 8 12 3 7 8"/>'
         '<line x1="12" x2="12" y1="3" y2="15"/>'
+    ),
+    # 다운로드 — 트레이로 내려오는 화살표 (유튜브 다운로드 트레이 버튼용).
+    "download": (
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+        '<polyline points="7 10 12 15 17 10"/>'
+        '<line x1="12" x2="12" y1="15" y2="3"/>'
     ),
     # 폴더 — 환경설정 폴더 picker 버튼용. 다른 아이콘과 달리 fill 색상 (노란/베이지)
     # 을 path 에 직접 명시 — _wrap 의 root-level fill="none" 보다 path attribute 가

@@ -6,12 +6,16 @@ QDockWidget 이 아니라 중앙 레이아웃에 삽입하는 일반 위젯이�
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
 from .download_row import DownloadRow
 
 
 class DownloadsPanel(QWidget):
+    # 줄 수가 바뀔 때마다 방출 — 트레이 버튼이 자신의 표시/숨김을 결정하는 데 쓴다.
+    rows_changed = Signal(int)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._rows: list[DownloadRow] = []
@@ -60,3 +64,4 @@ class DownloadsPanel(QWidget):
 
     def _update_visibility(self) -> None:
         self.setVisible(len(self._rows) > 0)
+        self.rows_changed.emit(len(self._rows))

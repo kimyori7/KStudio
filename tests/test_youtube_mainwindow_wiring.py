@@ -21,9 +21,11 @@ def win(qtbot, tmp_path):
     return w
 
 
-def test_downloads_panel_exists_and_hidden(win):
-    assert hasattr(win, "downloads_panel")
-    assert win.downloads_panel.isHidden()   # 작업 0개 → 숨김
+def test_downloads_button_exists_and_hidden(win):
+    # 다운로드 버튼은 글로벌 툴바(설정 버튼 왼쪽)에 있고, 작업 0개면 숨김.
+    btn = win.global_toolbar.downloads_button
+    assert btn is not None
+    assert btn.isHidden()
 
 
 def test_open_youtube_dialog_remembers_dir_and_quality(win, qtbot, tmp_path, monkeypatch):
