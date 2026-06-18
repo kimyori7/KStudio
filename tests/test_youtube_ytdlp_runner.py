@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from screen_recorder.youtube.request import DownloadRequest
-from screen_recorder.youtube.ytdlp_runner import build_ydl_opts
+from screen_recorder.youtube.ytdlp_runner import build_ydl_opts, final_output_path
 
 
 def _hook(d):
@@ -61,3 +61,15 @@ def test_progress_hook_registered():
     req = DownloadRequest("u", "mp3", Path("/out"), "192")
     o = build_ydl_opts(req, ffmpeg_dir=Path("/ff"), progress_hook=_hook)
     assert o["progress_hooks"] == [_hook]
+
+
+def test_final_output_path_video_forces_mp4():
+    # 회귀: prepare_filename 이 머지 전 컨테이너(.webm)를 줘도 .mp4 로 보정해야 함.
+    # (원래 버그: hook 의 조각 파일명을 반환해 .mp4 가 아닌 경로가 나옴 → 이제 prepare_filename 사용)
+    base = str(Path("/out") / "Me at the zoo.webm")
+    assert final_output_path(base, "video") == str(Path("/out") / "Me at the zoo.mp4")
+
+
+def test_final_output_path_mp3_forces_mp3():
+    base = str(Path("/out") / "Me at the zoo.webm")
+    assert final_output_path(base, "mp3") == str(Path("/out") / "Me at the zoo.mp3")

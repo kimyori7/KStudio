@@ -57,6 +57,44 @@ class CancelledError(Exception):
     """사용자 취소로 다운로드 중단."""
 
 
+def final_output_path(base_filename: str, mode: str) -> str:
+    """다운로드 결과의 최종 경로 — mode 가 결정하는 확장자로 보정.
+
+    video 는 merge_output_format=mp4, mp3 는 FFmpegExtractAudio 라 최종 확장자가
+    결정적이다. yt-dlp 의 prepare_filename 은 머지/후처리 *전* 확장자(.webm·.f251 등
+    조각 파일)를 줄 수 있으므로 여기서 .mp4/.mp3 로 강제한다.
+
+    한계: 같은 제목을 같은 폴더에 두 번 받으면 yt-dlp 가 ' (1)' 로 dedup 하지만
+    이 경로엔 반영되지 않는다(드문 경우 — '열기' 버튼이 옛 파일을 가리킬 수 있음).
+    """
+    ext = ".mp3" if mode == "mp3" else ".mp4"
+    return str(Path(base_filename).with_suffix(ext))
+
+
+_truststore_injected = False
+
+
+def _ensure_truststore() -> None:
+    """OS(Windows) 인증서 저장소로 TLS 검증 — 사내 프록시(TLS 인터셉트) 환경 대응.
+
+    yt-dlp/certifi 기본 번들엔 사내 루트 CA 가 없어 CERTIFICATE_VERIFY_FAILED 로
+    다운로드가 실패한다(실측 2026-06-18, COMPANY 사내망). truststore 는 OS 네이티브
+    검증기를 써 Windows 가 신뢰하는 체인(사내 CA 포함)을 그대로 인정한다.
+    inject 는 프로세스 전역이라 한 번만 호출하면 되고, 다운로드 경로에서 lazy 로
+    호출해 영향 범위를 최소화한다. truststore 미설치/실패해도 일반 네트워크에선
+    동작하므로 best-effort.
+    """
+    global _truststore_injected
+    if _truststore_injected:
+        return
+    _truststore_injected = True
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_download(
     req: DownloadRequest,
     ffmpeg_dir: Path,
@@ -70,25 +108,19 @@ def run_download(
     """
     import yt_dlp  # lazy import — 미설치 환경에서도 build_ydl_opts 테스트는 가능
 
-    final_path: dict = {"path": ""}
+    _ensure_truststore()
 
     def _hook(d: dict) -> None:
         if cancel_check is not None and cancel_check():
             raise CancelledError()
-        if d.get("status") == "finished":
-            final_path["path"] = d.get("filename", "") or final_path["path"]
         progress_hook(d)
 
     opts = build_ydl_opts(req, ffmpeg_dir, _hook)
+    final = ""
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(req.url, download=True)
-        # mp3 후처리 시 실제 확장자는 .mp3, video 머지는 .mp4 — prepare_filename 으로 보정.
         try:
-            base = ydl.prepare_filename(info)
-            if req.mode == "mp3":
-                final_path["path"] = str(Path(base).with_suffix(".mp3"))
-            elif not final_path["path"]:
-                final_path["path"] = str(Path(base).with_suffix(".mp4"))
+            final = final_output_path(ydl.prepare_filename(info), req.mode)
         except Exception:  # noqa: BLE001
-            pass
-    return final_path["path"]
+            final = ""
+    return final

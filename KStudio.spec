@@ -28,6 +28,8 @@ a = Analysis(
         # yt-dlp 는 extractor 를 지연 로딩 → PyInstaller 정적 분석이 놓침.
         # collect_submodules 로 모든 extractor/postprocessor 모듈을 동봉해야
         # 설치본(.exe)에서 다운로드가 동작한다 (dev 에선 되는데 exe 만 깨지는 함정).
+        # truststore — run_download 가 함수 내부에서 lazy import 하므로 명시 (사내 TLS).
+        "truststore",
         "dxcam",
         "pyaudiowpatch",
         "send2trash",
