@@ -247,6 +247,34 @@ def test_multi_segment_track_different_srcs_concat_with_extra_input():
     assert "[1:v]" in fc
 
 
+def test_multi_segment_track_letterboxes_instead_of_stretching():
+    """비율 다른 클립을 멀티트랙으로 이어붙일 때 강제 stretch(찌그러짐) 대신
+    fit(레터박스: 비율 보존 + 검은 여백) 으로 캔버스에 맞춘다.
+
+    회귀: 멀티트랙 concat 이 main 조각(line 620)과 insert 조각(line 632)을 모두
+    'stretch' 로 강제해 비율 다른 클립이 찌그러졌다 (사용자 보고 2026-06-19).
+    캔버스=첫 클립 기준(surface_w/h)은 그대로 유지하고, 맞춤 방식만 fit 으로 바꾼다.
+    """
+    from screen_recorder.effects.segment import VideoSegment
+    # seg1 = src_path (source="main", line 620 경로), seg2 = 다른 src (insert, line 632 경로).
+    seg1 = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=3000, src_duration_ms=10000,
+                         media_kind="video", start_ms=0)
+    seg2 = VideoSegment(src="B.mp4", src_in_ms=0, src_out_ms=2000, src_duration_ms=5000,
+                         media_kind="video", start_ms=3000)
+    sc = Sidecar(source_path="A.mp4", source_hash="h", video_track=[seg1, seg2])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    # 두 조각(main + insert) 모두 비율 보존 레터박스(fit) — 검은 pad 포함.
+    assert fc.count("force_original_aspect_ratio=decrease") == 2, \
+        f"두 클립 모두 fit(레터박스) 되어야 함: {fc}"
+    # 강제 stretch (scale 뒤에 바로 format 이 붙는 모양) 는 사라져야 한다.
+    assert "scale=1920:1080,format" not in fc, f"강제 stretch 가 남아있음: {fc}"
+
+
 def test_multi_segment_effects_remapped_to_gap_collapsed_timeline():
     """multi-segment 트랙 + gap 이 있는 사이드카에서 effect 가 gap-collapsed
     시간축에 맞춰 remap 되는지. SpeedEffect 의 setpts 가 적용된 segment 의

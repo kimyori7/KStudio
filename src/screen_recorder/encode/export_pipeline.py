@@ -617,7 +617,10 @@ def build_export_args(
             a_src = f"[{main_audio_input}:a]atrim={in_s}:{out_s},"
             fc_parts.append(
                 f"{v_src}setpts=PTS-STARTPTS{speed_v_filter},"
-                f"{_scale_filter('stretch', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
+                # fit = 비율 보존 레터박스. main 조각이 캔버스(surface)와 같은 비율이면
+                # no-op(검은 띠 없음)이고, 캔버스가 다른 클립 기준일 때만 늘이지 않고
+                # 검은 여백을 넣어 찌그러짐 방지 (2026-06-19 사용자 보고).
+                f"{_scale_filter('fit', surface_w, surface_h)}{zoom_filter}{v_norm}[{v_label}]"
             )
             if audio_available:
                 fc_parts.append(
@@ -629,7 +632,10 @@ def build_export_args(
             out_s = seg.source_end_ms / 1000.0
             if seg.source_id in track_src_index:
                 idx = track_src_index[seg.source_id]
-                scale_mode = "stretch"   # 다중 src track 은 일관되게 stretch.
+                # 다중 src track 은 fit(레터박스)로 캔버스에 맞춘다 — 비율 다른 클립을
+                # 늘여 찌그러뜨리지 않고 검은 여백으로 채움 (2026-06-19 사용자 보고).
+                # 캔버스=첫 클립(surface_w/h) 기준은 그대로.
+                scale_mode = "fit"
             else:
                 cut = next(c for c in cuts if c.id == seg.source_id)
                 idx = cut_src_index[cut.id]
