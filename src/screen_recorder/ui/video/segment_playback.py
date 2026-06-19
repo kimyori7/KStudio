@@ -146,16 +146,32 @@ class SegmentPlaybackController(QObject):
         """
         if not (0 <= idx < len(self._segments)):
             return
+        prev_idx = self._active_idx   # hold_last_frame 판정용 — 갱신 전에 캡처.
         seg = self._segments[idx]
         target_src = seg.src
         target_seek_ms = int(seg.src_in_ms) + max(0, seek_local_ms)
         was_playing = bool(getattr(self._player, "is_playing", lambda: False)())
         src_changed = (self._loaded_src != target_src)
+        # _active_idx 를 load() 보다 *먼저* 갱신한다. setSource(B) 가 새 미디어
+        # position 을 0 으로 리셋하며 positionChanged(0) 을 (동기/재진입) 쏘는데,
+        # 그때 _active_idx 가 아직 옛 segment 면 combined = 옛.start_ms(=0) 로 환산돼
+        # 재생바가 트랙 처음으로 튄다. 새 segment 를 먼저 가리키면 0 은 seg.start_ms 로
+        # 환산돼 경계 위치에 머문다.
+        self._active_idx = idx
         if src_changed:
-            self._player.load(Path(target_src))
+            # 영상→영상 전환일 때만 직전 프레임을 유지해 경계 회색 깜빡임을 막는다.
+            # 직전이 갭(-1)/이미지/GIF 면 surface 의 프레임이 stale 이거나 없으므로
+            # 정상 clear 로 새 프레임을 받는다.
+            prev_seg = (self._segments[prev_idx]
+                        if 0 <= prev_idx < len(self._segments) else None)
+            hold_last_frame = (
+                seg.media_kind == "video"
+                and prev_seg is not None
+                and prev_seg.media_kind == "video"
+            )
+            self._player.load(Path(target_src), hold_last_frame=hold_last_frame)
             self._loaded_src = target_src
         self._player.seek_ms(int(target_seek_ms))
-        self._active_idx = idx
         self.active_segment_changed.emit(seg.id)
         # src 가 바뀌면 load 후 paused 상태가 됨. 이전 재생 중이었으면 재개.
         if was_playing and src_changed:

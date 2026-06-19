@@ -91,6 +91,55 @@ def test_segment_boundary_auto_advances():
     player.seek_ms.assert_called_with(0)
 
 
+def test_video_to_video_boundary_holds_last_frame():
+    """영상→영상 경계 자동 전환 시 load(hold_last_frame=True) — 회색 깜빡임 방지.
+
+    새 src 를 비동기 로딩하는 동안 surface 를 비우면(clear_frame) 검은/회색 프레임이
+    잠깐 뜬다. 이전 클립의 마지막 프레임을 유지하도록 hold_last_frame=True 로 로드.
+    """
+    ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"), _seg("b.mp4", 3000, 2000, "b"))
+    ctrl.seek_combined_ms(2999)
+    player.load.reset_mock()
+    ctrl.on_main_position_changed(3000)
+    player.load.assert_called_once()
+    assert player.load.call_args.kwargs.get("hold_last_frame") is True
+
+
+def test_source_switch_position_reset_does_not_jump_to_zero():
+    """클립 전환 시 setSource 가 동기적으로 position 0 을 보고해도 재생바가 트랙
+    처음(0)으로 튀지 않아야 한다.
+
+    QMediaPlayer.setSource(B) 는 새 미디어의 position 을 0 으로 리셋하며
+    positionChanged(0) 을 쏜다. _activate_segment 가 _active_idx 를 새 segment 로
+    갱신하기 *전에* load() 를 부르면, 그 0 이 아직 옛 segment(A) 기준으로 환산돼
+    combined = A.start_ms(=0) → 재생바가 처음으로 튄다. _active_idx 를 먼저 갱신해야 한다.
+    """
+    ctrl, player = _ctrl(_seg("a.mp4", 0, 2000, "a"), _seg("b.mp4", 2000, 7000, "b"))
+    ctrl.seek_combined_ms(1999)   # a 활성 (preset 이라 load 없음)
+    emitted: list[int] = []
+    ctrl.combined_position_changed.connect(emitted.append)
+
+    # load(=setSource) 호출 순간 player 가 position 0 을 동기적으로 보고하는 상황 모사.
+    def _load_side_effect(path, *, hold_last_frame=False):
+        ctrl.on_main_position_changed(0)
+    player.load.side_effect = _load_side_effect
+
+    ctrl.on_main_position_changed(2000)   # a 끝 → b 로 전환
+    assert emitted, "전환 중 combined emit 이 있어야 한다"
+    assert min(emitted) >= 2000, f"재생바가 트랙 처음으로 튐: {emitted}"
+
+
+def test_gap_exit_does_not_hold_last_frame():
+    """갭 이탈 후 segment 진입은 hold 하지 않음 — 갭에서 이미 검은 화면을 보여줬고
+    이전 영상 프레임은 stale 이므로 정상 clear 로 새 프레임을 받는다."""
+    ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"), _seg("b.mp4", 5000, 2000, "b"))
+    ctrl.seek_combined_ms(4000)   # 갭 (3000~5000) 진입 → _active_idx = -1
+    player.load.reset_mock()
+    ctrl.seek_combined_ms(6000)   # b 진입
+    player.load.assert_called_once()
+    assert player.load.call_args.kwargs.get("hold_last_frame") is False
+
+
 def test_last_segment_end_triggers_pause():
     ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"))
     ctrl.seek_combined_ms(0)

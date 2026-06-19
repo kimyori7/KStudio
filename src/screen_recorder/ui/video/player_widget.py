@@ -325,6 +325,12 @@ class PlayerWidget(QStackedWidget):
         self._media.setAudioOutput(self._audio)
         self._media.setVideoSink(self._video_surface.video_sink)
         self._media.playbackStateChanged.connect(self._on_media_state)
+        # 새 src 로드(setSource) 직후엔 미디어가 아직 LoadedMedia 가 아니라 setPosition 이
+        # 무시·불안정. 보조 player 와 동일하게 메인 player 도 로딩 중 seek 를 보류했다가
+        # LoadedMedia 시 한 번에 적용한다(영상 이어붙이기 경계에서 파일 중간으로 점프할 때
+        # "뒷부분이 0초부터 시작" 같은 불안정 방지). -1 = 보류 없음.
+        self._pending_seek_ms: int = -1
+        self._media.mediaStatusChanged.connect(self._on_main_media_status)
         # seek 시 paused-frame 갱신용 짧은 play/pause 사이클 동안 외부에 playing_changed
         # 가 깜빡거리는 걸 막는 가드.
         self._suppress_state_signal: bool = False
@@ -512,8 +518,17 @@ class PlayerWidget(QStackedWidget):
         if self._overlay is not None:
             self._overlay.setGeometry(0, 0, self.width(), self.height())
 
-    def load(self, path: Path) -> None:
+    def load(self, path: Path, *, hold_last_frame: bool = False) -> None:
+        """미디어를 로드. hold_last_frame=True 면 새 영상의 첫 프레임이 도착할 때까지
+        현재 surface 의 마지막 프레임을 유지한다 (clear 안 함).
+
+        영상 이어붙이기 경계에서 다음 클립을 비동기 로딩하는 동안 surface 를 비우면
+        검은/회색 프레임이 잠깐 떠 깜빡인다. 직전 클립의 마지막 프레임을 유지하면
+        ~100ms 동안 정지 화면으로 보여 깜빡임이 사라진다 (영상→영상 전환 전용 —
+        호출자가 직전·다음이 모두 video 일 때만 True 로 넘긴다).
+        """
         self._seek_frame_timer.stop()   # 이전 미디어의 보류된 force-frame 취소
+        self._pending_seek_ms = -1      # 이전 src 의 보류된 seek 폐기 (stale 점프 방지)
         if self._movie is not None:
             self._movie.stop()
             try:
@@ -537,7 +552,8 @@ class PlayerWidget(QStackedWidget):
             # 3-arg singleShot: self 가 destroy 되면 슬롯 취소 → 테스트 격리.
             QTimer.singleShot(0, self, lambda: self.duration_changed.emit(self._gif_total_ms()))
         else:
-            self._video_surface.clear_frame()
+            if not hold_last_frame:
+                self._video_surface.clear_frame()
             self._media.setSource(QUrl.fromLocalFile(str(self._path)))
             self.setCurrentIndex(0)
 
@@ -555,6 +571,7 @@ class PlayerWidget(QStackedWidget):
         """
         try:
             self._seek_frame_timer.stop()   # 보류된 force-frame 취소 (파일 핸들 해제 직전)
+            self._pending_seek_ms = -1      # 보류된 seek 도 폐기
             self._media.stop()
             self._media.setSource(QUrl())
         except (RuntimeError, AttributeError):
@@ -660,11 +677,17 @@ class PlayerWidget(QStackedWidget):
     def seek_ms(self, ms: int) -> None:
         if not self.is_loaded():
             return
-        ms = max(0, min(ms, self.duration_ms()))
         if self._is_gif:
             assert self._movie is not None
+            ms = max(0, min(int(ms), self.duration_ms()))
             self._movie.jumpToFrame(self._gif_frame_at_ms(ms))
             return
+        if not self._media_ready():
+            # 아직 로딩 중 — LoadedMedia 시 적용하도록 보류. duration 이 아직 0 이라
+            # 여기서 클램프하면 0 으로 죽으므로 원값 보존, 클램프는 적용 시점에.
+            self._pending_seek_ms = max(0, int(ms))
+            return
+        ms = max(0, min(int(ms), self.duration_ms()))
         was_paused = self._media.playbackState() != QMediaPlayer.PlayingState
         self._media.setPosition(ms)
         # Qt6/WMF 회귀: 일시정지 상태에서 setPosition 만으론 새 프레임이 video sink
@@ -689,14 +712,9 @@ class PlayerWidget(QStackedWidget):
         try:
             if self._media.playbackState() == QMediaPlayer.PlayingState:
                 return
-            status = self._media.mediaStatus()
         except (AttributeError, RuntimeError):
             return
-        from PySide6.QtMultimedia import QMediaPlayer as _QMP
-        ready = status in (
-            _QMP.LoadedMedia, _QMP.BufferedMedia, _QMP.BufferingMedia, _QMP.EndOfMedia
-        )
-        if not ready:
+        if not self._media_ready():
             return
         prev_muted = self._audio.isMuted()
         self._suppress_state_signal = True
@@ -713,6 +731,38 @@ class PlayerWidget(QStackedWidget):
             except RuntimeError:
                 pass
             self._suppress_state_signal = False
+
+    def _media_ready(self) -> bool:
+        """메인 미디어가 seek/play 가능한 상태(LoadedMedia 이상)인지."""
+        try:
+            status = self._media.mediaStatus()
+        except (AttributeError, RuntimeError):
+            return False
+        from PySide6.QtMultimedia import QMediaPlayer as _QMP
+        return status in (
+            _QMP.LoadedMedia, _QMP.BufferedMedia, _QMP.BufferingMedia, _QMP.EndOfMedia
+        )
+
+    def _on_main_media_status(self, status) -> None:
+        """setSource 후 LoadedMedia 가 오면 보류된 seek 를 한 번 적용.
+
+        로딩 중 들어온 seek_ms 는 _pending_seek_ms 에 저장돼 있다가 여기서 적용된다.
+        영상 이어붙이기 경계에서 다음 클립을 파일 중간으로 점프할 때, setPosition 이
+        로딩 완료 후 정확히 그 위치에 적용돼 "뒷부분이 0초부터 시작"하는 불안정을 막는다.
+        """
+        from PySide6.QtMultimedia import QMediaPlayer as _QMP
+        if status not in (
+            _QMP.LoadedMedia, _QMP.BufferedMedia, _QMP.BufferingMedia, _QMP.EndOfMedia
+        ):
+            return
+        if self._pending_seek_ms < 0:
+            return
+        target = max(0, min(self._pending_seek_ms, self.duration_ms()))
+        self._pending_seek_ms = -1
+        try:
+            self._media.setPosition(target)
+        except (RuntimeError, AttributeError):
+            pass
 
     def seek_seconds(self, delta_seconds: float) -> None:
         target = self.position_ms() + int(delta_seconds * 1000)

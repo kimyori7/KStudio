@@ -43,6 +43,72 @@ def test_create_player_for_video(qtbot, tmp_path):
     assert not w.is_gif()
 
 
+def test_load_clears_frame_by_default(qtbot, tmp_path):
+    """기본 load 는 이전 프레임을 지운다 (새 미디어 로딩 중 잔상 방지)."""
+    p1 = tmp_path / "a.mp4"
+    p1.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    p2 = tmp_path / "b.mp4"
+    p2.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    w = PlayerWidget()
+    qtbot.addWidget(w)
+    w.load(p1)
+    fake = QImage(4, 4, QImage.Format_RGB32)
+    fake.fill(Qt.white)
+    w._video_surface._frame = fake
+    w.load(p2)
+    assert w._video_surface._frame.isNull()
+
+
+def test_load_holds_last_frame_when_requested(qtbot, tmp_path):
+    """hold_last_frame=True 면 새 src 를 로딩하는 동안 직전 프레임을 유지한다.
+
+    영상 이어붙이기 경계에서 회색/검은 깜빡임을 막기 위한 동작 — 새 클립의 첫 프레임이
+    도착하기 전까지 이전 클립의 마지막 프레임이 화면에 남는다.
+    """
+    p1 = tmp_path / "a.mp4"
+    p1.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    p2 = tmp_path / "b.mp4"
+    p2.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    w = PlayerWidget()
+    qtbot.addWidget(w)
+    w.load(p1)
+    fake = QImage(4, 4, QImage.Format_RGB32)
+    fake.fill(Qt.white)
+    w._video_surface._frame = fake
+    w.load(p2, hold_last_frame=True)
+    assert not w._video_surface._frame.isNull()
+
+
+def test_main_seek_defers_until_media_loaded(qtbot, tmp_path):
+    """새 src 로드 직후(LoadedMedia 이전) seek 는 즉시 setPosition 하지 않고 보류한다.
+
+    setSource 가 비동기라 로딩 중 setPosition 은 무시되거나 불안정 — 보조 player 처럼
+    메인 player 도 pending 에 저장했다가 LoadedMedia 시 적용한다. 보류 시 duration 이
+    아직 0 이므로 클램프하지 않고 원값을 보존해야 한다(0 으로 죽지 않게)."""
+    p = tmp_path / "v.mp4"
+    p.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    w = PlayerWidget()
+    qtbot.addWidget(w)
+    w.load(p)                 # setSource — 아직 LoadedMedia 아님
+    w.seek_ms(5000)
+    assert w._pending_seek_ms == 5000
+
+
+def test_load_resets_pending_seek(qtbot, tmp_path):
+    """새 load 는 이전 src 의 보류된 seek 를 버린다 (stale 점프 방지)."""
+    p1 = tmp_path / "a.mp4"
+    p1.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    p2 = tmp_path / "b.mp4"
+    p2.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    w = PlayerWidget()
+    qtbot.addWidget(w)
+    w.load(p1)
+    w.seek_ms(5000)
+    assert w._pending_seek_ms == 5000
+    w.load(p2)
+    assert w._pending_seek_ms == -1
+
+
 def test_play_pause_toggle_signal(qtbot, gif_file):
     w = PlayerWidget()
     qtbot.addWidget(w)
