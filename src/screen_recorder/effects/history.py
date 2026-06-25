@@ -55,3 +55,16 @@ class History:
         self._undo.append(self._current)
         self._current = self._redo.popleft()
         return copy.deepcopy(self._current)
+
+    # ---- bulk migration ----
+    def migrate(self, fn) -> None:
+        """보존 중인 모든 상태(current + undo + redo)에 in-place 변환 fn 을 적용.
+
+        디스크 rename 후 사이드카 source_path 마이그레이션 등에 사용 — 어떤 시점으로
+        undo/redo 해도 옛 경로가 되살아나지 않도록 전체 스냅샷을 일괄 갱신한다.
+        """
+        fn(self._current)
+        for s in self._undo:
+            fn(s)
+        for s in self._redo:
+            fn(s)

@@ -1401,41 +1401,53 @@ class MainWindow(QMainWindow):
             )
 
     def _on_mode_changed(self, mode: AppMode) -> None:
+        # [modeswitch-diag] 2026-06-22 임시 계측 — 영상↔이미지 전환 3초 멈춤 원인 추적.
+        # 각 단계 소요 ms 를 app.log 에 한 줄로 남긴다. 동작 변경 없음. 원인 확정 후 제거.
+        from time import perf_counter as _pc
+        _t = {}
+        _m0 = _pc()
         # 모드 전환 직전 dock 레이아웃 저장 (이전 모드 기준).
         prev_mode = getattr(self, "_last_mode", None)
         if prev_mode is not None and prev_mode is not mode:
             self._save_dock_state_for_mode(prev_mode)
         self._last_mode = mode
+        _t["save_dock"] = _pc()
         # 마지막 사용 모드 영속화 — 다음 실행 시 같은 모드로 복원.
         # _persist_settings 가 _initializing 플래그를 자체적으로 체크하므로 init 중엔 no-op.
         self.app_settings.preferences.last_mode = mode.value
         self._persist_settings()
+        _t["persist"] = _pc()
         # 모드별 테마 — 영상=현재 시안 / 이미지=mono+emerald.
         # 실제 전환일 때만 재적용 — init(prev_mode is None) 에선 main.py 의
         # 초기 apply_theme 호출이 이미 끝났으므로 중복 방지.
         if prev_mode is not None and prev_mode is not mode:
             from screen_recorder.ui.theme import apply_theme
             apply_theme(QApplication.instance(), _palette_name_for_mode(mode))
+        _t["apply_theme"] = _pc()
         self.global_toolbar.set_mode(mode)
         is_image = (mode is AppMode.IMAGE)
         # ToolPalette: 이미지 모드 + 창 메뉴 체크 둘 다일 때만
         tp_checked = self.menu_bar.tool_palette_visible_action.isChecked()
         self.tool_palette.setVisible(is_image and tp_checked)
         self.annotation_toolbar.setVisible(is_image)
+        _t["toolbar"] = _pc()
         # 새 모드의 dock 레이아웃 복원 — 영상↔이미지 전환 시 사용자가 모드별로 떼어둔
         # 패널 배치를 그대로 유지. 단, 첫 show 이전(init) 엔 restoreState 를 미룬다 —
         # 첫 show 전 복원은 일부 저장본에서 Qt paint 크래시. 초기 복원은 showEvent 가 담당.
         if not getattr(self, "_initializing", False):
             self._restore_dock_state_for_mode(mode)
+        _t["restore_dock"] = _pc()
         # restoreState 후 dock 가시성을 메뉴 체크 기준으로 강제 — restoreState 가 visibility
         # 도 같이 복원해 사용자가 닫지 않은 dock 도 닫는 부작용 방지.
         self._enforce_dock_visibility()
+        _t["enforce_vis"] = _pc()
         # 영상 모드면 레이어 패널 비활성화 (모드 무관 호출 — 안전망).
         self._apply_layers_panel_enabled_state()
         # 모드 전용 dock 의 메뉴 항목 enable/disable 갱신.
         self._apply_mode_aware_menu_enabled()
         # 이미지 편집용 Ctrl+C/X/A/D 단축키 토글 (탭 변경 없이 모드만 바뀌는 경우 대비).
         self._update_image_clipboard_shortcuts()
+        _t["menu_misc"] = _pc()
         # 문서 모드로 *전환* 시 WebEngine pre-warm — 이미지/영상으로 켰다가 문서로 들어온
         # 세션은 startup gate(last_mode==document)를 못 타 첫 문서 열 때 HWND 재생성으로
         # 창 전체가 깜빡이던 회귀 fix(2026-05-29). idempotent 라 startup 에 이미 했으면 no-op.
@@ -1443,6 +1455,33 @@ class MainWindow(QMainWindow):
         # 스킵 — 그 경로의 document 시작은 730 의 gated warm 이 담당. runtime 전환만 발동.
         if mode is AppMode.DOCUMENT and not getattr(self, "_initializing", False):
             self._maybe_prewarm_webengine(force=True)
+        _t["prewarm"] = _pc()
+        # ---- [modeswitch-diag] 로그 한 줄 ----
+        try:
+            if prev_mode is not None and prev_mode is not mode:
+                prev = _m0
+                parts = []
+                for key in ("save_dock", "persist", "apply_theme", "toolbar",
+                            "restore_dock", "enforce_vis", "menu_misc", "prewarm"):
+                    parts.append(f"{key}={(_t[key] - prev) * 1000:.0f}")
+                    prev = _t[key]
+                total = (_t["prewarm"] - _m0) * 1000.0
+                try:
+                    n_tabs = self.tab_area.count()
+                except Exception:
+                    n_tabs = -1
+                try:
+                    n_entries = len(self.library_model.entries())
+                except Exception:
+                    n_entries = -1
+                logging.getLogger("modeswitch-diag").warning(
+                    "switch %s->%s total=%.0fms tabs=%d entries=%d | %s",
+                    getattr(prev_mode, "value", prev_mode),
+                    getattr(mode, "value", mode), total, n_tabs, n_entries,
+                    " ".join(parts),
+                )
+        except Exception:
+            pass
 
     def _on_mode_button_clicked(self, mode: AppMode) -> None:
         """사용자가 모드 토글 버튼을 직접 클릭 — 그 모드의 가장 최근 탭으로 점프.
@@ -1458,35 +1497,52 @@ class MainWindow(QMainWindow):
            visibility 동기화가 자동 처리).
         3) 탭이 하나도 없으면 라이브러리의 첫 entry 로 새 탭 오픈.
         """
+        # [modeswitch-diag] 2026-06-22 임시 — set_mode(전 슬롯) vs 이후 탭 열기 비용 분리.
+        from time import perf_counter as _pc
+        _b0 = _pc()
         self.mode_controller.set_mode(mode)
-        # 1) 마지막 활성 탭 우선.
-        last_eid = self._last_entry_per_mode.get(mode)
-        if last_eid is not None and self.tab_area.find_index_by_entry(last_eid) >= 0:
-            self.tab_area.focus_entry(last_eid)
+        _b_setmode = _pc()
+        try:
+            # 1) 마지막 활성 탭 우선.
+            last_eid = self._last_entry_per_mode.get(mode)
+            if last_eid is not None and self.tab_area.find_index_by_entry(last_eid) >= 0:
+                self.tab_area.focus_entry(last_eid)
+                if mode is AppMode.VIDEO:
+                    self._focus_current_video_tab()
+                return
+            # 2) 마지막 기록은 없지만 그 모드 탭이 이미 있으면 tab_area 의 visibility
+            #    동기화가 알아서 visible 한 첫 탭을 보여줌 — 추가 작업 불필요.
+            target_app_mode = mode
+            has_existing_tab = any(
+                m is target_app_mode for _w, m, _e in self.tab_area._tabs
+            )
+            if has_existing_tab:
+                if mode is AppMode.VIDEO:
+                    self._focus_current_video_tab()
+                return
+            # 문서 모드는 Phase 1 에서 라이브러리 백킹 entry 가 없다 — 탭이 없으면 빈 문서
+            # 모드 상태만 유지하고 끝낸다 (else 분기로 빠져 스크린샷을 잘못 여는 것 방지).
+            if mode is AppMode.DOCUMENT:
+                return
+            # 3) 그 모드 탭이 전혀 없으면 라이브러리에서 첫 entry 로 새로 오픈.
+            target_kind = EntryKind.VIDEO if mode is AppMode.VIDEO else EntryKind.SCREENSHOT
+            entries = self.library_model.entries(kind=target_kind)
+            if entries:
+                self._open_entry(entries[0].id)
             if mode is AppMode.VIDEO:
                 self._focus_current_video_tab()
-            return
-        # 2) 마지막 기록은 없지만 그 모드 탭이 이미 있으면 tab_area 의 visibility
-        #    동기화가 알아서 visible 한 첫 탭을 보여줌 — 추가 작업 불필요.
-        target_app_mode = mode
-        has_existing_tab = any(
-            m is target_app_mode for _w, m, _e in self.tab_area._tabs
-        )
-        if has_existing_tab:
-            if mode is AppMode.VIDEO:
-                self._focus_current_video_tab()
-            return
-        # 문서 모드는 Phase 1 에서 라이브러리 백킹 entry 가 없다 — 탭이 없으면 빈 문서
-        # 모드 상태만 유지하고 끝낸다 (else 분기로 빠져 스크린샷을 잘못 여는 것 방지).
-        if mode is AppMode.DOCUMENT:
-            return
-        # 3) 그 모드 탭이 전혀 없으면 라이브러리에서 첫 entry 로 새로 오픈.
-        target_kind = EntryKind.VIDEO if mode is AppMode.VIDEO else EntryKind.SCREENSHOT
-        entries = self.library_model.entries(kind=target_kind)
-        if entries:
-            self._open_entry(entries[0].id)
-        if mode is AppMode.VIDEO:
-            self._focus_current_video_tab()
+        finally:
+            try:
+                _b_end = _pc()
+                logging.getLogger("modeswitch-diag").warning(
+                    "button ->%s set_mode=%.0fms open_tab=%.0fms btn_total=%.0fms",
+                    getattr(mode, "value", mode),
+                    (_b_setmode - _b0) * 1000.0,
+                    (_b_end - _b_setmode) * 1000.0,
+                    (_b_end - _b0) * 1000.0,
+                )
+            except Exception:
+                pass
 
     def _on_video_duration_resolved(self, entry_id: int, duration_ms: int) -> None:
         """영상 player 가 로드 후 실제 duration 을 알려주면 라이브러리 항목도 갱신.
@@ -1638,9 +1694,25 @@ class MainWindow(QMainWindow):
             # target == old_path 가 되어 즉시 return.
             self.library_model.rename(entry_id, old_path.stem)
             return
+        # 영상이 편집 탭에서 열려 있으면 Windows WMF/QMovie 가 파일 핸들을 잡고 있어
+        # rename 이 WinError 32 ("다른 프로세스가 파일을 사용 중") 로 실패한다. 삭제 경로
+        # (_close_tab_and_release_handles) 와 동일하게 rename 전에 핸들을 먼저 해제한다.
+        video_tab = self.tab_area.tab_widget_for_entry(entry_id)
+        if not isinstance(video_tab, VideoTab):
+            video_tab = None
+        if video_tab is not None:
+            try:
+                video_tab.release_player_for_file_op()
+            except (RuntimeError, AttributeError):
+                pass
+            # 핸들 해제(setSource(QUrl())/QMovie deleteLater)가 실제로 반영되도록 이벤트
+            # 루프를 굴린다 — 삭제 경로와 동일.
+            from PySide6.QtCore import QCoreApplication, QEvent
+            QApplication.processEvents()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            QApplication.processEvents()
         try:
-            old_path.rename(target)
-            entry.path = target
+            self._rename_with_retry(old_path, target)
         except OSError as e:
             logging.getLogger(__name__).warning("rename failed: %s", e)
             QMessageBox.warning(
@@ -1648,6 +1720,28 @@ class MainWindow(QMainWindow):
                 f"파일 이름을 바꿀 수 없습니다:\n{e}",
             )
             self.library_model.rename(entry_id, old_path.stem)
+            if video_tab is not None:
+                # 해제했던 player 를 원본 경로로 다시 로드.
+                video_tab.apply_renamed_source(old_path, old_path)
+            return
+        entry.path = target
+        if video_tab is not None:
+            video_tab.apply_renamed_source(old_path, target)
+
+    def _rename_with_retry(self, src: Path, dst: Path) -> None:
+        """src → dst rename. 핸들이 막 풀리는 타이밍(WMF/ffmpeg 썸네일 추출 등)이면
+        WinError 32 (sharing violation) 가 잠깐 날 수 있어 100ms 뒤 한 번 재시도한다.
+        재시도도 실패하면 OSError 를 그대로 전파 (호출자가 안내·롤백)."""
+        try:
+            src.rename(dst)
+            return
+        except OSError as e:
+            if getattr(e, "winerror", None) != 32:
+                raise
+            import time
+            time.sleep(0.1)
+            QApplication.processEvents()
+            src.rename(dst)   # 재시도 — 또 실패하면 OSError 전파
 
     def _on_library_remove(self, entry_id: int) -> None:
         """Del — 라이브러리 목록에서만 제외 (디스크 파일은 그대로). 열려 있던 탭은 닫음.

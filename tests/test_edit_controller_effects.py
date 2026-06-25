@@ -147,3 +147,25 @@ def test_update_effect_rejects_overlap_with_sibling(video, tmp_path):
     # 사이드카는 원본 그대로.
     rng_now = next(e for e in ec.sidecar().effects if e.id == rng.id)
     assert (rng_now.in_ms, rng_now.out_ms) == (5000, 6000)
+
+
+def test_update_effect_accepts_flush_adjacent_sibling(qtbot, video, tmp_path):
+    """딱 붙은(flush) 배치는 겹침이 아니므로 수락 — 반열림 [in, out) 구간.
+
+    배속을 이웃에 딱 붙이는 기능(2026-06-23)의 핵심 전제: out_ms == 이웃.in_ms 는
+    겹침이 아니다. overlap.py 가 닫힌 구간으로 바뀌면 이 테스트가 회귀를 잡는다.
+    """
+    from dataclasses import replace
+    from screen_recorder.effects.types.speed import SpeedEffect
+
+    ec = EditController(video, tmp_path / "sidecars")
+    a = SpeedEffect(in_ms=1000, out_ms=3000, rate=2.0)
+    b = SpeedEffect(in_ms=5000, out_ms=8000, rate=0.5)
+    assert ec.add_effect(a) is True
+    assert ec.add_effect(b) is True
+    # a 를 오른쪽으로 옮겨 b 의 왼쪽 edge(5000)에 딱 붙임 → 수락 (track_idx 유지).
+    moved = replace(a, in_ms=3000, out_ms=5000)
+    assert ec.update_effect(moved) is True
+    a_now = next(e for e in ec.sidecar().effects if e.id == a.id)
+    assert (a_now.in_ms, a_now.out_ms) == (3000, 5000)
+    assert a_now.track_idx == 0

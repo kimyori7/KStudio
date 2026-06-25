@@ -424,7 +424,7 @@ def build_export_args(
     speed_hud_pngs: list[tuple[Path, SpeedEffect, int, int]] = []   # (png, eff, w_px, h_px)
     hud_font_pt = max(14, int(round(14 * surface_w / 800.0)))
     for sp in speeds:
-        if not getattr(sp, "show_hud", True):
+        if not getattr(sp, "show_hud", False):   # 2026-06-23 기본 OFF 와 일관
             continue
         png = png_dir_path / f"speed_hud_{sp.id}.png"
         w_px, h_px = render_speed_hud_png(sp, font_pt=hud_font_pt, dst=png)

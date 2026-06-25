@@ -310,6 +310,7 @@ class PlayerWidget(QStackedWidget):
     playing_changed = Signal(bool)
     position_changed = Signal(int)   # ms
     duration_changed = Signal(int)   # ms
+    media_ended = Signal()           # 메인 영상이 소스 파일 끝(EndOfMedia)에 도달
     insert_position_changed = Signal(int)    # ms — 보조 player
     insert_duration_changed = Signal(int)    # ms
 
@@ -751,6 +752,13 @@ class PlayerWidget(QStackedWidget):
         로딩 완료 후 정확히 그 위치에 적용돼 "뒷부분이 0초부터 시작"하는 불안정을 막는다.
         """
         from PySide6.QtMultimedia import QMediaPlayer as _QMP
+        # 소스 파일 끝 도달 → 다음 클립으로 넘어가는 트리거. SegmentPlaybackController 가
+        # position_changed 만으론 segment-끝=소스-끝 경계에서 advance 를 놓치므로 보완.
+        # force-frame(play/pause) 사이클 중(_suppress_state_signal)·GIF 는 제외.
+        if (status == _QMP.EndOfMedia
+                and not self._suppress_state_signal
+                and not self._is_gif):
+            self.media_ended.emit()
         if status not in (
             _QMP.LoadedMedia, _QMP.BufferedMedia, _QMP.BufferingMedia, _QMP.EndOfMedia
         ):
@@ -761,6 +769,14 @@ class PlayerWidget(QStackedWidget):
         self._pending_seek_ms = -1
         try:
             self._media.setPosition(target)
+            # Qt6/WMF: 일시정지 상태에선 setPosition 만으론 새 프레임이 video sink 에
+            # 도착하지 않아 화면이 빈 채(또는 stale 썸네일)로 남는다. seek_ms 와 동일한
+            # 디바운스 force-frame(play/pause 한 사이클)으로 한 번 프레임을 민다.
+            # 회귀 2026-06-22: 이미지 모드 갔다가 영상 모드로 복귀(탭 lazy reload) 하면
+            # 이 보류 seek 경로로만 적용돼 미리보기가 안 나오고, 편집 모드 진입 시
+            # repaint 트리거로 저해상도 썸네일만 보이던 버그. 재생 중엔 불필요.
+            if self._media.playbackState() != _QMP.PlayingState:
+                self._seek_frame_timer.start()
         except (RuntimeError, AttributeError):
             pass
 

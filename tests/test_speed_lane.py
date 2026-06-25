@@ -134,6 +134,61 @@ def test_drag_right_past_duration_preserves_width(qtbot):
         f"폭은 원본 2000ms 보존되어야 함 (got width={last.out_ms - last.in_ms})"
 
 
+def test_drag_into_right_neighbor_snaps_flush(qtbot):
+    """2026-06-23: 배속을 오른쪽 이웃에 끌어다 놓으면 원복되지 않고 딱 붙는다.
+
+    a[1000,3000] 를 우측으로 끌어 b[5000,8000] 와 겹치려 함 → b.in(5000)에 flush.
+    """
+    lane = SpeedLane(effect_type="speed", header_label="배속", color="#8b5cf6")
+    qtbot.addWidget(lane)
+    lane.resize(400, 20)
+    lane.set_duration_ms(10_000)
+    a = SpeedEffect(in_ms=1000, out_ms=3000, rate=2.0)
+    b = SpeedEffect(in_ms=5000, out_ms=8000, rate=0.5)
+    lane.set_effects([a, b])
+
+    start_x = 56 + int(344 * 2000 / 10_000)    # a 중앙(2000ms)
+    delta_px = int(344 * 3500 / 10_000)         # +3500ms → a.out 가 5000 너머로
+
+    received: list = []
+    lane.effect_changed.connect(received.append)
+    qtbot.mousePress(lane, Qt.LeftButton, pos=QPoint(start_x, 10))
+    qtbot.mouseMove(lane, QPoint(start_x + delta_px, 10))
+    qtbot.mouseRelease(lane, Qt.LeftButton, pos=QPoint(start_x + delta_px, 10))
+
+    assert received, "effect_changed 발화해야"
+    last = received[-1]
+    assert last.id == a.id
+    assert last.out_ms == 5000, f"이웃 왼쪽 edge(5000)에 딱 붙어야 (got {last.out_ms})"
+    assert last.out_ms - last.in_ms == 2000, "폭 보존"
+
+
+def test_drag_into_left_neighbor_snaps_flush(qtbot):
+    """대칭 — 왼쪽 이웃에 끌어다 놓으면 a.out(3000)에 딱 붙는다."""
+    lane = SpeedLane(effect_type="speed", header_label="배속", color="#8b5cf6")
+    qtbot.addWidget(lane)
+    lane.resize(400, 20)
+    lane.set_duration_ms(10_000)
+    a = SpeedEffect(in_ms=1000, out_ms=3000, rate=2.0)
+    b = SpeedEffect(in_ms=5000, out_ms=8000, rate=0.5)
+    lane.set_effects([a, b])
+
+    start_x = 56 + int(344 * 6500 / 10_000)    # b 중앙(6500ms)
+    delta_px = -int(344 * 3500 / 10_000)        # -3500ms → b.in 이 3000 아래로
+
+    received: list = []
+    lane.effect_changed.connect(received.append)
+    qtbot.mousePress(lane, Qt.LeftButton, pos=QPoint(start_x, 10))
+    qtbot.mouseMove(lane, QPoint(start_x + delta_px, 10))
+    qtbot.mouseRelease(lane, Qt.LeftButton, pos=QPoint(start_x + delta_px, 10))
+
+    assert received, "effect_changed 발화해야"
+    last = received[-1]
+    assert last.id == b.id
+    assert last.in_ms == 3000, f"이웃 오른쪽 edge(3000)에 딱 붙어야 (got {last.in_ms})"
+    assert last.out_ms - last.in_ms == 3000, "폭 보존"
+
+
 def test_delete_key_emits_effect_deleted(qtbot):
     lane, eff = _lane_with_one_speed(qtbot)
     bar_x = 56 + int(344 * 3000 / 10_000)

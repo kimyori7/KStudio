@@ -86,3 +86,32 @@ def test_add_button_emits_at_playhead(widget, qtbot):
         speed_action.trigger()
     assert blocker.args == ["speed", 4_500, 0]
     menu.close()
+
+
+def test_remove_lane_after_effect_deleted(widget, qtbot):
+    """회귀 (2026-06-22): 줌 효과 추가 → Del 로 삭제 → '줌 라인 지우기' →
+    빈 줌 lane 이 실제로 제거돼야 한다.
+
+    Del 로 효과를 지우면 정책상 lane 은 (효과 0 이어도) 유지된다. 그 상태에서
+    '이 라인 지우기' 를 누르면 효과·빈 row 모두 0 이라 두 분기를 모두 건너뛰고
+    fall-through 해서 lane 이 안 사라지던 버그.
+    """
+    from screen_recorder.effects import Sidecar
+    from screen_recorder.effects.types.zoom import ZoomEffect
+
+    # 1) 줌 효과 1개 → 줌 lane 생성.
+    sc_with = Sidecar(source_path="x", source_hash="h",
+                      effects=[ZoomEffect(in_ms=1_000, out_ms=4_000)])
+    widget.set_sidecar(sc_with)
+    assert "zoom" in widget._lanes
+
+    # 2) Del 로 효과 삭제 → 효과 0 인 사이드카 도착 (같은 영상이라 lane 유지).
+    sc_empty = Sidecar(source_path="x", source_hash="h", effects=[])
+    widget.set_sidecar(sc_empty)
+    assert "zoom" in widget._lanes, "정책: 효과 0 이어도 lane 유지"
+    assert widget._lanes["zoom"].effects() == []
+    assert widget._extra_empty_lanes.get("zoom", 0) == 0
+
+    # 3) '줌 라인 지우기' → lane 이 실제로 제거돼야 한다.
+    widget._on_remove_lane_requested("zoom", 0)
+    assert "zoom" not in widget._lanes

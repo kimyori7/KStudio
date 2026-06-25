@@ -130,6 +130,14 @@ class VideoTab(QWidget):
         # eventFilter 가 풀스크린이 아닐 때도 호출되므로 반드시 __init__ 에서 정의.
         self._fullscreen_holder: QWidget | None = None
         self._fs_hide_timer: QTimer | None = None
+        # 풀스크린 하위 레이아웃 상태 (2026-06-22): 풀스크린엔 재생용 floating overlay 와
+        # 편집용 splitter 두 모드가 있고 편집 토글 시 오간다. holder 의 QVBoxLayout 참조,
+        # 현재 편집 레이아웃인지 여부, 복귀 시 원위치 인덱스를 보관.
+        self._fs_holder_layout: QVBoxLayout | None = None
+        self._fs_edit_layout: bool = False
+        self._fs_player_index: int = 0
+        self._fs_ctrl_index: int = 1
+        self._fs_timeline_index: int = 1
 
         self.player = PlayerWidget()
         self.controls = PlayerControls()
@@ -330,6 +338,9 @@ class VideoTab(QWidget):
         from .video.segment_playback import SegmentPlaybackController
         self._segment_ctrl = SegmentPlaybackController(self.player)
         self.player.position_changed.connect(self._segment_ctrl.on_main_position_changed)
+        # 소스 파일 끝(EndOfMedia) → 다음 클립으로 진행. position_changed 가 segment-끝=
+        # 소스-끝 경계에서 advance 를 놓쳐 "마지막 직전 클립에서 멈춤"하던 회귀의 보완 경로.
+        self.player.media_ended.connect(self._segment_ctrl.on_media_ended)
         self._segment_ctrl.combined_position_changed.connect(self.timeline.set_position_ms)
         self._segment_ctrl.combined_position_changed.connect(self.controls.set_position_ms)
         self._segment_ctrl.combined_duration_changed.connect(self.timeline.set_duration_ms)
@@ -411,8 +422,16 @@ class VideoTab(QWidget):
 
         재생 모드: 타임라인 = 시크 바 한 줄(작은 고정 높이). 편집 모드: 영상 트랙 +
         효과 줄까지 펼침. 시크 바 자체는 두 모드 모두에서 보임.
+
+        2026-06-22: 풀스크린 중이면 splitter 가 holder 로 옮겨가 있으므로 일반
+        _apply_timeline_layout 대신 풀스크린 하위 레이아웃 전환(_fs_apply_sublayout)을
+        탄다 — 편집 OFF 면 floating overlay(playbar 가 하단 복귀), ON 이면 splitter
+        레이아웃(편집 UI 가 잘리지 않고 핸들로 크기 조절).
         """
-        self._apply_timeline_layout(on)
+        if self._fullscreen_holder is not None:
+            self._fs_apply_sublayout(on)
+        else:
+            self._apply_timeline_layout(on)
 
     def _apply_timeline_layout(self, edit_on: bool) -> None:
         """편집 모드에 따라 splitter 에서 타임라인이 차지할 세로 공간을 결정한다.
@@ -671,7 +690,9 @@ class VideoTab(QWidget):
             # 트랙 lane 의 정보 가치가 작아 스킵.
             if seg.src.lower().endswith(".gif"):
                 continue
-            for src_ms in lane.thumbnail_slots_for(seg):
+            # 이미 가진 슬롯은 skip — 편집마다 전체 재요청 시 슬롯 총합 > 썸네일 캐시(100)
+            # 면 매번 수백 개를 ffmpeg 로 재추출하던 폭풍(클립 많을수록 CPU/메모리 폭증) 방지.
+            for src_ms in lane.missing_thumbnail_slots(seg):
                 self._thumb_service.request(self._thumb_request_cls(
                     segment_id=seg.id, src=seg.src, ms=int(src_ms),
                 ))
@@ -1491,6 +1512,30 @@ class VideoTab(QWidget):
             pass
         self._media_loaded = False
 
+    def release_player_for_file_op(self) -> None:
+        """디스크 파일 작업(rename 등) 전 player 파일 핸들을 해제 + position 보존.
+
+        Windows WMF/QMovie 가 잡고 있는 핸들 때문에 열린 영상은 rename/삭제가
+        WinError 32 로 실패. _release_player 와 동일하나 외부(MainWindow) 호출용 공개 API.
+        해제 후 _media_loaded=False 가 되어 다음 _ensure_player_loaded 가 재로드한다.
+        """
+        self._release_player()
+
+    def apply_renamed_source(self, old_path: Path, new_path: Path) -> None:
+        """디스크 rename 완료 후 호출 — in-memory 소스 경로 갱신 + (보이는 탭이면) 재로드.
+
+        호출자(MainWindow)가 release_player_for_file_op → 디스크 rename 까지 끝낸 뒤 호출.
+        실패해 원복하는 경우 old_path == new_path 로 호출하면 마이그레이션은 no-op 이고
+        원본을 그대로 재로드한다.
+        """
+        self._source_path = Path(new_path)
+        try:
+            self._edit_controller.migrate_source_path(old_path, new_path)
+        except (AttributeError, RuntimeError):
+            pass
+        if self.isVisible():
+            self._ensure_player_loaded()
+
     def showEvent(self, event) -> None:  # noqa: N802 — Qt signature
         """탭이 보일 때 player lazy 로드 + thumbnail filmstrip 디스패치.
 
@@ -1594,94 +1639,39 @@ class VideoTab(QWidget):
         # 반환 → 복귀 시 outer layout 끝에 append 되어 splitter 가 비고 playbar 가
         # 사라지는 보고 ("영상 편집 갔다가 편집 끝니까 플레이바 사라짐").
         preview_layout = self._preview_container.layout()
-        player_index = preview_layout.indexOf(self.player)
-        ctrl_index = preview_layout.indexOf(self.controls)
-        timeline_index = self._main_splitter.indexOf(self.timeline)
+        self._fs_player_index = preview_layout.indexOf(self.player)
+        self._fs_ctrl_index = preview_layout.indexOf(self.controls)
+        self._fs_timeline_index = self._main_splitter.indexOf(self.timeline)
 
-        # 새 top-level 창에 player 를 일시적으로 reparent.
-        # holder 자체엔 layout 을 두지 않는다 — player 는 fillRect 로 깔고, controls
-        # 는 raise_() 한 floating overlay 로 관리한다. 마우스 트래킹은 위젯별
-        # setMouseTracking 대신 QApplication 글로벌 eventFilter 로 처리 (아래).
+        # 새 top-level 창. holder 엔 빈 QVBoxLayout 을 둔다 — 편집 모드에선 여기에
+        # _main_splitter 를 통째로 넣어 풀스크린 전체를 차지하게 하고(일반 모드와 동일
+        # 한 리사이즈 핸들·레인 배치), 재생 모드에선 비워두고 player/controls/timeline
+        # 을 floating(setGeometry) overlay 로 띄운다. 마우스 트래킹은 위젯별 대신
+        # __init__ 의 QApplication 글로벌 eventFilter 가 처리.
         holder = QWidget()
         holder.setWindowTitle("KStudio - 풀스크린")
         holder.setStyleSheet("background-color: black;")
+        holder_layout = QVBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.setSpacing(0)
+        self._fs_holder_layout = holder_layout
 
-        # player 를 holder 로 옮김 (원래 layout 에서 자동 분리)
-        self.player.setParent(holder)
-        self.player.show()
-        self.player.setGeometry(0, 0, 1, 1)  # showFullScreen 후 resizeEvent 에서 정확히 잡음
-
-        # controls 도 holder 의 자식으로 reparent — layout 이 아닌 floating overlay
-        # 로 두어야 player 위에 겹쳐 그릴 수 있다.
-        preview_layout.removeWidget(self.controls)
-        self.controls.setParent(holder)
-        self.controls.show()
-        # timeline (재생 슬라이더) 도 풀스크린에서 보여줌 — 사용자가 위치/길이 확인
-        # 못해 답답하다는 보고 (이전엔 hide 처리). controls 와 함께 화면 하단에
-        # floating overlay 로 띄움.
-        # timeline 은 splitter 의 자식 — splitter 에서 직접 제거 후 reparent.
-        self.timeline.setParent(holder)
-        self.timeline.show()
-
-        # 자동 숨김 타이머
+        # 자동 숨김 타이머 (재생 모드 floating overlay 에서만 사용 — 편집 모드는 비활성)
         hide_timer = QTimer(holder)
         hide_timer.setSingleShot(True)
         hide_timer.setInterval(_FS_HIDE_DELAY_MS)
         hide_timer.timeout.connect(lambda: self._fs_maybe_hide_controls())
         self._fs_hide_timer = hide_timer
 
-        def _reposition_controls():
-            ctrl_h = self.controls.sizeHint().height()
-            tl_h = self.timeline.sizeHint().height()
-            self.controls.setGeometry(
-                0, holder.height() - ctrl_h, holder.width(), ctrl_h,
-            )
-            self.controls.raise_()
-            # timeline 은 controls 바로 위에.
-            self.timeline.setGeometry(
-                0, holder.height() - ctrl_h - tl_h, holder.width(), tl_h,
-            )
-            self.timeline.raise_()
-
         def _on_resize(ev):
-            self.player.setGeometry(0, 0, holder.width(), holder.height())
-            _reposition_controls()
+            # 편집(splitter) 모드면 holder 의 layout 이 splitter 크기를 잡으므로 손대지
+            # 않는다. 재생(floating) 모드에서만 player 를 꽉 채우고 바를 하단 재배치.
+            if not self._fs_edit_layout:
+                self.player.setGeometry(0, 0, holder.width(), holder.height())
+                self._fs_reposition_floating()
         holder.resizeEvent = _on_resize  # type: ignore[assignment]
 
-        # 마우스 위치 추적 — _VideoSurface 까지 mouseTracking 을 전파하고 후크하는
-        # 것은 깨지기 쉽다 (페인트만 하던 위젯에 입력 이벤트 흐름이 추가됨). 대신
-        # __init__ 에서 이미 영구 설치한 QApplication eventFilter 가 mouseMove 를 한
-        # 곳에서 처리한다 (풀스크린일 때만 _fs_handle_global_mouse_move 동작).
-
-        def _restore():
-            # player + controls 를 원래 자리에 복귀. 멱등 — 한 번만 실행되도록 가드.
-            if self._fullscreen_holder is None:
-                return
-            self._fullscreen_holder = None
-            self._fs_hide_timer = None
-            # eventFilter 는 __init__ 에서 영구 설치 — 여기서 제거하지 않는다.
-            try:
-                self.player.setParent(None)
-                self.controls.setParent(None)
-            except RuntimeError:
-                pass
-            try:
-                self.timeline.setParent(None)
-            except RuntimeError:
-                pass
-            # 진입 전과 동일한 위치로 복귀 — player/controls 는 preview_container,
-            # timeline 은 splitter. *_index 는 modify 전에 잡아둔 값.
-            preview_layout.insertWidget(player_index, self.player, stretch=1)
-            preview_layout.insertWidget(ctrl_index, self.controls)
-            self._main_splitter.insertWidget(timeline_index, self.timeline)
-            # 풀스크린 복귀 후 타임라인 레이아웃을 현재 편집 모드에 맞게 재적용 —
-            # 재생 모드면 시크 바 한 줄, 편집 모드면 전체 (_apply_timeline_layout 단일 funnel).
-            self._apply_timeline_layout(self.is_edit_mode_on())
-            self.player.show()
-            self.controls.show()
-            self.player.setFocus()
-
-        # 닫힐 때(Esc 등) 복귀 처리
+        # 닫힐 때(Esc 등) 복귀 처리 — _fs_restore 가 현재 하위 레이아웃과 무관하게 복원.
         original_keyPressEvent = holder.keyPressEvent
         def _key(ev):
             if ev.key() == Qt.Key_Escape:
@@ -1699,16 +1689,119 @@ class VideoTab(QWidget):
         # player 가 holder 의 자식 상태로 남아 사라지는 일을 방지.
         original_closeEvent = holder.closeEvent
         def _close(ev):
-            _restore()
+            self._fs_restore()
             original_closeEvent(ev)
         holder.closeEvent = _close   # type: ignore[assignment]
 
-        holder.showFullScreen()
         self._fullscreen_holder = holder
-        # 진입 직후엔 컨트롤 보임 → 3초 후 (재생 중이면) 숨김 시작
-        _reposition_controls()
-        if self.player.is_playing():
-            hide_timer.start()
+        self._fs_edit_layout = False
+        # 진입 시점의 편집 모드에 맞는 하위 레이아웃 구성.
+        self._fs_apply_sublayout(self.is_edit_mode_on())
+        holder.showFullScreen()
+        # showFullScreen 직후 정확한 크기로 재배치 (floating 모드 한정).
+        if not self._fs_edit_layout:
+            self.player.setGeometry(0, 0, holder.width(), holder.height())
+            self._fs_reposition_floating()
+            if self.player.is_playing():
+                hide_timer.start()
+
+    # ---------- 풀스크린 하위 레이아웃 전환 (재생 overlay ↔ 편집 splitter) ----------
+    def _fs_apply_sublayout(self, edit_on: bool) -> None:
+        """풀스크린에서 편집 모드에 맞는 하위 레이아웃을 적용한다.
+
+        편집 ON: 일반 모드와 동일한 _main_splitter 를 holder 전체에 — 위/아래 핸들
+        드래그로 영역 조절 가능, 자동 숨김 비활성(편집 공간 항상 표시).
+        편집 OFF: player 가 화면을 채우고 controls/timeline 은 floating overlay.
+        """
+        holder = self._fullscreen_holder
+        if holder is None:
+            return
+        if edit_on:
+            if self._fs_hide_timer is not None:
+                self._fs_hide_timer.stop()
+            self._fs_reassemble_splitter()                     # floating 였다면 재조립
+            self._fs_holder_layout.addWidget(self._main_splitter)  # self→holder (자식 동반)
+            self._fs_edit_layout = True
+            self._main_splitter.show()
+            self.player.show()
+            self.controls.show()
+            self.timeline.show()
+            self._apply_timeline_layout(True)                  # 핸들 비율 + 높이 제한 해제
+        else:
+            self._fs_edit_layout = False
+            self._apply_timeline_layout(False)                 # 시크 바 한 줄로 묶음
+            self._fs_detach_to_floating()
+            if self.player.is_playing() and self._fs_hide_timer is not None:
+                self._fs_hide_timer.start()
+
+    def _fs_reposition_floating(self) -> None:
+        """재생(floating) 모드 — controls/timeline 을 화면 하단에 겹쳐 배치."""
+        holder = self._fullscreen_holder
+        if holder is None:
+            return
+        ctrl_h = self.controls.sizeHint().height()
+        tl_h = self.timeline.sizeHint().height()
+        self.controls.setGeometry(0, holder.height() - ctrl_h, holder.width(), ctrl_h)
+        self.controls.raise_()
+        # timeline 은 controls 바로 위에.
+        self.timeline.setGeometry(
+            0, holder.height() - ctrl_h - tl_h, holder.width(), tl_h,
+        )
+        self.timeline.raise_()
+
+    def _fs_detach_to_floating(self) -> None:
+        """player/controls/timeline 을 splitter 에서 빼 holder 직속 floating 으로.
+
+        편집→재생 전환 또는 재생 모드 진입 시 호출. 빈 splitter 는 복귀 대비해
+        self 의 outer layout 으로 도로 park.
+        """
+        holder = self._fullscreen_holder
+        if holder is None:
+            return
+        self._fs_holder_layout.removeWidget(self._main_splitter)
+        self.player.setParent(holder)
+        self.player.show()
+        self.player.setGeometry(0, 0, max(1, holder.width()), max(1, holder.height()))
+        self.controls.setParent(holder)
+        self.controls.show()
+        self.timeline.setParent(holder)
+        self.timeline.show()
+        if self._main_splitter.parent() is not self:
+            self.layout().addWidget(self._main_splitter)
+        self._fs_reposition_floating()
+
+    def _fs_reassemble_splitter(self) -> None:
+        """floating 상태였던 player/controls/timeline 을 splitter 구조로 되돌린다.
+
+        이미 splitter 안에 있으면 각 검사가 False 라 no-op. *_index 는 진입 전 캡처값.
+        """
+        preview_layout = self._preview_container.layout()
+        if self.player.parent() is not self._preview_container:
+            preview_layout.insertWidget(self._fs_player_index, self.player, stretch=1)
+        if self.controls.parent() is not self._preview_container:
+            preview_layout.insertWidget(self._fs_ctrl_index, self.controls)
+        if self.timeline.parent() is not self._main_splitter:
+            self._main_splitter.insertWidget(self._fs_timeline_index, self.timeline)
+
+    def _fs_restore(self) -> None:
+        """풀스크린 종료 — 하위 레이아웃(overlay/splitter)과 무관하게 원위치 복원.
+
+        멱등 — closeEvent 가 한 번만 실행되도록 holder 가드.
+        """
+        if self._fullscreen_holder is None:
+            return
+        self._fullscreen_holder = None
+        self._fs_hide_timer = None
+        self._fs_edit_layout = False
+        # 위젯들을 splitter 구조로 복원하고 splitter 를 self 의 outer layout 으로.
+        self._fs_reassemble_splitter()
+        if self._main_splitter.parent() is not self:
+            self.layout().addWidget(self._main_splitter)
+        # 현재 편집 모드에 맞게 타임라인 레이아웃 재적용 (단일 funnel).
+        self._apply_timeline_layout(self.is_edit_mode_on())
+        self.player.show()
+        self.controls.show()
+        self.player.setFocus()
 
     # ---------- 풀스크린 컨트롤 오버레이 ----------
     def eventFilter(self, obj, ev) -> bool:  # type: ignore[override]
@@ -1766,6 +1859,10 @@ class VideoTab(QWidget):
         holder = self._fullscreen_holder
         if holder is None:
             return
+        # 편집(splitter) 모드에선 controls/timeline 이 splitter 자식(상시 표시)이라
+        # 자동 숨김/표시 토글을 하면 안 된다 — overlay 모드에서만 동작.
+        if self._fs_edit_layout:
+            return
         # 글로벌 커서 → holder 로컬 좌표 변환. 다른 모니터/창 위로 마우스가 가도
         # 안전하게 무시.
         pos = holder.mapFromGlobal(QCursor.pos())
@@ -1791,6 +1888,8 @@ class VideoTab(QWidget):
     def _fs_maybe_hide_controls(self) -> None:
         if self._fullscreen_holder is None:
             return
+        if self._fs_edit_layout:
+            return  # 편집 모드 — 바를 숨기지 않음
         if not self.player.is_playing():
             return  # 일시정지 중엔 숨기지 않음
         self.controls.hide()

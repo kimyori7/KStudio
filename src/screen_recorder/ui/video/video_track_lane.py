@@ -123,6 +123,20 @@ class VideoTrackLane(QWidget):
         self._thumbnails[(segment_id, int(src_ms))] = img
         self.update()
 
+    def has_thumbnail(self, segment_id: str, src_ms: int) -> bool:
+        """이 슬롯의 썸네일을 이미 가지고 있는지. _request_all_thumbnails 가 편집마다
+        전체 슬롯을 재추출(ffmpeg 폭풍)하지 않도록, 이미 가진 슬롯은 skip 하는 데 쓴다."""
+        return (segment_id, int(src_ms)) in self._thumbnails
+
+    def missing_thumbnail_slots(self, seg: VideoSegment) -> list[int]:
+        """이 segment 의 필름스트립 슬롯 중 아직 캐시에 없는 src ms 만 반환.
+
+        편집(삽입/자르기)마다 _request_all_thumbnails 가 모든 클립의 모든 슬롯을
+        통째로 재요청해, 슬롯 총합 > 썸네일 LRU 캐시(100)일 때 매번 수백 개를 ffmpeg
+        로 재추출하던 폭풍(클립 많을수록 CPU/메모리 폭증)을 막는다 — 새로 생긴 슬롯만 요청."""
+        return [ms for ms in self.thumbnail_slots_for(seg)
+                if not self.has_thumbnail(seg.id, ms)]
+
     def thumbnail_slots_for(self, seg: VideoSegment, width_px: int = 0) -> list[int]:
         """segment 길이 기반 고정 src ms 슬롯들 (박스 width 무관).
 

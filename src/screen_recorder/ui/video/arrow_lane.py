@@ -140,6 +140,13 @@ class ArrowLane(EffectLane):
         elif self._drag_kind == "right":
             new_out = max(self._drag_orig_in + 100, self._drag_orig_out + delta_ms)
             new_out = self._snap_ms_to_playhead(new_out)
+        # 같은 row 이웃에 딱 붙도록 클램프 — 겹쳐서 원복되던 동작 대신 flush (2026-06-23).
+        _ti = int(getattr(
+            next((e for e in self._effects if e.id == self._drag_id), None),
+            "track_idx", 0))
+        new_in, new_out = self._clamp_against_siblings(
+            self._drag_kind, new_in, new_out, drag_id=self._drag_id,
+            orig_in=self._drag_orig_in, orig_out=self._drag_orig_out, track_idx=_ti)
         new_in = max(0, min(self._duration_ms, new_in))
         new_out = max(0, min(self._duration_ms, new_out))
         if new_out <= new_in:

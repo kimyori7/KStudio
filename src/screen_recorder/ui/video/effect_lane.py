@@ -196,6 +196,44 @@ class EffectLane(QWidget):
             new_out -= shift
         return int(new_in), int(new_out)
 
+    def _clamp_against_siblings(
+        self, kind: str, new_in: int, new_out: int, *,
+        drag_id: str, orig_in: int, orig_out: int, track_idx: int = 0,
+    ) -> tuple[int, int]:
+        """드래그를 같은 row(같은 track_idx)의 다른 효과에 '딱 붙도록' 클램프한다.
+
+        2026-06-23 사용자 요청: 배속을 옮기다 이웃에 겹치면 원복되던 동작 →
+        넘지 못하고 이웃 edge 에 flush. 구간은 반열림 [in, out) 이라 edge 가 맞닿아도
+        (new_out == 이웃.in_ms) 겹침이 아니므로 controller 가 수락한다.
+
+        - kind="move": 평행 이동(폭 보존). 원래 위치 기준 좌/우 이웃의 안쪽 edge 까지만.
+          이웃을 '넘어' 반대편으로 점프하는 건 막는다(타임라인 표준).
+        - kind="left"/"right": 한쪽 edge 리사이즈. 그 방향 이웃 edge 에서 멈춘다.
+
+        sidecar 가 유효하면 이웃들은 [orig_in, orig_out] 와 안 겹치므로 각자 완전히
+        좌측이거나 우측 — corridor(left_limit..right_limit) 폭은 항상 효과 폭 이상.
+        """
+        sibs = [
+            e for e in self._effects
+            if e.id != drag_id and int(getattr(e, "track_idx", 0)) == int(track_idx)
+        ]
+        left_limit = max([e.out_ms for e in sibs if e.out_ms <= orig_in], default=0)
+        right_limit = min(
+            [e.in_ms for e in sibs if e.in_ms >= orig_out],
+            default=self._duration_ms if self._duration_ms > 0 else orig_out,
+        )
+        if kind == "move":
+            width = new_out - new_in
+            if new_in < left_limit:
+                new_in, new_out = left_limit, left_limit + width
+            if new_out > right_limit:
+                new_out, new_in = right_limit, right_limit - width
+        elif kind == "left":
+            new_in = max(new_in, left_limit)
+        elif kind == "right":
+            new_out = min(new_out, right_limit)
+        return int(new_in), int(new_out)
+
     def _ms_to_x(self, ms: int) -> int:
         if self._duration_ms <= 0:
             return _HEADER_WIDTH

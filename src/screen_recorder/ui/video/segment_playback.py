@@ -44,6 +44,10 @@ class SegmentPlaybackController(QObject):
         self._segments: list[VideoSegment] = []
         self._active_idx: int = -1   # 현재 로드된 segment 의 인덱스. 갭이면 -1.
         self._loaded_src: Optional[str] = None
+        # 갓 활성화 직후 가드 — 다음 segment 로 막 넘긴 직후 도착하는 stale end 신호
+        # (EndOfMedia / positionChanged)가 곧장 또 advance 하지 않도록. 첫 정상
+        # in-segment position 에서 해제. 사용자 시크는 가드하지 않음.
+        self._just_activated: bool = False
         # 갭 진입/이탈 상태.
         self._in_gap: bool = False
         self._gap_combined_ms: int = 0
@@ -90,6 +94,25 @@ class SegmentPlaybackController(QObject):
         self._exit_gap()
         idx = self._segments.index(seg)
         self._activate_segment(idx, seek_local_ms=local)
+        # 사용자 시크는 직후 첫 position 이 곧장 경계일 수 있어 advance 가드 안 함.
+        self._just_activated = False
+
+    def on_media_ended(self) -> None:
+        """player 의 EndOfMedia(소스 파일 끝) — 현재 segment 끝으로 간주하고 진행.
+
+        position_changed 기반 advance 는 segment 가 자기 소스 파일의 끝에서 끝날 때
+        (마지막 위치 신호가 seg_dur 에 못 미치고 player 가 멈춤) 누락된다. 사용자 보고:
+        4개 클립 중 3번째(소스 끝)에서 멈추고 4번째로 안 넘어감. EndOfMedia 를 두 번째
+        advance 경로로 받아 다음 클립/갭으로 확실히 넘긴다.
+        """
+        if self._in_gap or self._active_idx < 0 or not self._segments:
+            return
+        if self._just_activated:
+            # position 기반 advance 가 이미 다음 클립으로 넘긴 뒤 도착한 뒤늦은 신호 —
+            # 재-advance 금지. EndOfMedia 는 '재생 중이었음' 을 뜻하니 재생만 보장.
+            self._player.play()
+            return
+        self._advance_past(self._segments[self._active_idx], resume_play=True)
 
     def on_main_position_changed(self, ms: int) -> None:
         """player 의 position 변화 — 결합 ms 로 변환 emit + segment 끝 검사."""
@@ -109,22 +132,38 @@ class SegmentPlaybackController(QObject):
         _perf_inc("combined_pos")
         seg_dur = seg.duration_ms
         if seg_dur > 0 and local_ms >= seg_dur:
-            # 현재 segment 끝 — 그 시점의 다음 트랙 위치 (= seg.end_ms) 가 갭 인지
-            # 다른 segment 인지 검사.
-            next_t = seg.end_ms
-            next_seg, next_local = self._segment_at(next_t)
-            if next_seg is None:
-                # 마지막 segment 끝 또는 갭 진입.
-                if next_t >= self.combined_duration_ms():
-                    self._player.pause()
-                    self.combined_position_changed.emit(int(next_t))
-                else:
-                    self._enter_gap(next_t)
-            else:
-                idx = self._segments.index(next_seg)
-                self._activate_segment(idx, seek_local_ms=next_local)
+            self._try_advance(seg)
+        else:
+            # 정상 in-segment 위치 — 갓 활성화 가드 해제.
+            self._just_activated = False
 
     # ---------- internal ----------
+    def _try_advance(self, from_seg: VideoSegment) -> None:
+        """현재 segment 끝 도달 → 다음으로 진행. 단, 갓 활성화된 직후의 stale 신호면
+        무시(position 기반 + EndOfMedia 가 둘 다 와 중복 advance 하는 회귀 방지)."""
+        if self._just_activated:
+            return
+        self._advance_past(from_seg)
+
+    def _advance_past(self, seg: VideoSegment, *, resume_play: bool = False) -> None:
+        """seg.end_ms 시점의 다음 트랙 위치로 진행 — 다음 segment / 갭 / 트랙 끝.
+
+        경계가 갭/다른 segment 인지 검사. resume_play=True 면 (EndOfMedia 경로처럼
+        player 가 이미 멈춰 is_playing()=False 여도) 다음에서 재생을 이어간다.
+        """
+        next_t = seg.end_ms
+        next_seg, next_local = self._segment_at(next_t)
+        if next_seg is None:
+            # 마지막 segment 끝 또는 갭 진입.
+            if next_t >= self.combined_duration_ms():
+                self._player.pause()
+                self.combined_position_changed.emit(int(next_t))
+            else:
+                self._enter_gap(next_t, assume_playing=resume_play)
+        else:
+            idx = self._segments.index(next_seg)
+            self._activate_segment(idx, seek_local_ms=next_local,
+                                   assume_playing=resume_play)
     def _segment_at(self, combined_ms: int) -> tuple[Optional[VideoSegment], int]:
         """결합 ms 위치의 segment 와 그 안의 local ms. 갭이면 (None, 0).
 
@@ -136,8 +175,12 @@ class SegmentPlaybackController(QObject):
                 return s, combined_ms - s.start_ms
         return None, 0
 
-    def _activate_segment(self, idx: int, *, seek_local_ms: int = 0) -> None:
+    def _activate_segment(self, idx: int, *, seek_local_ms: int = 0,
+                          assume_playing: bool = False) -> None:
         """segment 를 활성화 — source 가 다르면 load, 같으면 seek 만.
+
+        assume_playing=True 면 player.is_playing() 가 False(EndOfMedia 직후 등)여도
+        재생 중이었던 것으로 간주해 새 src 로드 후 재생을 이어간다.
 
         다음 segment 진입 시 player.load() 가 새 미디어를 비동기 로딩 — 그 직후
         play() 호출 안 하면 새 segment 가 paused 상태로 멈춤. 이전 상태 (재생 중)
@@ -150,7 +193,8 @@ class SegmentPlaybackController(QObject):
         seg = self._segments[idx]
         target_src = seg.src
         target_seek_ms = int(seg.src_in_ms) + max(0, seek_local_ms)
-        was_playing = bool(getattr(self._player, "is_playing", lambda: False)())
+        was_playing = bool(assume_playing
+                           or getattr(self._player, "is_playing", lambda: False)())
         src_changed = (self._loaded_src != target_src)
         # _active_idx 를 load() 보다 *먼저* 갱신한다. setSource(B) 가 새 미디어
         # position 을 0 으로 리셋하며 positionChanged(0) 을 (동기/재진입) 쏘는데,
@@ -174,14 +218,22 @@ class SegmentPlaybackController(QObject):
         self._player.seek_ms(int(target_seek_ms))
         self.active_segment_changed.emit(seg.id)
         # src 가 바뀌면 load 후 paused 상태가 됨. 이전 재생 중이었으면 재개.
-        if was_playing and src_changed:
+        # assume_playing(EndOfMedia 경로)면 src 변화 여부와 무관하게 재생을 보장.
+        if was_playing and (src_changed or assume_playing):
             self._player.play()
+        # 갓 활성화 — 직후 도착하는 stale end 신호가 곧장 또 advance 하지 않도록 가드.
+        self._just_activated = True
 
     # ---------- gap 처리 ----------
-    def _enter_gap(self, combined_ms: int) -> None:
-        """갭 진입 — player pause + 검은 화면 + 가상 시계 시작(재생 중일 때만)."""
+    def _enter_gap(self, combined_ms: int, *, assume_playing: bool = False) -> None:
+        """갭 진입 — player pause + 검은 화면 + 가상 시계 시작(재생 중일 때만).
+
+        assume_playing=True 면 player.is_playing()=False(EndOfMedia 직후 등)여도
+        재생 중이었던 것으로 간주해 가상 시계를 돌려 다음 segment 까지 진행한다.
+        """
         self._gap_combined_ms = int(combined_ms)
-        was_playing = bool(getattr(self._player, "is_playing", lambda: False)())
+        was_playing = bool(assume_playing
+                           or getattr(self._player, "is_playing", lambda: False)())
         self._gap_was_playing = was_playing
         if was_playing:
             self._player.pause()

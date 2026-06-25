@@ -298,6 +298,21 @@ def ensure_default_track(sidecar: Sidecar, source_duration_ms: int) -> None:
     ))
 
 
+def migrate_sidecar_source(sc: Sidecar, old_src: str, new_src: str) -> None:
+    """디스크 rename/이동 후 in-memory 사이드카의 경로를 old_src → new_src 로 갱신.
+
+    SidecarStore.load_for 가 파일을 옮겼을 때 디스크에서 자동으로 하던 마이그레이션을
+    (재로드 없이) 메모리상의 Sidecar 에 즉시 적용하는 순수 함수. source_path 가
+    old_src 거나 비어 있으면 new_src 로 바꾸고, old_src 를 가리키던 video_track
+    segment.src 만 바꾼다 (멀티-소스 concat 의 다른 src 는 그대로 둠).
+    """
+    if not sc.source_path or sc.source_path == old_src:
+        sc.source_path = new_src
+    for seg in sc.video_track:
+        if seg.src == old_src:
+            seg.src = new_src
+
+
 # ---- file I/O ----
 def save_atomic(path: Path, sc: Sidecar) -> None:
     """JSON 직렬화 후 임시파일 → rename. 저장 중 프로세스 죽어도 기존 파일 보존."""

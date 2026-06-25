@@ -45,6 +45,7 @@ bin/
 /diag_*.png
 /diag_crop_magnifier/
 /diag_diff_colors/
+scripts/_diag_out/
 
 
 # Claude Code local settings

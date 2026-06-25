@@ -79,6 +79,47 @@ def test_lane_empty_segments_no_crash(qtbot):
     assert lane._segment_rects() == []
 
 
+def test_lane_has_thumbnail_reports_presence(qtbot):
+    """has_thumbnail — 슬롯 (segment_id, ms) 이 이미 캐시에 있으면 True.
+
+    편집마다 _request_all_thumbnails 가 전체 슬롯을 재요청해 ffmpeg 폭풍을 내던
+    회귀(클립 많을수록 CPU/메모리 폭증)를 막기 위해, 이미 가진 슬롯은 skip 하는 데 쓴다.
+    """
+    lane = VideoTrackLane()
+    qtbot.addWidget(lane)
+    assert lane.has_thumbnail("a", 0) is False
+    img = QImage(96, 54, QImage.Format_RGB888)
+    img.fill(0)
+    lane.set_thumbnail("a", 0, img)
+    assert lane.has_thumbnail("a", 0) is True
+    # 다른 ms / 다른 segment 는 여전히 없음.
+    assert lane.has_thumbnail("a", 999) is False
+    assert lane.has_thumbnail("b", 0) is False
+
+
+def test_lane_missing_thumbnail_slots_excludes_cached(qtbot):
+    """missing_thumbnail_slots — 아직 없는 슬롯만 반환. 편집마다 전체 재요청 대신
+    빠진 것만 추출하게 해 ffmpeg 폭풍(클립 많을수록 CPU/메모리 폭증)을 막는다."""
+    lane = VideoTrackLane()
+    qtbot.addWidget(lane)
+    seg = _seg("a.mp4", 4000, "a", start_ms=0)
+    all_slots = lane.thumbnail_slots_for(seg)
+    assert all_slots, "사전조건: 슬롯이 하나 이상"
+    # 캐시 비었을 때 — 전부 missing.
+    assert lane.missing_thumbnail_slots(seg) == all_slots
+    # 한 슬롯을 채우면 그것만 빠진다.
+    img = QImage(96, 54, QImage.Format_RGB888)
+    img.fill(0)
+    lane.set_thumbnail("a", all_slots[0], img)
+    remaining = lane.missing_thumbnail_slots(seg)
+    assert all_slots[0] not in remaining
+    assert remaining == all_slots[1:]
+    # 전부 채우면 빈 리스트 — 재요청 0건.
+    for ms in all_slots:
+        lane.set_thumbnail("a", ms, img)
+    assert lane.missing_thumbnail_slots(seg) == []
+
+
 def test_lane_thumbnail_set_does_not_crash(qtbot):
     lane = VideoTrackLane()
     qtbot.addWidget(lane)

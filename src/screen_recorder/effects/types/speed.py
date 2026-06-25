@@ -14,7 +14,7 @@ class SpeedEffect(Effect):
     type: Literal["speed"] = "speed"
     rate: float = 1.0
     audio: str = "auto"
-    show_hud: bool = True
+    show_hud: bool = False   # 2026-06-23 사용자 요청: 기본 OFF (원하면 인스펙터에서 ON)
     hud_font_pt: int = 14
 
     def __post_init__(self) -> None:

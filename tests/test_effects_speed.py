@@ -8,7 +8,7 @@ def test_speed_minimal_construct():
     assert s.type == "speed"
     assert s.rate == 2.0
     assert s.audio == "auto"      # 기본
-    assert s.show_hud is True     # 기본 ON
+    assert s.show_hud is False    # 2026-06-23 기본 OFF 로 변경
 
 
 def test_speed_explicit_construct():

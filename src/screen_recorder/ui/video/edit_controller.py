@@ -97,6 +97,22 @@ class EditController(QObject):
         """사이드카 파일이 저장되는 디렉터리 경로."""
         return self._store.root
 
+    def migrate_source_path(self, old_path: Path, new_path: Path) -> None:
+        """디스크 rename 후 in-memory 소스 경로를 즉시 갱신 (재로드 없이).
+
+        편집 탭이 열린 채 라이브러리에서 영상 이름을 바꾸면, hash 매칭이라 사이드카
+        자체는 따라오지만 메모리상의 _video_path / sidecar.source_path / segment.src 는
+        여전히 옛 경로를 가리켜 이후 export/trim 이 깨진다. SidecarStore.load_for 가
+        파일 이동 시 하던 마이그레이션과 동일 로직을 현재 사이드카와 undo/redo 히스토리
+        전체에 적용한다.
+        """
+        from ...effects.sidecar import migrate_sidecar_source
+        old_s = str(old_path)
+        new_s = str(new_path)
+        self._video_path = Path(new_path)
+        migrate_sidecar_source(self._sidecar, old_s, new_s)
+        self._history.migrate(lambda sc: migrate_sidecar_source(sc, old_s, new_s))
+
     def is_edit_mode_on(self) -> bool:
         return self._edit_mode_on
 

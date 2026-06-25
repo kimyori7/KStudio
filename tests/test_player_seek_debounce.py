@@ -30,6 +30,29 @@ def _loaded_paused_player(qtbot):
     return w, m, a
 
 
+def test_end_of_media_emits_media_ended(qtbot):
+    """EndOfMedia(소스 파일 끝) 도달 시 media_ended 시그널 emit.
+
+    SegmentPlaybackController 가 이 신호로 다음 클립으로 넘어간다(클립이 자기 소스 끝에서
+    끝나 position_changed 로는 advance 가 누락되던 회귀의 보완 경로)."""
+    w, m, a = _loaded_paused_player(qtbot)
+    fired = []
+    w.media_ended.connect(lambda: fired.append(True))
+    w._on_main_media_status(QMediaPlayer.EndOfMedia)
+    assert fired == [True]
+
+
+def test_end_of_media_suppressed_during_force_frame(qtbot):
+    """force-frame(play/pause 사이클) 중 EndOfMedia 는 media_ended 를 쏘지 않음 —
+    끝 근처에서 일시정지 프레임 강제 중 잘못된 advance 방지."""
+    w, m, a = _loaded_paused_player(qtbot)
+    fired = []
+    w.media_ended.connect(lambda: fired.append(True))
+    w._suppress_state_signal = True
+    w._on_main_media_status(QMediaPlayer.EndOfMedia)
+    assert fired == []
+
+
 def test_rapid_seek_defers_play_pause(qtbot):
     """빠른 연속 seek 30회 → setPosition 30회(즉시)이지만 play/pause 는 아직 0회,
     스크럽이 멈춘 뒤(타이머 발화) 딱 1회만."""
@@ -64,3 +87,21 @@ def test_stop_cancels_pending_force_frame(qtbot):
     assert not w._seek_frame_timer.isActive()
     qtbot.wait(120)
     assert m.play.call_count == 0
+
+
+def test_pending_seek_on_load_forces_frame(qtbot):
+    """회귀 (2026-06-22): 보류된 seek 가 LoadedMedia 에서 적용될 때 setPosition 만
+    하고 프레임을 안 밀어 화면이 빈(또는 stale 썸네일) 채 남던 버그.
+
+    이미지 모드 갔다가 영상 모드로 복귀하면 탭 재활성에서 lazy reload → seek_ms 가
+    아직 로딩 중이라 _pending_seek_ms 에 저장 → LoadedMedia 시 _on_main_media_status
+    가 setPosition 만 했었다. seek_ms 와 동일하게 force-frame 디바운스를 켜야 한다."""
+    w, m, _a = _loaded_paused_player(qtbot)
+    w._pending_seek_ms = 5_000
+    w._on_main_media_status(QMediaPlayer.LoadedMedia)
+    assert m.setPosition.call_count == 1
+    assert m.setPosition.call_args[0][0] == 5_000
+    assert w._seek_frame_timer.isActive()      # force-frame 예약됨
+    qtbot.wait(150)                             # 디바운스 발화 대기
+    assert m.play.call_count == 1
+    assert m.pause.call_count == 1

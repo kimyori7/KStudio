@@ -147,6 +147,57 @@ def test_last_segment_end_triggers_pause():
     player.pause.assert_called_once()
 
 
+def test_media_ended_advances_to_next_segment():
+    """소스 파일 끝(EndOfMedia) 도달 시 다음 segment 로 진행 + 재생 재개.
+
+    회귀(사용자 보고): 4개 클립 중 3번째가 자기 소스 파일의 끝에서 끝나면 Qt 가
+    EndOfMedia 로 멈추는데, position_changed 가 seg_dur 에 도달 못 해 advance 가
+    누락 → 4번째로 못 넘어가고 정지. EndOfMedia 를 별도 advance 경로로 받아 해결.
+    """
+    ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"), _seg("b.mp4", 3000, 2000, "b"))
+    ctrl.seek_combined_ms(1000)   # a 활성
+    player.load.reset_mock()
+    player.play.reset_mock()
+    ctrl.on_media_ended()
+    assert ctrl.active_segment_id == "b"
+    player.load.assert_called_once()
+    player.play.assert_called()   # EndOfMedia ⇒ 재생 중이었으므로 재개
+
+
+def test_media_ended_on_last_segment_pauses():
+    """마지막 segment 의 소스 끝이면 정지 (다음이 없음)."""
+    ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"))
+    ctrl.seek_combined_ms(0)
+    player.pause.reset_mock()
+    ctrl.on_media_ended()
+    player.pause.assert_called()
+
+
+def test_media_ended_after_position_advance_does_not_double_advance():
+    """position 기반 advance 와 EndOfMedia 가 둘 다 와도 한 번만 — 뒤늦은 EndOfMedia 가
+    이미 넘어간 다음 클립을 즉시 정지/재-advance 시키면 안 됨(중복 advance 회귀)."""
+    ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"), _seg("b.mp4", 3000, 2000, "b"))
+    ctrl.seek_combined_ms(2999)
+    ctrl.on_main_position_changed(3000)   # position 기반으로 b 로 advance
+    assert ctrl.active_segment_id == "b"
+    player.pause.reset_mock()
+    ctrl.on_media_ended()                 # 뒤늦은 EndOfMedia
+    assert ctrl.active_segment_id == "b"
+    player.pause.assert_not_called()
+
+
+def test_media_ended_advances_into_gap_and_runs_clock(qtbot):
+    """소스 끝 직후가 갭이면 갭으로 진입하고 가상 시계가 진행(재생 중이었으므로).
+
+    qtbot — _gap_timer.start()/isActive 가 event dispatcher 를 요구.
+    """
+    ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"), _seg("b.mp4", 5000, 2000, "b"))
+    ctrl.seek_combined_ms(1000)   # a 활성
+    ctrl.on_media_ended()
+    assert ctrl._in_gap is True
+    assert ctrl._gap_timer.isActive() is True
+
+
 def test_active_segment_changed_signal_through_gap():
     """a → 갭 → b. active_segment_changed 가 a, "", b 순으로 emit."""
     ctrl, player = _ctrl(_seg("a.mp4", 0, 3000, "a"), _seg("b.mp4", 5000, 2000, "b"))

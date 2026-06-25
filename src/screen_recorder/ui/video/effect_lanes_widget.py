@@ -311,6 +311,17 @@ class EffectLanesWidget(QWidget):
                 lane.deleteLater()
             return
 
+        # 3. 효과·빈 row 모두 없음 (예: 효과를 Del 로 지운 뒤 남은 빈 lane).
+        # docstring 규칙 3 — lane 인스턴스 직접 제거. _lanes_pending_removal 큐는
+        # set_sidecar 재호출에 의존하는데, 지울 효과가 없어 effect_deleted 가 발화하지
+        # 않으므로 큐는 영영 처리되지 않는다 → 여기서 즉시 제거해야 한다 (회귀 2026-06-22:
+        # "줌 추가 → Del → 줌 라인 지우기 했는데 라인이 안 지워져").
+        if not lane.effects():
+            self._lanes.pop(effect_type)
+            self._layout.removeWidget(lane)
+            lane.deleteLater()
+        return
+
     def set_duration_ms(self, ms: int) -> None:
         self._duration_ms = max(0, int(ms))
         for lane in self._lanes.values():
