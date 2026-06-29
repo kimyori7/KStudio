@@ -55,7 +55,6 @@ def start_update_check(app, win, settings_update, si_server):
     if not getattr(sys, "frozen", False):
         return None
 
-    from screen_recorder.app.updater.manifest import Manifest  # noqa: F401
     from screen_recorder import __version__
 
     # RELEASES_REPO — ⚠️ Plan 2 에서 만들 실제 공개 레포로 교체.
@@ -118,7 +117,11 @@ def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) ->
                 logger.warning("업데이트 다운로드 실패", exc_info=True)
                 self.done.emit(None)
 
-    worker = _Worker()
+    # parent=win 으로 worker 의 스레드 affinity 를 GUI 스레드에 명시 고정한다. 그래야
+    # 백그라운드 run() 에서 emit 한 progressed/done 이 AutoConnection 으로 GUI 스레드 큐에
+    # 안전하게 전달된다(부모 없이도 GUI 스레드서 생성돼 현재는 맞지만, 호출 위치에 의존하는
+    # 암묵 가정을 없애 미래 리팩토링에도 안전하게).
+    worker = _Worker(win)
     worker.progressed.connect(dlg.set_progress)
 
     def _on_done(out_path):
