@@ -1,7 +1,11 @@
 """녹화 중 화면 우측 하단의 작은 컨트롤 패널."""
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLabel
+
+from screen_recorder.ui.icons import load_icon
+
+_ICON_PX = 16
 
 
 class MiniControl(QWidget):
@@ -22,18 +26,28 @@ class MiniControl(QWidget):
         self.elapsed = QLabel("00:00:00")
         layout.addWidget(self.elapsed)
 
-        self.pause_btn = QPushButton("⏸")
+        # 버튼 아이콘은 SVG(icons.load_icon) — 유니코드 글리프(⏸ ⏹ ✕)는 시스템 폰트
+        # 폴백에 따라 네모/깨짐으로 보였다. SVG 는 모든 OS·DPI 에서 동일하게 렌더.
+        self.pause_btn = QPushButton()
+        self.pause_btn.setIcon(load_icon("pause", size=_ICON_PX))
+        self.pause_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
+        self.pause_btn.setToolTip("일시정지")
         self.pause_btn.setFixedWidth(32)
         self.pause_btn.clicked.connect(self.pause_clicked.emit)
         layout.addWidget(self.pause_btn)
 
-        self.stop_btn = QPushButton("⏹")
+        self.stop_btn = QPushButton()
+        self.stop_btn.setIcon(load_icon("stop", size=_ICON_PX))
+        self.stop_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
+        self.stop_btn.setToolTip("정지")
         self.stop_btn.setFixedWidth(32)
         self.stop_btn.clicked.connect(self.stop_clicked.emit)
         layout.addWidget(self.stop_btn)
 
         # X — 이 mini 창을 영구히 끄기. 녹화 자체는 계속됨 (stop 과 구분).
-        self.close_btn = QPushButton("✕")
+        self.close_btn = QPushButton()
+        self.close_btn.setIcon(load_icon("x", size=_ICON_PX))
+        self.close_btn.setIconSize(QSize(_ICON_PX, _ICON_PX))
         self.close_btn.setFixedWidth(24)
         self.close_btn.setToolTip("이 창 다시 안 보기 (환경설정 → 작은 컨트롤로 재활성화)")
         self.close_btn.clicked.connect(self.close_requested.emit)
@@ -57,6 +71,11 @@ class MiniControl(QWidget):
         h, rem = divmod(self._secs, 3600)
         m, s = divmod(rem, 60)
         self.elapsed.setText(f"{h:02d}:{m:02d}:{s:02d}")
+
+    def set_paused(self, paused: bool):
+        """일시정지 상태면 버튼을 ▶(재개)로, 아니면 ⏸(일시정지)로. global_toolbar 와 동일."""
+        self.pause_btn.setIcon(load_icon("play" if paused else "pause", size=_ICON_PX))
+        self.pause_btn.setToolTip("재개" if paused else "일시정지")
 
     def stop(self):
         self._timer.stop()

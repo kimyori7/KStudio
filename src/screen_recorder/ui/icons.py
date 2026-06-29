@@ -56,6 +56,10 @@ _PATHS: dict[str, str] = {
         '<path d="M14.8 14.8 20 20"/>'
     ),
     "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    # 녹화 정지 — 꽉 찬 둥근 사각형. 미니 컨트롤(⏹ 글리프 대체)·정지 버튼용.
+    # fill="currentColor" 라 _wrap 의 color 토큰을 따라가 enabled/disabled 색이
+    # 모두 자동으로 맞는다. lucide 의 outline 형제들과 달리 채움(정지=관습적 채운 사각).
+    "stop": '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>',
     "crop": (
         '<path d="M6 2v14a2 2 0 0 0 2 2h14"/>'
         '<path d="M18 22V8a2 2 0 0 0-2-2H2"/>'
@@ -245,9 +249,12 @@ _PATHS: dict[str, str] = {
 def _wrap(name: str, color: str) -> str:
     """SVG path 본문을 24×24 viewBox 의 stroke-only SVG 로 감싼다."""
     body = _PATHS[name]
+    # color="{color}" 를 root 에 명시 → path 본문의 fill="currentColor"(stop·circle-record)
+    # 가 stroke 와 같은 테마 색을 따라가게 한다. disabled 변형도 COLOR_DISABLED 로
+    # 렌더되면 fill 까지 자동 회색. (stroke-only 아이콘에는 영향 없음.)
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
-        f'fill="none" stroke="{color}" stroke-width="1.5" '
+        f'fill="none" color="{color}" stroke="{color}" stroke-width="1.5" '
         f'stroke-linecap="round" stroke-linejoin="round">'
         f'{body}'
         f'</svg>'

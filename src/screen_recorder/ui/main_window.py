@@ -4298,6 +4298,8 @@ class MainWindow(QMainWindow):
         self.record_status_panel.set_state(state)
         self.status_bar.set_recording(state == RecorderState.RECORDING)
         self.status_bar.set_paused(state == RecorderState.PAUSED)
+        if self._mini is not None:
+            self._mini.set_paused(state == RecorderState.PAUSED)
 
     def _on_finished(self, path: str):
         # 인코더가 캡처 실패로 파일을 폐기했으면(존재 안 함) 라이브러리/탭에 등록하지
