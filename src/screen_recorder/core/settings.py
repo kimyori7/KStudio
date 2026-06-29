@@ -236,6 +236,19 @@ class YouTubeSettings:
 
 
 @dataclass
+class UpdateSettings:
+    """자동 업데이트 설정.
+
+    auto_check: 시작 시 새 버전을 조용히 확인할지(기본 ON). 끄면 절대 네트워크 안 함.
+    skip_version: "이 버전 건너뛰기"용 (현재는 예약 — 지금/나중에만 노출).
+    last_check_iso: 마지막 확인 시각(ISO). bookkeeping — 동작에 영향 없음.
+    """
+    auto_check: bool = True
+    skip_version: str = ""
+    last_check_iso: str = ""
+
+
+@dataclass
 class AppSettings:
     general: GeneralSettings = field(default_factory=GeneralSettings)
     video: VideoSettings = field(default_factory=VideoSettings)
@@ -251,6 +264,7 @@ class AppSettings:
     mcp: McpSettings = field(default_factory=McpSettings)
     markdown: MarkdownSettings = field(default_factory=MarkdownSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
+    update: UpdateSettings = field(default_factory=UpdateSettings)
 
 
 def save(settings: AppSettings, path: Path) -> None:
