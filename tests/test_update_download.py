@@ -54,3 +54,19 @@ def test_download_sha_mismatch_deletes(tmp_path: Path):
         assert not dest.exists()               # 폐기됨
     finally:
         srv.shutdown()
+
+
+def test_download_deletes_partial_on_midstream_error(tmp_path: Path):
+    # 스트리밍 도중 예외(여기선 진행 콜백이 던짐)가 나도 부분 파일을 남기지 않는다.
+    srv, url = _serve()
+
+    def boom(downloaded, total):
+        raise RuntimeError("simulated mid-stream failure")
+
+    try:
+        dest = tmp_path / "KStudio.exe"
+        with pytest.raises(RuntimeError):
+            download_to(url, dest, _SHA, progress=boom)
+        assert not dest.exists()   # 부분 파일 청소됨(검증 못 한 바이너리 안 남김)
+    finally:
+        srv.shutdown()
