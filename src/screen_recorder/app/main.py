@@ -97,6 +97,18 @@ def main() -> int:
     # 한 번도 보여주지 않으므로 이 보호가 더 중요해진다.)
     app.setQuitOnLastWindowClosed(False)
 
+    # 직전 코드 패치가 남긴 KStudio.exe.old 청소 — 무거운 초기화/단일인스턴스보다 먼저,
+    # best-effort(아직 잠겨 있으면 다음 실행에 재시도). frozen 빌드에서만 의미 있음.
+    if getattr(sys, "frozen", False):
+        from screen_recorder.app.updater.cleanup import cleanup_old_exe
+        from screen_recorder.app.updater.install_location import current_install_dir
+        cleanup_old_exe(current_install_dir())
+
+    # 코드 패치 재시작으로 켜진 프로세스(--post-update)는 단일인스턴스 forward 를
+    # 건너뛰고 무조건 primary 가 된다(옛 프로세스 서버가 아직 listen 중일 수 있어,
+    # 안 그러면 '이미 실행 중'으로 오판해 조용히 종료됨 → 앱이 사라짐).
+    _post_update = "--post-update" in sys.argv[1:]
+
     # 단일 인스턴스 — 탐색기에서 .md/.kstudio 더블클릭 시 새 KStudio 창이 또 뜨는 대신
     # 이미 실행 중인 인스턴스가 그 파일을 열도록(라이브러리 추가 + 표시) 한다.
     # 무거운 초기화(MainWindow/torch/WebEngine) 전에 검사 → 두 번째 프로세스는 빠르게 종료.
@@ -105,7 +117,7 @@ def main() -> int:
         a for a in sys.argv[1:]
         if a and not a.startswith("-") and Path(a).is_file()
     ]
-    if single_instance.try_forward(_file_args):
+    if not _post_update and single_instance.try_forward(_file_args):
         return 0  # 이미 실행 중인 인스턴스가 처리 — 이 프로세스는 조용히 종료.
     # 첫 인스턴스: 파이프를 선점(핸들러는 MainWindow 생성 후 연결). 초기화 도중 들어온
     # 두 번째 실행의 메시지는 큐에 쌓였다가 set_handler 에서 flush 된다.
@@ -190,6 +202,11 @@ def main() -> int:
             opened_any = True
     if start_in_tray and opened_any:
         win.show()
+
+    # 시작 시 새 버전 비동기 확인(frozen 전용·실패 무시·시작 안 막음).
+    if settings.update.auto_check:
+        from screen_recorder.app.updater.controller import start_update_check
+        start_update_check(app, win, settings.update, _si_server)
 
     return app.exec()
 
