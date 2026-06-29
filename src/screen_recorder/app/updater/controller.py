@@ -143,9 +143,10 @@ def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) ->
             return
         try:
             if kind == "code":
-                si_server.close()                 # ⚠️ 재시작 전 파이프 해제
                 from screen_recorder.app.updater.apply_code_patch import swap_exe, spawn_and_quit
-                swap_exe(out_path, install_dir / "KStudio.exe")
+                swap_exe(out_path, install_dir / "KStudio.exe")  # 위험 작업 먼저(트랜잭션 보장)
+                si_server.close()                 # ⚠️ swap 성공 후에만 파이프 해제 — swap 실패 시
+                                                  # 파이프가 살아있어 기존 인스턴스가 primary 유지
                 spawn_and_quit(install_dir / "KStudio.exe", app)
             else:
                 from screen_recorder.app.updater.apply_installer import run_installer

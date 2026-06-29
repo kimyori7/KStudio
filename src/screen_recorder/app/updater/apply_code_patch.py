@@ -31,7 +31,14 @@ def swap_exe(new_exe: Path, target_exe: Path) -> None:
     if old.exists():
         old.unlink()                       # 이전 잔여 제거(없으면 rename 실패)
     os.rename(target_exe, old)             # 실행 중 exe 도 이름변경은 허용(win32)
-    os.replace(new_exe, target_exe)        # 새 exe 를 원래 경로로(원자적 교체)
+    try:
+        os.replace(new_exe, target_exe)    # 새 exe 를 원래 경로로(원자적 교체)
+    except OSError:
+        # 롤백: os.replace 실패 시 원래 exe 를 복원해 항상 실행 가능한 상태를 보장한다.
+        # 이 복원 없이 예외가 전파되면 target_exe 가 사라진 채 .old 만 남아 사용자
+        # 바로가기/작업표시줄이 exe 를 찾지 못한다("app vanishes" 부분 swap 방지).
+        os.rename(old, target_exe)
+        raise
     logger.info("코드패치 교체 완료: %s (이전본 → %s)", target_exe, old.name)
 
 
