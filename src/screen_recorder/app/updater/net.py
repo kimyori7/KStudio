@@ -26,4 +26,5 @@ def open_url(url: str, timeout: float = 30.0):
     """GET 요청 → 응답(컨텍스트 매니저). truststore 를 먼저 활성화한다."""
     ensure_truststore()
     req = urllib.request.Request(url, headers={"User-Agent": "KStudio-Updater"})
-    return urllib.request.urlopen(req, timeout=timeout)   # noqa: S310 — https 고정
+    # 프로덕션 URL 은 GitHub https — https 사용은 호출자(updater) 책임. (S310: urlopen 감사 억제)
+    return urllib.request.urlopen(req, timeout=timeout)   # noqa: S310

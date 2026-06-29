@@ -1,5 +1,6 @@
 import json
 import threading
+import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -46,6 +47,17 @@ def test_fetch_manifest_bad_json_raises():
     srv, url = _serve(body=b"not json")
     try:
         with pytest.raises(ManifestError):
+            fetch_manifest(url)
+    finally:
+        srv.shutdown()
+
+
+def test_fetch_manifest_http_error_propagates():
+    # 404/500 등 HTTP 에러는 urllib 가 HTTPError 로 올리고, fetch 는 삼키지 않고 전파한다
+    # (호출자=컨트롤러가 잡아 조용히 포기). 여기서 안 잡히면 error-propagation 계약 위반.
+    srv, url = _serve(body=b"nope", status=404)
+    try:
+        with pytest.raises(urllib.error.HTTPError):
             fetch_manifest(url)
     finally:
         srv.shutdown()
