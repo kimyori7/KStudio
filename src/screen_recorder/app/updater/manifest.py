@@ -41,7 +41,7 @@ def _require_sha(d: dict, key: str) -> str:
     return v
 
 
-def parse_manifest(data) -> Manifest:
+def parse_manifest(data: dict | str | bytes) -> Manifest:
     """dict | str | bytes → Manifest. 형식 위반은 ManifestError."""
     if isinstance(data, (bytes, bytearray)):
         data = data.decode("utf-8")

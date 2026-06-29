@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import pytest
 from screen_recorder.app.updater.manifest import parse_manifest, Manifest, ManifestError
@@ -51,5 +52,5 @@ def test_code_url_without_sha_raises():
 
 def test_manifest_is_frozen():
     m = parse_manifest(_FULL_ONLY)
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         m.version = "9.9.9"   # frozen
