@@ -27,3 +27,9 @@ def test_is_newer_false_on_garbage_remote():
     # 깨진 remote 버전은 절대 "새 버전"으로 보지 않음(안전).
     assert is_newer("garbage", "0.1.4") is False
     assert is_newer("", "0.1.4") is False
+
+
+def test_is_newer_false_on_garbage_current():
+    # current 가 깨져도 크래시 없이 안전하게 False(업데이트 트리거 안 함).
+    assert is_newer("0.1.5", "garbage") is False
+    assert is_newer("0.1.5", "") is False
