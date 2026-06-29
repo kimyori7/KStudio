@@ -486,7 +486,13 @@ class MarkdownTab(QWidget):
         finally:
             self._reload_prompt_open = False
         if confirmed:
-            self._apply_external_reload(disk)
+            # 모달이 떠 있는 동안 파일이 또 바뀌었을 수 있다(블로킹 nested 루프). 적용
+            # 직전 디스크를 다시 읽어 '팝업 이후'의 최신본까지 반영한다(재읽기 실패 시 스냅샷).
+            try:
+                latest = _read_text_with_fallback(p)
+            except OSError:
+                latest = disk
+            self._apply_external_reload(latest)
         else:
             # 거절한 버전을 기억 — 같은 내용으로 다시 묻지 않음(허위 이벤트 반복 차단).
             self._disk_text = disk

@@ -103,6 +103,25 @@ def test_dirty_change_passes_warning_flag(qtbot, tmp_path):
     assert tab.editor.toPlainText() == "MY UNSAVED EDIT"   # 거절 → 편집 보존
 
 
+def test_yes_applies_latest_when_file_changes_during_prompt(qtbot, tmp_path):
+    """팝업이 떠 있는 동안 파일이 또 바뀌면, [예] 는 팝업 직전 스냅샷이 아니라
+    적용 시점의 최신 디스크 내용을 반영해야 한다(모달이 블록하는 동안의 변경 반영).
+    """
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+
+    def confirm_then_change(dirty):
+        # 모달이 떠 있는 사이 외부 에디터가 한 번 더 저장한 상황을 모사.
+        p.write_text("v3 during prompt", encoding="utf-8")
+        return True
+
+    tab._confirm_external_reload = confirm_then_change
+    p.write_text("v2 before prompt", encoding="utf-8")
+    tab._reload_check()
+    assert tab.editor.toPlainText() == "v3 during prompt"
+    assert not tab.needs_save()
+
+
 def test_dirty_yes_discards_local_and_loads_disk(qtbot, tmp_path):
     tab, p = _make_tab(tmp_path, "v1")
     qtbot.addWidget(tab)
