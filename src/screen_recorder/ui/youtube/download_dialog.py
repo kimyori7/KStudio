@@ -1,7 +1,9 @@
-"""유튜브 다운로드 통합 팝업 — 영상/mp3 모드를 같은 다이얼로그로 처리한다.
+"""영상 URL 가져오기 통합 팝업 — 영상/음악(mp3) 모드를 같은 다이얼로그로 처리한다.
 
-메뉴 두 항목(유튜브 영상 추출 / mp3 변환)이 mode 만 다르게 이 다이얼로그를 연다.
-주소 + 저장 폴더(찾아보기, 기억) + 품질 드롭다운(모드별 항목)을 한 곳에 모은다.
+메뉴 두 항목(영상 URL에서 가져오기 / URL에서 음악(mp3) 추출)이 mode 만 다르게 이 다이얼로그를
+연다. 엔진(yt-dlp)은 유튜브 외 다수 사이트를 지원하므로 UI 는 특정 플랫폼을 앞세우지 않는다.
+주소 + 저장 폴더(찾아보기, 기억) + 품질 드롭다운(모드별 항목)을 한 곳에 모으고, 하단에
+"권리 있는 영상만" 안내문을 둔다(다운로드 책임은 사용자에게 있음을 명시).
 """
 from __future__ import annotations
 
@@ -29,13 +31,13 @@ class YouTubeDownloadDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._mode = mode
-        self.setWindowTitle("유튜브 영상 추출" if mode == "video" else "유튜브 mp3 변환")
+        self.setWindowTitle("영상 URL에서 가져오기" if mode == "video" else "URL에서 음악(mp3) 추출")
         self.setMinimumWidth(460)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("유튜브 주소"))
+        layout.addWidget(QLabel("영상 주소(URL)"))
         self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText("https://www.youtube.com/watch?v=...")
+        self.url_edit.setPlaceholderText("영상 페이지 주소를 붙여넣으세요")
         layout.addWidget(self.url_edit)
 
         layout.addWidget(QLabel("저장 폴더"))
@@ -56,6 +58,16 @@ class YouTubeDownloadDialog(QDialog):
         if idx >= 0:
             self.quality_combo.setCurrentIndex(idx)
         layout.addWidget(self.quality_combo)
+
+        # 사용 책임 안내 — 다운로드는 중립적 도구이고, 받는 콘텐츠의 권리/약관 준수는
+        # 사용자 책임임을 명시(특정 사이트를 지목하지 않음).
+        notice = QLabel(
+            "본인이 권리를 가졌거나 사용이 허락된 영상만 받으세요. "
+            "각 사이트의 약관 준수는 사용자 책임입니다."
+        )
+        notice.setWordWrap(True)
+        notice.setStyleSheet("color: #9aa0a6; font-size: 11px;")
+        layout.addWidget(notice)
 
         buttons = QDialogButtonBox()
         self._ok = buttons.addButton("받기", QDialogButtonBox.AcceptRole)

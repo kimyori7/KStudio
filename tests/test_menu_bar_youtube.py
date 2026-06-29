@@ -8,8 +8,8 @@ def test_menu_has_youtube_signals(qtbot):
     qtbot.addWidget(mb)
     assert hasattr(mb, "youtube_video_requested")
     assert hasattr(mb, "youtube_mp3_requested")
-    assert mb.youtube_video_action.text() == "유튜브 영상 추출"
-    assert mb.youtube_mp3_action.text() == "유튜브 mp3 변환"
+    assert mb.youtube_video_action.text() == "영상 URL에서 가져오기"
+    assert mb.youtube_mp3_action.text() == "URL에서 음악(mp3) 추출"
 
 
 def test_youtube_actions_emit(qtbot):

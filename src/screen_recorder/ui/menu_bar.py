@@ -216,12 +216,16 @@ class KStudioMenuBar(QMenuBar):
         self.record_pause_action.triggered.connect(self.record_pause_requested.emit)
         m_record.addAction(self.record_pause_action)
 
-        # 추가 기능 — 유튜브 영상 추출 / mp3 변환 (도움말 바로 앞).
+        # 추가 기능 — 영상 URL 에서 영상/음악 가져오기 (도움말 바로 앞).
+        # 사용자에게 보이는 이름은 특정 사이트(유튜브)를 앞세우지 않고 중립적으로 둔다 —
+        # 엔진(yt-dlp)은 1000+ 사이트를 지원하므로 'URL에서 가져오기'가 더 정확하고, 공개
+        # 배포 시 특정 플랫폼 다운로더로 부각되는 것(ToS 회색지대 노출)을 피한다. 내부
+        # 식별자/시그널 이름(youtube_*)은 호환 위해 그대로 둔다.
         m_extra = self.addMenu(tr("추가 기능"))
-        self.youtube_video_action = QAction(tr("유튜브 영상 추출"), self)
+        self.youtube_video_action = QAction(tr("영상 URL에서 가져오기"), self)
         self.youtube_video_action.triggered.connect(self.youtube_video_requested.emit)
         m_extra.addAction(self.youtube_video_action)
-        self.youtube_mp3_action = QAction(tr("유튜브 mp3 변환"), self)
+        self.youtube_mp3_action = QAction(tr("URL에서 음악(mp3) 추출"), self)
         self.youtube_mp3_action.triggered.connect(self.youtube_mp3_requested.emit)
         m_extra.addAction(self.youtube_mp3_action)
 
