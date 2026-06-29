@@ -127,7 +127,7 @@ def main() -> int:
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "COMPANY.kimyori.screen_recorder.1.0"
+                "kimyori7.KStudio.1.0"
             )
         except Exception:
             pass
