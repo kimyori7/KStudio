@@ -13,11 +13,13 @@ def test_update_settings_roundtrip(tmp_path: Path):
     s = S.AppSettings()
     s.update.auto_check = False
     s.update.skip_version = "0.1.9"
+    s.update.last_check_iso = "2026-06-29T00:00:00"
     p = tmp_path / "settings.json"
     S.save(s, p)
     loaded = S.load(p)
     assert loaded.update.auto_check is False
     assert loaded.update.skip_version == "0.1.9"
+    assert loaded.update.last_check_iso == "2026-06-29T00:00:00"
 
 
 def test_missing_update_block_uses_defaults(tmp_path: Path):
