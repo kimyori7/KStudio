@@ -35,10 +35,12 @@ def _stub_confirm(tab, answer: bool):
     return calls
 
 
-def test_open_starts_watching_file(qtbot, tmp_path):
+def test_open_starts_watching_parent_dir(qtbot, tmp_path):
+    # 파일이 아니라 부모 디렉터리를 감시(파일 직접 감시는 atomic save 를 막으므로).
     tab, p = _make_tab(tmp_path)
     qtbot.addWidget(tab)
-    assert str(p) in tab._fs_watcher.files()
+    assert str(p.parent) in tab._fs_watcher.directories()
+    assert str(p) not in tab._fs_watcher.files()
     assert tab.editor.toPlainText() == "v1"
     assert not tab.needs_save()
 
@@ -122,6 +124,40 @@ def test_yes_applies_latest_when_file_changes_during_prompt(qtbot, tmp_path):
     assert not tab.needs_save()
 
 
+def test_yes_applies_latest_atomic_save_during_prompt(qtbot, tmp_path):
+    """VS Code 식 atomic save(temp→rename 교체)가 팝업 도중 일어난 뒤 [예] 면,
+    rename 으로 교체된 최신 내용이 반영돼야 한다(제자리 덮어쓰기와 동작 차이 검증)."""
+    import os
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+
+    def confirm_then_atomic(dirty):
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text("v3 atomic", encoding="utf-8")
+        os.replace(tmp, p)        # VS Code 식 원자적 교체
+        return True
+
+    tab._confirm_external_reload = confirm_then_atomic
+    p.write_text("v2", encoding="utf-8")
+    tab._reload_check()
+    assert tab.editor.toPlainText() == "v3 atomic"
+
+
+def test_dir_watch_survives_and_allows_atomic_save(qtbot, tmp_path):
+    """핵심 회귀: 부모 디렉터리 감시는 (1) 파일을 잠그지 않아 atomic rename 이 막히지
+    않고 (2) rename 으로도 감시가 풀리지 않는다. 파일을 직접 감시하면 WinError 5 로
+    os.replace 가 막혔다(2026-06-29 근본 원인)."""
+    import os
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+    assert str(p.parent) in tab._fs_watcher.directories()
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text("v2 atomic", encoding="utf-8")
+    os.replace(tmp, p)        # 파일 감시였으면 여기서 PermissionError(WinError 5)
+    assert p.read_text(encoding="utf-8") == "v2 atomic"
+    assert str(p.parent) in tab._fs_watcher.directories()   # 감시 유지
+
+
 def test_dirty_yes_discards_local_and_loads_disk(qtbot, tmp_path):
     tab, p = _make_tab(tmp_path, "v1")
     qtbot.addWidget(tab)
@@ -167,11 +203,11 @@ def test_save_updates_watch_path(qtbot, tmp_path):
     tab.editor.setPlainText("new doc")
     target = tmp_path / "saved.md"
     tab.save_as(target)
-    assert str(target) in tab._fs_watcher.files()
+    assert str(target.parent) in tab._fs_watcher.directories()
 
 
-def test_filechanged_signal_triggers_debounced_prompt(qtbot, tmp_path):
-    """배선 확인: fileChanged → 디바운스 타이머 → _reload_check(팝업) 발화.
+def test_dirchanged_signal_triggers_debounced_prompt(qtbot, tmp_path):
+    """배선 확인: directoryChanged → 디바운스 타이머 → _reload_check(팝업) 발화.
 
     OS 파일 이벤트 감지 의존은 헤드리스에서 불안정 → 시그널을 직접 emit 해
     (시그널→타이머→핸들러) 경로만 결정론적으로 검증한다. 답은 [예] 주입.
@@ -180,6 +216,6 @@ def test_filechanged_signal_triggers_debounced_prompt(qtbot, tmp_path):
     qtbot.addWidget(tab)
     _stub_confirm(tab, answer=True)
     p.write_text("after via watcher", encoding="utf-8")
-    tab._fs_watcher.fileChanged.emit(str(p))       # OS 이벤트 모사
+    tab._fs_watcher.directoryChanged.emit(str(p.parent))   # OS 이벤트 모사
     qtbot.waitUntil(lambda: tab.editor.toPlainText() == "after via watcher", timeout=1000)
     assert not tab.needs_save()

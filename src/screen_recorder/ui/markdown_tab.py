@@ -148,12 +148,16 @@ class MarkdownTab(QWidget):
             sc.activated.connect(slot)
             self._search_shortcuts.append(sc)
 
-        # 외부 변경 반영 — 열린 파일을 감시(QFileSystemWatcher). 디스크가 외부 에디터로
-        # 바뀌면 "최신 내용으로 불러올까요?" 확인 팝업을 띄우고, 사용자가 [예] 를 눌렀을 때만
-        # 반영한다(조용히 덮어쓰지 않음 — 사용자 요청 2026-06-01).
+        # 외부 변경 반영 — 열린 파일의 '부모 디렉터리'를 감시(QFileSystemWatcher). 디스크가
+        # 외부 에디터로 바뀌면 "최신 내용으로 불러올까요?" 확인 팝업을 띄우고, 사용자가
+        # [예] 를 눌렀을 때만 반영한다(조용히 덮어쓰지 않음 — 사용자 요청 2026-06-01).
+        # ⚠ 파일을 직접 감시(addPath(file))하면 Windows 에서 그 파일에 핸들이 걸려 외부
+        # 에디터의 atomic save(temp→rename 교체)가 WinError 5 로 막힌다(VS Code·에이전트).
+        # 부모 디렉터리 감시는 파일을 잠그지 않으면서 atomic save·제자리쓰기 둘 다 잡고
+        # rename 으로도 풀리지 않는다(2026-06-29 실측).
         # _disk_text = 마지막으로 디스크와 동기화한 내용(로드/저장/reload/거절 시 갱신). 외부
         # 변경 판별 기준 — 편집기 현재 텍스트가 아니라 이 값과 비교해야 '저장 직후 타이핑'
-        # 오탐을 피한다(advisor 2026-06-01). fileChanged 는 버스트로 오므로 150ms 디바운스.
+        # 오탐을 피한다(advisor 2026-06-01). directoryChanged 는 버스트로 오므로 150ms 디바운스.
         # _reload_prompt_open = 모달 팝업이 떠 있는 동안 재진입 차단(exec 의 중첩 루프에서
         # 디바운스 타이머가 _reload_check 를 다시 부를 수 있음).
         self._disk_text: str | None = None
@@ -163,7 +167,7 @@ class MarkdownTab(QWidget):
         self._fs_debounce.setSingleShot(True)
         self._fs_debounce.setInterval(150)
         self._fs_debounce.timeout.connect(self._reload_check)
-        self._fs_watcher.fileChanged.connect(lambda _p: self._fs_debounce.start())
+        self._fs_watcher.directoryChanged.connect(lambda _p: self._fs_debounce.start())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -252,16 +256,20 @@ class MarkdownTab(QWidget):
         self.save_state_changed.emit()
 
     def _set_saved_path(self, path: Path | None) -> None:
-        """_saved_path 를 갱신하고 QFileSystemWatcher 가 정확히 그 파일만 감시하게 한다.
+        """_saved_path 를 갱신하고 QFileSystemWatcher 가 그 파일의 '부모 디렉터리'를 감시하게 한다.
 
+        ⚠ 파일을 직접 감시하면 Windows 에서 핸들이 걸려 외부 에디터의 atomic save
+        (temp→rename 교체)가 WinError 5 로 막힌다(VS Code 등) → 부모 디렉터리를 감시한다.
         모든 _saved_path 할당의 단일 길목 — 열기/저장/비교칸 채움 어디로 와도 감시가
-        새 경로로 따라간다."""
-        watched = self._fs_watcher.files()
+        새 파일의 부모 폴더로 따라간다."""
+        watched = self._fs_watcher.files() + self._fs_watcher.directories()
         if watched:
             self._fs_watcher.removePaths(watched)
         self._saved_path = Path(path) if path is not None else None
-        if self._saved_path is not None and self._saved_path.exists():
-            self._fs_watcher.addPath(str(self._saved_path))
+        if self._saved_path is not None:
+            d = self._saved_path.parent
+            if d.exists():
+                self._fs_watcher.addPath(str(d))
 
     def _on_text_changed(self) -> None:
         if not self._dirty:
@@ -469,9 +477,11 @@ class MarkdownTab(QWidget):
         p = self._saved_path
         if p is None:
             return
-        # 아토믹 저장(temp→rename)은 watcher 가 경로를 놓치므로 다시 등록.
-        if p.exists() and str(p) not in self._fs_watcher.files():
-            self._fs_watcher.addPath(str(p))
+        # 부모 디렉터리 감시는 atomic rename 으로도 잘 안 풀리지만, 폴더가 지워졌다
+        # 다시 생기는 드문 경우를 대비해 감시를 보장한다.
+        d = p.parent
+        if d.exists() and str(d) not in self._fs_watcher.directories():
+            self._fs_watcher.addPath(str(d))
         if not p.exists():
             return   # 삭제는 범위 밖 — 열린 탭/편집 보존
         try:

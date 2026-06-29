@@ -1,12 +1,14 @@
-"""실제 OS→Qt fileChanged 전달 경로 검증 (수동 emit 아님).
+"""실제 OS→Qt directoryChanged 전달 경로 검증 (수동 emit 아님).
 
 유닛테스트는 _reload_check 를 직접 호출하거나 시그널을 모사한다. 이 스크립트는 진짜
-QFileSystemWatcher 가 외부 파일 쓰기를 감지해 열린 탭을 갱신하는지 — 사용자가 보고한 바로
-그 경로 — 를 실제 이벤트 루프에서 확인한다.
+QFileSystemWatcher(부모 디렉터리 감시)가 외부 파일 쓰기를 감지해 열린 탭을 갱신하는지
+— 사용자가 보고한 바로 그 경로 — 를 실제 이벤트 루프에서 확인한다.
 
 PASS 조건:
-  S1 깨끗한 탭: 외부에서 파일 쓰기 → 탭 내용이 새 내용으로 자동 갱신
-  S2 더티 탭: 미저장 편집 상태에서 외부 쓰기 → 덮어쓰지 않고 배너 노출
+  S1 깨끗한 탭: 외부 제자리 쓰기 → 탭 내용이 새 내용으로 자동 갱신
+  S2 더티 탭: 미저장 편집 상태에서 외부 쓰기 → 덮어쓰지 않고 팝업(dirty 경고)
+  S3 atomic save: VS Code 식 temp→rename 교체가 (a) 막히지 않고 (b) 탭에 반영
+     (파일 직접 감시였으면 os.replace 가 WinError 5 로 막혔다 — 근본 원인)
 """
 import os
 import sys
@@ -72,6 +74,27 @@ def main() -> int:
     print(f"S2 dirty prompt+no: {'PASS' if (asked and kept) else 'FAIL'} "
           f"(prompted={s2_calls}, edit_kept={kept})")
     ok = ok and asked and kept
+
+    # --- S3: atomic save(temp→rename) 가 막히지 않고 반영 (사용자 실제 케이스: VS Code) ---
+    p3 = tmp / "s3.md"
+    p3.write_text("BEFORE ATOMIC\n", encoding="utf-8")
+    tab3 = MarkdownTab.from_file(p3)
+    s3_calls = []
+    tab3._confirm_external_reload = lambda dirty: (s3_calls.append(dirty) or True)  # [예]
+    tab3.show()
+    app.processEvents()
+    replace_ok = True
+    try:
+        tmp_sidecar = p3.with_name(p3.name + ".tmp")
+        tmp_sidecar.write_text("AFTER ATOMIC SAVE\n", encoding="utf-8")
+        os.replace(tmp_sidecar, p3)        # 파일 직접 감시였으면 WinError 5
+    except OSError as e:
+        replace_ok = False
+        print(f"S3 atomic replace FAILED to write: {e}")
+    got3 = _pump_until(app, lambda: tab3.editor.toPlainText() == "AFTER ATOMIC SAVE\n")
+    print(f"S3 atomic save reflect: {'PASS' if (replace_ok and got3) else 'FAIL'} "
+          f"(replace_ok={replace_ok}, prompted={s3_calls}, editor={tab3.editor.toPlainText()!r})")
+    ok = ok and replace_ok and got3
 
     print("\nRESULT:", "ALL PASS" if ok else "FAIL")
     return 0 if ok else 1
