@@ -5,8 +5,8 @@
 """
 from __future__ import annotations
 
-import os
 import sys
+import tempfile
 from pathlib import Path
 
 from screen_recorder.app.updater.manifest import Manifest
@@ -18,15 +18,15 @@ def current_install_dir() -> Path:
 
 
 def is_user_writable(dir_path: Path) -> bool:
-    """디렉터리에 실제로 쓸 수 있는지 프로브(임시 파일 생성→삭제).
+    """디렉터리에 실제로 쓸 수 있는지 프로브(고유 임시 파일 생성→자동 삭제).
 
     Program Files(관리자 폴더)에 비관리자로 깔린 경우 False → 전체 인스톨러 경로로.
+    NamedTemporaryFile 을 쓰는 이유: ① 고유 이름이라 동시 프로브가 서로 충돌하지 않고,
+    ② with 블록을 벗어나면(쓰기 도중 예외가 나도) 자동 삭제돼 프로브 파일이 남지 않는다.
     """
     try:
-        probe = dir_path / ".kstudio_write_probe"
-        with open(probe, "wb") as f:
+        with tempfile.NamedTemporaryFile(dir=dir_path, prefix=".kstudio_probe_") as f:
             f.write(b"x")
-        os.remove(probe)
         return True
     except OSError:
         return False

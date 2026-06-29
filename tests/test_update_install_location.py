@@ -1,8 +1,14 @@
 from pathlib import Path
 from screen_recorder.app.updater.install_location import (
-    is_user_writable, want_code_patch, select_download,
+    current_install_dir, is_user_writable, want_code_patch, select_download,
 )
 from screen_recorder.app.updater.manifest import Manifest
+
+
+def test_current_install_dir_is_existing_dir():
+    # sys.executable 의 부모 폴더 — 회귀 방지(.parent.parent 등으로 어긋나면 잡힘).
+    d = current_install_dir()
+    assert d.is_dir()
 
 _FULL = Manifest(version="0.1.5", notes="", full_url="https://x/Setup.exe",
                  full_sha256="a" * 64)
