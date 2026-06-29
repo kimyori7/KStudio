@@ -204,7 +204,9 @@ def main() -> int:
         win.show()
 
     # 시작 시 새 버전 비동기 확인(frozen 전용·실패 무시·시작 안 막음).
-    if settings.update.auto_check:
+    # frozen 게이트를 호출부에도 둬 dev/pytest 에선 컨트롤러를 아예 안 부른다(위 .old
+    # 청소 블록과 동일 패턴 — start_update_check 내부 guard 에 의존하지 않고 self-contained).
+    if getattr(sys, "frozen", False) and settings.update.auto_check:
         from screen_recorder.app.updater.controller import start_update_check
         start_update_check(app, win, settings.update, _si_server)
 
