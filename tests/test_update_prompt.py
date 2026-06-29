@@ -1,9 +1,9 @@
-"""Test update prompt UI and download progress dialog."""
-from screen_recorder.app.updater.manifest import Manifest
-from screen_recorder.ui.update_prompt import DownloadProgressDialog
+"""Test update prompt UI and download progress dialog.
 
-_M = Manifest(version="0.1.5", notes="버그픽스 묶음",
-              full_url="https://x/Setup.exe", full_sha256="a" * 64)
+prompt_update 의 모달 버튼 결과는 수동검증(헤드리스 모달 클릭 위조 금지) — 여기선
+DownloadProgressDialog 의 진행/busy 동작만 자동 검증한다.
+"""
+from screen_recorder.ui.update_prompt import DownloadProgressDialog
 
 
 def test_progress_dialog_updates(qtbot):
