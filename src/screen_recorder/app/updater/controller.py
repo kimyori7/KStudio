@@ -1,0 +1,159 @@
+"""시작 시 비동기 업데이트 체크 + 동의 시 다운로드·적용 오케스트레이션.
+
+⚠️ 절대 시작을 막지 않음: fetch 는 백그라운드 스레드, 모든 예외를 삼킨다. frozen
+빌드에서만 동작(dev/pytest no-op). 재시작 시 single-instance 충돌은 _apply_code 에서
+si_server.close() + --post-update 로 처리(Global Constraints).
+"""
+from __future__ import annotations
+
+import logging
+import threading
+from pathlib import Path
+
+from PySide6.QtCore import QObject, Signal
+
+from screen_recorder.app.updater import install_location as loc
+from screen_recorder.app.updater.download import download_to
+from screen_recorder.app.updater.fetch import fetch_manifest
+from screen_recorder.app.updater.manifest import Manifest
+from screen_recorder.app.updater.version_compare import is_newer
+
+logger = logging.getLogger(__name__)
+
+
+def should_prompt(manifest: Manifest, current_version: str, skip_version: str) -> bool:
+    """새 버전이고 사용자가 '건너뛰기' 안 한 버전이면 True."""
+    return is_newer(manifest.version, current_version) and manifest.version != skip_version
+
+
+class UpdateChecker(QObject):
+    update_available = Signal(object)   # Manifest
+
+    def __init__(self, manifest_url: str, current_version: str,
+                 skip_version: str, parent=None):
+        super().__init__(parent)
+        self._url = manifest_url
+        self._current = current_version
+        self._skip = skip_version
+
+    def start(self) -> None:
+        threading.Thread(target=self._run, name="UpdateChecker", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            manifest = fetch_manifest(self._url)
+            if should_prompt(manifest, self._current, self._skip):
+                # 큐 연결(Qt.AutoConnection) — 스레드→GUI 스레드 안전 전달.
+                self.update_available.emit(manifest)
+        except Exception:   # noqa: BLE001 — 네트워크/형식/타임아웃 전부 조용히 포기
+            logger.debug("업데이트 체크 실패(무시)", exc_info=True)
+
+
+def start_update_check(app, win, settings_update, si_server):
+    """frozen 빌드에서만 비동기 체크 시작. dev/pytest 는 no-op(None)."""
+    import sys
+    if not getattr(sys, "frozen", False):
+        return None
+
+    from screen_recorder.app.updater.manifest import Manifest  # noqa: F401
+    from screen_recorder import __version__
+
+    # RELEASES_REPO — ⚠️ Plan 2 에서 만들 실제 공개 레포로 교체.
+    RELEASES_REPO = "kimyori7/KStudio-releases"
+    manifest_url = (
+        f"https://github.com/{RELEASES_REPO}/releases/latest/download/latest.json"
+    )
+
+    checker = UpdateChecker(manifest_url, __version__,
+                            settings_update.skip_version, parent=win)
+
+    def _on_update_available(manifest: Manifest) -> None:
+        from screen_recorder.ui.update_prompt import (
+            prompt_update, DownloadProgressDialog,
+        )
+        if prompt_update(win, manifest) != "now":
+            return
+        _download_and_apply(app, win, si_server, manifest, DownloadProgressDialog)
+
+    checker.update_available.connect(_on_update_available)
+    win._update_checker = checker   # GC 방지 (win 수명에 묶음)
+    checker.start()
+    return checker
+
+
+def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) -> None:
+    """동의 후: 적절한 자산 다운로드 → 검증 → 코드패치/인스톨러 적용."""
+    import tempfile
+
+    install_dir = loc.current_install_dir()
+    writable = loc.is_user_writable(install_dir)
+    kind, url, sha = loc.select_download(manifest, writable)
+
+    dlg = ProgressCls(manifest.version, win)
+    # ⚠️ 코드 패치는 install_dir 안에 받는다(KStudio.exe.new). temp 와 install 이 다른
+    # 볼륨이면 swap_exe 의 os.replace 가 WinError 17(cross-device)로 실패한다 — 기본
+    # LocalAppData 설치는 temp(=AppData\Local)와 같은 볼륨이라 dev PC 에선 통과하고
+    # TEMP 가 다른 드라이브로 리다이렉트된 사용자에게만 조용히 실패하는 함정. 코드 패치
+    # 경로는 want_code_patch 전제상 install_dir 이 쓰기가능 → install_dir 저장이 안전.
+    # 전체 인스톨러는 실행만 하고 replace 안 하므로 temp 로도 무방.
+    if kind == "code":
+        dest = install_dir / "KStudio.exe.new"
+    else:
+        dest = Path(tempfile.gettempdir()) / f"KStudio-Setup-{manifest.version}.exe"
+
+    # 다운로드는 백그라운드 스레드, 진행/완료는 GUI 스레드로 마샬링.
+    from PySide6.QtCore import QObject as _QO, Signal as _Sig
+
+    class _Worker(_QO):
+        progressed = _Sig(int, int)
+        done = _Sig(object)        # Path or None(실패)
+
+        def run(self):
+            def _cb(d, t):
+                self.progressed.emit(d, t)
+            try:
+                out = download_to(url, dest, sha, progress=_cb)
+                self.done.emit(out)
+            except Exception:   # noqa: BLE001
+                logger.warning("업데이트 다운로드 실패", exc_info=True)
+                self.done.emit(None)
+
+    worker = _Worker()
+    worker.progressed.connect(dlg.set_progress)
+
+    def _on_done(out_path):
+        cancelled = dlg.wasCanceled()
+        dlg.close()
+        if cancelled:
+            # 사용자가 취소 — 적용/재시작 강행하지 않음(편집 중 강제 재시작 = 데이터 유실
+            # 처럼 느껴짐). 이미 받은 임시본은 청소.
+            if out_path is not None:
+                try:
+                    out_path.unlink()
+                except OSError:
+                    pass
+            return
+        if out_path is None:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(win, "KStudio 업데이트",
+                                "업데이트 다운로드에 실패했습니다. 나중에 다시 시도하세요.")
+            return
+        try:
+            if kind == "code":
+                si_server.close()                 # ⚠️ 재시작 전 파이프 해제
+                from screen_recorder.app.updater.apply_code_patch import swap_exe, spawn_and_quit
+                swap_exe(out_path, install_dir / "KStudio.exe")
+                spawn_and_quit(install_dir / "KStudio.exe", app)
+            else:
+                from screen_recorder.app.updater.apply_installer import run_installer
+                run_installer(out_path, app)
+        except Exception:   # noqa: BLE001 — 코드패치 실패 시 폴백 안내
+            logger.error("업데이트 적용 실패", exc_info=True)
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(win, "KStudio 업데이트",
+                                "업데이트 적용에 실패했습니다. 전체 인스톨러로 다시 시도하세요.")
+
+    worker.done.connect(_on_done)
+    win._update_worker = worker     # GC 방지
+    dlg.show()
+    threading.Thread(target=worker.run, name="UpdateDownload", daemon=True).start()
