@@ -242,10 +242,12 @@ class UpdateSettings:
     auto_check: 시작 시 새 버전을 조용히 확인할지(기본 ON). 끄면 절대 네트워크 안 함.
     skip_version: "이 버전 건너뛰기"용 (현재는 예약 — 지금/나중에만 노출).
     last_check_iso: 마지막 확인 시각(ISO). bookkeeping — 동작에 영향 없음.
+    last_seen_version: 마지막으로 패치 내역을 보여준 버전. 시작 시 비교 기준.
     """
     auto_check: bool = True
     skip_version: str = ""
     last_check_iso: str = ""
+    last_seen_version: str = ""
 
 
 @dataclass
