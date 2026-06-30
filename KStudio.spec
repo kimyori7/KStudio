@@ -23,6 +23,7 @@ a = Analysis(
     ],
     datas=[
         (str(ROOT / "resources" / "app_icon.ico"), "resources"),
+        (str(ROOT / "THIRD-PARTY-LICENSES.txt"), "."),
     ] + _markdown_assets,
     hiddenimports=collect_submodules("yt_dlp") + [
         # yt-dlp 는 extractor 를 지연 로딩 → PyInstaller 정적 분석이 놓침.

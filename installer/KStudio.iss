@@ -3,7 +3,7 @@
 ; - 설치: 기본 사용자별 LocalAppData (관리자 불필요, 자동 업데이트 30MB 코드패치 호환).
 ;   사용자가 원하면 설치 다이얼로그에서 Program Files 로 격상 설치 가능 (PrivilegesRequiredOverridesAllowed=dialog).
 ; - 결과: dist/installer/KStudio-Setup-<version>.exe
-; - 코드 서명 안 함 — SmartScreen 경고 발생 가능 (내부 배포 가정)
+; - 코드 서명 안 함 — 미서명 개인 배포라 SmartScreen 경고가 뜰 수 있음
 
 #define AppName       "KStudio"
 ; AppVersion 은 하드코딩하지 않고 단일 소스 src\screen_recorder\__init__.py 의

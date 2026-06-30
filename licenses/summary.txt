@@ -1,0 +1,112 @@
+KStudio — Third-Party Components (summary)
+==========================================
+
+KStudio uses the following third-party software. Each component retains its
+own license; this section lists the projects, their licenses, and links to the
+upstream sources. The full texts of the GPL v3 and LGPL v3, and the FFmpeg
+corresponding-source provision, follow this summary in this same file.
+
+For the licenses of KStudio's own source code, see LICENSE.
+
+
+--------------------------------------------------------------------------------
+1. FFmpeg
+--------------------------------------------------------------------------------
+- Bundled binary: bin/ffmpeg.exe (invoked as a separate process).
+- License: GNU General Public License v3 (GPL v3). This build is configured with
+  --enable-gpl --enable-version3 and statically links x264, x265, and xvid.
+- Exact build: ffmpeg 2026-04-19-git-de18feb0f0-essentials_build (gyan.dev).
+- Corresponding Source (GPL v3 sec.6) and full build provenance: see the
+  "FFmpeg - corresponding source & provenance" section later in this file.
+- Full GPL v3 text: see the "GNU GENERAL PUBLIC LICENSE (v3)" section below.
+
+
+--------------------------------------------------------------------------------
+2. PySide6 (Qt for Python)
+--------------------------------------------------------------------------------
+- License: GNU LGPL v3 (also available under Qt Commercial License)
+- Source: https://www.qt.io/qt-for-python
+- Note: KStudio uses PySide6 via dynamic linking (PyInstaller --onedir),
+  satisfying the LGPL v3 obligation that users be able to replace the Qt
+  libraries.
+- Full LGPL v3 text: see the "GNU LESSER GENERAL PUBLIC LICENSE (v3)" section below.
+
+
+--------------------------------------------------------------------------------
+3. dxcam
+--------------------------------------------------------------------------------
+- License: MIT
+- Source: https://github.com/ra1nty/DXcam
+
+
+--------------------------------------------------------------------------------
+4. PyAudioWPatch (PortAudio binding for WASAPI loopback)
+--------------------------------------------------------------------------------
+- License: MIT
+- Source: https://github.com/s0d3s/PyAudioWPatch
+- Underlying PortAudio: MIT
+
+
+--------------------------------------------------------------------------------
+5. pygetwindow
+--------------------------------------------------------------------------------
+- License: BSD-3-Clause
+- Source: https://github.com/asweigart/PyGetWindow
+
+
+--------------------------------------------------------------------------------
+6. send2trash
+--------------------------------------------------------------------------------
+- License: BSD-3-Clause
+- Source: https://github.com/arsenetar/send2trash
+
+
+--------------------------------------------------------------------------------
+7. rembg (background removal) and ONNX models
+--------------------------------------------------------------------------------
+- rembg license: MIT
+- Source: https://github.com/danielgatis/rembg
+- Default model used: u2net (Apache 2.0)
+- Models are downloaded on first use; their licenses follow upstream.
+
+
+--------------------------------------------------------------------------------
+8. Pillow (PIL fork)
+--------------------------------------------------------------------------------
+- License: HPND (PIL license, BSD-style)
+- Source: https://github.com/python-pillow/Pillow
+
+
+--------------------------------------------------------------------------------
+9. pywin32
+--------------------------------------------------------------------------------
+- License: PSF (Python Software Foundation, BSD-like)
+- Source: https://github.com/mhammond/pywin32
+
+
+--------------------------------------------------------------------------------
+10. Lucide Icons (SVG paths in src/screen_recorder/ui/icons.py)
+--------------------------------------------------------------------------------
+- License: ISC
+- Source: https://lucide.dev/
+
+The icon path data inlined in icons.py is derived from the lucide-icons
+project. The icons.py wrapper code is part of KStudio (MIT).
+
+
+--------------------------------------------------------------------------------
+11. Inno Setup (build-only, not redistributed in the app)
+--------------------------------------------------------------------------------
+- License: Modified BSD (Inno Setup License)
+- Source: https://jrsoftware.org/isinfo.php
+- Used to build the Windows installer; not included in the running app.
+
+
+--------------------------------------------------------------------------------
+Notes
+--------------------------------------------------------------------------------
+- This list covers the dependencies that ship with the packaged KStudio
+  binary or are essential to building it. Pure dev dependencies (pytest,
+  pytest-qt, etc.) are not redistributed and are not listed here.
+- If you spot a missing attribution or an outdated license here, please open
+  an issue on the project repository.
