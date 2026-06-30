@@ -96,6 +96,14 @@ def _prev_internal_hash(tmp: Path) -> str | None:
 
 
 def main(argv: list[str]) -> int:
+    # Windows 콘솔/파일 리다이렉트 기본 인코딩(cp949)은 em-dash(—) 같은 비-cp949 문자를
+    # 못 써서 print 가 UnicodeEncodeError 로 죽는다(노트·경로에 한글/기호가 섞일 수 있음).
+    # stdout/stderr 를 utf-8 로 고정해 어떤 문자든 안전히 출력(로그도 깨지지 않음).
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(description="KStudio 릴리스 파이프라인")
     ap.add_argument("--notes", default="", help="릴리스 노트")
     ap.add_argument("--dry-run", action="store_true",
