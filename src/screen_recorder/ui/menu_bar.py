@@ -48,6 +48,7 @@ class KStudioMenuBar(QMenuBar):
     youtube_mp3_requested = Signal()
     # 도움말
     about_requested = Signal()
+    changelog_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -233,6 +234,9 @@ class KStudioMenuBar(QMenuBar):
         self.about_action = QAction(tr("정보"), self)
         self.about_action.triggered.connect(self.about_requested.emit)
         m_help.addAction(self.about_action)
+        self.changelog_action = QAction(tr("패치 내역"), self)
+        self.changelog_action.triggered.connect(self.changelog_requested.emit)
+        m_help.addAction(self.changelog_action)
 
 
 def build_menu_bar(parent) -> dict[str, list[QAction]]:
@@ -292,5 +296,6 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
         ],
         "help": [
             mb.about_action,
+            mb.changelog_action,
         ],
     }
