@@ -3,8 +3,12 @@ KStudio — Third-Party Components (summary)
 
 KStudio uses the following third-party software. Each component retains its
 own license; this section lists the projects, their licenses, and links to the
-upstream sources. The full texts of the GPL v3 and LGPL v3, and the FFmpeg
-corresponding-source provision, follow this summary in this same file.
+upstream sources. Full license texts for the copyleft components — GPL v3
+(FFmpeg), LGPL v3 (Qt/PySide6), and MPL 2.0 (certifi) — and the FFmpeg
+corresponding-source provision, follow this summary in this same file. The
+permissive components (MIT / BSD / Apache-2.0 / ISC / HPND / PSF) are attributed
+below with their license and upstream link; each project's full license text and
+copyright notice are available at the linked source.
 
 For the licenses of KStudio's own source code, see LICENSE.
 
@@ -24,7 +28,9 @@ For the licenses of KStudio's own source code, see LICENSE.
 --------------------------------------------------------------------------------
 2. PySide6 (Qt for Python)
 --------------------------------------------------------------------------------
-- License: GNU LGPL v3 (also available under Qt Commercial License)
+- License: GNU LGPL v3 (also available under Qt Commercial License). The wheels
+  are tri-licensed LGPL-3.0 / GPL-2.0 / GPL-3.0; KStudio uses them under LGPL-3.0.
+  Includes PySide6, PySide6-Essentials, PySide6-Addons, and shiboken6.
 - Source: https://www.qt.io/qt-for-python
 - Note: KStudio uses PySide6 via dynamic linking (PyInstaller --onedir),
   satisfying the LGPL v3 obligation that users be able to replace the Qt
@@ -37,6 +43,7 @@ For the licenses of KStudio's own source code, see LICENSE.
 --------------------------------------------------------------------------------
 - License: MIT
 - Source: https://github.com/ra1nty/DXcam
+- Used by: screen recording (frame capture).
 
 
 --------------------------------------------------------------------------------
@@ -45,6 +52,7 @@ For the licenses of KStudio's own source code, see LICENSE.
 - License: MIT
 - Source: https://github.com/s0d3s/PyAudioWPatch
 - Underlying PortAudio: MIT
+- Used by: recording audio (system loopback + microphone).
 
 
 --------------------------------------------------------------------------------
@@ -68,6 +76,9 @@ For the licenses of KStudio's own source code, see LICENSE.
 - Source: https://github.com/danielgatis/rembg
 - Default model used: u2net (Apache 2.0)
 - Models are downloaded on first use; their licenses follow upstream.
+- Used by: automatic background removal (auto-cutout) and upscaling. rembg pulls
+  in the scientific/onnx and HTTP stacks listed under "Additional bundled
+  libraries" below.
 
 
 --------------------------------------------------------------------------------
@@ -100,13 +111,74 @@ project. The icons.py wrapper code is part of KStudio (MIT).
 - License: Modified BSD (Inno Setup License)
 - Source: https://jrsoftware.org/isinfo.php
 - Used to build the Windows installer; not included in the running app.
+- (PyInstaller, used to build the executable, is likewise build-only: GPL v2
+  with an exception explicitly permitting distribution of non-free programs.)
+
+
+--------------------------------------------------------------------------------
+12. certifi
+--------------------------------------------------------------------------------
+- License: Mozilla Public License 2.0 (MPL-2.0)  ** full text included below **
+- Source: https://github.com/certifi/python-certifi
+- Used by: the HTTPS certificate bundle for downloading the background-removal
+  ONNX model (rembg -> pooch -> requests -> certifi). As an MPL-2.0 component its
+  full license text is embedded in this file (see "MOZILLA PUBLIC LICENSE").
+
+
+--------------------------------------------------------------------------------
+Additional bundled libraries (permissive licenses)
+--------------------------------------------------------------------------------
+These ship with KStudio as transitive dependencies, mostly of the background
+removal / upscaling feature (rembg + ONNX) and its model download path. Each is
+under a permissive license; copyright notices and full texts are at the links.
+
+Background removal / upscaling (numeric / ONNX):
+- onnxruntime        MIT          https://github.com/microsoft/onnxruntime
+- numpy              BSD-3-Clause https://github.com/numpy/numpy
+- scipy              BSD-3-Clause https://github.com/scipy/scipy
+- scikit-image       BSD-3-Clause https://github.com/scikit-image/scikit-image
+- scikit-learn       BSD-3-Clause https://github.com/scikit-learn/scikit-learn
+- numba              BSD-2-Clause https://github.com/numba/numba
+- llvmlite           BSD-2-Clause https://github.com/numba/llvmlite
+- PyMatting          MIT          https://github.com/pymatting/pymatting
+
+Model download (HTTP stack):
+- pooch              BSD-3-Clause https://github.com/fatiando/pooch
+- requests           Apache-2.0   https://github.com/psf/requests
+- urllib3            MIT          https://github.com/urllib3/urllib3
+- charset-normalizer MIT          https://github.com/jawah/charset_normalizer
+- idna               BSD-3-Clause https://github.com/kjd/idna
+
+Supporting / transitive:
+- cffi               MIT          https://github.com/python-cffi/cffi
+- cryptography       Apache-2.0 / BSD-3-Clause  https://github.com/pyca/cryptography
+- jsonschema         MIT          https://github.com/python-jsonschema/jsonschema
+- jsonschema-specifications  MIT  https://github.com/python-jsonschema/jsonschema-specifications
+- rpds-py            MIT          https://github.com/crate-py/rpds
+- attrs              MIT          https://github.com/python-attrs/attrs
+- MarkupSafe         BSD-3-Clause https://github.com/pallets/markupsafe
+- PyYAML             MIT          https://github.com/yaml/pyyaml
+- psutil             BSD-3-Clause https://github.com/giampaolo/psutil
+- importlib-metadata Apache-2.0   https://github.com/python/importlib_metadata
+
+Markdown preview (document mode):
+- markdown-it-py     MIT          https://github.com/executablebooks/markdown-it-py
+- mdurl              MIT          https://github.com/executablebooks/mdurl
+- Pygments           BSD-2-Clause https://github.com/pygments/pygments
+
+Network/TLS:
+- truststore         MIT          https://github.com/sethmlarson/truststore
+
+Any further transitive dependencies not individually named above are likewise
+distributed under permissive terms (MIT / BSD / Apache-2.0 / ISC); their notices
+are available from the respective upstream projects.
 
 
 --------------------------------------------------------------------------------
 Notes
 --------------------------------------------------------------------------------
 - This list covers the dependencies that ship with the packaged KStudio
-  binary or are essential to building it. Pure dev dependencies (pytest,
-  pytest-qt, etc.) are not redistributed and are not listed here.
+  binary or are essential to building it. Pure dev/test dependencies
+  (pytest, pytest-qt, coverage, etc.) are not part of the distributed app.
 - If you spot a missing attribution or an outdated license here, please open
   an issue on the project repository.

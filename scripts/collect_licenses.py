@@ -38,6 +38,7 @@ def build_bundle() -> str:
         ("FFmpeg — corresponding source & provenance", "GPL-3.0", _read("SOURCES.md")),
         ("GNU GENERAL PUBLIC LICENSE (v3)", "GPL-3.0", _read("gpl-3.0.txt")),
         ("GNU LESSER GENERAL PUBLIC LICENSE (v3)", "LGPL-3.0", _read("lgpl-3.0.txt")),
+        ("MOZILLA PUBLIC LICENSE (v2.0) — applies to: certifi", "MPL-2.0", _read("mpl-2.0.txt")),
     ]
     return format_license_bundle(sections)
 

@@ -25,8 +25,8 @@ def test_format_bundle_includes_all_sections():
 
 
 def test_license_data_files_present():
-    # 법적 필수 데이터 파일이 레포에 있어야 함.
-    for name in ("gpl-3.0.txt", "lgpl-3.0.txt", "summary.txt", "SOURCES.md"):
+    # 법적 필수 데이터 파일이 레포에 있어야 함(GPL/LGPL/MPL 전문 + 요약 + 소스조달).
+    for name in ("gpl-3.0.txt", "lgpl-3.0.txt", "mpl-2.0.txt", "summary.txt", "SOURCES.md"):
         assert (_ROOT / "licenses" / name).exists(), name
 
 
@@ -41,3 +41,8 @@ def test_build_bundle_embeds_full_texts_and_provenance():
     # ffmpeg 소스조달 + 정확한 빌드 커밋:
     assert "de18feb0f0" in bundle
     assert "Corresponding Source" in bundle
+    # MPL-2.0 전문 임베드 + certifi(유일한 약한 카피레프트) 명시:
+    assert "Mozilla Public License" in bundle
+    assert "certifi" in bundle
+    # 누락됐던 번들 패키지 보강 확인(대표 몇 개):
+    assert "onnxruntime" in bundle and "numpy" in bundle and "scikit-image" in bundle
