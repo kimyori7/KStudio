@@ -29,7 +29,7 @@ a = Analysis(
         # yt-dlp 는 extractor 를 지연 로딩 → PyInstaller 정적 분석이 놓침.
         # collect_submodules 로 모든 extractor/postprocessor 모듈을 동봉해야
         # 설치본(.exe)에서 다운로드가 동작한다 (dev 에선 되는데 exe 만 깨지는 함정).
-        # truststore — run_download 가 함수 내부에서 lazy import 하므로 명시 (사내 TLS).
+        # truststore — run_download 가 함수 내부에서 lazy import 하므로 명시 (기업 프록시 TLS).
         "truststore",
         "dxcam",
         "pyaudiowpatch",
@@ -54,13 +54,27 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # pymatting 을 런타임 스텁으로 대체 (아래 excludes 의 pymatting/numba/llvmlite 와 짝).
+    # rembg/bg.py 가 top-level 에서 pymatting 3 심볼을 import 하지만 누끼는 alpha_matting
+    # 을 안 써서 호출되지 않음 → 스텁으로 import 만 만족시키고 102MB(llvmlite 등) 를 뺀다.
+    runtime_hooks=[str(ROOT / "pyi_rthook_pymatting_stub.py")],
     excludes=[
         "tkinter",
         # 'unittest' 는 제외하면 안 됨 — pyrect/doctest 가 의존함
         "pytest",
         "pytest_qt",
         "pytest_cov",
+        # 테스트 전용 도구(앱이 import 안 함) — 우발 번들 방지.
+        "coverage",
+        # scikit-learn 은 누끼/업스케일 런타임 경로가 안 씀(librosa 전용인데 librosa 도 제외).
+        # ⚠ scikit-IMAGE(skimage) 는 rembg/bg.py 가 쓰므로 절대 빼지 말 것.
+        "sklearn",
+        # pymatting → numba → llvmlite(101MB) 체인. rembg 가 top-level import 하지만
+        # 누끼가 호출 안 함 → 런타임훅(pyi_rthook_pymatting_stub.py)이 import 를 스텁으로
+        # 대체. 셋 다 빼야 크기 이득(스텁만 넣고 안 빼면 그대로 번들됨).
+        "pymatting",
+        "numba",
+        "llvmlite",
         # 2026-06-18: 에이전트(로컬 LLM)·Whisper·자동편집·이미지 생성 기능 제거에 따라
         # GPU/AI 스택을 번들에서 제외 — 인스톨러 ~2.4GB→~0.7GB. 코드가 더 이상 import 하지
         # 않으므로 PyInstaller 가 자동으로 빼지만, 전이 의존으로 끌려오지 않도록 명시.

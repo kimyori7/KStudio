@@ -15,9 +15,9 @@ _truststore_injected = False
 
 
 def _ensure_truststore() -> None:
-    """rembg 모델 다운로드(pooch/HTTPS)가 사내망 TLS 인터셉트나 설치본(.exe)의 certifi
-    경로 문제로 CERTIFICATE_VERIFY_FAILED 나지 않도록, OS(Windows) 인증서 저장소를 쓰게
-    한다. yt-dlp 다운로드와 동일한 패턴 — 프로세스 전역·1회·신뢰 추가만(안전, pip 도 사용)."""
+    """rembg 모델 다운로드(pooch/HTTPS)가 기업 프록시 등의 TLS 인터셉트나 설치본(.exe)의
+    certifi 경로 문제로 CERTIFICATE_VERIFY_FAILED 나지 않도록, OS(Windows) 인증서 저장소를
+    쓰게 한다. yt-dlp 다운로드와 동일한 패턴 — 프로세스 전역·1회·신뢰 추가만(안전, pip 도 사용)."""
     global _truststore_injected
     if _truststore_injected:
         return
@@ -40,7 +40,7 @@ def _default_remove_bg(image: QImage, *, model_name: str = "u2net") -> QImage:
     from PIL import Image
     from rembg import new_session, remove
 
-    _ensure_truststore()   # 모델 다운로드 전 OS 인증서 저장소 활성화 (사내망/frozen 대비)
+    _ensure_truststore()   # 모델 다운로드 전 OS 인증서 저장소 활성화 (기업 프록시/frozen 대비)
     # QImage → PIL → rembg → PIL(RGBA) → mask QImage(Grayscale8)
     src = image.convertToFormat(QImage.Format_RGBA8888)
     ptr = src.bits()
