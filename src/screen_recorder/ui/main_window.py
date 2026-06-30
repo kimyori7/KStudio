@@ -4981,17 +4981,8 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_force_quit", False):
             e.ignore()
             self.hide()
-            # 트레이 안내는 최초 1회만 — 매번 띄우면 알람 피로도 증가.
-            if not getattr(self, "_tray_hint_shown", False):
-                try:
-                    self.tray.tray.showMessage(
-                        "KStudio",
-                        "트레이에서 계속 실행 중입니다. 종료하려면 트레이 아이콘 우클릭 → '종료'.",
-                        QSystemTrayIcon.Information, 3000,
-                    )
-                except Exception:
-                    pass
-                self._tray_hint_shown = True
+            # 트레이로 숨길 때 알림(풍선/토스트)은 띄우지 않는다 — 사용자 요청(알람 피로).
+            # 트레이 아이콘은 그대로 보이므로 종료는 트레이 아이콘 우클릭 → '종료'.
             return
         # 실제 종료 경로 — 녹화 중이면 사용자에게 확인.
         if self.controller.state != RecorderState.IDLE:
