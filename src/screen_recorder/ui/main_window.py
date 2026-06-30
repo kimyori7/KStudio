@@ -671,6 +671,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.youtube_mp3_requested.connect(
             lambda: self._open_youtube_dialog("mp3"))
         self.menu_bar.about_requested.connect(self._show_about)
+        self.menu_bar.changelog_requested.connect(self._show_changelog)
 
         # 모드 / 탭 / 라이브러리
         self.mode_controller.mode_changed.connect(self._on_mode_changed)
@@ -3872,6 +3873,12 @@ class MainWindow(QMainWindow):
         from screen_recorder import __version__
         from .about import about_html
         QMessageBox.about(self, "KStudio 정보", about_html(__version__))
+
+    def _show_changelog(self) -> None:
+        """도움말 → 패치 내역. 0.1.4 부터 전체 내역을 다이얼로그로."""
+        from .changelog_dialog import ChangelogDialog
+        from screen_recorder.app.changelog import all_notes
+        ChangelogDialog(all_notes(), "패치 내역", self).exec()
 
     # ---------- 추가 기능: 유튜브 영상 추출 / mp3 변환 ----------
     def _open_youtube_dialog(self, mode: str) -> None:

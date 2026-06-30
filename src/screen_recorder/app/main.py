@@ -128,6 +128,7 @@ def main() -> int:
     app.setWindowIcon(app_icon())
     # 마지막 사용 모드를 settings 에서 읽어 초기 테마 적용 — 재시작 시 깜빡임 방지.
     # 잘못된 값(파일 손상/구버전)은 "image" 로 폴백.
+    settings_existed = SETTINGS_PATH().exists()   # 패치 내역: 기존 사용자 vs 생 새 설치 구분
     settings = _settings_module.load(SETTINGS_PATH())
     initial_palette = settings.preferences.last_mode
     if initial_palette not in ("video", "image", "document"):
@@ -202,6 +203,21 @@ def main() -> int:
             opened_any = True
     if start_in_tray and opened_any:
         win.show()
+
+    # 업데이트 후 첫 실행이면 바뀐 점을 보여준다(frozen 전용; dev/pytest 잡음 방지).
+    try:
+        from screen_recorder import __version__
+        from screen_recorder.app.changelog import decide_startup_changelog
+        from screen_recorder.ui.changelog_dialog import ChangelogDialog
+        _cl = decide_startup_changelog(
+            settings.update.last_seen_version, __version__, settings_existed)
+        if _cl and getattr(sys, "frozen", False):
+            ChangelogDialog(_cl, "업데이트 내역", parent=win).exec()
+        if settings.update.last_seen_version != __version__:
+            settings.update.last_seen_version = __version__
+            _settings_module.save(win.app_settings, SETTINGS_PATH())
+    except Exception:
+        logging.getLogger(__name__).debug("패치 내역 표시 건너뜀", exc_info=True)
 
     # 시작 시 새 버전 비동기 확인(frozen 전용·실패 무시·시작 안 막음).
     # frozen 게이트를 호출부에도 둬 dev/pytest 에선 컨트롤러를 아예 안 부른다(위 .old
