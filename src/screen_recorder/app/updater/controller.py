@@ -86,7 +86,8 @@ def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) ->
 
     install_dir = loc.current_install_dir()
     writable = loc.is_user_writable(install_dir)
-    kind, url, sha = loc.select_download(manifest, writable)
+    installed_internal = loc.installed_internal_hash(install_dir)
+    kind, url, sha = loc.select_download(manifest, writable, installed_internal)
 
     dlg = ProgressCls(manifest.version, win)
     # ⚠️ 코드 패치는 install_dir 안에 받는다(KStudio.exe.new). temp 와 install 이 다른

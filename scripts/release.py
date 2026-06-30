@@ -116,6 +116,11 @@ def main(argv: list[str]) -> int:
     new_hash = compute_internal_hash(_DIST_APP / "_internal")
     print(f"[release] 새 internal_hash = {new_hash}")
 
+    # 설치본이 자기 _internal 지문을 알 수 있게 앱 루트(KStudio.exe 옆, _internal 밖)에
+    # 동봉 → Plan 1 want_code_patch 가 manifest.internal_hash 와 비교해 의존성 바뀐
+    # 릴리스를 건너뛴 사용자에게 불일치 코드패치가 적용되는 걸 막는다.
+    (_DIST_APP / "internal_hash.txt").write_text(new_hash, encoding="utf-8")
+
     # 5) 전체 인스톨러(ISCC 직접) — OutputDir 가 없을 때 ISCC 가 만들지만, 실패 시
     # "산출물 없음" 보다 ISCC 자체 에러가 먼저 드러나도록 미리 만들어 둔다.
     _INSTALLER_DIR.mkdir(parents=True, exist_ok=True)

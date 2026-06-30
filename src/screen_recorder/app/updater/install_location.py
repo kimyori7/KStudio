@@ -32,13 +32,38 @@ def is_user_writable(dir_path: Path) -> bool:
         return False
 
 
-def want_code_patch(manifest: Manifest, writable: bool) -> bool:
-    """30MB 코드 패치를 쓸 조건: code_url 존재 AND 설치폴더 쓰기가능."""
-    return bool(manifest.code_url) and writable
+def installed_internal_hash(install_dir: Path) -> str | None:
+    """설치된 _internal 지문(빌드 때 동봉한 internal_hash.txt). 없으면 None.
+
+    release.py 가 빌드 시 _internal 지문을 KStudio.exe 옆(앱 루트)에 적어 동봉한다.
+    이 값이 manifest.internal_hash 와 같아야만 코드 패치가 *현재 설치된* _internal 과
+    호환됨이 보장된다(의존성 바뀐 릴리스를 건너뛴 사용자 보호 — 직전 릴리스 기준
+    decide_code_patch 만으론 부족). 파일이 없으면(이 기능 이전 설치) None → 코드 패치
+    안 함(전체 인스톨러로 안전).
+    """
+    try:
+        v = (install_dir / "internal_hash.txt").read_text(encoding="utf-8").strip()
+        return v or None
+    except OSError:
+        return None
 
 
-def select_download(manifest: Manifest, writable: bool) -> tuple[str, str, str]:
+def want_code_patch(manifest: Manifest, writable: bool,
+                    installed_internal: str | None) -> bool:
+    """30MB 코드 패치 조건: code_url 존재 AND 쓰기가능 AND manifest.internal_hash 가
+    *현재 설치된* _internal 지문과 일치. 마지막 조건이 빠지면 의존성이 다른 옛 버전에
+    코드만 덮어써 런타임 불일치로 깨진다(skip-version 함정)."""
+    return (
+        bool(manifest.code_url)
+        and writable
+        and bool(manifest.internal_hash)
+        and manifest.internal_hash == installed_internal
+    )
+
+
+def select_download(manifest: Manifest, writable: bool,
+                    installed_internal: str | None) -> tuple[str, str, str]:
     """(kind, url, sha256) 반환. kind='code' 또는 'full'."""
-    if want_code_patch(manifest, writable):
+    if want_code_patch(manifest, writable, installed_internal):
         return "code", manifest.code_url, manifest.code_sha256
     return "full", manifest.full_url, manifest.full_sha256
