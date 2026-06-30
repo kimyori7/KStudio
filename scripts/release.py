@@ -116,7 +116,9 @@ def main(argv: list[str]) -> int:
     new_hash = compute_internal_hash(_DIST_APP / "_internal")
     print(f"[release] 새 internal_hash = {new_hash}")
 
-    # 5) 전체 인스톨러(ISCC 직접)
+    # 5) 전체 인스톨러(ISCC 직접) — OutputDir 가 없을 때 ISCC 가 만들지만, 실패 시
+    # "산출물 없음" 보다 ISCC 자체 에러가 먼저 드러나도록 미리 만들어 둔다.
+    _INSTALLER_DIR.mkdir(parents=True, exist_ok=True)
     _run([str(_iscc_exe()), str(_ISS)])
     installer = _INSTALLER_DIR / FULL_ASSET.format(version=version)
     if not installer.is_file():
@@ -168,10 +170,14 @@ def main(argv: list[str]) -> int:
     if exists:
         _run(["gh", "release", "upload", tag, *asset_paths,
               "--repo", RELEASES_REPO, "--clobber"])
+        # 기존 릴리스가 prerelease/draft 였더라도 latest 로 승격 — Plan 1 의
+        # releases/latest/download/latest.json 가 항상 resolve 되도록 보장.
+        _run(["gh", "release", "edit", tag,
+              "--repo", RELEASES_REPO, "--latest"])
     else:
         _run(["gh", "release", "create", tag, *asset_paths,
               "--repo", RELEASES_REPO, "--title", tag,
-              "--notes", args.notes or tag])
+              "--notes", args.notes or tag, "--latest"])
     print(f"[release] 업로드 완료: {tag}")
     return 0
 
