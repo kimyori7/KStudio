@@ -19,6 +19,13 @@
     for (var i = 0; i < imgs.length; i++) {
       imgs[i].setAttribute("src", resolveRelative(imgs[i].getAttribute("src"), docDir));
     }
+    // 상대 경로 링크(./other.md 등)도 문서 폴더 기준으로 재작성 — 안 하면 base 가
+    // template.html 이라 assets 폴더 밑의 엉뚱한 경로를 가리킨다. (#앵커는 resolveRelative
+    // 가 그대로 통과시킴.)
+    var links = root.querySelectorAll("a[href]");
+    for (var j = 0; j < links.length; j++) {
+      links[j].setAttribute("href", resolveRelative(links[j].getAttribute("href"), docDir));
+    }
   }
 
   // --- 스크롤 동기화 (나란히 모드) ---
@@ -133,10 +140,24 @@
     }
   };
 
-  // 외부 링크는 미리보기 안에서 네비게이션하지 않음 (Python 이 acceptNavigationRequest 로
-  // 시스템 브라우저로 보냄). 여기선 기본 동작 막기만.
+  // 링크 클릭 처리. 과거에 모든 링크를 preventDefault 했더니 네비게이션이 시작조차
+  // 안 돼 Python acceptNavigationRequest 가 영영 안 불려 링크가 전부 죽었다
+  // (2026-07-13 사용자 보고). 이제:
+  //  - #앵커 → 페이지 URL 을 바꾸지 않고 해당 heading 으로 스크롤 (updateMarkdown 이
+  //    innerHTML 교체라 URL fragment 방식은 재렌더 후 잔상이 남음)
+  //  - 그 외 → 기본 네비게이션 시작 → Python acceptNavigationRequest(LinkClicked) 가
+  //    가로채 시스템 브라우저/기본 앱으로 열고 페이지 자체는 이동하지 않음.
   document.addEventListener("click", function (e) {
     var a = e.target.closest && e.target.closest("a[href]");
-    if (a) e.preventDefault();
+    if (!a) return;
+    var href = a.getAttribute("href") || "";
+    if (href.charAt(0) === "#") {
+      e.preventDefault();
+      var id;
+      // markdown-it 가 href 를 percent-encode 하므로(한글 앵커) 디코드해서 id 매칭.
+      try { id = decodeURIComponent(href.slice(1)); } catch (_) { id = href.slice(1); }
+      var t = document.getElementById(id);
+      if (t) t.scrollIntoView();
+    }
   });
 })();

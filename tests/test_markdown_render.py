@@ -51,3 +51,19 @@ def test_pygments_css_nonempty():
     from screen_recorder.ui.markdown.render import pygments_css
     css = pygments_css()
     assert ".highlight" in css and len(css) > 100
+
+
+def test_heading_anchor_ids():
+    # 문서 내 앵커 링크([...](#섹션))의 목적지 — heading 에 GitHub 스타일 id 부여.
+    # id 가 없으면 앵커 링크가 "작동 안 함"으로 보인다 (2026-07-13 사용자 보고).
+    from screen_recorder.ui.markdown.render import render_markdown_to_html
+    html = render_markdown_to_html("# Hello World\n\n## 결정 이력\n")
+    assert 'id="hello-world"' in html
+    assert 'id="결정-이력"' in html
+
+
+def test_heading_anchor_ids_dedup_and_formatting_stripped():
+    from screen_recorder.ui.markdown.render import render_markdown_to_html
+    html = render_markdown_to_html("# Same\n\n# Same\n\n## **Bold** `code` title\n")
+    assert 'id="same"' in html and 'id="same-1"' in html  # 중복 heading 은 -1 접미
+    assert 'id="bold-code-title"' in html                 # 인라인 마크업은 슬러그에서 제거

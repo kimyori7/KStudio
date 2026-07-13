@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QUrl, Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
@@ -250,6 +250,9 @@ class WebEnginePreviewRenderer(PreviewRenderer):
         self._page.setBackgroundColor(QColor("#1e1e1e"))
         self._ready = False
         self._pending: tuple[str, str | None, int] | None = None
+        # 마지막으로 주입한 본문 — template 이 다시 로드되면(#content 빈 상태) 재주입해
+        # 자가 복구한다 (렌더 프로세스 재시작 등. Reload 메뉴 자체는 제거했지만 방어).
+        self._last: tuple[str, str | None, int] | None = None
         self._scroll_cb = None
         self._zoom_cb = None
         self._sel_cb = None
@@ -263,9 +266,33 @@ class WebEnginePreviewRenderer(PreviewRenderer):
             )
         )
         self._page.setUrl(QUrl.fromLocalFile(str(_ASSETS / "template.html")))
+        # 기본 Chromium 메뉴(Back/Forward/Reload/Save page/View source)는 주입형
+        # 미리보기에서 전부 무의미하거나 유해(Reload=본문 소실) — 최소 메뉴로 교체.
+        self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._view.customContextMenuRequested.connect(self._show_context_menu)
 
     def widget(self):
         return self._view
+
+    def _show_context_menu(self, pos) -> None:
+        from PySide6.QtWebEngineCore import QWebEnginePage
+        from PySide6.QtWidgets import QMenu
+
+        from .preview_menu import context_menu_items
+
+        link = ""
+        req = self._view.lastContextMenuRequest()
+        if req is not None and req.linkUrl().isValid():
+            link = req.linkUrl().toString()
+        actions = {
+            "copy": QWebEnginePage.WebAction.Copy,
+            "copy_link": QWebEnginePage.WebAction.CopyLinkToClipboard,
+            "select_all": QWebEnginePage.WebAction.SelectAll,
+        }
+        menu = QMenu(self._view)
+        for key, label in context_menu_items(self._page.hasSelection(), link):
+            menu.addAction(label, lambda k=key: self._page.triggerAction(actions[k]))
+        menu.exec(self._view.mapToGlobal(pos))
 
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
@@ -284,8 +311,13 @@ class WebEnginePreviewRenderer(PreviewRenderer):
             html, dd, rev = self._pending
             self._pending = None
             self._inject(html, dd, rev)
+        elif self._last is not None:
+            # 재로드로 #content 가 비었을 때(app.js 의 latestRevision 도 리셋됨) 마지막
+            # 본문을 재주입 — 없으면 다음 편집 전까지 빈 화면으로 남는다.
+            self._inject(*self._last)
 
     def show_html(self, html: str, doc_dir: str | None, revision: int) -> None:
+        self._last = (html, doc_dir, revision)
         if not self._ready:
             self._pending = (html, doc_dir, revision)  # loadFinished 전 큐잉
             return

@@ -10,6 +10,7 @@ nowrap=True 로 토큰 span 만 받아 <pre class="highlight"><code> 로 직접 
 from __future__ import annotations
 
 import html as _html
+import re
 
 from markdown_it import MarkdownIt
 from pygments import highlight as _pyg_highlight
@@ -45,6 +46,41 @@ def _inject_source_lines(state) -> None:
             token.attrSet("data-source-line", str(token.map[0]))
 
 
+# GitHub 스타일 슬러그: 소문자화 → 단어문자(유니코드 포함)·공백·하이픈 외 제거 → 공백을 -.
+_SLUG_STRIP = re.compile(r"[^\w\s-]")
+_SLUG_WS = re.compile(r"\s+")
+
+
+def _heading_slug(text: str) -> str:
+    s = _SLUG_STRIP.sub("", text.strip().lower())
+    return _SLUG_WS.sub("-", s)
+
+
+def _inject_heading_anchors(state) -> None:
+    """heading 에 GitHub 스타일 ``id`` 를 부여 — 문서 내 앵커 링크([...](#섹션))의 목적지.
+
+    id 가 없으면 앵커 링크가 갈 곳이 없어 "링크가 작동 안 함"으로 보인다. 슬러그는
+    인라인 마크업(**굵게**, `코드`)을 벗긴 표시 텍스트 기준, 중복 heading 은 -1, -2 접미.
+    """
+    seen: dict[str, int] = {}
+    tokens = state.tokens
+    for i, token in enumerate(tokens):
+        if token.type != "heading_open":
+            continue
+        inline = tokens[i + 1] if i + 1 < len(tokens) else None
+        text = ""
+        if inline is not None and inline.type == "inline" and inline.children:
+            text = "".join(
+                c.content for c in inline.children if c.type in ("text", "code_inline")
+            )
+        slug = _heading_slug(text)
+        if not slug:
+            continue  # 순수 기호 heading — 앵커로 쓸 이름이 없으니 건너뜀
+        n = seen.get(slug, 0)
+        seen[slug] = n + 1
+        token.attrSet("id", slug if n == 0 else f"{slug}-{n}")
+
+
 _md = (
     MarkdownIt("commonmark", {"html": False, "linkify": True, "highlight": _highlight})
     .enable("table")
@@ -52,6 +88,7 @@ _md = (
 )
 # core 파이프라인 끝(블록·인라인 파싱 후)에 줄번호 주입 규칙 추가 — 이때 token.map 이 확정됨.
 _md.core.ruler.push("source_line", _inject_source_lines)
+_md.core.ruler.push("heading_anchors", _inject_heading_anchors)
 
 
 def render_markdown_to_html(md_text: str) -> str:
