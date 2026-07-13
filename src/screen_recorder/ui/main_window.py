@@ -2501,6 +2501,12 @@ class MainWindow(QMainWindow):
         # set_mode 가 기존 탭으로 currentChanged 를 일으켜 라이브러리 포커스를 덮어쓸 수
         # 있으므로(_on_active_tab_changed), focus_entry 는 반드시 set_mode '다음'에 호출.
         self.mode_controller.set_mode(self._mode_for_kind(target.kind))
+        # 문서는 선택 하이라이트만으로는 아무것도 안 보인다(문서 모드는 열린 탭이
+        # 없으면 빈 화면) — 드롭한 .md 는 즉시 탭으로 열어 내용을 보여준다
+        # (사용자 요청 2026-07-13). 이미 열려 있으면 그 탭으로 포커스만 이동.
+        if (target.kind is EntryKind.DOCUMENT and target.path is not None
+                and target.path.exists()):
+            self._open_markdown_path(target.path)
         if not self.library_dock.isVisible():
             self.library_dock.show()
         self.library_panel.focus_entry(target.id)

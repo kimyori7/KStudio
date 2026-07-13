@@ -473,7 +473,12 @@ class MarkdownTab(QWidget):
           (미저장 편집이 있으면 팝업에 '편집 내용이 사라집니다' 경고)
         """
         if self._reload_prompt_open:
-            return   # 이미 팝업이 떠 있음(중첩 루프 재진입 방지)
+            # 팝업이 떠 있는 동안 도착한 변경 통지 — 버리면 안 된다. 모달 중 마지막
+            # 변경의 디바운스가 여기서 소멸하면 [아니오]/Esc 뒤 팝업·갱신이 영영 안
+            # 온다(에이전트 연속 편집 중 사용자 보고 2026-07-13). 디바운스를 다시
+            # 걸어 모달이 닫힌 뒤 재검사한다([예]는 disk==_disk_text 라 no-op).
+            self._fs_debounce.start()
+            return
         p = self._saved_path
         if p is None:
             return

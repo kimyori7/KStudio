@@ -206,6 +206,56 @@ def test_save_updates_watch_path(qtbot, tmp_path):
     assert str(target.parent) in tab._fs_watcher.directories()
 
 
+def test_no_during_prompt_change_reprompts_after_close(qtbot, tmp_path):
+    """모달이 떠 있는 동안 파일이 또 바뀌고 그 디바운스(150ms)도 모달 '중'에 발화해
+    guard 로 버려진 경우 — [아니오]/Esc/X 로 닫으면 거절한 건 '보여준 v2'뿐이므로
+    모달 중 도착한 v3 로는 닫힌 뒤 다시 물어야 한다.
+
+    버그(2026-07-13): 이벤트가 통째로 버려져 편집이 끝나도 팝업/갱신이 영영 안 옴 —
+    에이전트가 문서를 연속 편집하는 동안 사용자가 팝업 하나를 닫으면 그대로 고착.
+    """
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+    answers = []
+
+    def confirm_no_while_editing(dirty):
+        answers.append(dirty)
+        if len(answers) == 1:
+            p.write_text("v3 during modal", encoding="utf-8")
+            tab._fs_watcher.directoryChanged.emit(str(p.parent))   # OS 이벤트 모사
+            qtbot.wait(400)   # 사용자가 팝업 읽는 시간 — 디바운스가 모달 중 발화(guard)
+        return False          # [아니오] (Esc/X 도 같은 경로)
+
+    tab._confirm_external_reload = confirm_no_while_editing
+    p.write_text("v2", encoding="utf-8")
+    tab._reload_check()                                            # 첫 팝업(v2 거절)
+    qtbot.waitUntil(lambda: len(answers) >= 2, timeout=2000)       # v3 로 재확인이 와야 함
+    assert tab.editor.toPlainText() == "v1"        # 확인 없인 여전히 안 바뀜(정책 유지)
+
+
+def test_yes_after_midmodal_debounce_no_spurious_reprompt(qtbot, tmp_path):
+    """[예] 는 적용 직전 디스크 재읽기로 모달 중 변경까지 반영하므로, 모달 중 디바운스
+    발화가 있었어도 닫힌 뒤 같은 내용으로 또 묻지 않아야 한다(재검사 no-op 확인)."""
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+    answers = []
+
+    def confirm_yes_while_editing(dirty):
+        answers.append(dirty)
+        if len(answers) == 1:
+            p.write_text("v3 during modal", encoding="utf-8")
+            tab._fs_watcher.directoryChanged.emit(str(p.parent))
+            qtbot.wait(400)
+        return True           # [예]
+
+    tab._confirm_external_reload = confirm_yes_while_editing
+    p.write_text("v2", encoding="utf-8")
+    tab._reload_check()
+    assert tab.editor.toPlainText() == "v3 during modal"   # 최신본 반영
+    qtbot.wait(400)                                        # 잔여 재검사 소화
+    assert answers == [False]                              # 추가 팝업 없음
+
+
 def test_dirchanged_signal_triggers_debounced_prompt(qtbot, tmp_path):
     """배선 확인: directoryChanged → 디바운스 타이머 → _reload_check(팝업) 발화.
 

@@ -72,6 +72,33 @@ def test_open_document_entry_from_library(qtbot, tmp_path):
     win.close()
 
 
+def test_drop_md_on_library_opens_document_tab(qtbot, tmp_path):
+    """라이브러리에 .md 드롭 → 등록+선택만이 아니라 그 문서 탭이 즉시 열려 보여야 한다.
+
+    사용자 보고(2026-07-13): 항목이 선택된 것처럼 표시되는데 내용은 안 보임 — 문서
+    모드는 탭이 없으면 빈 화면이라 하이라이트만으로는 아무것도 안 보인다.
+    """
+    from screen_recorder.app.main import build_main_window
+    from screen_recorder.ui.library_model import EntryKind
+    from screen_recorder.ui.markdown_tab import MarkdownTab
+    from screen_recorder.ui.mode_controller import AppMode
+    win = build_main_window()
+    qtbot.addWidget(win)
+    p = tmp_path / "dropped.md"
+    p.write_text("# dropped", encoding="utf-8")
+    win._on_library_files_dropped([str(p)])
+    assert win.mode_controller.mode() is AppMode.DOCUMENT
+    cur = win.tab_area.currentWidget()
+    assert isinstance(cur, MarkdownTab)                    # 탭이 실제로 열림
+    assert cur.editor.toPlainText() == "# dropped"         # 그 파일 내용이 보임
+    assert cur.saved_path() == p
+    docs = win.library_model.entries(EntryKind.DOCUMENT)
+    assert len(docs) == 1                                  # 중복 등록 없음
+    panel = win.library_panel
+    assert panel.list_widget.currentItem() is panel._items_by_id[docs[0].id]
+    win.close()
+
+
 def test_blank_md_saved_promotes_to_library(qtbot, tmp_path, monkeypatch):
     from screen_recorder.app.main import build_main_window
     from screen_recorder.ui.library_model import EntryKind
@@ -89,49 +116,6 @@ def test_blank_md_saved_promotes_to_library(qtbot, tmp_path, monkeypatch):
     win.close()
 
 
-def test_agent_document_edit_replace_is_undoable(qtbot, tmp_path):
-    # 에이전트 replace → 즉시 적용 + Ctrl+Z(undo) 한 번에 원복돼야 함.
-    from concurrent.futures import Future
-    from screen_recorder.app.main import build_main_window
-    win = build_main_window()
-    qtbot.addWidget(win)
-    p = tmp_path / "doc.md"
-    p.write_text("original", encoding="utf-8")
-    win._open_path(p)
-    fut = Future()
-    win._on_agent_document_edit({"op": "replace", "content": "rewritten"}, fut)
-    assert fut.result()["ok"] is True
-    md = win.tab_area.currentWidget()
-    assert md.editor.toPlainText() == "rewritten"
-    md.editor.undo()
-    assert md.editor.toPlainText() == "original"   # 한 번의 undo 로 복원
-    win.close()
-
-
-def test_agent_document_find_replace(qtbot, tmp_path):
-    from concurrent.futures import Future
-    from screen_recorder.app.main import build_main_window
-    win = build_main_window()
-    qtbot.addWidget(win)
-    p = tmp_path / "doc.md"
-    p.write_text("foo bar foo", encoding="utf-8")
-    win._open_path(p)
-    fut = Future()
-    win._on_agent_document_edit(
-        {"op": "find_replace", "find": "foo", "replace": "X", "count": 0}, fut)
-    res = fut.result()
-    assert res["n_replaced"] == 2
-    assert win.tab_area.currentWidget().editor.toPlainText() == "X bar X"
-    win.close()
-
-
-def test_agent_document_edit_no_active_doc(qtbot):
-    # 활성 문서 아닐 때 편집 요청은 거부(ok=False)하되 future 는 반드시 해결돼야 함(hang 방지).
-    from concurrent.futures import Future
-    from screen_recorder.app.main import build_main_window
-    win = build_main_window()
-    qtbot.addWidget(win)
-    fut = Future()
-    win._on_agent_document_edit({"op": "replace", "content": "x"}, fut)
-    assert fut.result()["ok"] is False
-    win.close()
+# NOTE: test_agent_document_edit_* 3건은 2026-07-13 제거 — 인앱 에이전트 기능이
+# 기능 다이어트(b552408, 2026-06-18)로 통째 삭제되면서 _on_agent_document_edit 가
+# 사라져 잔재로 실패하고 있었다. 기능 복원 시 git 이력에서 함께 복원할 것.
