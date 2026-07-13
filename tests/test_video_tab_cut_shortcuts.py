@@ -1,13 +1,13 @@
-"""VideoTab 단축키 — C (splice) / Shift+C (구간) 가 CutEffect 추가."""
-import os
-import tempfile
-from pathlib import Path
+"""VideoTab 자르기 단축키 — S (현재 위치에서 트랙 segment split).
 
+구 C / Shift+C (CutEffect 추가) 단축키는 새 트랙 모델(Stage D)에서 제거됨 —
+자르기는 트랙 lane 우클릭 메뉴 또는 단축키 S. 이 파일은 2026-07-13 그 현행
+계약으로 재작성(과거 C/Shift+C 테스트는 잔재라 삭제).
+"""
 import pytest
 from PySide6.QtCore import Qt
 
 from screen_recorder.core.settings import PlayerSettings, PlayerHotkeys
-from screen_recorder.effects.types.cut import CutEffect
 from screen_recorder.ui.video_tab import VideoTab
 
 
@@ -15,7 +15,7 @@ from screen_recorder.ui.video_tab import VideoTab
 def tab(qtbot, tmp_path):
     # PlayerWidget 의 영상 로드 없이 단축키만 테스트.
     fake_video = tmp_path / "a.mp4"
-    fake_video.write_bytes(b"\x00" * 4096)  # 1MB sha-1 폴백을 위해 일정 크기
+    fake_video.write_bytes(b"\x00" * 4096)
     sidecar_dir = tmp_path / "sidecars"
     sidecar_dir.mkdir()
     t = VideoTab(
@@ -34,31 +34,17 @@ def tab(qtbot, tmp_path):
     return t
 
 
-def test_C_adds_splice_at_current_position(tab, qtbot):
+def test_S_splits_segment_at_current_position(tab, qtbot):
     tab.setFocus()
-    qtbot.keyClick(tab, Qt.Key_C, Qt.NoModifier)
-    cuts = [e for e in tab._edit_controller.sidecar().effects if e.type == "cut"]
-    assert len(cuts) == 1
-    assert cuts[0].is_splice
-    assert cuts[0].in_ms == 5000
+    assert len(tab.sidecar().video_track) == 1          # 기본 segment 1개
+    qtbot.keyClick(tab, Qt.Key_S, Qt.NoModifier)
+    segs = tab.sidecar().video_track
+    assert len(segs) == 2                               # 5000ms 에서 둘로
+    assert segs[1].start_ms == 5000
 
 
-def test_shift_C_adds_range_centered(tab, qtbot):
-    tab.setFocus()
-    qtbot.keyClick(tab, Qt.Key_C, Qt.ShiftModifier)
-    cuts = [e for e in tab._edit_controller.sidecar().effects if e.type == "cut"]
-    assert len(cuts) == 1
-    e = cuts[0]
-    assert not e.is_splice
-    assert e.in_ms == 4500
-    assert e.out_ms == 5500
-    assert not e.has_insert
-
-
-def test_shortcuts_inactive_when_edit_mode_off(tab, qtbot):
+def test_S_inactive_when_edit_mode_off(tab, qtbot):
     tab.set_edit_mode(False)
     tab.setFocus()
-    qtbot.keyClick(tab, Qt.Key_C, Qt.NoModifier)
-    qtbot.keyClick(tab, Qt.Key_C, Qt.ShiftModifier)
-    cuts = [e for e in tab._edit_controller.sidecar().effects if e.type == "cut"]
-    assert len(cuts) == 0
+    qtbot.keyClick(tab, Qt.Key_S, Qt.NoModifier)
+    assert len(tab.sidecar().video_track) == 1          # split 안 됨

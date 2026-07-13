@@ -134,13 +134,18 @@ def test_zoom_factor_default_one(timeline):
 
 
 def test_set_zoom_factor_expands_inner_width(timeline, qtbot):
-    """zoom 2x → inner widget 의 minimum width 가 viewport × 2."""
+    """zoom 2x → 위/아래 inner 둘 다 minimum width 가 viewport × 2.
+
+    (_inner 는 sticky 상단(_top_inner) + 스크롤 하단(_bottom_inner)으로 분리됨 —
+    두 영역의 너비가 같아야 시간축이 정렬된다.)
+    """
     timeline.resize(800, 200)
     timeline.show()
     qtbot.waitExposed(timeline)
     vp_w = timeline._scroll.viewport().width()
     timeline.set_zoom_factor(2.0)
-    assert timeline._inner.minimumWidth() == vp_w * 2
+    assert timeline._bottom_inner.minimumWidth() == vp_w * 2
+    assert timeline._top_inner.minimumWidth() == vp_w * 2
 
 
 def test_set_zoom_factor_clamped(timeline):

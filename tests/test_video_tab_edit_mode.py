@@ -77,7 +77,9 @@ def test_video_tab_creates_empty_sidecar_when_missing(qtbot, tmp_path: Path, sam
     assert len(tab.sidecar().effects) == 0
 
 
-def test_ctrl_e_toggles_edit_mode(qtbot, tmp_path: Path, sample_mp4: Path):
+def test_ctrl_e_requests_edit_mode_toggle(qtbot, tmp_path: Path, sample_mp4: Path):
+    """Ctrl+E 는 직접 토글하지 않고 edit_mode_change_requested(원하는 상태)를 emit —
+    MainWindow 가 전역 라우팅으로 모든 탭에 적용한다(탭 단독으론 상태 불변이 계약)."""
     from PySide6.QtCore import Qt
 
     tab = VideoTab(
@@ -89,11 +91,17 @@ def test_ctrl_e_toggles_edit_mode(qtbot, tmp_path: Path, sample_mp4: Path):
     tab.show()
     qtbot.waitExposed(tab)
     tab.setFocus()
+    requested = []
+    tab.edit_mode_change_requested.connect(requested.append)
     assert tab.is_edit_mode_on() is False
     qtbot.keyClick(tab, Qt.Key_E, modifier=Qt.ControlModifier)
-    assert tab.is_edit_mode_on() is True
+    assert requested == [True]                    # OFF → ON 요청
+    # MainWindow 라우팅 모사. (controls 버튼 동기화가 같은 상태 요청을 echo 하므로
+    # — 실제 앱에선 재적용 no-op — Ctrl+E 계약만 보려고 리스트를 비운다.)
+    tab.set_edit_mode(True)
+    requested.clear()
     qtbot.keyClick(tab, Qt.Key_E, modifier=Qt.ControlModifier)
-    assert tab.is_edit_mode_on() is False
+    assert requested == [False]                   # ON → OFF 요청
 
 
 def test_video_tab_lanes_visibility_follows_edit_mode(qtbot, tmp_path: Path, sample_mp4: Path):
@@ -164,11 +172,11 @@ def test_video_tab_does_not_accept_drops_preview_area(qtbot, tmp_path: Path, sam
     )
 
 
-def test_video_tab_edit_off_hides_timeline(qtbot, tmp_path: Path, sample_mp4: Path):
-    """편집 모드 OFF 시 timeline widget 자체가 hidden (일반 플레이어 모습).
+def test_video_tab_edit_off_caps_timeline_to_seekbar(qtbot, tmp_path: Path, sample_mp4: Path):
+    """편집 모드 OFF 시 timeline 은 시크 바 한 줄 높이로만 제한되고 **항상 visible**.
 
-    Phase 31: setSizes([total, 0]) 대신 timeline.setVisible(off) — splitter 가
-    hidden 자식을 자동으로 거둬들이고, 사용자가 드래그한 비율은 보존.
+    (구 Phase 31 은 OFF 시 timeline 을 통째로 hide 했으나, 시크 바까지 사라지는
+    회귀라 2026-06-04 폐기 — _apply_timeline_layout 이 높이 cap 방식으로 대체.)
     """
     tab = VideoTab(
         path=sample_mp4, source_label="sample", duration_ms=10_000,
@@ -179,8 +187,10 @@ def test_video_tab_edit_off_hides_timeline(qtbot, tmp_path: Path, sample_mp4: Pa
     tab.resize(800, 600)
     tab.show()
     qtbot.waitExposed(tab)
-    # 편집 OFF — timeline widget hidden.
-    assert not tab.timeline.isVisible(), "편집 OFF 인데 timeline 이 visible"
-    # 편집 ON — timeline visible.
+    # 편집 OFF — timeline 은 보이되(시크 바 공통) 높이가 시크 바 한 줄로 cap.
+    assert tab.timeline.isVisible(), "편집 OFF 여도 시크 바(timeline)는 보여야 함"
+    assert tab.timeline.maximumHeight() == tab.timeline.playback_height()
+    # 편집 ON — 높이 제한 해제(트랙/효과 줄까지 펼침).
     tab.set_edit_mode(True)
-    assert tab.timeline.isVisible(), "편집 ON 인데 timeline hidden"
+    assert tab.timeline.isVisible()
+    assert tab.timeline.maximumHeight() > tab.timeline.playback_height()

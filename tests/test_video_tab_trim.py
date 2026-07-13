@@ -83,31 +83,18 @@ def test_escape_clears_trim_when_in_or_out_set(video_tab):
     assert video_tab.sidecar().trim.out_ms == 0
 
 
-def test_seek_during_trim_auto_pauses(video_tab):
-    """트림 활성 + 영상 재생 중 시크 → 자동 일시정지 + 그 위치로 이동."""
-    pause_calls = []
-    seek_calls = []
-    video_tab.player.is_playing = lambda: True
-    video_tab.player.pause = lambda: pause_calls.append(True)
-    video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
+def test_user_seek_routes_through_segment_controller(video_tab):
+    """사용자 시크는 segment 시간축(SegmentPlaybackController)으로 라우팅된다.
 
+    (구 '트림 중 시크 자동 일시정지'는 트랙 모델 교체(ba2469a, InsertPlayback →
+    SegmentPlayback) 때 함께 제거된 옛 경로라 2026-07-13 현행 계약으로 교체.)
+    """
+    seeks = []
+    video_tab._segment_ctrl.seek_combined_ms = lambda ms: seeks.append(ms)
     video_tab.set_edit_mode(True)
     video_tab._edit_controller.update_trim(in_ms=500, out_ms=1500)
     video_tab._on_user_seek_request(2_000)
-    assert pause_calls == [True]
-    assert seek_calls == [2_000]
-
-
-def test_seek_without_trim_does_not_pause(video_tab):
-    pause_calls = []
-    seek_calls = []
-    video_tab.player.is_playing = lambda: True
-    video_tab.player.pause = lambda: pause_calls.append(True)
-    video_tab.player.seek_ms = lambda ms: seek_calls.append(ms)
-
-    video_tab._on_user_seek_request(2_000)
-    assert pause_calls == []
-    assert seek_calls == [2_000]
+    assert seeks == [2_000]
 
 
 def test_ctrl_enter_does_not_emit_trim_requested(video_tab, qtbot):
