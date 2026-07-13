@@ -29,8 +29,10 @@ def test_notes_since_unparseable_is_empty():
 
 
 def test_all_notes_is_full_newest_first_with_baseline_last():
+    from screen_recorder import __version__
     versions = _vers(all_notes())
-    assert versions[0] == "1.0.0"
+    # 맨 위 항목 = 현재 앱 버전 — 버전 bump 시 체인지로그 추가를 잊으면 여기서 잡힌다.
+    assert versions[0] == __version__
     assert versions[-1] == PATCH_BASELINE == "0.1.4"
     # 모든 항목이 노트를 갖는다(빈 릴리스 금지).
     assert all(notes for _, notes in all_notes())
