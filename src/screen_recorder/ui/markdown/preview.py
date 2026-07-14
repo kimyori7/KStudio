@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QUrl, Qt, Signal
+from PySide6.QtCore import QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
@@ -259,12 +259,11 @@ class WebEnginePreviewRenderer(PreviewRenderer):
         self._zoom_factor = 1.0
         self._base_css = load_base_css()
         self._css = pygments_css()
+        # 템플릿 재로드 예산 — 로드 실패/렌더 프로세스 사망 시 자가복구용. 연속 실패
+        # 상한(3회) 없이는 깨진 템플릿에서 무한 재로드 루프가 된다. 성공 로드가 리셋.
+        self._reload_attempts = 0
         self._page.loadFinished.connect(self._on_load_finished)
-        self._view.renderProcessTerminated.connect(
-            lambda status, code: _log.error(
-                "WebEngine render proc terminated: %s/%s", status, code
-            )
-        )
+        self._view.renderProcessTerminated.connect(self._on_render_process_terminated)
         self._page.setUrl(QUrl.fromLocalFile(str(_ASSETS / "template.html")))
         # 기본 Chromium 메뉴(Back/Forward/Reload/Save page/View source)는 주입형
         # 미리보기에서 전부 무의미하거나 유해(Reload=본문 소실) — 최소 메뉴로 교체.
@@ -296,8 +295,12 @@ class WebEnginePreviewRenderer(PreviewRenderer):
 
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
+            # 방치하면 _ready 가 영영 False → 모든 본문이 _pending 에 갇혀 영구 백지
+            # (2026-07-13 실사용 로그에서 2건 실측). 템플릿 재로드로 자가복구 시도.
             _log.error("WebEngine template loadFinished(False)")
+            self._schedule_template_reload()
             return
+        self._reload_attempts = 0
         # 문서 스타일(style.css) → pygments 코드강조 순서로 주입한 뒤 대기 본문 적용.
         # <link> 대신 JS 주입 — file:// CSP 우회 + 읽기전용 번들 안전.
         if self._base_css:
@@ -315,6 +318,25 @@ class WebEnginePreviewRenderer(PreviewRenderer):
             # 재로드로 #content 가 비었을 때(app.js 의 latestRevision 도 리셋됨) 마지막
             # 본문을 재주입 — 없으면 다음 편집 전까지 빈 화면으로 남는다.
             self._inject(*self._last)
+
+    def _on_render_process_terminated(self, status, code) -> None:
+        """렌더 프로세스(Chromium) 사망 — 방치하면 그 탭의 미리보기가 영구 백지.
+
+        템플릿을 다시 로드하면 loadFinished(True) → _last 재주입 경로가 본문까지
+        복구한다. _ready 를 내려 죽은 페이지로의 주입 시도를 막는다."""
+        _log.error("WebEngine render proc terminated: %s/%s — 템플릿 재로드로 복구 시도", status, code)
+        self._ready = False
+        self._schedule_template_reload()
+
+    def _schedule_template_reload(self) -> None:
+        if self._reload_attempts >= 3:
+            _log.warning("WebEngine 템플릿 재로드 포기 — 연속 %d회 실패", self._reload_attempts)
+            return
+        self._reload_attempts += 1
+        QTimer.singleShot(500, self._reload_template)
+
+    def _reload_template(self) -> None:
+        self._page.setUrl(QUrl.fromLocalFile(str(_ASSETS / "template.html")))
 
     def show_html(self, html: str, doc_dir: str | None, revision: int) -> None:
         self._last = (html, doc_dir, revision)

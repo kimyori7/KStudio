@@ -14,24 +14,36 @@ socket). 별도 의존성 없이 PySide6 만으로 동작한다.
   이벤트 루프가 돌 때 처리된다. 핸들러가 아직 없으면 큐에 보관 후 `set_handler` 에서 flush.
 - 두 번째 인스턴스: `try_forward()` 가 연결되면 경로를 보내고 True 반환(=종료해야 함).
   연결 실패면(=실행 중 인스턴스 없음) False → 자기가 첫 인스턴스가 된다.
-- 메시지 형식: 경로를 줄바꿈으로 이어붙인 UTF-8. 파일 없이 그냥 두 번째로 켠 경우엔
-  `_RAISE_TOKEN` 만 보내 "창만 앞으로" 를 의미.
+- 메시지 형식: 경로를 줄바꿈으로 이어붙인 UTF-8 + 종단 바이트(_EOM). 파일 없이 그냥
+  두 번째로 켠 경우엔 `_RAISE_TOKEN` 만 보내 "창만 앞으로" 를 의미.
+- 수신 확인(ACK): 서버는 _EOM 까지 받으면 _ACK 1바이트로 응답한다. 파이프 연결·쓰기는
+  상대가 크래시 직후 WER 에 얼어붙은 좀비여도 커널 수준에서 성공하므로(2026-07-14
+  실사고: 재실행이 좀비에 전달하고 조용히 종료 → '앱이 안 켜짐'), 클라이언트는 ACK
+  를 못 받으면 False 를 반환해 스스로 새 주 인스턴스로 기동한다. EOM 없이 끊는
+  구형 전송도 서버가 disconnected 시점에 처리한다(하위 호환).
 """
 from __future__ import annotations
 
 import logging
 import re
 import sys
+import time
 from typing import Callable, List, Optional, Sequence
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 logger = logging.getLogger(__name__)
 
 _CONNECT_TIMEOUT_MS = 400
 _IO_TIMEOUT_MS = 1000
+# ACK 대기 상한 — 짧으면 무거운 초기화(WebEngine 콜드 스타트) 중인 정상 인스턴스를
+# 좀비로 오판해 창이 두 개 뜬다. 좀비(크래시 정지)일 때 사용자가 이만큼 기다린 뒤
+# 새 인스턴스가 뜨는 것이, 조용히 아무것도 안 뜨는 것보다 낫다.
+_ACK_TIMEOUT_MS = 5000
 _RAISE_TOKEN = "__RAISE__"
+_EOM = b"\x04"   # 메시지 종단(End Of Message) — 서버가 '다 받았음'을 아는 기준
+_ACK = b"\x06"   # 수신 확인 — 살아 있는(이벤트 루프가 도는) 인스턴스만 보낼 수 있음
 
 
 def server_name() -> str:
@@ -80,26 +92,132 @@ def _allow_foreground() -> None:
         pass
 
 
-def try_forward(paths: Sequence[str], name: Optional[str] = None) -> bool:
+def try_forward(paths: Sequence[str], name: Optional[str] = None,
+                ack_timeout_ms: int = _ACK_TIMEOUT_MS) -> bool:
     """이미 실행 중인 인스턴스에 경로를 전달한다.
 
     Returns:
-        True  — 전달 성공(이미 실행 중). 호출자는 이 프로세스를 종료해야 한다.
-        False — 실행 중인 인스턴스 없음. 호출자가 첫 인스턴스가 된다.
+        True  — 전달 성공(살아 있는 인스턴스가 ACK). 호출자는 이 프로세스를 종료해야 한다.
+        False — 실행 중인 인스턴스 없음 *또는 응답 없음(좀비/정지)*. 호출자가 첫(새 주)
+                인스턴스가 된다.
+
+    Windows 에서는 Qt 소켓 대신 Win32 named pipe 를 직접 쓴다 — QLocalSocket 의
+    블로킹 waitFor* 는 이벤트 루프가 없는 컨텍스트에서 write 조차 버퍼에 갇힐 수
+    있음을 실측(2026-07-14). ctypes 직접 호출은 스레드/루프 상태와 무관하게 결정론적.
     """
     name = name or server_name()
+    payload = encode_paths(paths) + _EOM
+    if sys.platform == "win32":
+        ok = _try_forward_win32(payload, name, ack_timeout_ms)
+    else:
+        ok = _try_forward_qt(payload, name, ack_timeout_ms)
+    if ok:
+        logger.info("기존 인스턴스에 %d 개 경로 전달 — 이 프로세스 종료", len(list(paths)))
+    return ok
+
+
+def _try_forward_win32(payload: bytes, name: str, ack_timeout_ms: int) -> bool:
+    """Win32 named pipe 직접 전송 — CreateFileW → WriteFile → PeekNamedPipe 폴링(ACK).
+
+    연결·쓰기 성공은 상대의 생존 증거가 아니다(크래시 직후 WER 에 얼어붙은 좀비의
+    파이프에도 커널 수준에선 성공). 살아 있는 인스턴스만 보낼 수 있는 ACK 를 못
+    받으면 False → 호출자가 새 주 인스턴스로 기동한다(조용한 무반응 실행 방지).
+    """
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    LPDWORD = ctypes.POINTER(wintypes.DWORD)
+    # ⚠ argtypes 를 전부 명시해야 한다 — 기본 변환은 64-bit HANDLE 을 c_int(32-bit)로
+    # 잘라 access violation 을 일으킨다(2026-07-14 실측).
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    k32.WaitNamedPipeW.restype = wintypes.BOOL
+    k32.WaitNamedPipeW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD)
+    k32.WriteFile.restype = wintypes.BOOL
+    k32.WriteFile.argtypes = (
+        wintypes.HANDLE, ctypes.c_char_p, wintypes.DWORD, LPDWORD, wintypes.LPVOID,
+    )
+    k32.FlushFileBuffers.restype = wintypes.BOOL
+    k32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
+    k32.PeekNamedPipe.restype = wintypes.BOOL
+    k32.PeekNamedPipe.argtypes = (
+        wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID,
+        LPDWORD, wintypes.LPVOID,
+    )
+    k32.ReadFile.restype = wintypes.BOOL
+    k32.ReadFile.argtypes = (
+        wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, LPDWORD, wintypes.LPVOID,
+    )
+    k32.CloseHandle.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    INVALID_HANDLE = ctypes.c_void_p(-1).value
+    GENERIC_RW = 0x80000000 | 0x40000000
+    OPEN_EXISTING = 3
+    ERROR_PIPE_BUSY = 231
+
+    pipe_path = rf"\\.\pipe\{name}"
+    deadline = time.monotonic() + _CONNECT_TIMEOUT_MS / 1000
+    handle = None
+    while handle is None:
+        h = k32.CreateFileW(pipe_path, GENERIC_RW, 0, None, OPEN_EXISTING, 0, None)
+        if h != INVALID_HANDLE:
+            handle = h
+            break
+        if ctypes.get_last_error() != ERROR_PIPE_BUSY:
+            return False   # 서버 없음(ERROR_FILE_NOT_FOUND 등) → 내가 첫 인스턴스
+        # 파이프 인스턴스 일시 소진 — 짧게 기다렸다 재시도.
+        if time.monotonic() >= deadline:
+            return False
+        k32.WaitNamedPipeW(pipe_path, 50)
+    try:
+        _allow_foreground()
+        written = wintypes.DWORD(0)
+        if not k32.WriteFile(handle, payload, len(payload),
+                             ctypes.byref(written), None):
+            return False
+        k32.FlushFileBuffers(handle)
+        # ACK 폴링 — PeekNamedPipe 는 논블로킹으로 도착 바이트 수만 본다.
+        avail = wintypes.DWORD(0)
+        end = time.monotonic() + ack_timeout_ms / 1000
+        while time.monotonic() < end:
+            if not k32.PeekNamedPipe(handle, None, 0, None,
+                                     ctypes.byref(avail), None):
+                logger.warning("기존 인스턴스가 파이프를 끊음(종료 중 추정) — 새 인스턴스로 계속")
+                return False
+            if avail.value > 0:
+                buf = ctypes.create_string_buffer(16)
+                rd = wintypes.DWORD(0)
+                k32.ReadFile(handle, buf, 16, ctypes.byref(rd), None)
+                return rd.value > 0
+            time.sleep(0.02)
+        logger.warning("기존 인스턴스가 응답하지 않음(정지/좀비 추정) — 새 인스턴스로 계속")
+        return False
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _try_forward_qt(payload: bytes, name: str, ack_timeout_ms: int) -> bool:
+    """비-Windows 폴백 — Unix domain socket 은 블로킹 waitFor* 가 신뢰 가능."""
     socket = QLocalSocket()
     socket.connectToServer(name)
     if not socket.waitForConnected(_CONNECT_TIMEOUT_MS):
         return False
     _allow_foreground()
-    socket.write(encode_paths(paths))
+    socket.write(payload)
     socket.flush()
     socket.waitForBytesWritten(_IO_TIMEOUT_MS)
+    if socket.bytesAvailable() == 0 and not socket.waitForReadyRead(ack_timeout_ms):
+        logger.warning("기존 인스턴스가 응답하지 않음(정지/좀비 추정) — 새 인스턴스로 계속")
+        socket.abort()
+        return False
+    socket.readAll()   # ACK 소비
     socket.disconnectFromServer()
     if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState:
         socket.waitForDisconnected(_IO_TIMEOUT_MS)
-    logger.info("기존 인스턴스에 %d 개 경로 전달 — 이 프로세스 종료", len(list(paths)))
     return True
 
 
@@ -160,23 +278,54 @@ class SingleInstanceServer(QObject):
         # 로 읽는다. 보낸 쪽은 write 후 곧 disconnect 하므로, 누적분을 disconnected 에서
         # 마지막으로 비운 뒤 dispatch 한다.
         buf = bytearray()
-        done = {"v": False}
+        done = {"v": False}      # dispatch 1회 보장
+        closed = {"v": False}    # 정리 1회 보장
         self._pending.add(conn)
 
         def _read() -> None:
-            buf.extend(conn.readAll().data())
+            try:
+                buf.extend(conn.readAll().data())
+                # 종단(_EOM)까지 받으면 즉시 처리 + ACK 응답 — 클라이언트는 이 ACK 로
+                # '살아 있는 인스턴스'를 확인한다(좀비 파이프 구별, 2026-07-14).
+                if not done["v"] and _EOM in buf:
+                    done["v"] = True
+                    msg = bytes(buf).split(_EOM, 1)[0]
+                    if msg:
+                        self._dispatch(decode_paths(msg))
+                    conn.write(_ACK)
+                    conn.flush()
+            except RuntimeError:
+                pass   # 앱 종료 등으로 C++ 소켓이 이미 파괴됨 — 무시
 
         def _finish() -> None:
-            if done["v"]:
+            if closed["v"]:
                 return
-            done["v"] = True
-            buf.extend(conn.readAll().data())
-            # 빈 read 는 읽기 실패 — "창만 앞으로"조차 _RAISE_TOKEN(비어있지 않음)을
-            # 보내므로 buf 가 비면 dispatch 하지 않는다(허위 빈 메시지 방지).
-            if buf:
-                self._dispatch(decode_paths(bytes(buf)))
-            self._pending.discard(conn)
-            conn.deleteLater()
+            closed["v"] = True
+            try:
+                if not done["v"]:
+                    # EOM 없이 끊는 구형(v1.0.2 이전) 전송 — disconnected 시점에 처리.
+                    done["v"] = True
+                    buf.extend(conn.readAll().data())
+                    # 빈 read 는 읽기 실패 — "창만 앞으로"조차 _RAISE_TOKEN(비어있지
+                    # 않음)을 보내므로 buf 가 비면 dispatch 하지 않는다(허위 메시지 방지).
+                    if buf:
+                        self._dispatch(decode_paths(bytes(buf)))
+                # 즉시 deleteLater 하면 ACK 쓰기 완료 콜백(Qt 스레드풀)이 파괴된
+                # 소켓을 만져 access violation 이 난다(2026-07-14 실측). close 로
+                # I/O 를 멈추고, 파괴는 콜백이 확실히 끝난 뒤로 미룬다. conn 의
+                # C++ 부모는 QLocalServer 라 지연 중 서버가 먼저 죽어도 함께 정리된다.
+                conn.close()
+
+                def _delete_later_safe() -> None:
+                    try:
+                        conn.deleteLater()
+                    except RuntimeError:
+                        pass   # 서버와 함께 이미 파괴됨
+                QTimer.singleShot(5000, _delete_later_safe)
+            except RuntimeError:
+                pass   # 앱 종료 등으로 C++ 소켓이 이미 파괴됨 — 무시
+            finally:
+                self._pending.discard(conn)
 
         conn.readyRead.connect(_read)
         conn.disconnected.connect(_finish)

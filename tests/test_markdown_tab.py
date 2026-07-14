@@ -128,3 +128,25 @@ def test_save_as_cancel_returns_cancelled(qtbot, monkeypatch):
                         staticmethod(lambda *a, **k: ("", "")))
     assert tab.save_as() is SaveResult.CANCELLED
     assert tab.saved_path() is None
+
+
+def test_from_file_defaults_to_preview_mode(qtbot, tmp_path):
+    """문서 파일 열기의 기본 보기는 미리보기 — 열람이 주 용도 (사용자 요청 2026-07-14)."""
+    from screen_recorder.ui.markdown_tab import MarkdownTab, ViewMode
+    p = tmp_path / "doc.md"
+    p.write_text("# hi", encoding="utf-8")
+    tab = MarkdownTab.from_file(p)
+    qtbot.addWidget(tab)
+    tab.show()
+    assert tab.preview.isVisible() and not tab.editor.isVisible()
+    assert tab._view_mode is ViewMode.PREVIEW
+
+
+def test_from_blank_defaults_to_split_mode(qtbot):
+    """새(빈) 문서는 작성이 목적 — 미리보기만 보이면 입력할 곳이 없으므로 나란히 유지."""
+    from screen_recorder.ui.markdown_tab import MarkdownTab, ViewMode
+    tab = MarkdownTab.from_blank()
+    qtbot.addWidget(tab)
+    tab.show()
+    assert tab.editor.isVisible() and tab.preview.isVisible()
+    assert tab._view_mode is ViewMode.SPLIT

@@ -104,6 +104,13 @@ class MarkdownTab(QWidget):
             self._btn_group.addButton(btn)
             self._buttons[mode] = btn
             bar.addWidget(btn)
+        # 수동 새로고침 — 모드가 아닌 액션 버튼(체크 없음). 외부 변경 감지가 어떤
+        # 이유로든 놓쳐도 사용자가 즉시 복구할 수 있는 안전망(2026-07-14 사용자 요청).
+        self.refresh_btn = QPushButton("⟳ 새로고침")
+        self.refresh_btn.setToolTip("디스크의 최신 내용을 다시 불러오고 미리보기를 다시 그립니다")
+        self.refresh_btn.setFocusPolicy(Qt.NoFocus)
+        self.refresh_btn.clicked.connect(self.refresh_from_disk)
+        bar.addWidget(self.refresh_btn)
         bar.addStretch(1)
 
         # 폰트 크기 컨트롤 — 편집/미리보기 각각 A−/A+ + 공용 '기본' 리셋 (우측 정렬).
@@ -162,6 +169,9 @@ class MarkdownTab(QWidget):
         # 디바운스 타이머가 _reload_check 를 다시 부를 수 있음).
         self._disk_text: str | None = None
         self._reload_prompt_open = False
+        # 읽기 실패(쓰기 잠금 등) 연속 횟수 — 상한까지 디바운스 재장전으로 재시도.
+        # 조용히 버리면 마지막 변경이 영영 반영 안 됨(2026-07-14, Phase 108 과 같은 부류).
+        self._fs_read_retries = 0
         self._fs_watcher = QFileSystemWatcher(self)
         self._fs_debounce = QTimer(self)
         self._fs_debounce.setSingleShot(True)
@@ -236,6 +246,9 @@ class MarkdownTab(QWidget):
         tab._dirty = False              # 막 로드한 파일은 깨끗한 상태
         tab.save_state_changed.emit()
         tab._refresh_preview(text)
+        # 파일 열기의 기본 보기는 미리보기 — 열람이 주 용도(사용자 요청 2026-07-14).
+        # 새(빈) 문서는 작성이 목적이라 from_blank 는 나란히(SPLIT) 유지.
+        tab.set_view_mode(ViewMode.PREVIEW)
         return tab
 
     # --- EditTab 계약 ---
@@ -269,7 +282,12 @@ class MarkdownTab(QWidget):
         if self._saved_path is not None:
             d = self._saved_path.parent
             if d.exists():
-                self._fs_watcher.addPath(str(d))
+                ok = self._fs_watcher.addPath(str(d))
+                if not ok:
+                    # 감시 등록 실패 — 외부 변경 팝업이 영영 안 뜨는 원인이 되므로 남긴다.
+                    _log.warning("외부 변경 감시 등록 실패: %s", d)
+            else:
+                _log.warning("외부 변경 감시 불가 — 부모 폴더 없음: %s", d)
 
     def _on_text_changed(self) -> None:
         if not self._dirty:
@@ -488,18 +506,32 @@ class MarkdownTab(QWidget):
         if d.exists() and str(d) not in self._fs_watcher.directories():
             self._fs_watcher.addPath(str(d))
         if not p.exists():
+            _log.info("외부 변경 검사: 파일 없음(삭제/교체 중) — 보류: %s", p)
             return   # 삭제는 범위 밖 — 열린 탭/편집 보존
         try:
             disk = _read_text_with_fallback(p)
-        except OSError:
+        except OSError as e:
+            # 일시 실패(외부 에디터의 쓰기 잠금 등)일 수 있다 — 버리면 마지막 변경이
+            # 영영 반영 안 되므로(2026-07-14) 상한까지 디바운스 재장전으로 재시도.
+            # 상한 초과(영구 실패: 권한 등)면 포기 — 무한 150ms 루프 방지. 다음 실제
+            # 파일 이벤트가 오면 처음부터 다시 시도된다.
+            self._fs_read_retries += 1
+            if self._fs_read_retries <= 5:
+                _log.info("외부 변경 검사: 읽기 실패(%s) — 재시도 %d/5", e, self._fs_read_retries)
+                self._fs_debounce.start()
+            else:
+                _log.warning("외부 변경 검사: 읽기 실패 지속 — 포기: %s (%s)", p, e)
             return
+        self._fs_read_retries = 0
         if disk == self._disk_text:
             return   # 자기 저장 또는 동일 내용 — 반영할 외부 변경 없음
+        _log.info("외부 변경 감지 — 확인 팝업 표시: %s (dirty=%s)", p, self._dirty)
         self._reload_prompt_open = True
         try:
             confirmed = self._confirm_external_reload(self._dirty)
         finally:
             self._reload_prompt_open = False
+        _log.info("외부 변경 팝업 답: %s", "예(반영)" if confirmed else "아니오(유지)")
         if confirmed:
             # 모달이 떠 있는 동안 파일이 또 바뀌었을 수 있다(블로킹 nested 루프). 적용
             # 직전 디스크를 다시 읽어 '팝업 이후'의 최신본까지 반영한다(재읽기 실패 시 스냅샷).
@@ -545,6 +577,35 @@ class MarkdownTab(QWidget):
         vsb.setValue(round(ratio * vsb.maximum()))
         self.save_state_changed.emit()
         self._refresh_preview(text)
+
+    def refresh_from_disk(self) -> None:
+        """수동 새로고침(⟳ 버튼) — 감시 재장전 + 디스크 최신본 반영/미리보기 재렌더.
+
+        외부 변경 감지가 어떤 이유로든 놓친 상황의 사용자 안전망(2026-07-14):
+        - 감시 재장전: _set_saved_path 재호출(removePaths→addPath)로 죽은 watch 복구
+        - 외부 변경 있음: 깨끗하면 즉시 반영(버튼 클릭 = 명시적 동의), 미저장 편집이
+          있으면 잃음 경고 확인 후에만 반영(조용히 덮어쓰지 않음 정책 유지)
+        - 외부 변경 없음: 편집 내용은 건드리지 않고 미리보기만 재렌더
+          (미리보기 렌더러가 죽었을 때의 수동 복구 수단 겸용)
+        """
+        p = self._saved_path
+        if p is None:
+            self._refresh_preview(self.editor.toPlainText())
+            return
+        self._set_saved_path(p)   # 감시 재장전
+        try:
+            disk = _read_text_with_fallback(p)
+        except OSError as e:
+            _log.warning("수동 새로고침: 읽기 실패 %s (%s)", p, e)
+            self._refresh_preview(self.editor.toPlainText())
+            return
+        if disk == self._disk_text:
+            self._refresh_preview(self.editor.toPlainText())
+            return
+        if self._dirty and not self._confirm_external_reload(True):
+            return
+        _log.info("수동 새로고침: 디스크 반영 %s", p)
+        self._apply_external_reload(disk)
 
     # --- 스크롤 동기화 ---
     def _on_editor_scrolled(self, _value: int) -> None:

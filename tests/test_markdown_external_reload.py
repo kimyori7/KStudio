@@ -269,3 +269,63 @@ def test_dirchanged_signal_triggers_debounced_prompt(qtbot, tmp_path):
     tab._fs_watcher.directoryChanged.emit(str(p.parent))   # OS 이벤트 모사
     qtbot.waitUntil(lambda: tab.editor.toPlainText() == "after via watcher", timeout=1000)
     assert not tab.needs_save()
+
+
+def test_read_error_rearms_debounce_for_retry(qtbot, tmp_path, monkeypatch):
+    """디스크 읽기 실패(쓰기 잠금 등)는 이벤트를 버리지 않고 디바운스를 재장전해
+    재시도한다 — 조용히 버리면 마지막 변경이 영영 반영 안 됨 (Phase 108 과 같은 부류)."""
+    import screen_recorder.ui.markdown_tab as M
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+    calls = _stub_confirm(tab, answer=True)
+    p.write_text("v2", encoding="utf-8")
+
+    def boom(_p):
+        raise OSError("locked")
+
+    monkeypatch.setattr(M, "_read_text_with_fallback", boom)
+    tab._reload_check()                     # 읽기 실패 → 버리지 말고 재장전
+    assert calls == []
+    assert tab._fs_debounce.isActive()      # 재시도 예약됨
+
+
+def test_read_error_retry_gives_up_after_cap(qtbot, tmp_path, monkeypatch):
+    """영구 읽기 실패(권한 등)면 무한 150ms 루프가 되면 안 된다 — 상한 후 포기,
+    다음 실제 파일 이벤트가 오면 다시 시도."""
+    import screen_recorder.ui.markdown_tab as M
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+    _stub_confirm(tab, answer=True)
+    p.write_text("v2", encoding="utf-8")
+
+    def boom(_p):
+        raise OSError("locked")
+
+    monkeypatch.setattr(M, "_read_text_with_fallback", boom)
+    for _ in range(10):
+        tab._fs_debounce.stop()
+        tab._reload_check()
+    assert not tab._fs_debounce.isActive()  # 상한 초과 → 포기 (무한 루프 없음)
+
+
+def test_read_success_resets_retry_counter(qtbot, tmp_path, monkeypatch):
+    """읽기 성공하면 재시도 카운터가 리셋 — 이후의 일시 실패를 또 버텨야 한다."""
+    import screen_recorder.ui.markdown_tab as M
+    tab, p = _make_tab(tmp_path, "v1")
+    qtbot.addWidget(tab)
+    _stub_confirm(tab, answer=True)
+    real = M._read_text_with_fallback
+
+    def boom(_p):
+        raise OSError("locked")
+
+    monkeypatch.setattr(M, "_read_text_with_fallback", boom)
+    p.write_text("v2", encoding="utf-8")
+    for _ in range(3):
+        tab._fs_debounce.stop()
+        tab._reload_check()                 # 실패 3회 누적
+    monkeypatch.setattr(M, "_read_text_with_fallback", real)
+    tab._fs_debounce.stop()
+    tab._reload_check()                     # 성공 → 반영 + 카운터 리셋
+    assert tab.editor.toPlainText() == "v2"
+    assert tab._fs_read_retries == 0

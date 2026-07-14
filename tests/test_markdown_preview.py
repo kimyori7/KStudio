@@ -171,3 +171,74 @@ def test_preview_context_menu_spec():
     # 링크 위에서 열면 '링크 주소 복사' 포함.
     keys = [k for k, _ in context_menu_items(False, "https://example.com")]
     assert "copy_link" in keys and "select_all" in keys
+
+
+# --- 미리보기 자가복구 (2026-07-14: 템플릿 로드 실패/렌더 프로세스 사망 시 영구 백지) ---
+
+def _healable_renderer(run_js, set_url_calls):
+    """자가복구 검증용 — _bare 에 setUrl 기록과 즉시실행 타이머 스텁을 더한다."""
+    r = _bare_webengine_renderer(run_js)
+    r._page.setUrl = set_url_calls.append
+    r._reload_attempts = 0
+    return r
+
+
+def test_load_failure_schedules_template_retry(monkeypatch):
+    # loadFinished(False) 는 회복 시도 없이 영구 백지였다 — 템플릿 재로드를 예약해야 한다.
+    from screen_recorder.ui.markdown import preview as P
+    fired = []
+    monkeypatch.setattr(P.QTimer, "singleShot",
+                        staticmethod(lambda ms, cb: fired.append(cb)))
+    urls = []
+    r = _healable_renderer(lambda s: None, urls)
+    r._on_load_finished(False)
+    assert fired, "재시도가 예약돼야 한다"
+    for cb in fired:
+        cb()
+    assert urls, "템플릿 setUrl 재호출이 있어야 한다"
+
+
+def test_load_failure_retry_capped(monkeypatch):
+    # 템플릿 자체가 계속 실패하면(파일 깨짐 등) 무한 재로드 루프가 되면 안 된다.
+    from screen_recorder.ui.markdown import preview as P
+    fired = []
+    monkeypatch.setattr(P.QTimer, "singleShot",
+                        staticmethod(lambda ms, cb: fired.append(cb)))
+    urls = []
+    r = _healable_renderer(lambda s: None, urls)
+    for _ in range(10):
+        r._on_load_finished(False)
+    assert len(fired) <= 3
+
+
+def test_load_success_resets_retry_budget(monkeypatch):
+    # 성공 로드는 재시도 예산을 리셋 — 이후의 새로운 실패를 다시 버텨야 한다.
+    from screen_recorder.ui.markdown import preview as P
+    fired = []
+    monkeypatch.setattr(P.QTimer, "singleShot",
+                        staticmethod(lambda ms, cb: fired.append(cb)))
+    urls = []
+    r = _healable_renderer(lambda s: None, urls)
+    for _ in range(5):
+        r._on_load_finished(False)
+    n_first = len(fired)
+    r._on_load_finished(True)
+    r._on_load_finished(False)
+    assert len(fired) == n_first + 1     # 리셋 덕에 또 재시도됨
+
+
+def test_render_process_death_reloads_template(monkeypatch):
+    # 렌더 프로세스 사망은 로그만 남기고 방치돼 영구 백지였다 — 템플릿을 다시 로드하면
+    # loadFinished(True) → _last 재주입(기존 자가복구)으로 본문까지 살아난다.
+    from screen_recorder.ui.markdown import preview as P
+    fired = []
+    monkeypatch.setattr(P.QTimer, "singleShot",
+                        staticmethod(lambda ms, cb: fired.append(cb)))
+    urls = []
+    r = _healable_renderer(lambda s: None, urls)
+    r._ready = True
+    r._on_render_process_terminated("Crashed", 1)
+    assert r._ready is False              # 죽은 페이지에 주입 시도 금지
+    for cb in fired:
+        cb()
+    assert urls, "템플릿 재로드가 예약돼야 한다"
