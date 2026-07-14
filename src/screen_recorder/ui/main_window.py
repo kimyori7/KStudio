@@ -2447,6 +2447,7 @@ class MainWindow(QMainWindow):
             existing = self._find_library_entry_for_path(p)
             if existing is not None:
                 target = existing    # 중복 — 새로 추가하지 않고 그 기존 항목을 대상으로.
+                self.library_model.move_to_top(existing.id)   # 다시 넣은 파일은 맨 위로
                 continue
             if ext in self.VIDEO_EXTS:
                 placeholder = QImage(64, 36, QImage.Format_ARGB32)
@@ -2651,6 +2652,9 @@ class MainWindow(QMainWindow):
             except OSError:
                 same = path == p
             if same:
+                # 다시 연 문서는 라이브러리 맨 위로 (blank 문서의 eid 는 라이브러리에
+                # 없어 no-op).
+                self.library_model.move_to_top(eid)
                 self.tab_area.focus_entry(eid)
                 self.mode_controller.set_mode(AppMode.DOCUMENT)
                 return
@@ -2666,6 +2670,7 @@ class MainWindow(QMainWindow):
         existing = self._find_library_entry_for_path(p)
         if existing is not None:
             entry_id = existing.id
+            self.library_model.move_to_top(entry_id)   # 다시 연 파일은 맨 위로
         else:
             entry = self.library_model.add(
                 EntryKind.DOCUMENT, thumbnail=QImage(),
@@ -2729,6 +2734,8 @@ class MainWindow(QMainWindow):
                 EntryKind.DOCUMENT, thumbnail=QImage(),
                 source_label="dropped", display_name=p.name, path=p, origin="opened",
             )
+        else:
+            self.library_model.move_to_top(entry.id)   # 다시 본 파일은 맨 위로
         if not self.library_dock.isVisible():
             self.library_dock.show()
         self.library_panel.focus_entry(entry.id)
@@ -2796,6 +2803,7 @@ class MainWindow(QMainWindow):
         existing = self._find_library_entry_for_path(p)
         if existing is not None:
             entry_id = existing.id
+            self.library_model.move_to_top(entry_id)   # 다시 연 파일은 맨 위로
         else:
             placeholder = QImage(64, 36, QImage.Format_ARGB32)
             placeholder.fill(0xFF222222)
@@ -2829,6 +2837,7 @@ class MainWindow(QMainWindow):
         existing = self._find_library_entry_for_path(p)
         if existing is not None:
             entry_id = existing.id
+            self.library_model.move_to_top(entry_id)   # 다시 연 파일은 맨 위로
         else:
             placeholder = QImage(64, 36, QImage.Format_ARGB32)
             placeholder.fill(0xFF222222)
@@ -4408,11 +4417,8 @@ class MainWindow(QMainWindow):
             except (TypeError, OSError):
                 continue
 
-        # created_at 기준 정렬 (오래된 → 최신). 없으면 그대로.
-        def _sort_key(d):
-            return d.get("created_at") or ""
-        survivors.sort(key=_sort_key)
-
+        # 저장된 순서 그대로 복원 (오래된 → 최신으로 저장됨). created_at 재정렬은
+        # 하지 않는다 — 드래그 재정렬/맨 위로 올리기로 만든 수동 순서가 파괴됨.
         self._persist_restore_queue = survivors
         QTimer.singleShot(150, self._restore_one_library_entry)
 
@@ -4492,6 +4498,8 @@ class MainWindow(QMainWindow):
         self.library_model.entry_renamed.connect(_schedule)
         self.library_model.entry_removed.connect(self._on_library_entry_removed_for_cache)
         self.library_model.entry_removed.connect(_schedule)
+        # 순서 변경(드래그 재정렬 / 파일 다시 열어 맨 위로)도 재시작 후 유지.
+        self.library_model.entries_reordered.connect(_schedule)
 
     def _setup_library_file_watcher(self) -> None:
         """라이브러리 항목 파일들의 부모 디렉터리를 감시 — 외부 삭제 시 취소선 표시(자동 제거 X).

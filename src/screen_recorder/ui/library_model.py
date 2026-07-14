@@ -41,6 +41,8 @@ class LibraryModel(QObject):
     entry_removed = Signal(int)     # entry id
     entry_renamed = Signal(int, str)   # (entry_id, new_display_name) — 모델이 갱신된 후 emit
     entry_missing_changed = Signal(int, bool)  # (entry_id, missing) — 외부 삭제/복구 감지
+    entry_moved_to_top = Signal(int)   # entry id — 파일 열기 등으로 맨 위로 이동됨
+    entries_reordered = Signal()       # 순서 변경(move_to_top/set_order) → 영속화 트리거
 
     def __init__(self) -> None:
         super().__init__()
@@ -104,6 +106,32 @@ class LibraryModel(QObject):
                 del self._entries[i]
                 self.entry_removed.emit(entry_id)
                 return
+
+    def move_to_top(self, entry_id: int) -> bool:
+        """항목을 라이브러리 맨 위(최신 위치)로 — 파일을 다시 열 때 호출.
+
+        _entries 는 오래된 → 최신 순이므로 '맨 위' = 리스트의 끝. 이미 맨 위거나
+        모르는 id 면 False (시그널도 발화하지 않아 불필요한 저장이 없다)."""
+        for i, e in enumerate(self._entries):
+            if e.id == entry_id:
+                if i == len(self._entries) - 1:
+                    return False
+                self._entries.append(self._entries.pop(i))
+                self.entry_moved_to_top.emit(entry_id)
+                self.entries_reordered.emit()
+                return True
+        return False
+
+    def set_order(self, ordered_ids: list[int]) -> None:
+        """표시 순서(위→아래 id 목록)를 통째로 반영 — 패널 드래그 재정렬 후 호출.
+
+        모르는 id 는 무시. 목록에 빠진 기존 항목은 잃지 않고 맨 아래(가장 오래된
+        쪽)에 기존 상대 순서대로 유지."""
+        by_id = {e.id: e for e in self._entries}
+        picked = [by_id.pop(i) for i in reversed(ordered_ids) if i in by_id]
+        remainder = [e for e in self._entries if e.id in by_id]
+        self._entries = remainder + picked
+        self.entries_reordered.emit()
 
     def entries(self, kind: Optional[EntryKind] = None) -> list[LibraryEntry]:
         items = list(reversed(self._entries))

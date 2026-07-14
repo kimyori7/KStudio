@@ -4,68 +4,27 @@ from typing import Optional
 
 from pathlib import Path as _Path
 
-from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent, QRect, QMimeData, QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QPoint, QEvent, QRect
 from PySide6.QtGui import (
-    QPixmap, QIcon, QAction, QPainter, QFont, QFontMetrics, QColor, QDrag,
+    QPixmap, QIcon, QAction, QPainter, QFont, QFontMetrics, QColor,
     QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent,
 )
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QLabel, QMenu,
+    QWidget, QVBoxLayout, QListWidgetItem, QLabel, QMenu,
     QProxyStyle, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QApplication,
 )
 
-
-_ROLE_MISSING = Qt.UserRole + 3   # 외부에서 파일이 삭제됨 → 취소선 + ✕ 표시 (Phase 60)
-_MISSING_COLOR = "#d08770"        # 취소선/dim/✕ 색
-_X_BTN_SIZE = 16
-_X_BTN_RIGHT_PAD = 6
-
-
-def _x_button_rect(row_rect: "QRect") -> "QRect":
-    """삭제된 항목 오른쪽 끝의 ✕ 클릭/그리기 영역 (행 rect 기준). delegate 와 히트테스트가 공유."""
-    top = row_rect.top() + (row_rect.height() - _X_BTN_SIZE) // 2
-    return QRect(row_rect.right() - _X_BTN_SIZE - _X_BTN_RIGHT_PAD, top,
-                 _X_BTN_SIZE, _X_BTN_SIZE)
-
-
-class _DragOutListWidget(QListWidget):
-    """라이브러리 항목을 파일 URL 로 드래그아웃(비교 뷰 등 외부 칸으로). 외부→라이브러리
-    드롭은 부모 LibraryPanel 이 처리(여기선 드래그 *시작*만 담당)."""
-
-    def __init__(self, path_for_item, on_x_clicked=None) -> None:
-        super().__init__()
-        self._path_for_item = path_for_item
-        self._on_x_clicked = on_x_clicked   # 삭제된 항목 ✕ 클릭 → entry_id 콜백
-        self.setDragEnabled(True)
-
-    def mousePressEvent(self, e) -> None:  # type: ignore[override]
-        # 삭제된(취소선) 항목의 오른쪽 ✕ 클릭이면 제거 콜백 후 소비 — 선택/열기/드래그로
-        # 새지 않게 한다(히트테스트가 결정적이라 editorEvent 경로보다 안전).
-        item = self.itemAt(e.position().toPoint())
-        if item is not None and item.data(_ROLE_MISSING):
-            if _x_button_rect(self.visualItemRect(item)).contains(e.position().toPoint()):
-                eid = item.data(Qt.UserRole)
-                if eid is not None and self._on_x_clicked is not None:
-                    self._on_x_clicked(int(eid))
-                e.accept()
-                return
-        super().mousePressEvent(e)
-
-    def mime_for_item(self, item) -> "QMimeData | None":
-        p = self._path_for_item(item) if item is not None else None
-        if p is None:
-            return None
-        m = QMimeData()
-        m.setUrls([QUrl.fromLocalFile(str(p))])
-        return m
-
-    def startDrag(self, supportedActions) -> None:  # type: ignore[override]
-        mime = self.mime_for_item(self.currentItem())
-        if mime is None:
-            return
-        drag = QDrag(self)
-        drag.setMimeData(mime)
-        drag.exec(Qt.CopyAction)
+# 목록 위젯(드래그아웃 + 내부 재정렬 + ✕ 히트테스트)은 별도 파일로 분리.
+# _ROLE_MISSING/_x_button_rect 는 delegate 와 히트테스트가 공유 — 여기서 re-export
+# (기존 import 경로 호환).
+from .library_list_widget import (
+    LibraryListWidget,
+    _MISSING_COLOR,
+    _ROLE_MISSING,
+    _X_BTN_RIGHT_PAD,
+    _X_BTN_SIZE,
+    _x_button_rect,
+)
 
 
 class _FastTooltipStyle(QProxyStyle):
@@ -200,7 +159,7 @@ class _TwoLineDelegate(QStyledItemDelegate):
             )
             painter.drawText(text_rect.left(), top + name_fm.ascent(), name_elided)
 
-        # 오른쪽 끝 ✕ — 삭제된 항목 정리 버튼(클릭은 _DragOutListWidget 히트테스트).
+        # 오른쪽 끝 ✕ — 삭제된 항목 정리 버튼(클릭은 LibraryListWidget 히트테스트).
         if missing:
             x_rect = _x_button_rect(option.rect)
             painter.setFont(option.font)
@@ -247,7 +206,7 @@ class LibraryPanel(QWidget):
         title.setStyleSheet("color: #A0A4AB; font-weight: bold; padding: 2px 4px;")
         layout.addWidget(title)
 
-        self.list_widget = _DragOutListWidget(self._path_for_item, self._on_x_remove_clicked)
+        self.list_widget = LibraryListWidget(self._path_for_item, self._on_x_remove_clicked)
         self.list_widget.setIconSize(QSize(48, 32))
         # PySide6 — delegate Python 참조 유지 필수. 인스턴스 속성으로 보관해야 GC 안 됨.
         self._item_delegate = _TwoLineDelegate(self.list_widget)
@@ -267,6 +226,10 @@ class LibraryPanel(QWidget):
         model.entry_removed.connect(self._remove_by_id)
         model.entry_renamed.connect(self._on_entry_renamed)
         model.entry_missing_changed.connect(self._on_entry_missing)
+        # 파일을 다시 열면 그 항목이 맨 위로 (모델 → 행 이동).
+        model.entry_moved_to_top.connect(self._on_entry_moved_to_top)
+        # 내부 드래그 재정렬 (행 이동 → 모델 순서 반영).
+        self.list_widget.order_changed.connect(self._sync_order_to_model)
 
         if self._mode is not None:
             self._mode.mode_changed.connect(self._refresh_visibility)
@@ -369,6 +332,36 @@ class LibraryPanel(QWidget):
         finally:
             self.list_widget.blockSignals(False)
 
+    def _on_entry_moved_to_top(self, entry_id: int) -> None:
+        """모델이 항목을 맨 위로 올림(파일 다시 열기 등) → 행도 맨 위로 이동.
+
+        takeItem/insertItem 은 같은 item 인스턴스를 유지하므로 _items_by_id 안전."""
+        item = self._items_by_id.get(entry_id)
+        if item is None:
+            return
+        row = self.list_widget.row(item)
+        if row <= 0:
+            return
+        was_current = self.list_widget.currentItem() is item
+        self.list_widget.blockSignals(True)
+        try:
+            self.list_widget.takeItem(row)
+            self.list_widget.insertItem(0, item)
+            if was_current:
+                self.list_widget.setCurrentItem(item)
+        finally:
+            self.list_widget.blockSignals(False)
+        self.list_widget.viewport().update()
+
+    def _sync_order_to_model(self) -> None:
+        """드래그 재정렬 뒤 현재 행 순서(위→아래, 숨김 포함 전체)를 모델에 반영."""
+        ids: list[int] = []
+        for i in range(self.list_widget.count()):
+            eid = self.list_widget.item(i).data(Qt.UserRole)
+            if eid is not None:
+                ids.append(int(eid))
+        self._model.set_order(ids)
+
     def _remove_by_id(self, entry_id: int) -> None:
         item = self._items_by_id.pop(entry_id, None)
         if item is None:
@@ -459,18 +452,33 @@ class LibraryPanel(QWidget):
         self._drop_hint.show()
 
     def _is_own_drag(self, event) -> bool:
-        # 자기 항목을 드래그아웃하다 패널 위로 돌아온 경우 — 라이브러리에 재추가하지 않는다.
+        # 자기 항목 드래그 — 라이브러리에 재추가하지 않고 내부 재정렬로 처리한다.
         return event.source() is self.list_widget
 
+    def _viewport_pos(self, panel_pos: QPoint) -> QPoint:
+        """패널 좌표 → list_widget viewport 좌표 (드롭 행 계산용)."""
+        return self.list_widget.viewport().mapFrom(self, panel_pos)
+
+    def _accept_own_drag(self, event) -> None:
+        """내부 재정렬 드래그 수락 + 삽입 표시선 갱신 (hint 라벨은 안 씀)."""
+        event.setDropAction(Qt.MoveAction)
+        event.accept()
+        pos = self._viewport_pos(event.position().toPoint())
+        self.list_widget.set_drop_line_y(self.list_widget.drop_line_y_for_pos(pos))
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if not self._is_own_drag(event) and self._accepted_paths(event.mimeData()):
+        if self._is_own_drag(event):
+            self._accept_own_drag(event)
+        elif self._accepted_paths(event.mimeData()):
             event.acceptProposedAction()
             self._show_drop_hint(event.position().toPoint())
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        if not self._is_own_drag(event) and self._accepted_paths(event.mimeData()):
+        if self._is_own_drag(event):
+            self._accept_own_drag(event)
+        elif self._accepted_paths(event.mimeData()):
             event.acceptProposedAction()
             self._show_drop_hint(event.position().toPoint())
         else:
@@ -478,12 +486,21 @@ class LibraryPanel(QWidget):
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         self._drop_hint.hide()
+        self.list_widget.set_drop_line_y(None)
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:
         self._drop_hint.hide()
         if self._is_own_drag(event):
-            event.ignore()
+            # 내부 재정렬 — 드롭 위치로 행 이동 (order_changed → 모델 반영).
+            pos = self._viewport_pos(event.position().toPoint())
+            moved = self.list_widget.perform_internal_move(pos)
+            self.list_widget.set_drop_line_y(None)
+            if moved:
+                event.setDropAction(Qt.MoveAction)
+                event.accept()
+            else:
+                event.ignore()
             return
         paths = self._accepted_paths(event.mimeData())
         if not paths:
