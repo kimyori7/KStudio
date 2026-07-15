@@ -68,9 +68,15 @@ def _iscc_exe() -> Path:
 
 
 def _run(cmd) -> subprocess.CompletedProcess:
-    """subprocess 실행 — 실패 시 stdout/stderr 를 그대로 드러내고 중단(증거 보존)."""
+    """subprocess 실행 — 실패 시 stdout/stderr 를 그대로 드러내고 중단(증거 보존).
+
+    encoding 미지정 시 한글 Windows 는 cp949 로 읽다가 자식(ISCC 등)의 비-cp949
+    바이트에서 리더 스레드가 UnicodeDecodeError 로 죽어 출력이 통째로 사라진다
+    → utf-8 + errors=replace 로 어떤 출력이든 안전하게 보존.
+    """
     print(f"[run] {' '.join(str(c) for c in cmd)}")
-    proc = subprocess.run(cmd, cwd=str(_ROOT), text=True, capture_output=True)
+    proc = subprocess.run(cmd, cwd=str(_ROOT), text=True, capture_output=True,
+                          encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout or "")
         sys.stderr.write(proc.stderr or "")
