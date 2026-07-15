@@ -77,10 +77,14 @@ def make_banner(size: tuple[int, int]) -> Image.Image:
 
 
 def make_small(size: tuple[int, int]) -> Image.Image:
-    """내부 페이지 오른쪽 위 작은 로고 — 아이콘만."""
+    """내부 페이지 오른쪽 위 작은 로고 — 흰 배경 + 아이콘.
+
+    Inno 내부 페이지 헤더가 흰색(clWindow)이라 다크 배경은 검은 박스로 도드라진다
+    (1.0.5 첫 빌드 실물 확인) — 헤더와 같은 흰색으로 깔아 아이콘만 떠 보이게.
+    """
     w, h = size
-    img = _vertical_gradient(size, BG_TOP, BG_BOTTOM)
-    icon_px = int(min(w, h) * 0.8)
+    img = Image.new("RGB", size, (255, 255, 255))
+    icon_px = int(min(w, h) * 0.92)
     icon = Image.open(ICON_SRC).convert("RGBA").resize(
         (icon_px, icon_px), Image.LANCZOS)
     img.paste(icon, ((w - icon_px) // 2, (h - icon_px) // 2), icon)
