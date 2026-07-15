@@ -216,10 +216,43 @@ class UpdateDialog(QDialog):
         self.start_download()
         self.update_now.emit()
 
-    def _on_cancel(self) -> None:      # Task 4 에서 동작 확정 (여기선 자리만)
-        pass
-
     def start_download(self) -> None:
         """PROMPT → DOWNLOADING 전환 (같은 창)."""
         self._title.setText("업데이트 다운로드 중")
         self._footer.setCurrentIndex(_STATE_DOWNLOADING)
+
+    # ---- 진행/오류/취소 ----
+    def set_progress(self, downloaded: int, total: int) -> None:
+        """다운로드 진행 반영. total<=0(길이 모름)이면 busy 인디케이터."""
+        if total <= 0:
+            self._bar.setRange(0, 0)
+            self._size_label.setText(format_bytes(downloaded))
+            return
+        self._bar.setRange(0, 100)
+        self._bar.setValue(int(downloaded * 100 / total))
+        self._size_label.setText(
+            f"{format_bytes(downloaded)} / {format_bytes(total)}")
+
+    def show_error(self, message: str =
+                   "업데이트 다운로드에 실패했습니다. 나중에 다시 시도하세요.") -> None:
+        """같은 창에서 실패 안내로 전환 — 별도 경고 팝업을 띄우지 않는다."""
+        self._title.setText("업데이트 실패")
+        self._error_label.setText(message)
+        self._footer.setCurrentIndex(_STATE_ERROR)
+
+    def was_canceled(self) -> bool:
+        return self._canceled
+
+    def _on_cancel(self) -> None:
+        # 즉시 닫지 않는다 — worker 완료(_on_done)가 임시본 청소까지 맡는 기존
+        # 취소 semantics 유지. 버튼만 잠그고 표시로 피드백.
+        self._canceled = True
+        self._cancel_btn.setEnabled(False)
+        self._size_label.setText("취소 중…")
+
+    def reject(self) -> None:
+        # Esc/X/시스템 닫기 — QDialog.closeEvent 는 내부적으로 reject() 를 부르므로
+        # 여기 한 곳만 오버라이드하면 모든 닫기 경로가 취소로 집계된다.
+        if self._footer.currentIndex() == _STATE_DOWNLOADING:
+            self._canceled = True
+        super().reject()

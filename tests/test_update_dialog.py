@@ -50,3 +50,47 @@ def test_skip_signal(qtbot):
     dlg = _dlg(qtbot)
     with qtbot.waitSignal(dlg.skipped):
         dlg._skip_btn.click()
+
+
+def test_set_progress_percent_and_label(qtbot):
+    dlg = _dlg(qtbot)
+    dlg.start_download()
+    dlg.set_progress(50 * 1024 * 1024, 100 * 1024 * 1024)
+    assert dlg._bar.value() == 50
+    assert "/" in dlg._size_label.text()          # "50.0 MB / 100.0 MB"
+
+
+def test_set_progress_busy_when_total_zero(qtbot):
+    dlg = _dlg(qtbot)
+    dlg.start_download()
+    dlg.set_progress(1234, 0)                     # total 모름 → busy
+    assert dlg._bar.maximum() == 0
+
+
+def test_cancel_sets_flag_and_disables(qtbot):
+    dlg = _dlg(qtbot)
+    dlg.start_download()
+    dlg._cancel_btn.click()
+    assert dlg.was_canceled() is True
+    assert not dlg._cancel_btn.isEnabled()
+
+
+def test_reject_during_download_counts_as_cancel(qtbot):
+    dlg = _dlg(qtbot)
+    dlg.start_download()
+    dlg.reject()                                  # Esc/X 경로
+    assert dlg.was_canceled() is True
+
+
+def test_reject_on_prompt_is_not_cancel(qtbot):
+    dlg = _dlg(qtbot)
+    dlg.reject()                                  # "나중에" — 취소 아님
+    assert dlg.was_canceled() is False
+
+
+def test_error_state(qtbot):
+    dlg = _dlg(qtbot)
+    dlg.start_download()
+    dlg.show_error()
+    assert dlg._footer.currentIndex() == 2        # ERROR
+    assert "실패" in dlg._title.text()
