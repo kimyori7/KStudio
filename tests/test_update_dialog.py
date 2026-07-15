@@ -1,6 +1,16 @@
 """UpdateDialog 통합 카드 — 순수 함수 + 상태 전환 + 시그널."""
+from screen_recorder.app.updater.manifest import Manifest
 from screen_recorder.ui.tokens import VIDEO_PALETTE
-from screen_recorder.ui.update_dialog import format_bytes, notes_html
+from screen_recorder.ui.update_dialog import UpdateDialog, format_bytes, notes_html
+
+_M = Manifest(version="1.1.0", notes="- 새 기능 A\n- 버그 수정 B",
+              full_url="https://x/S.exe", full_sha256="a" * 64)
+
+
+def _dlg(qtbot) -> UpdateDialog:
+    dlg = UpdateDialog("1.0.4", _M, palette=VIDEO_PALETTE)
+    qtbot.addWidget(dlg)
+    return dlg
 
 
 def test_format_bytes_units():
@@ -21,3 +31,22 @@ def test_notes_html_empty_fallback():
 
 def test_notes_html_escapes():
     assert "<script>" not in notes_html("- <script>x</script>", VIDEO_PALETTE)
+
+
+def test_prompt_state_components(qtbot):
+    dlg = _dlg(qtbot)
+    assert "v1.0.4" in dlg._chip.text() and "v1.1.0" in dlg._chip.text()
+    assert dlg._footer.currentIndex() == 0          # PROMPT
+
+
+def test_update_now_signal_and_transition(qtbot):
+    dlg = _dlg(qtbot)
+    with qtbot.waitSignal(dlg.update_now):
+        dlg._now_btn.click()
+    assert dlg._footer.currentIndex() == 1          # DOWNLOADING 전환
+
+
+def test_skip_signal(qtbot):
+    dlg = _dlg(qtbot)
+    with qtbot.waitSignal(dlg.skipped):
+        dlg._skip_btn.click()
