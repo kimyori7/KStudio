@@ -39,6 +39,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist\installer
 OutputBaseFilename={#AppName}-Setup-{#AppVersion}
 SetupIconFile=..\resources\app_icon.ico
+; 위저드 브랜드 배너 — scripts/make_installer_images.py 가 생성 (수동 1회, 커밋).
+; 쉼표 목록: Inno 6 가 화면 DPI(100/150/200%)에 맞는 크기를 자동 선택.
+WizardImageFile=wizard_banner.bmp,wizard_banner_150.bmp,wizard_banner_200.bmp
+WizardSmallImageFile=wizard_small.bmp,wizard_small_150.bmp,wizard_small_200.bmp
 UninstallDisplayIcon={app}\{#AppExeName}
 WizardStyle=modern
 Compression=lzma2/max
