@@ -26,6 +26,19 @@ def should_prompt(manifest: Manifest, current_version: str, skip_version: str) -
     return is_newer(manifest.version, current_version) and manifest.version != skip_version
 
 
+def save_skip_version(app_settings, settings_update, version: str) -> None:
+    """'이 버전 건너뛰기' — skip_version 기록 + settings.json 저장.
+
+    저장 실패는 로그만 남기고 무시 (다음 실행에 한 번 더 물어볼 뿐 — 치명적이지 않음).
+    """
+    settings_update.skip_version = version
+    try:
+        from screen_recorder.core import settings as settings_module
+        settings_module.save(app_settings, settings_module.settings_path())
+    except Exception:   # noqa: BLE001
+        logger.warning("skip_version 저장 실패", exc_info=True)
+
+
 class UpdateChecker(QObject):
     update_available = Signal(object)   # Manifest
 
@@ -67,12 +80,19 @@ def start_update_check(app, win, settings_update, si_server):
                             settings_update.skip_version, parent=win)
 
     def _on_update_available(manifest: Manifest) -> None:
-        from screen_recorder.ui.update_prompt import (
-            prompt_update, DownloadProgressDialog,
-        )
-        if prompt_update(win, manifest) != "now":
-            return
-        _download_and_apply(app, win, si_server, manifest, DownloadProgressDialog)
+        from screen_recorder.ui.update_dialog import UpdateDialog
+        dlg = UpdateDialog(__version__, manifest, parent=win)
+
+        def _on_skip() -> None:
+            save_skip_version(win.app_settings, settings_update, manifest.version)
+            dlg.close()
+
+        dlg.skipped.connect(_on_skip)
+        # 클릭 시 다이얼로그가 스스로 DOWNLOADING 으로 전환한 뒤 emit 된다.
+        dlg.update_now.connect(
+            lambda: _download_and_apply(app, win, si_server, manifest, dlg))
+        win._update_dialog = dlg    # GC 방지 (win 수명에 묶음)
+        dlg.show()                  # 비블로킹 — exec() 금지 (한 인스턴스가 상태 전환)
 
     checker.update_available.connect(_on_update_available)
     win._update_checker = checker   # GC 방지 (win 수명에 묶음)
@@ -80,8 +100,11 @@ def start_update_check(app, win, settings_update, si_server):
     return checker
 
 
-def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) -> None:
-    """동의 후: 적절한 자산 다운로드 → 검증 → 코드패치/인스톨러 적용."""
+def _download_and_apply(app, win, si_server, manifest: Manifest, dlg) -> None:
+    """동의 후: 적절한 자산 다운로드 → 검증 → 코드패치/인스톨러 적용.
+
+    dlg: 이미 DOWNLOADING 상태로 전환된 UpdateDialog (컨트롤러가 생성 안 함).
+    """
     import tempfile
 
     install_dir = loc.current_install_dir()
@@ -89,7 +112,6 @@ def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) ->
     installed_internal = loc.installed_internal_hash(install_dir)
     kind, url, sha = loc.select_download(manifest, writable, installed_internal)
 
-    dlg = ProgressCls(manifest.version, win)
     # ⚠️ 코드 패치는 install_dir 안에 받는다(KStudio.exe.new). temp 와 install 이 다른
     # 볼륨이면 swap_exe 의 os.replace 가 WinError 17(cross-device)로 실패한다 — 기본
     # LocalAppData 설치는 temp(=AppData\Local)와 같은 볼륨이라 dev PC 에선 통과하고
@@ -126,11 +148,10 @@ def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) ->
     worker.progressed.connect(dlg.set_progress)
 
     def _on_done(out_path):
-        cancelled = dlg.wasCanceled()
-        dlg.close()
-        if cancelled:
+        if dlg.was_canceled():
             # 사용자가 취소 — 적용/재시작 강행하지 않음(편집 중 강제 재시작 = 데이터 유실
             # 처럼 느껴짐). 이미 받은 임시본은 청소.
+            dlg.close()
             if out_path is not None:
                 try:
                     out_path.unlink()
@@ -138,10 +159,9 @@ def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) ->
                     pass
             return
         if out_path is None:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(win, "KStudio 업데이트",
-                                "업데이트 다운로드에 실패했습니다. 나중에 다시 시도하세요.")
+            dlg.show_error()          # 같은 카드에서 실패 안내 (별도 팝업 없음)
             return
+        dlg.close()
         try:
             if kind == "code":
                 from screen_recorder.app.updater.apply_code_patch import swap_exe, spawn_and_quit
@@ -160,5 +180,4 @@ def _download_and_apply(app, win, si_server, manifest: Manifest, ProgressCls) ->
 
     worker.done.connect(_on_done)
     win._update_worker = worker     # GC 방지
-    dlg.show()
     threading.Thread(target=worker.run, name="UpdateDownload", daemon=True).start()
