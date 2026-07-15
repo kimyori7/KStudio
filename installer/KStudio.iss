@@ -43,6 +43,9 @@ SetupIconFile=..\resources\app_icon.ico
 ; 쉼표 목록: Inno 6 가 화면 DPI(100/150/200%)에 맞는 크기를 자동 선택.
 WizardImageFile=wizard_banner.bmp,wizard_banner_150.bmp,wizard_banner_200.bmp
 WizardSmallImageFile=wizard_small.bmp,wizard_small_150.bmp,wizard_small_200.bmp
+; 세로 배너는 환영/완료 페이지에만 나온다 — Inno 6 기본값(yes)은 환영 페이지를
+; 건너뛰어 배너가 완료 화면에서야 보이므로 명시적으로 켠다.
+DisableWelcomePage=no
 UninstallDisplayIcon={app}\{#AppExeName}
 WizardStyle=modern
 Compression=lzma2/max
