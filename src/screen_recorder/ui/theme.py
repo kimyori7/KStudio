@@ -499,12 +499,26 @@ QSplitter::handle:vertical {{
 """
 
 
+_current_palette: dict[str, str] = VIDEO_PALETTE
+
+
+def current_palette() -> dict[str, str]:
+    """마지막으로 apply_theme 된 팔레트 (없으면 VIDEO_PALETTE).
+
+    전역 stylesheet 는 문자열이라 역파싱이 불가능하므로, 다이얼로그 등이 현재
+    모드 액센트 색을 알아야 할 때 이 함수를 쓴다.
+    """
+    return _current_palette
+
+
 def apply_theme(app: QApplication, palette_name: str = "video") -> None:
     """QApplication 에 모드별 테마 적용.
 
     palette_name 미지정 시 영상 모드(시안) 로 폴백 — 모드 시스템이 없는 컨텍스트
     (예: 일부 다이얼로그 단독 테스트) 에서도 안전한 기본값.
     """
+    global _current_palette
     palette = PALETTES.get(palette_name, VIDEO_PALETTE)
+    _current_palette = palette
     arrow_path = _chevron_arrow_png(palette.get("text_sub", ""))
     app.setStyleSheet(build_qss(palette, arrow_path))
