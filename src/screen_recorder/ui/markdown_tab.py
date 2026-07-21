@@ -177,7 +177,7 @@ class MarkdownTab(QWidget):
         self._fs_debounce.setSingleShot(True)
         self._fs_debounce.setInterval(150)
         self._fs_debounce.timeout.connect(self._reload_check)
-        self._fs_watcher.directoryChanged.connect(lambda _p: self._fs_debounce.start())
+        self._fs_watcher.directoryChanged.connect(self._on_dir_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -483,6 +483,22 @@ class MarkdownTab(QWidget):
         self.preview.set_content(text, doc_dir)
 
     # --- 외부 변경 반영 (QFileSystemWatcher) ---
+    def _on_dir_changed(self, path: str) -> None:
+        """감시 폴더 변경 통지 → 디바운스 재장전. 동작은 이전 lambda 와 동일.
+
+        ⚠ 진단 로그(2026-07-21) — "외부 변경 팝업이 안 뜬다" 재발 3회차. 지금까지의
+        수정은 전부 _reload_check 안쪽(중간층)만 손봤는데, 조용한 실패의 원인이
+        세 가지인데 로그로 구분이 안 됐다. 이 한 줄이 셋을 가른다:
+          - 실제 변경이 있었는데 '감시 신호' 없음        → OS→Qt 통지가 안 옴(감시 죽음)
+          - '감시 신호' 는 있는데 '동일 내용'/'감지' 없음 → 디바운스 굶김
+            (150ms 단발 타이머를 매 통지가 start() 로 리셋 — 통지가 150ms 보다
+             촘촘하면 _reload_check 가 영영 실행되지 않는다)
+          - '감시 신호' → '동일 내용 — 무시'            → 판별 기준(_disk_text) 문제
+        원인 확정 후 제거하거나 DEBUG 로 낮출 것.
+        """
+        _log.info("감시 신호: %s", path)
+        self._fs_debounce.start()
+
     def _reload_check(self) -> None:
         """감시 중인 파일이 외부에서 바뀌었으면 확인 팝업을 띄우고, [예] 일 때만 반영한다.
 
@@ -524,6 +540,9 @@ class MarkdownTab(QWidget):
             return
         self._fs_read_retries = 0
         if disk == self._disk_text:
+            # 진단 로그(2026-07-21) — 여기서 조용히 끝난 건지, 애초에 여기까지
+            # 못 온 건지가 구분이 안 돼 3회 오진했다. _on_dir_changed 참고.
+            _log.info("외부 변경 검사: 동일 내용 — 무시: %s", p)
             return   # 자기 저장 또는 동일 내용 — 반영할 외부 변경 없음
         _log.info("외부 변경 감지 — 확인 팝업 표시: %s (dirty=%s)", p, self._dirty)
         self._reload_prompt_open = True
