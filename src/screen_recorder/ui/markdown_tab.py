@@ -595,11 +595,32 @@ class MarkdownTab(QWidget):
             # 거절한 버전을 기억 — 같은 내용으로 다시 묻지 않음(허위 이벤트 반복 차단).
             self._disk_text = disk
 
+    def _surface_window(self) -> None:
+        """팝업 직전에 앱 창을 앞으로 — 편집기 뒤에 깔려 못 보는 것을 막는다(2026-07-21).
+
+        실사용 로그에서 팝업은 제때 떴는데 답변까지 41분·1시간 39분이 걸렸다. 편집기로
+        작업하는 동안 KStudio 창이 뒤에 있으면 모달이 떠도 눈에 안 들어온다.
+
+        창을 올리는 실제 Win32 절차는 MainWindow.bring_to_front 가 이미 갖고 있다
+        (Qt 의 raise_/activateWindow 는 Windows 포그라운드 가로채기 방지에 막혀
+        작업표시줄만 깜빡인다). 여기서는 MainWindow 를 import 하지 않고 덕 타이핑으로
+        찾는다 — 탭이 상위 창 구현에 묶이지 않게, 테스트에서도 그냥 뜨게.
+        실패해도 삼킨다: 포커스가 안 올라오는 것보다 팝업이 안 뜨는 게 훨씬 나쁘다.
+        """
+        bring = getattr(self.window(), "bring_to_front", None)
+        if not callable(bring):
+            return
+        try:
+            bring()
+        except Exception as e:   # noqa: BLE001 — 포커스 실패가 본 기능을 막으면 안 됨
+            _log.debug("팝업 전 창 올리기 실패: %s", e)
+
     def _confirm_external_reload(self, dirty: bool) -> bool:
         """'최신 내용으로 불러올까요?' 모달 확인. 테스트에서 patch 가능하게 분리.
 
         반환 True = 사용자가 [예](최신화) 선택.
         """
+        self._surface_window()
         if dirty:
             msg = ("이 문서가 외부에서 변경되었습니다.\n"
                    "미저장 편집이 있습니다 — 최신 내용으로 불러오면 편집한 내용이 사라집니다.\n\n"
