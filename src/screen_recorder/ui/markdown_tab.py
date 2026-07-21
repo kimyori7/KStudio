@@ -13,12 +13,17 @@ from PySide6.QtWidgets import (
 )
 
 from .icons import load_icon
+from .markdown.disk_poll import DiskPoller
 from .markdown.editor import MarkdownEditor
 from .markdown.highlighter import MarkdownHighlighter
 from .markdown.preview import MarkdownPreview
 from .markdown.search_bar import MarkdownSearchBar
 
 _log = logging.getLogger(__name__)
+
+# 디스크 확인 주기 — 통지 유실 대비 안전망(disk_poll.py 참고). 2초는 "에이전트가
+# 고친 걸 눈치채기엔 충분히 빠르고, stat 한 번이라 있으나 마나 한 비용" 의 절충.
+POLL_INTERVAL_MS = 2000
 
 
 class SaveResult(Enum):
@@ -179,6 +184,16 @@ class MarkdownTab(QWidget):
         self._fs_debounce.timeout.connect(self._reload_check)
         self._fs_watcher.directoryChanged.connect(self._on_dir_changed)
 
+        # 통지와 독립된 두 번째 경로 — 주기적 디스크 확인(2026-07-21). 통지가 유실되는
+        # 것이 실측돼(disk_poll.py 주석) 통지 하나에만 의존하는 설계를 버렸다. 사용자가
+        # 하루 종일 손으로 누르던 ⟳ 새로고침이 매번 동작했다는 사실이 근거 — 그 수동
+        # 동작을 자동화한 것이다. stat 만 보므로 탭당 비용은 무시할 수준.
+        self._disk_poller = DiskPoller()
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(POLL_INTERVAL_MS)
+        self._poll_timer.timeout.connect(self._poll_disk)
+        self._poll_timer.start()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(bar)
@@ -288,6 +303,9 @@ class MarkdownTab(QWidget):
                     _log.warning("외부 변경 감시 등록 실패: %s", d)
             else:
                 _log.warning("외부 변경 감시 불가 — 부모 폴더 없음: %s", d)
+        # 폴링 기준도 같은 길목에서 맞춘다 — 열기/저장/비교칸 어디로 와도 '지금 디스크'
+        # 가 기준이 되어, 우리 앱 자신의 저장이 외부 변경으로 보고되지 않는다.
+        self._disk_poller.watch(self._saved_path)
 
     def _on_text_changed(self) -> None:
         if not self._dirty:
@@ -498,6 +516,20 @@ class MarkdownTab(QWidget):
         """
         _log.info("감시 신호: %s", path)
         self._fs_debounce.start()
+
+    def _poll_disk(self) -> None:
+        """주기적 안전망 — 통지가 유실돼도 외부 변경을 잡는다.
+
+        값싼 stat 비교로 후보만 거르고, 실제 판단은 통지 경로와 똑같이 _reload_check
+        에 맡긴다(팝업 정책·dirty 경고·거절 기억이 한 곳에만 있게).
+        모달이 떠 있는 동안은 건너뛴다 — _reload_check 의 재진입 가드와 같은 이유.
+        """
+        if self._reload_prompt_open or self._saved_path is None:
+            return
+        if not self._disk_poller.check():
+            return
+        _log.info("폴링: 디스크 변화 감지 — 검사 실행: %s", self._saved_path)
+        self._reload_check()
 
     def _reload_check(self) -> None:
         """감시 중인 파일이 외부에서 바뀌었으면 확인 팝업을 띄우고, [예] 일 때만 반영한다.

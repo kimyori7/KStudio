@@ -96,6 +96,27 @@ def main() -> int:
           f"(replace_ok={replace_ok}, prompted={s3_calls}, editor={tab3.editor.toPlainText()!r})")
     ok = ok and replace_ok and got3
 
+    # --- S4: 통지가 죽어도 폴링 안전망이 잡는다 (2026-07-21 실측 유실 대응) ---
+    # 실제 앱에서 살아있는 watcher 가 진짜 쓰기 1건을 놓친 게 관측됐다. 여기서는
+    # watcher 를 아예 떼어내 그 상황을 만들고, QTimer 폴링만으로 반영되는지 본다.
+    # (유닛테스트는 _poll_disk 를 직접 부른다 — 이 시나리오는 타이머 배선까지 검증.)
+    p4 = tmp / "s4.md"
+    p4.write_text("BEFORE POLL\n", encoding="utf-8")
+    tab4 = MarkdownTab.from_file(p4)
+    s4_calls = []
+    tab4._confirm_external_reload = lambda dirty: (s4_calls.append(dirty) or True)
+    tab4.show()
+    app.processEvents()
+    watched4 = tab4._fs_watcher.files() + tab4._fs_watcher.directories()
+    if watched4:
+        tab4._fs_watcher.removePaths(watched4)      # 통지 경로 절단
+    severed = not tab4._fs_watcher.directories()
+    p4.write_text("AFTER POLL\n", encoding="utf-8")
+    got4 = _pump_until(app, lambda: tab4.editor.toPlainText() == "AFTER POLL\n", timeout_s=8.0)
+    print(f"S4 poll fallback (watcher severed): {'PASS' if (severed and got4) else 'FAIL'} "
+          f"(severed={severed}, prompted={s4_calls}, editor={tab4.editor.toPlainText()!r})")
+    ok = ok and severed and got4
+
     print("\nRESULT:", "ALL PASS" if ok else "FAIL")
     return 0 if ok else 1
 
