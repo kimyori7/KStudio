@@ -681,7 +681,14 @@ class MarkdownTab(QWidget):
 
     # --- 스크롤 동기화 ---
     def _on_editor_scrolled(self, _value: int) -> None:
-        if self._syncing:
+        # _sel_syncing 도 함께 막는다 (2026-07-22 사용자 보고 — 회귀 테스트:
+        # test_markdown_selection_scroll_echo.py). 선택 동기화는 편집기 커서를 옮기는데,
+        # setTextCursor/ensureCursorVisible 은 그 커서를 보이게 하려고 *편집기를 스크롤*
+        # 한다. 그 스크롤이 여기로 들어와 미리보기로 되돌아가면, 사용자가 드래그 중인
+        # 미리보기가 통째로 끌려간다("드래그하려 하면 이전 선택 위치로 튄다" / "화면 끝까지
+        # 안 갔는데 저절로 스크롤된다"). 선택이 유발한 스크롤은 사용자 스크롤이 아니므로
+        # 상대 창에 전파할 이유가 없다 — _syncing 과 같은 성격의 에코 차단.
+        if self._syncing or self._sel_syncing:
             return
         vsb = self.editor.verticalScrollBar()
         mx = vsb.maximum()
