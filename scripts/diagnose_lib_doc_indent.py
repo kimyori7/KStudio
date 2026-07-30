@@ -29,7 +29,7 @@ from screen_recorder.ui.library_model import EntryKind, LibraryModel
 from screen_recorder.ui.docks.library_panel import LibraryPanel
 
 model = LibraryModel()
-base = r"C:/work/internal-project\기획서"
+base = r"C:\samples\docs"  # 표시용 더미 경로 (실제 파일은 필요 없음)
 # 이미지(썸네일 있음) — 비교용. 빨강 32px 썸네일.
 thumb = QImage(48, 32, QImage.Format_RGB32)
 thumb.fill(QColor("#c0392b"))
