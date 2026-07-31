@@ -38,8 +38,12 @@ recordings/
 # Bundled ffmpeg binaries (too large for git; install via PATH or bin/)
 bin/
 
-# Brainstorming visual companion (mockups + state)
+# 개발 과정 문서는 저장소에 넣지 않는다 (로컬 보관).
+# 기획서·계획서에는 내부 검증 기록과 업무 맥락이 그대로 남는다.
+# 이 규칙이 없으면 새로 클론한 뒤 `git add .` 한 번으로 전부 다시 올라간다.
+docs/superpowers/
 .superpowers/
+/CLAUDE.md
 
 # Diagnostic PNG outputs (regenerable by scripts/diagnose_*.py — tools tracked, outputs not)
 /diag_*.png
