@@ -5,8 +5,8 @@
 Windows 용 1인 사용자 스튜디오 — 스크린 녹화 + 스크린샷 + 주석/이미지 편집을 한
 프로그램에서.
 
-> 옛 이름: Screen Recorder. archive 된 [KimyoriPhotoShop](https://github.com/kimyori7/KimyoriPhotoShop)
-> (JS 기반 Phase 1 완료) 의 이미지 편집 기능을 흡수하면서 더 넓은 도구로 발전 중.
+> 옛 이름: Screen Recorder. 지금은 없어진 JS 기반 이미지 편집 습작(Phase 1 까지 진행)의
+> 기능을 흡수하면서 더 넓은 도구로 발전 중.
 
 ## 주요 기능
 
