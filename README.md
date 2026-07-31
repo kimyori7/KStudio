@@ -71,5 +71,6 @@ KStudio 가 도움이 되었다면 따뜻한 한 잔 사주세요 ☕
 - [FFmpeg](https://ffmpeg.org/) — 영상 인코딩의 핵심
 - [PySide6 (Qt)](https://www.qt.io/qt-for-python) — UI 프레임워크
 - [Lucide Icons](https://lucide.dev/) — UI 아이콘 (icons.py 의 path 데이터)
+- 앱 아이콘(`resources/app_icon.ico`, `app_icon_source.png`) — 이미지 생성 AI 로 만든 자체 자산. 제3자 아이콘 세트를 재배포하지 않는다.
 - [rembg](https://github.com/danielgatis/rembg) — 배경 제거
 - [dxcam](https://github.com/ra1nty/DXcam) — 빠른 화면 캡처
