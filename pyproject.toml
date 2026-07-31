@@ -19,7 +19,7 @@ dependencies = [
     # 유튜브 영상 추출 / mp3 변환 (추가 기능 메뉴). mp4 머지·mp3 추출은 동봉 ffmpeg 사용.
     # 주의: 유튜브 사이트 변경 시 가끔 업데이트가 필요하며, 설치본 동봉본은 재빌드로만 갱신됨.
     "yt-dlp>=2024.1",
-    # OS 인증서 저장소로 TLS 검증 — 사내 프록시(TLS 인터셉트) 환경에서 yt-dlp 가
+    # OS 인증서 저장소로 TLS 검증 — 기업 프록시(TLS 인터셉트) 환경에서 yt-dlp 가
     # CERTIFICATE_VERIFY_FAILED 로 죽지 않게 한다 (run_download 에서 lazy inject).
     "truststore>=0.9",
 ]

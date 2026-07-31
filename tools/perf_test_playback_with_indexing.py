@@ -3,7 +3,7 @@
 목적: 사용자 보고 "프리뷰 로딩 중 어플 자체가 엄청 버벅거려, 메인은 항상 매끄럽게
 움직여야해" — 인덱싱이 재생을 방해하는지 객관적으로 검증.
 
-대상: C:\\Users\\kimyori\\KStudio\\Video\\발표용\\ 안의 mp4 들 (실제 사용자 파일).
+대상: C:\\Users\\me\\KStudio\\Video\\samples\\ 안의 mp4 들 (실제 사용자 파일).
 """
 from __future__ import annotations
 import os
@@ -27,7 +27,7 @@ from screen_recorder.core.ffmpeg_check import find_ffmpeg
 
 
 def main():
-    target_dir = Path(r"C:\Users\me\KStudio\Video\발표용")
+    target_dir = Path(r"C:\Users\me\KStudio\Video\samples")
     mp4s = sorted([p for p in target_dir.iterdir() if p.suffix.lower() == ".mp4"],
                   key=lambda p: -p.stat().st_size)
     if not mp4s:

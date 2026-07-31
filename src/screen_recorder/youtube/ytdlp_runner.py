@@ -75,11 +75,11 @@ _truststore_injected = False
 
 
 def _ensure_truststore() -> None:
-    """OS(Windows) 인증서 저장소로 TLS 검증 — 사내 프록시(TLS 인터셉트) 환경 대응.
+    """OS(Windows) 인증서 저장소로 TLS 검증 — 기업 프록시(TLS 인터셉트) 환경 대응.
 
-    yt-dlp/certifi 기본 번들엔 사내 루트 CA 가 없어 CERTIFICATE_VERIFY_FAILED 로
-    다운로드가 실패한다(실측 2026-06-18, 사내망). truststore 는 OS 네이티브
-    검증기를 써 Windows 가 신뢰하는 체인(사내 CA 포함)을 그대로 인정한다.
+    yt-dlp/certifi 기본 번들엔 기업 루트 CA 가 없어 CERTIFICATE_VERIFY_FAILED 로
+    다운로드가 실패한다(실측 2026-06-18, 기업 프록시 환경). truststore 는 OS 네이티브
+    검증기를 써 Windows 가 신뢰하는 체인(기업 CA 포함)을 그대로 인정한다.
     inject 는 프로세스 전역이라 한 번만 호출하면 되고, 다운로드 경로에서 lazy 로
     호출해 영향 범위를 최소화한다. truststore 미설치/실패해도 일반 네트워크에선
     동작하므로 best-effort.

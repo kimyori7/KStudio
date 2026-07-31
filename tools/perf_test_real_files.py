@@ -4,7 +4,7 @@
     python -u tools/perf_test_real_files.py
 
 대상:
-    C:\\Users\\kimyori\\KStudio\\Video\\발표용\\기획서 제작_시작.mp4 (202MB)
+    C:\\Users\\me\\KStudio\\Video\\samples\\sample_long.mp4 (202MB)
 """
 from __future__ import annotations
 import os
@@ -26,7 +26,7 @@ from screen_recorder.effects.sidecar_store import compute_video_hash
 
 
 def main():
-    target_dir = Path(r"C:\Users\me\KStudio\Video\발표용")
+    target_dir = Path(r"C:\Users\me\KStudio\Video\samples")
     if not target_dir.exists():
         print(f"ERROR: target dir not found: {target_dir}")
         return 2

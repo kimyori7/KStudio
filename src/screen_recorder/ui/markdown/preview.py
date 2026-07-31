@@ -172,7 +172,7 @@ class MarkdownPreview(QWidget):
 
     def _make_renderer(self) -> PreviewRenderer:
         # 환경변수로 강제 Fallback — 테스트(Chromium teardown 불안정) 및 WebEngineProcess
-        # 가 막힌 환경(회사 PC 보안 정책, headless CI)에서 명시적으로 degrade.
+        # 가 막힌 환경(기업 보안 정책, headless CI)에서 명시적으로 degrade.
         if os.environ.get("KSTUDIO_DISABLE_WEBENGINE") == "1":
             return FallbackPreviewRenderer()
         try:

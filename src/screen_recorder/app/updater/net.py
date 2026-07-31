@@ -1,4 +1,4 @@
-"""HTTPS opener — 사내망 TLS(truststore) 대응. fetch/download 공용."""
+"""HTTPS opener — 기업 프록시 TLS(truststore) 대응. fetch/download 공용."""
 from __future__ import annotations
 
 import urllib.request
@@ -7,7 +7,7 @@ _truststore_injected = False
 
 
 def ensure_truststore() -> None:
-    """OS 인증서 저장소로 TLS 검증(사내 프록시 대응). 프로세스 전역·한 번만·best-effort.
+    """OS 인증서 저장소로 TLS 검증(기업 프록시 대응). 프로세스 전역·한 번만·best-effort.
 
     (기존 ytdlp_runner / background_removal 의 _ensure_truststore 와 동일 패턴.)
     """

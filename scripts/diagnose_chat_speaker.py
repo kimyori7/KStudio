@@ -11,6 +11,9 @@ from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from screen_recorder.ui.agent.bubbles.message_bubble import MessageBubble
 
 
+# 화자 구분만 보는 진단이라 내용은 무의미해도 되지만, 실제와 같은 조건이어야
+# 판정이 유효하다 — 짧은 말풍선/긴 말풍선, 한글 줄바꿈, 인라인 코드, 굵은 글씨,
+# 그리고 도구 호출 쌍까지 한 화면에 섞여 있어야 한다.
 CONV = [
     ("user", "응?"),
     ("assistant",
