@@ -284,9 +284,20 @@ def build_export_args(
     """
     surface_w = int(surface_w) & ~1   # 짝수로 floor (1903 → 1902)
     surface_h = int(surface_h) & ~1
+    # 트랙이 시간축의 권위인가, 아니면 src_path + sidecar.trim 인가.
+    #
+    # - segment 2개 이상: 트랙이 권위 (기존 동작).
+    # - segment 1개 + source_path 비어 있음: 소스 영상 없이 만든 빈 프로젝트 —
+    #   그 1개 클립의 src_in/src_out 이 곧 결과물이다. 이걸 구분하지 않으면
+    #   main_duration_ms 기준으로 소스 파일 **전체** 를 내보내 클립 범위가 무시된다.
+    # - segment 1개 + source_path 있음: 기존 영상 탭. 트랙이 아니라 sidecar.trim 이
+    #   자르기를 표현하므로 반드시 옛 경로를 유지해야 한다 (안 그러면 트림이 조용히 무시됨).
+    track_driven = len(sidecar.video_track) > 1 or (
+        len(sidecar.video_track) == 1 and not sidecar.source_path
+    )
     # 다중 segment 트랙 export. 같은 src 든 다른 src 든 자동 처리.
     # image segment 만 v2 보류 — 정지 이미지를 영상 stream 으로 합성하는 별도 그래프 필요.
-    if len(sidecar.video_track) > 1:
+    if track_driven:
         if any(seg.media_kind == "image" for seg in sidecar.video_track):
             raise NotImplementedError(
                 "image segment 가 포함된 트랙 export 는 v2 — 영상 segment 만 지원."
@@ -366,7 +377,7 @@ def build_export_args(
     # 모든 segment 의 src 가 src_path 와 같으면 source="main" 으로 간단 처리. 다른
     # src 가 섞이면 source="insert" + source_id=src 로 두고 _build_argv 가 별도 input 추가.
     track_extra_srcs: list[str] = []   # src_path 가 아닌 segment 들의 unique src
-    if len(sidecar.video_track) > 1:
+    if track_driven:
         segments, track_extra_srcs = _build_timeline_from_video_track(
             sidecar.video_track, str(src_path),
         )
@@ -386,7 +397,7 @@ def build_export_args(
     # 다중 segment 트랙은 각 segment 의 src_in/out 이 이미 자르기 표현이라 sidecar.trim 무시.
     trim_in = max(0, int(sidecar.trim.in_ms))
     trim_out = int(sidecar.trim.out_ms) if sidecar.trim.out_ms > 0 else int(main_duration_ms)
-    if len(sidecar.video_track) <= 1 and (trim_in > 0 or trim_out < main_duration_ms):
+    if not track_driven and (trim_in > 0 or trim_out < main_duration_ms):
         segments = _apply_trim_to_main_segments(segments, trim_in, trim_out)
 
     # 1.6) speed/zoom 효과 경계점에서 main segment 자동 분할.

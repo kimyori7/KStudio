@@ -194,7 +194,8 @@ class TabArea(QTabWidget):
                    display_name: str | None = None,
                    thumbnail: Optional[QImage] = None,
                    sidecar_dir: "Path | None" = None,
-                   sidecar_path: "Path | None" = None) -> int:
+                   sidecar_path: "Path | None" = None,
+                   project_path: "Path | None" = None) -> int:
         # 명시 인자가 있으면 그것 우선 (사용자가 사이드카 파일 직접 열기), 없으면
         # provider 콜백 (환경설정 폴더).
         sc_dir = sidecar_dir
@@ -206,7 +207,8 @@ class TabArea(QTabWidget):
         tab = VideoTab(path=path, source_label=source_label,
                        duration_ms=duration_ms, player_settings=self._player_settings,
                        thumbnail=thumbnail, player_hotkeys=self._player_hotkeys,
-                       sidecar_dir=sc_dir, sidecar_path=sidecar_path)
+                       sidecar_dir=sc_dir, sidecar_path=sidecar_path,
+                       project_path=project_path)
         tab.snapshot_requested.connect(self.snapshot_requested.emit)
         # 탭 라벨 — 실제 파일명(display_name)이 있으면 그걸로, 없으면 source_label.
         base = display_name if display_name else source_label

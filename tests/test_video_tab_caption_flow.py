@@ -87,8 +87,10 @@ def test_video_tab_ignores_unsupported_file_drop(qtbot, sample_mp4, tmp_path):
 
 
 def test_ctrl_c_copies_active_effect_to_clipboard(qtbot, sample_mp4, tmp_path):
-    """효과 선택 후 Ctrl+C → _effect_clipboard 에 deep copy 저장."""
+    """효과 선택 후 Ctrl+C → 전역 클립보드에 deep copy 저장 (탭 밖에 산다)."""
     from PySide6.QtCore import Qt
+    from screen_recorder.ui.video.clip_clipboard import clipboard
+    clipboard().clear()
     tab = _make_tab(qtbot, sample_mp4, tmp_path)
     tab.lanes_widget().request_add.emit("caption", 1000, 0)
     sc = tab.sidecar()
@@ -99,8 +101,9 @@ def test_ctrl_c_copies_active_effect_to_clipboard(qtbot, sample_mp4, tmp_path):
     qtbot.waitExposed(tab)
     tab.setFocus()
     qtbot.keyClick(tab, Qt.Key_C, Qt.ControlModifier)
-    assert tab._effect_clipboard is not None
-    assert tab._effect_clipboard.id == cap.id
+    assert clipboard().kind() == "effect"
+    assert clipboard().peek_effect().id == cap.id
+    clipboard().clear()
 
 
 def test_ctrl_v_pastes_effect_with_new_id(qtbot, sample_mp4, tmp_path):

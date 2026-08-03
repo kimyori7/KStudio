@@ -437,3 +437,43 @@ def test_mute_audio_drops_audio_chain(tmp_path):
         ffmpeg_path="ffmpeg", mute_audio=False,
     )
     assert "-c:a" in argv_kept   # 음소거 안 하면 오디오 유지
+
+
+def test_blank_project_single_clip_exports_only_that_clip_range():
+    """빈 프로젝트(소스 영상 없음)의 클립 1개 — 그 클립의 구간만 나가야 한다.
+
+    source_path 가 있는 일반 탭은 segment 1개 = "원본 전체 + sidecar.trim" 이라
+    main_duration_ms 기준으로 만든다. 빈 프로젝트는 그 전제가 없으므로 트랙이 권위 —
+    구분하지 않으면 4~10초 클립을 붙였는데 소스 파일 **전체** 가 나간다.
+    """
+    from screen_recorder.effects.segment import VideoSegment
+    seg = VideoSegment(src="A.mp4", src_in_ms=4000, src_out_ms=10000,
+                       src_duration_ms=30000, media_kind="video", start_ms=0)
+    sc = Sidecar(source_path="", source_hash="", video_track=[seg])
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=6000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    assert "[0:v]trim=4.0:10.0" in fc
+
+
+def test_normal_tab_single_segment_still_uses_trim_path():
+    """회귀 가드 — source_path 가 있는 일반 탭의 segment 1개는 옛 경로(sidecar.trim) 유지.
+
+    여기서 트랙 기반으로 넘어가면 사용자가 잡은 트림이 조용히 무시된다.
+    """
+    from screen_recorder.effects.segment import VideoSegment
+    from screen_recorder.effects.sidecar import Trim
+    seg = VideoSegment(src="A.mp4", src_in_ms=0, src_out_ms=0,
+                       src_duration_ms=10000, media_kind="video", start_ms=0)
+    sc = Sidecar(source_path="A.mp4", source_hash="h", video_track=[seg],
+                 trim=Trim(in_ms=2000, out_ms=5000))
+    argv, _ = build_export_args(
+        sidecar=sc, src_path="A.mp4", dst_path="out.mp4",
+        main_duration_ms=10000, surface_w=1920, surface_h=1080,
+        ffmpeg_path="ffmpeg",
+    )
+    fc = next(argv[i + 1] for i, a in enumerate(argv) if a == "-filter_complex")
+    assert "[0:v]trim=2.0:5.0" in fc

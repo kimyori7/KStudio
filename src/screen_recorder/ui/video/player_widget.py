@@ -407,6 +407,17 @@ class PlayerWidget(QStackedWidget):
         self._time_hud.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._time_hud.hide()  # 영상 로드 전엔 숨김
 
+        # 안내 문구 — 재생할 미디어가 아예 없을 때 화면 한가운데 (빈 프로젝트).
+        # 검은 사각형만 있으면 "고장난 화면" 으로 읽히므로 무엇을 해야 하는지 알린다.
+        self._placeholder = QLabel(self)
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._placeholder.setStyleSheet(
+            "QLabel { color: rgba(255,255,255,190); font-size: 13pt; "
+            "line-height: 160%; }"
+        )
+        self._placeholder.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._placeholder.hide()
+
         # 배속 (speed) HUD — 구간 안에서 계속 표시 (flash 아님). 1× 일 땐 안 보임.
         # 사용자 결정 (2026-05-11): 배경 제거 + 흰 글씨 + 외곽선 (영상 위 가시성 확보).
         # QLabel CSS 로는 text-stroke 가 안 되므로 paintEvent override 가 필요한 별도
@@ -441,8 +452,21 @@ class PlayerWidget(QStackedWidget):
             self._time_hud.show()
             self._time_hud.raise_()
 
+    def set_placeholder_text(self, text: str) -> None:
+        """미디어가 없을 때 화면 한가운데 띄울 안내 문구. 빈 문자열이면 숨김."""
+        if not text:
+            self._placeholder.hide()
+            return
+        self._placeholder.setText(text)
+        self._placeholder.show()
+        self._placeholder.raise_()
+        self._reposition_huds()
+
     def _reposition_huds(self) -> None:
         margin = 12
+        # 안내 문구는 surface 전체를 덮고 가운데 정렬 — 크기 계산 없이 항상 중앙.
+        if self._placeholder.isVisible():
+            self._placeholder.setGeometry(0, 0, self.width(), self.height())
         self._action_hud.move(margin, margin)
         self._time_hud.move(
             max(margin, self.width() - self._time_hud.width() - margin),

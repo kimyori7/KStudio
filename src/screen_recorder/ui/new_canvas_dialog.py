@@ -26,7 +26,7 @@ class NewCanvasDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("새로 만들기")
+        self.setWindowTitle("새 이미지")
         self.setModal(True)
 
         layout = QVBoxLayout(self)

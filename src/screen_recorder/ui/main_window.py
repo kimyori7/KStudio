@@ -631,6 +631,7 @@ class MainWindow(QMainWindow):
         self.menu_bar.new_requested.connect(self._on_file_new)
         self.menu_bar.open_requested.connect(self._on_file_open)
         self.menu_bar.new_markdown_requested.connect(self._on_new_markdown)
+        self.menu_bar.new_video_requested.connect(self._on_file_new_video)
         self.menu_bar.save_requested.connect(self._on_file_save)
         self.menu_bar.save_as_requested.connect(self._on_file_save_as)
         self.menu_bar.export_requested.connect(self._on_export)
@@ -1393,6 +1394,11 @@ class MainWindow(QMainWindow):
                 )
         else:
             if entry.path is None:
+                return
+            # .kstudio 를 가리키는 영상 항목 = 빈 영상 프로젝트 (Phase 117). 일반 영상처럼
+            # 열면 소스 파일로 오인해 재생도 저장도 깨진다 — 사이드카 경로로 라우팅.
+            if entry.path.suffix.lower() == ".kstudio":
+                self._open_sidecar_path(entry.path)
                 return
             self.tab_area.add_video(
                 path=entry.path, source_label=entry.source_label,
@@ -2404,6 +2410,80 @@ class MainWindow(QMainWindow):
         self.mode_controller.set_mode(AppMode.IMAGE)
         self._restore_window_for_capture()
 
+    def _on_file_new_video(self) -> None:
+        """파일 → 새 영상 프로젝트. 소스 영상 없이 빈 타임라인 탭을 연다.
+
+        사용자는 영상 트랙에 파일을 끌어다 놓거나 다른 탭에서 클립을 복사(Ctrl+C) 해
+        Ctrl+V 로 조립한다. 프로젝트 자체는 사이드카 폴더의 `.kstudio` 파일 하나로
+        자동 저장된다 (영상 hash 가 없으므로 그 파일이 유일한 정체성).
+
+        라이브러리 entry 는 「새 캔버스」와 같이 path 없이 추가 — 파일이 아직 없으므로
+        라이브러리에서 다시 열기는 지원하지 않는다 (알려진 한계).
+        """
+        from ..effects.sidecar import Sidecar, save_atomic
+        project_path = self._new_video_project_path()
+        # 빈 프로젝트 파일을 **즉시** 만든다. 첫 편집 때까지 미루면 연속으로 두 번
+        # 만들었을 때 둘 다 「새 영상 1」을 잡고, 나중 것이 먼저 것을 통째로 덮어쓴다.
+        try:
+            save_atomic(project_path, Sidecar(source_path="", source_hash=""))
+        except OSError as e:
+            QMessageBox.warning(self, "새 영상 프로젝트", f"프로젝트 파일 생성 실패: {e}")
+            return
+        self._open_blank_project(project_path)
+
+    def _open_blank_project(self, project_path: Path) -> None:
+        """빈 영상 프로젝트(.kstudio) 를 탭으로 연다 — 새로 만들 때와 다시 열 때 공용.
+
+        이미 라이브러리에 있으면 entry 를 재사용하고, 그 탭이 열려 있으면 포커스만
+        옮긴다 (같은 프로젝트가 두 탭으로 갈라져 서로를 덮어쓰는 것 방지).
+        """
+        label = project_path.stem
+        existing = self._find_library_entry_for_path(project_path)
+        if existing is not None:
+            entry_id = existing.id
+            self.library_model.move_to_top(entry_id)
+            if self.tab_area.find_index_by_entry(entry_id) >= 0:
+                self.tab_area.focus_entry(entry_id)
+                self.mode_controller.set_mode(AppMode.VIDEO)
+                return
+            label = existing.display_name or label
+        else:
+            placeholder = QImage(64, 36, QImage.Format_ARGB32)
+            placeholder.fill(0xFF222222)
+            # path 를 넣어야 라이브러리 클릭으로 다시 열 수 있고, 앱을 껐다 켜도
+            # 목록에 남는다 (경로 없는 entry 는 설정에 직렬화되지 않는다).
+            entry = self.library_model.add(
+                EntryKind.VIDEO,
+                thumbnail=placeholder,
+                source_label="new",
+                display_name=label,
+                path=project_path,
+                duration_ms=0,
+                origin="opened",
+            )
+            entry_id = entry.id
+        self.tab_area.add_video(
+            path=project_path, source_label="new",
+            duration_ms=0, entry_id=entry_id, display_name=label,
+            sidecar_dir=project_path.parent,
+            project_path=project_path, sidecar_path=project_path,
+        )
+        self.mode_controller.set_mode(AppMode.VIDEO)
+        self._restore_window_for_capture()
+
+    def _new_video_project_path(self) -> Path:
+        """겹치지 않는 새 프로젝트 파일 경로 — `<사이드카 폴더>/새 영상 N.kstudio`.
+
+        같은 이름이 이미 있으면 N 을 올린다. 파일은 첫 autosave 때 생긴다.
+        """
+        root = Path(self._resolve_sidecar_dir())
+        i = 1
+        while True:
+            cand = root / f"새 영상 {i}.kstudio"
+            if not cand.exists():
+                return cand
+            i += 1
+
     def _on_file_open(self) -> None:
         """파일 → 열기. .kstudio (이미지 zip 또는 영상 사이드카 JSON, magic 으로 분기) /
         일반 raster / 영상 모두 지원."""
@@ -2528,8 +2608,13 @@ class MainWindow(QMainWindow):
     def _kind_for_path(self, p: Path, *, fallback: EntryKind) -> EntryKind:
         """파일 확장자 → 라이브러리 EntryKind. 저장된 kind 가 옛 빌드/회귀로 틀려도
         (예: 오디오가 IMAGE 로 복원되던 버그) **형식에 맞는 모드 라이브러리**로 가게 하는
-        단일 진실원. 모르는 확장자(.kstudio 등)는 fallback(저장된 kind) 사용."""
+        단일 진실원. 모르는 확장자는 fallback(저장된 kind) 사용."""
         ext = p.suffix.lower()
+        if ext == ".kstudio":
+            # 같은 확장자를 둘이 쓴다 — 이미지 편집본(zip) 과 영상 사이드카·빈 프로젝트
+            # (JSON). 확장자만 보면 전자로 넘어가 빈 영상 프로젝트가 재시작 후
+            # 이미지로 복원되고 클릭 시 "열기 실패" 가 된다. magic 으로 가른다.
+            return EntryKind.VIDEO if self._is_video_sidecar_json(p) else EntryKind.IMAGE
         if is_audio(p):
             return EntryKind.AUDIO
         if ext in self.VIDEO_EXTS:
@@ -2581,14 +2666,28 @@ class MainWindow(QMainWindow):
         같은 영상이 이미 있으면 entry 중복 추가 없이 그 entry 재사용.
         """
         from ..effects.sidecar import load as load_sidecar
+        # 파일이 외부에서 지워졌는데 라이브러리 항목이 아직 남아 있는 창 (정리 스캔은
+        # 타이머로 돈다). 빈 프로젝트는 이 파일이 작업 전체라, 기술적인 파싱 오류 대신
+        # 무슨 일인지 그대로 알리고 죽은 항목을 치운다.
+        if not p.exists():
+            stale = self._find_library_entry_for_path(p)
+            if stale is not None:
+                self.library_model.remove(stale.id)
+            QMessageBox.warning(self, "열기 실패", f"파일을 찾을 수 없습니다:\n{p}")
+            return
         try:
             sc = load_sidecar(p)
         except Exception as e:
             QMessageBox.warning(self, "편집본 열기 실패",
                                   f"사이드카 파일을 읽을 수 없습니다:\n{e}")
             return
-        src = Path(sc.source_path or "")
-        if not sc.source_path or not src.exists():
+        # source_path 가 비어 있으면 소스 영상 없이 만든 빈 프로젝트 (Phase 117) —
+        # "원본을 못 찾았다" 가 아니라 그 자체가 프로젝트 파일이다.
+        if not sc.source_path:
+            self._open_blank_project(p)
+            return
+        src = Path(sc.source_path)
+        if not src.exists():
             QMessageBox.warning(
                 self, "원본 영상 없음",
                 "사이드카가 가리키는 원본 영상 파일을 찾을 수 없습니다:\n"
@@ -3137,6 +3236,18 @@ class MainWindow(QMainWindow):
         sidecar = tab._edit_controller.sidecar()
         src_path = tab._source_path
         main_duration = tab.player.duration_ms()
+        # 빈 프로젝트는 소스 영상이 없다 — 시간축과 주 입력을 트랙에서 가져온다.
+        # (player.duration_ms 는 현재 활성 클립의 소스 길이라 결합 길이와 다르다.)
+        if tab.is_blank_project():
+            track = sorted(sidecar.video_track, key=lambda s: s.start_ms)
+            if not track:
+                QMessageBox.warning(
+                    self, "내보내기",
+                    "빈 프로젝트입니다 — 영상 트랙에 클립을 먼저 추가하세요.",
+                )
+                return
+            src_path = Path(track[0].src)
+            main_duration = tab._get_duration_ms()
         if main_duration <= 0:
             QMessageBox.warning(self, "내보내기", "영상 길이가 확정되지 않았습니다.")
             return
@@ -3241,6 +3352,18 @@ class MainWindow(QMainWindow):
         sidecar = tab._edit_controller.sidecar()
         src_path = tab._source_path
         main_duration = tab.player.duration_ms()
+        # 빈 프로젝트 — 소스 영상이 없으므로 트랙에서 길이/기본 파일명을 가져온다.
+        # (트랙에 여러 소스가 섞였으면 아래 compute_audio_keep_intervals 가 명시적으로 거부.)
+        if getattr(tab, "is_blank_project", lambda: False)():
+            track = sorted(sidecar.video_track, key=lambda s: s.start_ms)
+            if not track:
+                QMessageBox.warning(
+                    self, "음성 내보내기",
+                    "빈 프로젝트입니다 — 영상 트랙에 클립을 먼저 추가하세요.",
+                )
+                return
+            src_path = Path(track[0].src)
+            main_duration = tab._get_duration_ms()
         if main_duration <= 0:
             QMessageBox.warning(self, "음성 내보내기", "길이가 확정되지 않았습니다 (재생을 한 번 시작하면 채워집니다).")
             return
@@ -4466,9 +4589,12 @@ class MainWindow(QMainWindow):
                     if p.suffix.lower() != ".kstudio":
                         self._decode_image_thumb_async(p, entry.id)
                 elif kind is EntryKind.VIDEO:
-                    if duration_ms <= 0:
-                        self._probe_duration_async(p, entry.id)
-                    self._extract_thumbnail_async(p, entry.id)
+                    # 빈 영상 프로젝트(.kstudio)는 미디어 파일이 아니다 — ffprobe/ffmpeg
+                    # 를 걸어봐야 실패만 하고 placeholder 그대로다.
+                    if p.suffix.lower() != ".kstudio":
+                        if duration_ms <= 0:
+                            self._probe_duration_async(p, entry.id)
+                        self._extract_thumbnail_async(p, entry.id)
                 elif kind is EntryKind.AUDIO:
                     # 오디오는 썸네일 없음(🎵 라벨/placeholder). 길이만 채움.
                     if duration_ms <= 0:

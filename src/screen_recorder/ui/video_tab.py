@@ -81,7 +81,12 @@ class VideoTab(QWidget):
                  thumbnail: QImage | None = None,
                  player_hotkeys: PlayerHotkeys | None = None,
                  sidecar_dir: Path | None = None,
-                 sidecar_path: Path | None = None) -> None:
+                 sidecar_path: Path | None = None,
+                 project_path: Path | None = None) -> None:
+        """project_path 가 주어지면 **빈 프로젝트 모드** — path 가 가리키는 소스 영상이
+        없고, 트랙은 비어 있으며, 모든 저장은 project_path 로 간다. 사용자가 파일을
+        끌어다 놓거나 다른 탭에서 클립을 붙여넣어 트랙을 채운다 ("새 영상").
+        """
         super().__init__()
         self.setFocusPolicy(Qt.StrongFocus)
         # 영상 탭 자체는 텍스트 입력을 받지 않으므로 IME 비활성화.
@@ -115,9 +120,9 @@ class VideoTab(QWidget):
         # kind ∈ {"segment", "effect", None}. id 는 해당 객체의 id.
         self._active_kind: Optional[str] = None
         self._active_id: Optional[str] = None
-        # 효과 복사붙여넣기 (Ctrl+C / Ctrl+V). 선택된 효과의 deep copy + id 비움.
-        # 붙여넣기 시 마우스 위치를 ms 로 환산해 in_ms 로 설정, duration 보존.
-        self._effect_clipboard: object | None = None
+        # 복사붙여넣기 (Ctrl+C / Ctrl+V) 는 탭 밖의 전역 클립보드 (video.clip_clipboard)
+        # 를 쓴다 — 영상 A 에서 클립을 복사해 영상 B 탭에 붙여넣으려면 클립보드가 이
+        # 인스턴스보다 오래 살아야 하기 때문. 여기엔 아무 상태도 두지 않는다.
 
         # 프레임 스킵 누적 — D/F 키와 ◀/▶ 버튼으로 프레임 단위 이동할 때마다 누적,
         # 다른 종류의 시크(슬라이더 드래그, 화살표 초단위 이동, Home/End) 가 일어나면 0 으로 리셋.
@@ -149,9 +154,12 @@ class VideoTab(QWidget):
         sc_dir = Path(sidecar_dir) if sidecar_dir is not None else default_sidecar_dir()
         # sidecar_path 명시 시 hash 매칭 우회하고 그 파일 직접 load — 사용자가 사이드카
         # 파일을 파일 열기로 직접 골랐을 때.
+        # 빈 프로젝트 — 소스 영상이 없고 트랙도 비어 있다. project_path 가 유일한 정체성.
+        self._is_blank = project_path is not None
         self._edit_controller = EditController(
             self._source_path, sc_dir,
             sidecar_path=Path(sidecar_path) if sidecar_path else None,
+            save_path=Path(project_path) if project_path is not None else None,
         )
         self._edit_controller.sidecar_replaced.connect(self._on_sidecar_replaced)
         self._edit_controller.sidecar_replaced.connect(self._warm_caption_fonts)
@@ -163,9 +171,11 @@ class VideoTab(QWidget):
         self._edit_controller.edit_mode_toggled.connect(self.edit_mode_toggled.emit)
         # Stage A: 사이드카가 비어 있으면 source 1 segment 로 자동 채움
         # (history baseline 도 새 segment 상태로 reset — 사용자가 undo 로 빈 트랙까지 안 감).
-        self._edit_controller.ensure_default_track(
-            source_duration_ms=int(duration_ms or 0),
-        )
+        # 빈 프로젝트는 채울 소스 자체가 없으므로 건너뛴다 — 사용자가 클립을 넣어 채운다.
+        if not self._is_blank:
+            self._edit_controller.ensure_default_track(
+                source_duration_ms=int(duration_ms or 0),
+            )
         # 사이드카에 캡션이 있으면 그 폰트들을 미리 measure → Qt 가 디스크에서 폰트
         # 읽고 glyph cache 빌드해 두므로 재생 중 첫 caption 진입 시 stutter 안 남.
         self._warm_caption_fonts(self._edit_controller.sidecar())
@@ -294,6 +304,9 @@ class VideoTab(QWidget):
         track.request_insert_at.connect(self._on_track_insert_at)
         track.request_insert_files.connect(self._on_track_insert_files)
         track.segment_selected.connect(self._on_segment_selected)
+        # Phase 116: 우클릭 메뉴의 클립 복사/붙여넣기 — 단축키와 같은 코드 경로.
+        track.request_copy.connect(self._on_track_copy_requested)
+        track.request_paste_at.connect(self._on_track_paste_requested)
         # Stage 1: 박스 드래그 → start_ms 변경 (clamp 는 EditController 에서).
         track.segment_position_changed.connect(self._edit_controller.set_segment_start)
 
@@ -336,7 +349,11 @@ class VideoTab(QWidget):
 
         # ---- SegmentPlaybackController (Stage C — 새 트랙 모델) ----
         from .video.segment_playback import SegmentPlaybackController
-        self._segment_ctrl = SegmentPlaybackController(self.player)
+        # 빈 프로젝트는 player 에 아무것도 로드돼 있지 않다 — "첫 segment 는 이미
+        # 로드됨" 가정을 끄지 않으면 첫 클립을 넣어도 검은 화면이 유지된다.
+        self._segment_ctrl = SegmentPlaybackController(
+            self.player, first_segment_preloaded=not self._is_blank,
+        )
         self.player.position_changed.connect(self._segment_ctrl.on_main_position_changed)
         # 소스 파일 끝(EndOfMedia) → 다음 클립으로 진행. position_changed 가 segment-끝=
         # 소스-끝 경계에서 advance 를 놓쳐 "마지막 직전 클립에서 멈춤"하던 회귀의 보완 경로.
@@ -400,6 +417,9 @@ class VideoTab(QWidget):
         # 음소거 토글 등 사이드카를 처음 바꿀 때(_on_sidecar_replaced)서야 요청됐다.
         # ensure_default_track 은 시그널을 emit 하지 않으므로 init 에서 직접 1회 요청한다.
         self._request_waveforms(self._edit_controller.sidecar())
+        # 빈 프로젝트 — 처음엔 트랙이 비어 있으니 안내 문구부터 띄운다.
+        if self._is_blank:
+            self._sync_blank_state(self._edit_controller.sidecar())
         # 음소거 토글 — AudioTrackLane 🔇 버튼 → sidecar + 미리보기 동기화.
         self.timeline.audio_mute_toggled.connect(self._on_audio_mute_toggled)
 
@@ -631,8 +651,34 @@ class VideoTab(QWidget):
         if self._edit_controller.set_audio_muted(muted):
             self._refresh_preview_mute()
 
+    _BLANK_HINT = (
+        "🎬 빈 영상 프로젝트\n\n"
+        "영상 파일을 아래 «영상» 트랙 위로 끌어다 놓거나,\n"
+        "다른 영상 탭에서 클립을 복사(Ctrl+C)해 여기서 Ctrl+V 하세요."
+    )
+
+    def is_blank_project(self) -> bool:
+        """소스 영상 없이 만든 빈 프로젝트인지 (트랙이 비어 있는지와는 별개)."""
+        return self._is_blank
+
+    def _sync_blank_state(self, sc) -> None:
+        """빈 프로젝트의 안내 문구 표시 + 첫 클립이 들어온 순간 미리보기 활성화.
+
+        트랙이 비면 다시 안내로 돌아간다 (클립을 전부 지운 경우).
+        """
+        has_clips = bool(sc.video_track)
+        try:
+            self.player.set_placeholder_text("" if has_clips else self._BLANK_HINT)
+        except (RuntimeError, AttributeError):
+            pass
+        if has_clips and not self._media_loaded and self.isVisible():
+            # 첫 클립 도착 — player 에 아무것도 없으므로 그 클립을 활성화해 화면에 띄운다.
+            self._ensure_player_loaded()
+
     def _on_sidecar_replaced(self, sc) -> None:
         self.timeline.set_sidecar(sc)
+        if self._is_blank:
+            self._sync_blank_state(sc)
         # Phase 28 — 인스펙터에서 zoom.preview 체크박스 등 토글 시점은 position_changed 가
         # 발화 안 함 (재생 중이 아니므로). 사이드카 갱신 시 즉시 zoom_preview 재계산해
         # 화면 갱신을 강제. preview=False 로 바뀌면 None 전달 → surface 가 다시 paint.
@@ -877,6 +923,129 @@ class VideoTab(QWidget):
             except (RuntimeError, AttributeError):
                 pass
 
+    # ---------- 복사 / 붙여넣기 (탭 사이 공용 클립보드) ----------
+    def _copy_active_to_clipboard(self) -> None:
+        """Ctrl+C — 활성 선택(효과 또는 클립)을 전역 클립보드에 담는다.
+
+        선택이 없으면 아무것도 안 함 (기존 클립보드 내용은 보존).
+        """
+        from .video.clip_clipboard import clipboard
+        if self._active_kind == "effect" and self._active_id:
+            eff = next(
+                (e for e in self.sidecar().effects
+                 if getattr(e, "id", None) == self._active_id),
+                None,
+            )
+            if eff is not None:
+                clipboard().copy_effect(eff)
+                self.player.flash_action("📋 효과 복사")
+            return
+        if self._active_kind == "segment" and self._active_id:
+            self._copy_active_segment()
+
+    def _copy_active_segment(self) -> None:
+        """선택된 클립 + 그 구간에 완전히 들어 있는 효과들을 클립보드로.
+
+        효과 동반은 set_segment_start / delete_segment 와 같은 정책 — "클립 안에 완전히
+        들어 있는 효과는 그 클립의 것" (걸쳐 있는 효과는 의도가 모호해 제외).
+
+        길이 미상(src_duration_ms=0) 이면 ffprobe 로 한 번 채운다. 그래도 모르면
+        복사하지 않고 알린다 — 길이 0 클립을 붙여넣으면 되살릴 수 없는 1px 조각이 되고,
+        _on_player_duration_for_segment 의 보정은 video_track[0] 만 고쳐 주기 때문.
+        """
+        from dataclasses import replace
+        from .video.clip_clipboard import clipboard
+        seg = next(
+            (s for s in self.sidecar().video_track if s.id == self._active_id), None
+        )
+        if seg is None:
+            return
+        if seg.duration_ms <= 0:
+            from ..services.media_probe import probe_duration_ms
+            probed = probe_duration_ms(seg.src)
+            if not probed:
+                self.player.flash_action("⚠ 클립 길이를 알 수 없어 복사 실패")
+                return
+            seg = replace(seg, src_duration_ms=int(probed))
+        start, end = seg.start_ms, seg.end_ms
+        contained = [
+            e for e in self.sidecar().effects
+            if start <= e.in_ms and e.out_ms <= end
+        ]
+        clipboard().copy_segment(seg, contained)
+        extra = f" + 효과 {len(contained)}개" if contained else ""
+        self.player.flash_action(f"📋 클립 복사{extra}")
+
+    def _on_track_copy_requested(self, segment_id: str) -> None:
+        """트랙 우클릭 → 클립 복사. 우클릭한 클립을 활성 선택으로 바꾼 뒤 Ctrl+C 와 동일 경로.
+
+        선택을 옮기는 이유: 복사 직후 Del/드래그가 방금 복사한 클립을 향하는 게 자연스럽고,
+        lane 의 시각 강조(흰 테두리) 도 함께 맞는다.
+        """
+        if not any(s.id == segment_id for s in self.sidecar().video_track):
+            return
+        self._active_kind = "segment"
+        self._active_id = segment_id
+        try:
+            self.timeline.video_track_lane.set_selected_id(segment_id)
+        except (RuntimeError, AttributeError):
+            pass
+        self._copy_active_segment()
+
+    def _on_track_paste_requested(self, at_combined_ms: int) -> None:
+        """트랙 빈 자리 우클릭 → 클릭한 위치에 클립 붙여넣기 (인디케이터가 아니라 클릭 지점)."""
+        if not self.is_edit_mode_on():
+            self.player.flash_action("⚠ 붙여넣기 — 편집 모드(Ctrl+E) 를 먼저 켜세요")
+            return
+        self._paste_segment_at(at_combined_ms)
+
+    def _paste_from_clipboard(self) -> None:
+        """Ctrl+V — 클립보드 내용에 따라 클립 또는 효과 붙여넣기.
+
+        편집 모드가 꺼져 있으면 붙여넣을 곳(타임라인) 이 없다 — 조용히 무시하지 말고
+        이유를 알린다 (다른 탭으로 옮겨온 직후 편집 모드가 꺼져 있는 게 흔한 상황).
+        """
+        from .video.clip_clipboard import clipboard
+        kind = clipboard().kind()
+        if kind is None:
+            return
+        if not self.is_edit_mode_on():
+            self.player.flash_action("⚠ 붙여넣기 — 편집 모드(Ctrl+E) 를 먼저 켜세요")
+            return
+        if kind == "segment":
+            self._paste_segment_at(self._get_position_ms())
+        else:
+            self._paste_effect_at_cursor()
+
+    def _paste_segment_at(self, at_ms: int) -> None:
+        """클립보드의 클립을 트랙의 at_ms 위치에 붙여넣는다 — 다른 영상 탭에서도.
+
+        단축키(Ctrl+V) 는 인디케이터 위치를, 트랙 우클릭 메뉴는 클릭한 위치를 넘긴다.
+        클립은 자기 src 경로를 들고 다니므로 다른 영상의 트랙에 그대로 얹힌다.
+        그 자리가 다른 클립과 겹치면 EditController 가 가장 가까운 빈 자리로 밀어
+        넣고, 밀렸다는 사실을 flash 로 알린다 (조용한 이동 금지).
+        """
+        from .video.clip_clipboard import clipboard
+        taken = clipboard().take_segment()
+        if taken is None:
+            return
+        seg, effects = taken
+        at_ms = max(0, int(at_ms))
+        placed = self._edit_controller.paste_clip(seg, effects, at_ms=at_ms)
+        # 붙여넣은 클립을 곧바로 활성 선택으로 — 이어서 드래그 이동/Del 가능.
+        self._active_kind = "segment"
+        self._active_id = seg.id
+        try:
+            self.timeline.video_track_lane.set_selected_id(seg.id)
+        except (RuntimeError, AttributeError):
+            pass
+        if placed == at_ms:
+            self.player.flash_action("📋 클립 붙여넣기")
+        else:
+            self.player.flash_action(
+                f"📋 클립 붙여넣기 — 겹쳐서 {placed / 1000:.1f}초 자리로 이동"
+            )
+
     def _paste_effect_at_cursor(self) -> None:
         """clipboard 의 효과를 deep copy → 마우스 위치 ms 를 in_ms 로, duration 보존.
 
@@ -886,14 +1055,12 @@ class VideoTab(QWidget):
         """
         from dataclasses import replace
         from PySide6.QtGui import QCursor
-        import copy
-        import uuid
-        if self._effect_clipboard is None:
+        from .video.clip_clipboard import clipboard
+        # take_effect 가 새 id 를 부여한 deep copy 를 준다 — nested dataclass (Font /
+        # Stroke / Position / Fade / PipConfig) 가 두 효과 인스턴스간 공유되지 않도록.
+        eff = clipboard().take_effect()
+        if eff is None:
             return
-        # advisor 지적: replace 는 top-level 만 복사. nested dataclass (Font / Stroke /
-        # Position / Fade / PipConfig 등) 가 두 효과 인스턴스간 공유돼 잠재 corruption.
-        # deepcopy 로 명시적 분리.
-        eff = copy.deepcopy(self._effect_clipboard)
         # 마우스 글로벌 → slider_lane 로컬 x → ms.
         slider = self.timeline.slider_lane
         local = slider.mapFromGlobal(QCursor.pos())
@@ -908,8 +1075,8 @@ class VideoTab(QWidget):
             target_ms = max(0, min(target_ms, max(0, timeline_end - duration)))
         # 같은 type 의 효과들과 겹치지 않는 빈 슬롯으로 자동 이동.
         target_ms = self._find_free_slot_for_paste(eff, target_ms, duration)
-        new_eff = replace(eff, id=str(uuid.uuid4()),
-                          in_ms=int(target_ms), out_ms=int(target_ms + duration))
+        new_eff = replace(eff, in_ms=int(target_ms),
+                          out_ms=int(target_ms + duration))
         ok = self._edit_controller.add_effect(new_eff)
         if ok:
             self.player.flash_action("📋 효과 붙여넣기")
@@ -1045,6 +1212,12 @@ class VideoTab(QWidget):
         for p in paths:
             seg = self._build_segment_for_path(str(p))
             if seg is None:
+                continue
+            # 길이를 못 읽은 영상(ffprobe 실패·손상 파일)은 트랙에 폭 0 으로 들어가
+            # 보이지도 지우지도 못하는 유령 클립이 된다 — 조용히 넣지 말고 알린다.
+            # (GIF 는 src_duration_ms=0 이 정상 — 재생 시 길이가 정해진다.)
+            if seg.media_kind == "video" and seg.duration_ms <= 0:
+                self.player.flash_action(f"⚠ 길이를 읽지 못해 건너뜀 — {Path(p).name}")
                 continue
             seg = replace(seg, start_ms=cursor_ms)
             self._edit_controller.insert_segment(
@@ -1277,21 +1450,15 @@ class VideoTab(QWidget):
             if self._edit_controller.redo():
                 self.player.flash_action("↷ 다시 실행")
             event.accept(); return
-        # Ctrl+C — 활성 효과 복사. Ctrl+V — 마우스 위치에 붙여넣기.
-        # 캡션·배속·줌·곁들임 박스 선택 후 Ctrl+C, 다음 위치에서 Ctrl+V.
+        # Ctrl+C — 활성 선택 복사. Ctrl+V — 붙여넣기.
+        # 효과(캡션·배속·줌·곁들임 박스): 복사 후 마우스/재생 위치에 붙여넣기.
+        # 클립(영상 트랙 박스): 복사 후 **다른 영상 탭** 으로 가서 인디케이터 위치에
+        # 붙여넣기 — 클립보드가 탭 밖(clip_clipboard) 에 살아 탭을 건너뛴다.
         if k == Qt.Key_C and (m & Qt.ControlModifier) and not (m & Qt.ShiftModifier):
-            if self._active_kind == "effect" and self._active_id:
-                eff = next(
-                    (e for e in self.sidecar().effects if getattr(e, "id", None) == self._active_id),
-                    None,
-                )
-                if eff is not None:
-                    self._effect_clipboard = eff
-                    self.player.flash_action("📋 효과 복사")
+            self._copy_active_to_clipboard()
             event.accept(); return
         if k == Qt.Key_V and (m & Qt.ControlModifier):
-            if self._effect_clipboard is not None and self.is_edit_mode_on():
-                self._paste_effect_at_cursor()
+            self._paste_from_clipboard()
             event.accept(); return
         # T — 편집 모드 ON 일 때만 캡션 추가 (현재 위치 + 기본 길이)
         if self.is_edit_mode_on() and k == Qt.Key_T and m == Qt.NoModifier:
@@ -1456,6 +1623,23 @@ class VideoTab(QWidget):
         """
         if self._media_loaded:
             return
+        if self._is_blank:
+            # 소스 영상이 없다 — 트랙의 첫 클립을 대신 활성화한다 (있으면).
+            sc = self._edit_controller.sidecar()
+            track = sorted(sc.video_track, key=lambda s: s.start_ms)
+            if not track:
+                return          # 빈 트랙 — 안내 라벨만 보이는 상태.
+            # segment controller 에 먼저 최신 트랙을 밀어 넣는다. 첫 클립 추가 직후엔
+            # _on_sidecar_replaced 가 _segment_ctrl.set_sidecar 보다 먼저 실행돼
+            # (연결 순서) controller 가 아직 빈 리스트를 들고 있어 시크가 갭으로 빠진다.
+            self._segment_ctrl.set_sidecar(sc)
+            self._media_loaded = True
+            self._segment_ctrl.seek_combined_ms(
+                max(int(track[0].start_ms), int(self._saved_position_ms))
+            )
+            self.controls.set_audio_enabled(self.player.has_audio())
+            self._refresh_preview_mute()
+            return
         self.player.load(self._source_path)
         if self._thumbnail_pending is not None:
             self.player.set_thumbnail(self._thumbnail_pending)
@@ -1547,6 +1731,8 @@ class VideoTab(QWidget):
         super().showEvent(event)
         # 매 showEvent 마다 lazy 로드 시도 (release 후 재진입 포함).
         self._ensure_player_loaded()
+        if self._is_blank:
+            self._sync_blank_state(self._edit_controller.sidecar())
         if not self._initial_thumbs_requested:
             self._initial_thumbs_requested = True
             self._request_all_thumbnails(self._edit_controller.sidecar())

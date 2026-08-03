@@ -128,3 +128,50 @@ def test_insert_action_emits_request_insert_at_end(qtbot):
         insert.trigger()
     # 새 contract: at_combined_ms (트랙상 시작 위치) — segment 끝(4000ms) 보다 큼.
     assert blocker.args[0] > 4000
+
+
+def test_context_menu_on_segment_offers_copy(qtbot):
+    """Phase 116 — 클립 위 우클릭에 '클립 복사'. 마우스로도 닿는 경로."""
+    lane = VideoTrackLane()
+    qtbot.addWidget(lane)
+    lane.resize(400, 60)
+    lane.set_segments([_seg("a.mp4", 4000, "a")])
+    lane.show()
+    qtbot.waitExposed(lane)
+
+    target = lane._segment_rects()[0]["rect"].center()
+    ev = QContextMenuEvent(QContextMenuEvent.Mouse, target, lane.mapToGlobal(target))
+    lane.contextMenuEvent(ev)
+    copy_action = next(a for a in lane._last_menu.actions() if "복사" in a.text())
+    with qtbot.waitSignal(lane.request_copy, timeout=500) as sig:
+        copy_action.trigger()
+    assert sig.args == ["a"]
+
+
+def test_paste_menu_item_only_when_clipboard_has_clip(qtbot):
+    """빈 자리 우클릭의 '붙여넣기' 는 클립보드에 클립이 있을 때만 — 죽은 항목 금지."""
+    from screen_recorder.ui.video.clip_clipboard import clipboard
+
+    lane = VideoTrackLane()
+    qtbot.addWidget(lane)
+    lane.resize(400, 60)
+    lane.set_segments([_seg("a.mp4", 4000, "a")])
+    lane.show()
+    qtbot.waitExposed(lane)
+
+    boxes = lane._segment_rects()
+    pt = QPoint(boxes[0]["rect"].right() + 50, boxes[0]["rect"].center().y())
+    ev = QContextMenuEvent(QContextMenuEvent.Mouse, pt, lane.mapToGlobal(pt))
+
+    clipboard().clear()
+    lane.contextMenuEvent(ev)
+    assert not any("붙여넣기" in a.text() for a in lane._last_menu.actions())
+
+    try:
+        clipboard().copy_segment(_seg("b.mp4", 3000, "b"))
+        lane.contextMenuEvent(ev)
+        paste_action = next(a for a in lane._last_menu.actions() if "붙여넣기" in a.text())
+        with qtbot.waitSignal(lane.request_paste_at, timeout=500):
+            paste_action.trigger()
+    finally:
+        clipboard().clear()

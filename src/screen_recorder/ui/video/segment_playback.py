@@ -35,12 +35,19 @@ class SegmentPlaybackController(QObject):
     combined_duration_changed = Signal(int)
     active_segment_changed = Signal(str)         # segment id (갭이면 빈 문자열)
 
-    def __init__(self, player) -> None:
+    def __init__(self, player, *, first_segment_preloaded: bool = True) -> None:
         """player 는 PlayerWidget — load(path), seek_ms(ms), play(), pause(),
         position_ms(), duration_ms(), show_black_frame(), is_playing() 메서드 제공.
-        position_changed Signal 지원."""
+        position_changed Signal 지원.
+
+        first_segment_preloaded — 호출자가 이미 첫 segment 의 src 를 player 에 load 한
+        상태인지. 일반 영상 탭은 True (VideoTab 이 소스 파일을 직접 load). 소스 파일이
+        없는 빈 프로젝트는 False — player 에 아무것도 없으므로 "이미 로드됨" 으로
+        가정하면 첫 클립을 넣어도 화면이 검은 채로 남는다.
+        """
         super().__init__()
         self._player = player
+        self._first_segment_preloaded = bool(first_segment_preloaded)
         self._segments: list[VideoSegment] = []
         self._active_idx: int = -1   # 현재 로드된 segment 의 인덱스. 갭이면 -1.
         self._loaded_src: Optional[str] = None
@@ -78,7 +85,12 @@ class SegmentPlaybackController(QObject):
         # 회귀가 생긴다. 첫 segment 의 src 와 동기화해 reload 자체를 막는다.
         if self._segments and self._active_idx < 0:
             self._active_idx = 0
-            self._loaded_src = self._segments[0].src
+            # 빈 프로젝트(first_segment_preloaded=False) 는 player 가 비어 있다 —
+            # _loaded_src 를 채우면 첫 시크에서 "이미 로드됨" 으로 판단해 load 를
+            # 건너뛰고 검은 화면이 유지된다. None 으로 둬 정상 load 를 타게 한다.
+            self._loaded_src = (
+                self._segments[0].src if self._first_segment_preloaded else None
+            )
 
     def combined_duration_ms(self) -> int:
         """트랙 결합 길이 = 모든 segment 의 end_ms 의 최대값. 빈 트랙이면 0."""

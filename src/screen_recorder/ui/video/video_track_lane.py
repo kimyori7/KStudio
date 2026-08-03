@@ -70,6 +70,9 @@ class VideoTrackLane(QWidget):
     request_insert_files = Signal(list, int)   # (paths: list[str], at_combined_ms) — 드래그-드롭
     segment_moved = Signal(int, int)        # (from_idx, to_idx) — 레거시 (현재 미사용)
     segment_position_changed = Signal(str, int)   # (segment_id, new_start_ms) — Stage 1 자유 이동
+    # Phase 116: 클립 복사/붙여넣기 — 단축키(Ctrl+C/V) 와 같은 동작의 마우스 경로.
+    request_copy = Signal(str)              # segment_id
+    request_paste_at = Signal(int)          # at_combined_ms
 
     def __init__(self) -> None:
         super().__init__()
@@ -367,6 +370,11 @@ class VideoTrackLane(QWidget):
                 lambda _checked=False, s=sid, m=local_ms: self.request_split.emit(s, m)
             )
             menu.addAction(split_action)
+            copy_action = QAction("📋 클립 복사  (Ctrl+C)", menu)
+            copy_action.triggered.connect(
+                lambda _checked=False, s=sid: self.request_copy.emit(s)
+            )
+            menu.addAction(copy_action)
             menu.addSeparator()
             del_action = QAction("🗑 삭제", menu)
             del_action.triggered.connect(
@@ -374,13 +382,21 @@ class VideoTrackLane(QWidget):
             )
             menu.addAction(del_action)
         else:
-            # 빈 영역 — 클릭한 결합 ms 위치에 삽입 요청.
+            # 빈 영역 — 클릭한 결합 ms 위치에 삽입 / 붙여넣기 요청.
             insert_at_ms = self._x_to_combined_ms(pos.x())
             insert_action = QAction("➕ 영상 파일 삽입…", menu)
             insert_action.triggered.connect(
                 lambda _checked=False, t=insert_at_ms: self.request_insert_at.emit(t)
             )
             menu.addAction(insert_action)
+            # 클립보드에 클립이 있을 때만 — 항상 띄우면 눌러도 아무 일 없는 죽은 항목이 된다.
+            from .clip_clipboard import clipboard
+            if clipboard().kind() == "segment":
+                paste_action = QAction("📌 여기에 클립 붙여넣기  (Ctrl+V)", menu)
+                paste_action.triggered.connect(
+                    lambda _checked=False, t=insert_at_ms: self.request_paste_at.emit(t)
+                )
+                menu.addAction(paste_action)
         self._last_menu = menu
         menu.popup(event.globalPos())
 

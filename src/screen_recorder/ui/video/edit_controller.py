@@ -32,14 +32,20 @@ class EditController(QObject):
     autosave_failed = Signal(str)            # 에러 메시지
 
     def __init__(self, video_path: Path, sidecar_dir: Path,
-                 sidecar_path: Optional[Path] = None) -> None:
+                 sidecar_path: Optional[Path] = None,
+                 save_path: Optional[Path] = None) -> None:
         """sidecar_path 가 명시되면 그 파일 직접 load (hash 매칭 우회) — 사용자가
         편집본 파일을 파일 열기로 직접 열었을 때. None 이면 hash 매칭으로 자동 검색.
+
+        save_path 가 명시되면 **모든 저장이 그 파일로** 간다 (hash 기반 파일명 우회).
+        소스 영상 파일이 없는 빈 프로젝트("새 영상")용 — 사이드카를 영상 hash 로 찾을
+        수 없으므로 프로젝트 파일 자체가 유일한 정체성이 된다.
         """
         super().__init__()
         from ...effects.sidecar import load as _load_sidecar
         self._video_path = Path(video_path)
         self._store = SidecarStore(sidecar_dir)
+        self._save_path = Path(save_path) if save_path is not None else None
         self._edit_mode_on = False
 
         # hash 1회 계산 — 이전엔 진단·load_for·MISS fallback 에서 동일 hash 가 3번
@@ -64,23 +70,30 @@ class EditController(QObject):
                 _log.warning("sidecar load explicit FAIL — file=%s err=%s",
                              sidecar_path, e)
         # 2) 명시 없거나 실패 시 hash 매칭 — 이미 계산한 h 를 hint 로 전달.
-        if loaded is None:
-            loaded = self._store.load_for(self._video_path, hash_hint=h or None)
+        #    hash 가 비어 있으면(파일이 없거나 못 읽음) 매칭 자체가 불가능하고,
+        #    load_for 는 hint 없이 호출되면 다시 파일을 열어 FileNotFoundError 를
+        #    던진다 — 빈 프로젝트 / 사라진 파일에서 탭 오픈이 통째로 깨지던 경로.
+        if loaded is None and h:
+            loaded = self._store.load_for(self._video_path, hash_hint=h)
             if loaded is None:
                 _log.info(
                     "sidecar load_for: MISS (새 사이드카로 시작) — dir 안 후보들=%s",
-                    [p.name for p in self._store._candidates_for_hash(h)] if h else "(hash 계산 실패)",
-                )
-                loaded = Sidecar(
-                    source_path=str(self._video_path),
-                    source_hash=h,   # 위에서 이미 계산. fallback 호출 제거.
-                    trim=Trim(in_ms=0, out_ms=0),
+                    [p.name for p in self._store._candidates_for_hash(h)],
                 )
             else:
                 _log.info(
                     "sidecar load_for: HIT — effects=%d, segments=%d",
                     len(loaded.effects), len(loaded.video_track),
                 )
+        if loaded is None:
+            # 새 사이드카로 시작. 빈 프로젝트(save_path 지정) 는 소스 영상이 없으므로
+            # source_path 를 비워 둔다 — export 가 "트랙이 권위" 를 판별하는 근거이자,
+            # 사이드카가 존재하지 않는 파일을 가리키지 않게 하는 장치.
+            loaded = Sidecar(
+                source_path="" if self._save_path is not None else str(self._video_path),
+                source_hash=h,
+                trim=Trim(in_ms=0, out_ms=0),
+            )
         self._sidecar: Sidecar = loaded
         self._history = History(initial=loaded)
 
@@ -359,6 +372,38 @@ class EditController(QObject):
         self.update_sidecar(new_sc)
         return True
 
+    def paste_clip(self, segment, effects=(), *, at_ms: int) -> int:
+        """클립 1개 + 동반 효과를 트랙의 at_ms 위치에 붙여넣는다 (history 1회).
+
+        insert_segment 를 쓰지 않는 이유: 그쪽은 start_ms <= 0 을 "트랙 끝에 append"
+        로 해석한다. 붙여넣기는 사용자가 인디케이터를 0 에 두면 0 에 놓여야 하므로
+        (앞이 비어 있으면 진짜로 0), 여기선 항상 명시 위치 → free-slot clamp 만 쓴다.
+
+        effects 의 in_ms/out_ms 는 클립 시작 기준 local ms — 배치된 start 를 더해
+        트랙(combined) 시간축으로 옮긴다. 같은 type 과 겹치면 add_effect 와 같은 규칙으로
+        빈 track_idx (sub-lane) 를 자동 할당.
+
+        반환: 실제로 배치된 start_ms (겹쳐서 밀렸으면 at_ms 와 다르다).
+        """
+        from dataclasses import replace
+        dur = segment.duration_ms
+        if dur <= 0:
+            raise ValueError(
+                f"길이 0 인 클립은 붙여넣을 수 없다 (src={segment.src!r})"
+            )
+        start = self._clamp_to_free_slot(
+            self._sidecar.video_track, max(0, int(at_ms)), dur,
+            ignore_id=segment.id,
+        )
+        new_sc = copy.deepcopy(self._sidecar)
+        new_sc.video_track.append(replace(segment, start_ms=int(start)))
+        for eff in effects:
+            moved = replace(eff, in_ms=int(start + eff.in_ms),
+                            out_ms=int(start + eff.out_ms))
+            new_sc.effects.append(self._assign_free_track_idx(new_sc.effects, moved))
+        self.update_sidecar(new_sc)
+        return int(start)
+
     def delete_segment(self, segment_id: str) -> bool:
         """id 로 segment 제거. 다른 segment 의 start_ms 는 변하지 않음 — 갭 그대로 유지.
 
@@ -536,15 +581,33 @@ class EditController(QObject):
         if self._autosave_timer.isActive():
             self._autosave_timer.stop()
         try:
-            self._store.save_for(self._video_path, self._sidecar)
+            self._write_sidecar()
             return True
         except OSError as e:
             self.autosave_failed.emit(str(e))
             return False
 
+    def project_path(self) -> Optional[Path]:
+        """빈 프로젝트의 사이드카 파일 경로. 소스 영상 기반 탭이면 None."""
+        return self._save_path
+
     # ---------- internal ----------
+    def _write_sidecar(self) -> None:
+        """사이드카 디스크 기록 — 저장 위치 결정의 단일 지점.
+
+        save_path 가 있으면(빈 프로젝트) 그 파일에 그대로 쓴다. SidecarStore 의
+        `<basename>_<hash>` 명명은 영상 파일 hash 를 전제하는데 빈 프로젝트엔 그
+        영상이 없다.
+        """
+        if self._save_path is not None:
+            from ...effects.sidecar import save_atomic
+            self._save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_atomic(self._save_path, self._sidecar)
+            return
+        self._store.save_for(self._video_path, self._sidecar)
+
     def _do_autosave(self) -> None:
         try:
-            self._store.save_for(self._video_path, self._sidecar)
+            self._write_sidecar()
         except OSError as e:
             self.autosave_failed.emit(str(e))

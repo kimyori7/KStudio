@@ -12,6 +12,7 @@ class KStudioMenuBar(QMenuBar):
     # 파일
     new_requested = Signal()
     new_markdown_requested = Signal()
+    new_video_requested = Signal()
     open_requested = Signal()
     save_requested = Signal()
     save_as_requested = Signal()
@@ -56,10 +57,16 @@ class KStudioMenuBar(QMenuBar):
 
     def _build(self) -> None:
         m_file = self.addMenu(tr("파일"))
-        self.new_action = QAction(tr("새로 만들기…"), self)
+        self.new_action = QAction(tr("새 이미지…"), self)
         self.new_action.setShortcut(QKeySequence("Ctrl+N"))
         self.new_action.triggered.connect(self.new_requested.emit)
         m_file.addAction(self.new_action)
+
+        # 빈 영상 프로젝트 — 소스 영상 없이 시작해 클립을 끌어다 놓거나 붙여넣어 조립.
+        self.new_video_action = QAction(tr("새 영상 프로젝트"), self)
+        self.new_video_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self.new_video_action.triggered.connect(self.new_video_requested.emit)
+        m_file.addAction(self.new_video_action)
 
         self.new_markdown_action = QAction(tr("새 Markdown 문서"), self)
         self.new_markdown_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
@@ -252,6 +259,7 @@ def build_menu_bar(parent) -> dict[str, list[QAction]]:
     return {
         "file": [
             mb.new_action,
+            mb.new_video_action,
             mb.open_action,
             mb.save_action,
             mb.save_as_action,
