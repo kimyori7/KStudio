@@ -3,8 +3,9 @@
 tokens.PALETTES 에서 "video" / "image" 팔레트를 골라 f-string 으로 QSS 빌드.
 폰트는 시스템 폰트(Segoe UI / 맑은 고딕 / Apple SD Gothic Neo) 유지 — 추가 폰트 번들 없음.
 
-mode_controller 의 mode_changed 시그널에 main_window 가 연결돼 있으며,
-모드 전환 시 apply_theme(app, "video"|"image") 가 재호출된다.
+apply_theme 은 **시작 시 1회 전용**이다. 모드 전환에 재호출하면 앱 안의 모든 위젯이 다시
+polish 되어 열린 탭 수에 따라 비용이 급증한다 (탭 16개 2.2초). 모드 전환은
+theme_scope.ThemeScope 가 chrome 위젯과 각 탭에만 적용한다.
 """
 from __future__ import annotations
 
@@ -18,6 +19,10 @@ from screen_recorder.ui import icons
 from screen_recorder.ui.tokens import PALETTES, VIDEO_PALETTE
 
 _ASSET_DIR = os.path.join(tempfile.gettempdir(), "kstudio_theme")
+
+# 탭을 담는 중앙 컨테이너의 objectName. QSS 셀렉터와 main_window 의 setObjectName 이
+# 같은 값을 써야 하므로 여기서 한 번만 정의한다.
+CENTRAL_HOST_NAME = "KStudioCentralHost"
 
 
 def _chevron_arrow_png(color: str, px: int = 28) -> Optional[str]:
@@ -496,29 +501,84 @@ QSplitter::handle:horizontal {{
 QSplitter::handle:vertical {{
     height: 1px;
 }}
+{_mode_property_rules()}
 """
+
+
+def _mode_property_rules() -> str:
+    """`kmode` 동적 property 로 모드 색이 정해지는 위젯들의 규칙 (모든 모드 분을 한꺼번에).
+
+    범위를 좁힐 수 없는 위젯 — 자식 subtree 전체가 딸려 오는 QMainWindow, QTabWidget —
+    은 스타일시트를 새로 걸면 그 아래 모든 탭까지 repolish 되어 비용이 탭 수에 따라
+    급증한다 (탭 16개에서 2.2초). 대신 세 모드 규칙을 모두 넣어 두고 전환 시에는
+    property 만 바꿔 그 위젯 하나만 repolish 한다 (0.1ms).
+
+    theme_scope.ThemeScope 가 property 설정과 단일 repolish 를 담당한다.
+    """
+    out: list[str] = []
+    for name, p in PALETTES.items():
+        # 셀렉터는 최대한 좁게 — `QWidget[kmode=...]` 처럼 범용으로 두면 polish 때마다
+        # 모든 위젯에 대해 속성 매칭이 일어나 chrome/탭 적용 비용이 3배로 늘었다(실측).
+        out.append(
+            f'QMainWindow[kmode="{name}"] {{ background-color: {p["bg"]}; }}\n'
+            # 탭 바 오른쪽 빈 칸을 칠하는 중앙 컨테이너 (main_window 가 이 이름을 붙인다).
+            f'QWidget#{CENTRAL_HOST_NAME}[kmode="{name}"] {{'
+            f' background-color: {p["bg"]}; }}\n'
+            f'QTabWidget[kmode="{name}"] {{ background-color: {p["bg"]}; }}\n'
+            f'QTabWidget[kmode="{name}"]::pane {{'
+            f' border: 1px solid {p["border_dim"]}; background: {p["bg"]}; }}'
+        )
+    return "\n".join(out)
+
+
+# palette 이름 → 완성된 QSS 문자열. 빌드 자체는 1ms 미만이지만 모드 전환마다 여러
+# 위젯에 같은 문자열을 거므로 동일 인스턴스를 재사용해 Qt 의 파싱 캐시도 태운다.
+_qss_cache: dict[str, str] = {}
+
+
+def qss_for(palette_name: str) -> str:
+    """모드 이름 → 그 모드의 전체 QSS (캐시)."""
+    if palette_name not in PALETTES:
+        palette_name = "video"
+    cached = _qss_cache.get(palette_name)
+    if cached is not None:
+        return cached
+    p = PALETTES[palette_name]
+    qss = build_qss(p, _chevron_arrow_png(p.get("text_sub", "")))
+    _qss_cache[palette_name] = qss
+    return qss
 
 
 _current_palette: dict[str, str] = VIDEO_PALETTE
 
 
 def current_palette() -> dict[str, str]:
-    """마지막으로 apply_theme 된 팔레트 (없으면 VIDEO_PALETTE).
+    """현재 모드 팔레트 (없으면 VIDEO_PALETTE).
 
     전역 stylesheet 는 문자열이라 역파싱이 불가능하므로, 다이얼로그 등이 현재
-    모드 액센트 색을 알아야 할 때 이 함수를 쓴다.
+    모드 액센트 색을 알아야 할 때 이 함수를 쓴다. 모드 전환은 apply_theme 이 아니라
+    theme_scope.ThemeScope 가 처리하므로, 그쪽도 set_current_palette 로 이 값을
+    갱신한다 — 갱신을 빠뜨리면 다이얼로그만 이전 모드 액센트로 남는다.
     """
     return _current_palette
 
 
+def set_current_palette(palette_name: str) -> dict[str, str]:
+    """current_palette() 가 돌려줄 팔레트를 지정하고 그 팔레트를 반환."""
+    global _current_palette
+    _current_palette = PALETTES.get(palette_name, VIDEO_PALETTE)
+    return _current_palette
+
+
 def apply_theme(app: QApplication, palette_name: str = "video") -> None:
-    """QApplication 에 모드별 테마 적용.
+    """QApplication 전역에 모드 테마 적용 — **시작 시 1회만** 호출할 것.
+
+    이 호출은 앱 안의 모든 위젯을 repolish 하며 비용이 열린 탭 수에 따라 급증한다
+    (탭 2개 62ms → 16개 2225ms). 따라서 모드 전환에는 쓰지 말고 theme_scope.ThemeScope
+    를 쓴다. 시작 시점엔 위젯이 몇 개 없어 비용이 무시할 만하다.
 
     palette_name 미지정 시 영상 모드(시안) 로 폴백 — 모드 시스템이 없는 컨텍스트
     (예: 일부 다이얼로그 단독 테스트) 에서도 안전한 기본값.
     """
-    global _current_palette
-    palette = PALETTES.get(palette_name, VIDEO_PALETTE)
-    _current_palette = palette
-    arrow_path = _chevron_arrow_png(palette.get("text_sub", ""))
-    app.setStyleSheet(build_qss(palette, arrow_path))
+    set_current_palette(palette_name)
+    app.setStyleSheet(qss_for(palette_name))

@@ -216,7 +216,11 @@ class LibraryPanel(QWidget):
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
         self.list_widget.installEventFilter(self)
-        self.list_widget.setStyle(_FastTooltipStyle(self.list_widget.style()))
+        # base style 을 넘기지 말 것. 현재 스타일(전역 스타일시트가 있으면 Qt 내부의
+        # QStyleSheetStyle 인스턴스)을 감싸면 그 스타일이 먼저 해제될 때 proxy 가
+        # 해제된 포인터를 참조해 종료 시 access violation 이 난다. base 없이 만들면
+        # Qt 가 기본 스타일을 쓰며 tooltip 지연 단축 효과는 동일하다.
+        self.list_widget.setStyle(_FastTooltipStyle())
         layout.addWidget(self.list_widget, stretch=1)
 
         for e in self._model.entries():

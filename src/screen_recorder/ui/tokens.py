@@ -4,8 +4,8 @@
 이미지 모드 (IMAGE_PALETTE): Mono 다크 + emerald-500 액센트 (neon 톤다운).
 
 theme.build_qss() 가 이 dict 를 f-string 으로 QSS 에 주입한다.
-mode_controller 의 mode_changed 시그널이 발화될 때마다 main_window 가
-적절한 팔레트로 theme.apply_theme 를 다시 호출.
+모드 전환 시에는 theme_scope.ThemeScope 가 그 모드 QSS 를 chrome 위젯과 각 탭에만
+적용한다 (전역 재적용은 시작 시 1회뿐).
 """
 from __future__ import annotations
 

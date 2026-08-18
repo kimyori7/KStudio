@@ -127,6 +127,11 @@ class _DockCloseFilter(QObject):
         return False  # 이벤트 자체는 통과 (dock 정상 close)
 
 
+# 모드 전환이 이 시간을 넘으면 app.log 에 단계별 소요를 남긴다 (회귀 감시).
+# 정상 범위: 탭 16개에서 약 200ms. 전역 setStyleSheet 회귀가 재발하면 초 단위로 뛴다.
+_MODESWITCH_SLOW_MS = 400.0
+
+
 def _palette_name_for_mode(mode: AppMode) -> str:
     """AppMode → theme.PALETTES 키. 영상=video(시안)/이미지=image(emerald)/문서=document(amber)."""
     if mode is AppMode.VIDEO:
@@ -231,6 +236,12 @@ class MainWindow(QMainWindow):
         # ---------- 본체 (QDockWidget 기반) ----------
         # 중앙: 도구 팔레트 + 탭 영역. 나머지 패널은 dock 으로 분리해 자유 배치.
         central = QWidget()
+        # 탭 바 오른쪽 빈 칸과 도구 팔레트 옆 여백을 칠하는 컨테이너 — 탭을 자식으로
+        # 가지므로 스타일시트 대신 kmode property 로 모드 색을 받는다 (theme_scope).
+        # objectName 은 QSS 셀렉터가 이 위젯만 집어내는 데 쓰인다.
+        from .theme import CENTRAL_HOST_NAME
+        central.setObjectName(CENTRAL_HOST_NAME)
+        self._central_host = central
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -404,6 +415,10 @@ class MainWindow(QMainWindow):
         # settings.preferences.recent_library_entries 에서 읽어 path.exists() 통과한
         # 것만 라이브러리에 등록. 썸네일은 library_thumbs 캐시에서 즉시 로드, 캐시 미스 시
         # placeholder + 백그라운드 재추출.
+        # 모드 테마 배선 — 전역 setStyleSheet 대신 chrome/탭 단위 적용 (theme_scope 참고).
+        # chrome 위젯이 모두 만들어진 뒤, mode_changed 를 연결하기 전에 준비돼야 한다.
+        self._setup_theme_scope()
+
         self._load_persisted_library()
 
         # 라이브러리 변경 시 자동 저장 (디바운스). 외부 삭제 시 정리도 같은 경로로.
@@ -1408,8 +1423,9 @@ class MainWindow(QMainWindow):
             )
 
     def _on_mode_changed(self, mode: AppMode) -> None:
-        # [modeswitch-diag] 2026-06-22 임시 계측 — 영상↔이미지 전환 3초 멈춤 원인 추적.
-        # 각 단계 소요 ms 를 app.log 에 한 줄로 남긴다. 동작 변경 없음. 원인 확정 후 제거.
+        # [modeswitch-diag] 모드 전환 단계별 소요 ms. 원인(전역 setStyleSheet)은 확정돼
+        # 2026-08-14 에 고쳤고, 계측은 회귀 감시용으로 남긴다 — 느린 전환일 때만 기록한다
+        # (_MODESWITCH_SLOW_MS 초과). 정상 전환에서는 로그가 남지 않는다.
         from time import perf_counter as _pc
         _t = {}
         _m0 = _pc()
@@ -1424,12 +1440,13 @@ class MainWindow(QMainWindow):
         self.app_settings.preferences.last_mode = mode.value
         self._persist_settings()
         _t["persist"] = _pc()
-        # 모드별 테마 — 영상=현재 시안 / 이미지=mono+emerald.
-        # 실제 전환일 때만 재적용 — init(prev_mode is None) 에선 main.py 의
-        # 초기 apply_theme 호출이 이미 끝났으므로 중복 방지.
+        # 모드별 테마 — 영상=현재 시안 / 이미지=mono+emerald / 문서=amber.
+        # 전역 setStyleSheet 대신 chrome + property 위젯에만 적용한다. 전역 적용은
+        # 열린 탭 전부를 repolish 해 탭이 쌓일수록 몇 초씩 멈췄다 (theme_scope 참고).
+        # 실제 전환일 때만 — init(prev_mode is None) 에선 main.py 의 초기 apply_theme 가
+        # 이미 같은 모드로 전역 적용을 끝냈다.
         if prev_mode is not None and prev_mode is not mode:
-            from screen_recorder.ui.theme import apply_theme
-            apply_theme(QApplication.instance(), _palette_name_for_mode(mode))
+            self.theme_scope.set_mode(_palette_name_for_mode(mode))
         _t["apply_theme"] = _pc()
         self.global_toolbar.set_mode(mode)
         is_image = (mode is AppMode.IMAGE)
@@ -1463,16 +1480,18 @@ class MainWindow(QMainWindow):
         if mode is AppMode.DOCUMENT and not getattr(self, "_initializing", False):
             self._maybe_prewarm_webengine(force=True)
         _t["prewarm"] = _pc()
-        # ---- [modeswitch-diag] 로그 한 줄 ----
+        # ---- [modeswitch-diag] 느린 전환일 때만 로그 한 줄 ----
         try:
-            if prev_mode is not None and prev_mode is not mode:
+            total_ms = (_t["prewarm"] - _m0) * 1000.0
+            if (prev_mode is not None and prev_mode is not mode
+                    and total_ms >= _MODESWITCH_SLOW_MS):
                 prev = _m0
                 parts = []
                 for key in ("save_dock", "persist", "apply_theme", "toolbar",
                             "restore_dock", "enforce_vis", "menu_misc", "prewarm"):
                     parts.append(f"{key}={(_t[key] - prev) * 1000:.0f}")
                     prev = _t[key]
-                total = (_t["prewarm"] - _m0) * 1000.0
+                total = total_ms
                 try:
                     n_tabs = self.tab_area.count()
                 except Exception:
@@ -1587,6 +1606,9 @@ class MainWindow(QMainWindow):
     def _on_tab_added(self, widget, mode) -> None:
         """새 탭이 추가되면 그 탭의 시그널을 옵션바 등에 연결."""
         from .audio_tab import AudioTab
+        # 탭은 한 모드에만 속하므로 만들어질 때 자기 모드 QSS 를 한 번만 걸어 둔다.
+        # 이후 모드 전환은 이 탭을 건드리지 않는다 (theme_scope 참고).
+        self.theme_scope.style_tab(widget, _palette_name_for_mode(mode))
         if isinstance(widget, EditTab):
             widget.canvas.zoom_changed.connect(self.annotation_toolbar.set_zoom_label)
         elif isinstance(widget, AudioTab):
@@ -4604,6 +4626,24 @@ class MainWindow(QMainWindow):
             pass
         if queue:
             QTimer.singleShot(0, self._restore_one_library_entry)
+
+    def _setup_theme_scope(self) -> None:
+        """모드 테마를 chrome 위젯 + 탭 단위로 적용하도록 배선.
+
+        시작 시 전역 QSS 는 main.py 의 apply_theme 이 이미 걸어 뒀다. 여기서는 그 모드를
+        기준점으로 잡고, 이후 전환에서 전역 재적용 없이 필요한 위젯만 갱신한다.
+        """
+        from .theme_scope import ThemeScope, chrome_widgets_of
+
+        initial = _palette_name_for_mode(self.mode_controller.mode())
+        self.theme_scope = ThemeScope(QApplication.instance(), initial, parent=self)
+        self.theme_scope.register_chrome(*chrome_widgets_of(self))
+        # 창 배경과 탭 pane 은 자식 전체를 딸고 오므로 스타일시트 대신 property 로 전환.
+        self.theme_scope.register_mode_property(
+            self, self.tab_area, getattr(self, "_central_host", None))
+        self.theme_scope.set_mode(initial)
+        # 나중에 만들어지는 다이얼로그가 시작 모드 색으로 남지 않도록.
+        self.theme_scope.install_toplevel_filter()
 
     def _setup_library_persistence(self) -> None:
         """라이브러리 변경 → settings 에 즉시 저장 (디바운스 200ms).
