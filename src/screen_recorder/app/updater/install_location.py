@@ -5,8 +5,8 @@
 """
 from __future__ import annotations
 
+import os
 import sys
-import tempfile
 from pathlib import Path
 
 from screen_recorder.app.updater.manifest import Manifest
@@ -18,18 +18,32 @@ def current_install_dir() -> Path:
 
 
 def is_user_writable(dir_path: Path) -> bool:
-    """디렉터리에 실제로 쓸 수 있는지 프로브(고유 임시 파일 생성→자동 삭제).
+    """디렉터리에 실제로 쓸 수 있는지 프로브(파일 1개 생성→삭제).
 
     Program Files(관리자 폴더)에 비관리자로 깔린 경우 False → 전체 인스톨러 경로로.
-    NamedTemporaryFile 을 쓰는 이유: ① 고유 이름이라 동시 프로브가 서로 충돌하지 않고,
-    ② with 블록을 벗어나면(쓰기 도중 예외가 나도) 자동 삭제돼 프로브 파일이 남지 않는다.
+
+    ⚠️ tempfile.NamedTemporaryFile 을 쓰면 안 된다. Windows 에서 쓰기 거부(PermissionError)
+    를 만나면 CPython 의 _mkstemp_inner 가 "같은 이름의 디렉터리가 이미 있는 경우"로 보고
+    (os.access 는 Windows ACL 을 못 보고 True 를 돌려준다) TMP_MAX 번 재시도한다. Program
+    Files 처럼 ACL 로 막힌 폴더에서는 이 재시도가 수 분간 GIL 을 쥔 채 돌아 앱 전체가
+    응답 없음이 된다 (2026-08-18 사용자 보고: 「새 버전 받기」 클릭 후 멈춤). 한 번만
+    시도하고 실패하면 바로 False 를 돌려준다.
+
+    이름에 PID 를 넣어 여러 인스턴스가 동시에 프로브해도 충돌하지 않게 하고, 성공·실패와
+    무관하게 프로브 파일을 지운다.
     """
+    probe = Path(dir_path) / f".kstudio_probe_{os.getpid()}"
     try:
-        with tempfile.NamedTemporaryFile(dir=dir_path, prefix=".kstudio_probe_") as f:
+        with open(probe, "wb") as f:
             f.write(b"x")
         return True
     except OSError:
         return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
 
 
 def installed_internal_hash(install_dir: Path) -> str | None:

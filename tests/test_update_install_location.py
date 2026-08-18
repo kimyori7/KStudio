@@ -68,3 +68,36 @@ def test_select_download_full_on_mismatch_or_nonwritable():
     assert sha == "a" * 64
     # code_url 없는 manifest → full
     assert select_download(_FULL, writable=True, installed_internal="h1")[0] == "full"
+
+
+def test_is_user_writable_returns_false_fast_when_denied(tmp_path, monkeypatch):
+    """쓰기 거부 폴더에서 즉시 False — 재시도 루프에 빠지지 않아야 한다.
+
+    회귀(2026-08-18): NamedTemporaryFile 을 쓰던 구현은 Windows 에서 PermissionError 를
+    "이름 충돌"로 오해해 TMP_MAX 번 재시도했고, Program Files 설치본에서 「새 버전 받기」
+    를 누르면 앱이 수 분간 응답 없음이 됐다. 열기 시도는 한 번뿐이어야 한다.
+    """
+    import builtins
+    from screen_recorder.app.updater import install_location as loc
+
+    attempts = []
+    real_open = builtins.open
+
+    def denying_open(file, *args, **kwargs):
+        if ".kstudio_probe_" in str(file):
+            attempts.append(file)
+            raise PermissionError(13, "Access is denied")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", denying_open)
+    assert loc.is_user_writable(tmp_path) is False
+    assert len(attempts) == 1, f"열기 시도가 {len(attempts)}회 — 한 번만 시도해야 함"
+
+
+def test_is_user_writable_leaves_no_probe_file(tmp_path):
+    """성공 경로에서도 프로브 파일이 남지 않아야 한다."""
+    from screen_recorder.app.updater.install_location import is_user_writable
+
+    before = set(p.name for p in tmp_path.iterdir())
+    assert is_user_writable(tmp_path) is True
+    assert set(p.name for p in tmp_path.iterdir()) == before
