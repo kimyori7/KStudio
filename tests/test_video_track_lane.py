@@ -200,3 +200,78 @@ def test_segment_h_rects_positions():
 def test_segment_h_rects_empty():
     from screen_recorder.ui.video.video_track_lane import segment_h_rects
     assert segment_h_rects([], total_ms=0, body_width=200) == []
+
+
+# ---------- 드래그 미리보기 = 실제 착지 위치 ----------
+def _drag(lane, from_pt, to_pt) -> None:
+    """press → move → release 를 직접 호출 (qtbot 의 마우스 합성은 드래그를 안 만든다)."""
+    for kind, pt, btn in ((QMouseEvent.MouseButtonPress, from_pt, Qt.LeftButton),
+                          (QMouseEvent.MouseMove, to_pt, Qt.NoButton),
+                          (QMouseEvent.MouseButtonRelease, to_pt, Qt.LeftButton)):
+        ev = QMouseEvent(kind, pt, lane.mapToGlobal(pt), btn, Qt.LeftButton, Qt.NoModifier)
+        {QMouseEvent.MouseButtonPress: lane.mousePressEvent,
+         QMouseEvent.MouseMove: lane.mouseMoveEvent,
+         QMouseEvent.MouseButtonRelease: lane.mouseReleaseEvent}[kind](ev)
+
+
+def test_drag_preview_matches_where_the_clip_will_land(qtbot):
+    """좁은 빈칸 위에서 끄는 동안 박스가 이미 끼워질 자리에 보인다.
+
+    미리보기와 착지 위치가 다르면 놓는 순간 클립이 튀어 보인다. 둘 다
+    clip_placement.plan_placement 를 쓰므로 같아야 한다.
+    """
+    from screen_recorder.ui.video.clip_placement import plan_placement
+
+    lane = VideoTrackLane()
+    qtbot.addWidget(lane)
+    lane.resize(800, 60)
+    lane.set_duration_ms(50_000)
+    segs = [
+        _seg("c1.mp4", 10_000, "c1", start_ms=0),
+        _seg("c2.mp4", 19_000, "c2", start_ms=11_000),
+        _seg("x.mp4", 5000, "x", start_ms=40_000),
+    ]
+    lane.set_segments(segs)
+    lane.show()
+    qtbot.waitExposed(lane)
+
+    box = next(b for b in lane._segment_rects() if b["id"] == "x")
+    start = box["rect"].center()
+    # x 를 1초짜리 빈칸(10000~11000) 쪽으로 끈다.
+    total, body_w = lane._total_duration_ms(), lane.width() - 56
+    px_per_ms = body_w / total
+    target = start + type(start)(int(-30_000 * px_per_ms), 0)
+
+    press = QMouseEvent(QMouseEvent.MouseButtonPress, start, lane.mapToGlobal(start),
+                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    move = QMouseEvent(QMouseEvent.MouseMove, target, lane.mapToGlobal(target),
+                       Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+    lane.mousePressEvent(press)
+    lane.mouseMoveEvent(move)
+
+    expected = plan_placement([s for s in segs if s.id != "x"],
+                              lane._reorder_raw_start_ms, 5000)
+    assert lane._reorder_preview_start_ms == expected.start_ms
+    assert expected.pushes, "빈칸(1초) 이 클립(5초) 보다 좁으니 밀어내는 계획이어야 한다"
+    assert lane._reorder_plan.push_delta_ms == expected.push_delta_ms
+
+
+def test_drag_emits_raw_position_so_controller_decides(qtbot):
+    """lane 은 마우스가 가리킨 값을 그대로 보낸다 — 자리 판단은 EditController 한 곳에서."""
+    lane = VideoTrackLane()
+    qtbot.addWidget(lane)
+    lane.resize(800, 60)
+    lane.set_duration_ms(50_000)
+    lane.set_segments([_seg("c1.mp4", 10_000, "c1", start_ms=0),
+                       _seg("x.mp4", 5000, "x", start_ms=40_000)])
+    lane.show()
+    qtbot.waitExposed(lane)
+
+    box = next(b for b in lane._segment_rects() if b["id"] == "x")
+    start = box["rect"].center()
+    target = start + type(start)(-100, 0)
+    with qtbot.waitSignal(lane.segment_position_changed, timeout=500) as blocker:
+        _drag(lane, start, target)
+    assert blocker.args[0] == "x"
+    # 왼쪽으로 끌었으니 원래 40000 보다 작다. 빈 구간이라 그대로 놓인다.
+    assert 0 < blocker.args[1] < 40_000

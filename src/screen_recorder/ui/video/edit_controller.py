@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ...effects import (
     History, Sidecar, SidecarStore, Trim, compute_video_hash, overlaps_existing,
 )
+from .clip_placement import MoveOutcome, Placement
 
 
 _log = logging.getLogger(__name__)
@@ -345,64 +346,107 @@ class EditController(QObject):
         self.update_sidecar(new_sc)
         return True
 
-    def insert_segment(self, at_idx: int, segment) -> bool:
+    def insert_segment(self, at_idx: int, segment) -> "MoveOutcome":
         """segment 를 at_idx 위치(track list 의 인덱스) 에 삽입.
 
         Gap 모델 변경: 트랙은 list 순서가 아니라 start_ms 가 위치를 결정한다.
         삽입 시 segment.start_ms 가 0 이면 "마지막 segment 끝에 이어 붙임" — 이전
         UI 의 packed 동작과 호환. 명시 start_ms 가 있으면 그 값 그대로 사용.
 
-        다른 segment 와 겹치면 자유 위치를 찾을 수 없으므로 가장 가까운 빈 slot 으로
-        clamp.
+        자리 결정은 드래그 이동·붙여넣기와 같은 규칙(clip_placement) — 놓은 지점이
+        가리키는 빈칸이 좁으면 그 자리에 넣고 뒤 클립들을 민다. "여기에 놓는다" 는
+        같은 의도의 동작이 경로마다 다르게 움직이지 않도록 한 규칙으로 통일한다.
+
+        반환: MoveOutcome — 배치된 start_ms + 밀린 클립 수/양. 여러 파일을 이어서 넣는
+        호출자가 실제 배치 위치를 이어받아 다음 파일의 위치를 정할 수 있다.
         """
         from dataclasses import replace
+        from .clip_placement import apply_push, plan_placement
+        old_track = self._sidecar.video_track
         new_sc = copy.deepcopy(self._sidecar)
         track = new_sc.video_track
         # start_ms 결정.
         if segment.start_ms <= 0:
-            target_start = self._track_end_ms(track)
+            plan = Placement(start_ms=self._track_end_ms(old_track))
         else:
-            target_start = self._clamp_to_free_slot(
-                track, segment.start_ms, segment.duration_ms,
-                ignore_id=segment.id,
-            )
-        seg_to_insert = replace(segment, start_ms=int(target_start))
+            plan = plan_placement(old_track, segment.start_ms, segment.duration_ms)
+        pushes = apply_push(old_track, plan)
+        for i, moved_start in pushes:
+            pushed = old_track[i]
+            track[i] = replace(pushed, start_ms=int(moved_start))
+        if pushes:
+            ranges = [(old_track[i].start_ms,
+                       old_track[i].start_ms + old_track[i].duration_ms)
+                      for i, _ in pushes]
+            for i, eff in enumerate(new_sc.effects):
+                if any(lo <= eff.in_ms and eff.out_ms <= hi for lo, hi in ranges):
+                    new_sc.effects[i] = replace(
+                        eff,
+                        in_ms=int(eff.in_ms + plan.push_delta_ms),
+                        out_ms=int(eff.out_ms + plan.push_delta_ms),
+                    )
+        seg_to_insert = replace(segment, start_ms=int(plan.start_ms))
         idx = max(0, min(len(track), int(at_idx)))
         track.insert(idx, seg_to_insert)
         self.update_sidecar(new_sc)
-        return True
+        return MoveOutcome(moved=True, start_ms=int(plan.start_ms),
+                           pushed_count=len(pushes),
+                           push_delta_ms=plan.push_delta_ms)
 
-    def paste_clip(self, segment, effects=(), *, at_ms: int) -> int:
+    def paste_clip(self, segment, effects=(), *, at_ms: int) -> "MoveOutcome":
         """클립 1개 + 동반 효과를 트랙의 at_ms 위치에 붙여넣는다 (history 1회).
 
         insert_segment 를 쓰지 않는 이유: 그쪽은 start_ms <= 0 을 "트랙 끝에 append"
         로 해석한다. 붙여넣기는 사용자가 인디케이터를 0 에 두면 0 에 놓여야 하므로
-        (앞이 비어 있으면 진짜로 0), 여기선 항상 명시 위치 → free-slot clamp 만 쓴다.
+        (앞이 비어 있으면 진짜로 0), 여기선 항상 명시 위치를 쓴다.
+
+        자리 결정은 드래그 이동과 같은 규칙(clip_placement) — 인디케이터가 가리키는
+        빈칸이 좁으면 그 자리에 넣고 뒤 클립들을 민다. 이전에는 들어갈 자리를 못 찾으면
+        트랙 맨 뒤로 보내, 다른 영상에서 가져온 클립이 엉뚱한 곳에 붙었다.
 
         effects 의 in_ms/out_ms 는 클립 시작 기준 local ms — 배치된 start 를 더해
         트랙(combined) 시간축으로 옮긴다. 같은 type 과 겹치면 add_effect 와 같은 규칙으로
         빈 track_idx (sub-lane) 를 자동 할당.
 
-        반환: 실제로 배치된 start_ms (겹쳐서 밀렸으면 at_ms 와 다르다).
+        반환: MoveOutcome — 배치된 start_ms + 밀린 클립 수/양.
         """
         from dataclasses import replace
+        from .clip_placement import apply_push, plan_placement
         dur = segment.duration_ms
         if dur <= 0:
             raise ValueError(
                 f"길이 0 인 클립은 붙여넣을 수 없다 (src={segment.src!r})"
             )
-        start = self._clamp_to_free_slot(
-            self._sidecar.video_track, max(0, int(at_ms)), dur,
-            ignore_id=segment.id,
-        )
+        track = self._sidecar.video_track
+        # segment 는 아직 트랙에 없는 새 클립이다 (클립보드가 붙여넣을 때마다 새 id 를
+        # 발급한다). 그래서 배치 계산에서 제외할 id 가 없다 — 트랙에 이미 있는 클립을
+        # 그대로 넘기면 자기 자신을 장애물로 보고 옆자리로 밀려난다.
+        plan = plan_placement(track, max(0, int(at_ms)), dur)
+        pushes = apply_push(track, plan)
+        start = int(plan.start_ms)
         new_sc = copy.deepcopy(self._sidecar)
-        new_sc.video_track.append(replace(segment, start_ms=int(start)))
+        # 밀리는 클립과 그 안의 효과 — 드래그 이동과 같은 정책.
+        for i, moved_start in pushes:
+            pushed = track[i]
+            new_sc.video_track[i] = replace(pushed, start_ms=int(moved_start))
+        if pushes:
+            lo_hi = [(track[i].start_ms, track[i].start_ms + track[i].duration_ms)
+                     for i, _ in pushes]
+            for i, eff in enumerate(new_sc.effects):
+                if any(lo <= eff.in_ms and eff.out_ms <= hi for lo, hi in lo_hi):
+                    new_sc.effects[i] = replace(
+                        eff,
+                        in_ms=int(eff.in_ms + plan.push_delta_ms),
+                        out_ms=int(eff.out_ms + plan.push_delta_ms),
+                    )
+        new_sc.video_track.append(replace(segment, start_ms=start))
         for eff in effects:
             moved = replace(eff, in_ms=int(start + eff.in_ms),
                             out_ms=int(start + eff.out_ms))
             new_sc.effects.append(self._assign_free_track_idx(new_sc.effects, moved))
         self.update_sidecar(new_sc)
-        return int(start)
+        return MoveOutcome(moved=True, start_ms=start, pushed_count=len(pushes),
+                           push_delta_ms=plan.push_delta_ms)
 
     def delete_segment(self, segment_id: str) -> bool:
         """id 로 segment 제거. 다른 segment 의 start_ms 는 변하지 않음 — 갭 그대로 유지.
@@ -442,41 +486,56 @@ class EditController(QObject):
         self.update_sidecar(new_sc)
         return True
 
-    def set_segment_start(self, segment_id: str, new_start_ms: int) -> bool:
-        """segment 를 트랙상 새 위치로 이동. 다른 segment 와 겹치면 가장 가까운 빈 slot 으로 clamp.
+    def set_segment_start(self, segment_id: str, new_start_ms: int) -> "MoveOutcome":
+        """segment 를 트랙상 새 위치로 이동. 좁은 빈칸이면 뒤 클립들을 밀어 끼워 넣는다.
 
-        Stage 1 의 핵심 — 박스 드래그 후 호출. 갭은 자동 생성/유지.
+        위치 결정은 clip_placement.plan_placement 가 한다 (드래그 중 미리보기와 같은
+        규칙). 놓은 지점이 가리키는 빈칸이 클립보다 넓으면 그대로, 좁으면 빈칸 시작에
+        놓고 그 뒤 클립 전부를 부족분만큼 오른쪽으로 민다.
+
         같이 이동: segment 의 시간 범위에 완전히 포함되는 effects (caption/speed/zoom/broll)
         도 같은 delta 만큼 in_ms/out_ms shift — "자른 후 옮겨도 효과 따라감" (사용자 결정).
+        밀려난 클립들의 효과도 같은 정책으로 밀림 양만큼 함께 이동한다.
+
+        반환: MoveOutcome — 이동 여부 + 밀린 클립 수/양 (호출자가 사용자에게 알리도록).
         """
         from dataclasses import replace
+        from .clip_placement import apply_push, plan_placement
         track = self._sidecar.video_track
         idx = next((i for i, s in enumerate(track) if s.id == segment_id), -1)
         if idx < 0:
-            return False
+            return MoveOutcome()
         seg = track[idx]
-        target = max(0, int(new_start_ms))
-        clamped = self._clamp_to_free_slot(
-            track, target, seg.duration_ms, ignore_id=segment_id,
-        )
-        if clamped == seg.start_ms:
-            return False
-        delta = clamped - seg.start_ms
+        others = [s for s in track if s.id != segment_id]
+        plan = plan_placement(others, max(0, int(new_start_ms)), seg.duration_ms)
+        pushes = apply_push(track, plan, exclude_id=segment_id)
+        if plan.start_ms == seg.start_ms and not pushes:
+            return MoveOutcome(start_ms=int(seg.start_ms))
+        delta = plan.start_ms - seg.start_ms
         new_sc = copy.deepcopy(self._sidecar)
-        new_sc.video_track[idx] = replace(seg, start_ms=int(clamped))
-        # 효과 동반 이동 — segment 의 옛 시간 범위 안에 완전히 포함된 effect 만 shift.
-        # (걸쳐 있는 효과는 의도가 모호 → 그대로 둠)
-        old_start = seg.start_ms
-        old_end = seg.start_ms + seg.duration_ms
+        new_sc.video_track[idx] = replace(seg, start_ms=int(plan.start_ms))
+        # 옮기는 클립 + 밀려나는 클립들의 (옛 범위, 이동량) 을 모아 효과를 한 번에 처리.
+        # 효과 동반은 "클립 안에 완전히 들어 있는 것만" — 걸쳐 있으면 의도가 모호해 제외.
+        shifts: list[tuple[int, int, int]] = [
+            (seg.start_ms, seg.start_ms + seg.duration_ms, delta)
+        ]
+        for i, moved_start in pushes:
+            pushed = track[i]
+            new_sc.video_track[i] = replace(pushed, start_ms=int(moved_start))
+            shifts.append((pushed.start_ms, pushed.start_ms + pushed.duration_ms,
+                           plan.push_delta_ms))
         for i, eff in enumerate(new_sc.effects):
-            if old_start <= eff.in_ms and eff.out_ms <= old_end:
-                new_sc.effects[i] = replace(
-                    eff,
-                    in_ms=int(eff.in_ms + delta),
-                    out_ms=int(eff.out_ms + delta),
-                )
+            for lo, hi, d in shifts:
+                if d and lo <= eff.in_ms and eff.out_ms <= hi:
+                    new_sc.effects[i] = replace(
+                        eff, in_ms=int(eff.in_ms + d), out_ms=int(eff.out_ms + d),
+                    )
+                    break
+        # 한 번의 update_sidecar — 옮김 + 밀림 + 효과가 Ctrl+Z 한 번에 되돌아간다.
         self.update_sidecar(new_sc)
-        return True
+        return MoveOutcome(moved=True, start_ms=int(plan.start_ms),
+                           pushed_count=len(pushes),
+                           push_delta_ms=plan.push_delta_ms)
 
     def update_segment(self, segment) -> bool:
         """기존 segment 를 같은 id 로 교체. 못 찾으면 False."""

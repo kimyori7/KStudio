@@ -13,6 +13,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QMenu, QWidget
 
 from ...effects.segment import VideoSegment
+from .clip_placement import plan_placement
 
 
 _HEADER_WIDTH = 56     # effect lane 들과 일관 — 좌측에 라벨 자리.
@@ -96,7 +97,14 @@ class VideoTrackLane(QWidget):
         self._reorder_press_x: int = 0
         self._reorder_started: bool = False
         self._reorder_orig_start_ms: int = 0
+        # raw = 마우스가 가리키는 그대로. preview = 배치 규칙을 적용한 실제 착지 위치.
+        # 둘을 나누는 이유: 착지 위치만 들고 있으면 다음 mouseMove 가 그 위치를 다시
+        # 기준 삼아 커서와 박스가 어긋난다. 시그널로는 raw 를 보내 배치 판단을
+        # EditController 한 곳에서만 하게 한다.
+        self._reorder_raw_start_ms: int = 0
         self._reorder_preview_start_ms: int = 0
+        # 이번 드래그가 뒤 클립을 밀어내는 경우의 계획 (미리보기에 반영).
+        self._reorder_plan = None
         # 외부 파일 드래그 시 마우스 옆 hint — "영상 트랙에 추가됩니다".
         from PySide6.QtWidgets import QLabel as _QLabel
         self._drop_hint = _QLabel("🎞 여기에 놓으면 영상 트랙에 추가됩니다", self)
@@ -195,17 +203,24 @@ class VideoTrackLane(QWidget):
         # 드래그 중인 박스는 임시 position 으로 표시.
         boxes = self._segment_rects()
         if self._reorder_drag_id is not None and self._reorder_started:
-            total = self._total_duration_ms()
+            total = max(1, self._total_duration_ms())
             body_w = max(1, self.width() - _HEADER_WIDTH)
+
+            def _place(box, start_ms: int) -> None:
+                r0 = box["rect"]
+                box["rect"] = QRect(
+                    _HEADER_WIDTH + int(round(start_ms * body_w / total)),
+                    r0.top(), r0.width(), r0.height())
+                box["start_ms"] = start_ms
+
+            plan = self._reorder_plan
             for box in boxes:
                 if box["id"] == self._reorder_drag_id:
-                    new_x = _HEADER_WIDTH + int(round(
-                        self._reorder_preview_start_ms * body_w / total
-                    ))
-                    r0 = box["rect"]
-                    box["rect"] = QRect(new_x, r0.top(), r0.width(), r0.height())
-                    box["start_ms"] = self._reorder_preview_start_ms
-                    break
+                    _place(box, self._reorder_preview_start_ms)
+                elif (plan is not None and plan.pushes
+                      and box["start_ms"] >= plan.push_from_ms):
+                    # 놓으면 밀려날 클립 — 밀린 자리에 미리 보여 준다.
+                    _place(box, box["start_ms"] + plan.push_delta_ms)
         for box in boxes:
             r = box["rect"]
             sid = box["id"]
@@ -301,7 +316,9 @@ class VideoTrackLane(QWidget):
                 # 페어를 유지한 채 좌우로 움직이면 해당 차이만큼 start_ms 도 따라감.
                 seg = next((s for s in self._segments if s.id == box["id"]), None)
                 self._reorder_orig_start_ms = seg.start_ms if seg else 0
+                self._reorder_raw_start_ms = self._reorder_orig_start_ms
                 self._reorder_preview_start_ms = self._reorder_orig_start_ms
+                self._reorder_plan = None
                 event.accept()
                 return
         self._pending_select = None
@@ -321,7 +338,20 @@ class VideoTrackLane(QWidget):
         total = self._total_duration_ms()
         body_w = max(1, self.width() - _HEADER_WIDTH)
         delta_ms = int(round((x - self._reorder_press_x) * total / body_w))
-        self._reorder_preview_start_ms = max(0, self._reorder_orig_start_ms + delta_ms)
+        self._reorder_raw_start_ms = max(0, self._reorder_orig_start_ms + delta_ms)
+        # EditController 와 같은 규칙으로 착지 위치를 미리 계산 — 놓았을 때 박스가
+        # 다른 곳으로 튀지 않도록. 자기 자신은 후보 계산에서 뺀다 (자기가 비우는
+        # 자리도 들어갈 수 있는 빈칸이므로).
+        drag_seg = next((s for s in self._segments
+                         if s.id == self._reorder_drag_id), None)
+        if drag_seg is not None:
+            others = [s for s in self._segments if s.id != self._reorder_drag_id]
+            plan = plan_placement(others, self._reorder_raw_start_ms,
+                                  drag_seg.duration_ms)
+            self._reorder_plan = plan
+            self._reorder_preview_start_ms = plan.start_ms
+        else:
+            self._reorder_preview_start_ms = self._reorder_raw_start_ms
         self.update()
         event.accept()
 
@@ -329,13 +359,15 @@ class VideoTrackLane(QWidget):
         sid = self._pending_select
         reorder_id = self._reorder_drag_id
         started = self._reorder_started
-        new_start = self._reorder_preview_start_ms
+        new_start = self._reorder_raw_start_ms
         self._pending_select = None
         self._reorder_drag_id = None
         self._reorder_started = False
         self._drop_indicator_x = None
+        self._reorder_raw_start_ms = 0
         self._reorder_preview_start_ms = 0
         self._reorder_orig_start_ms = 0
+        self._reorder_plan = None
         if reorder_id is not None and started and event.button() == Qt.LeftButton:
             # 자유 이동: 새 start_ms 로 위치 변경 요청. EditController 가 clamp.
             self.segment_position_changed.emit(reorder_id, int(new_start))

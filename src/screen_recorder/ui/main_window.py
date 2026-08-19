@@ -867,6 +867,36 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def keyPressEvent(self, event):  # noqa: N802 — Qt signature
+        """포커스가 영상 탭 밖에 있을 때의 Ctrl+C / Ctrl+V 를 현재 영상 탭으로 보낸다.
+
+        Qt 는 키 이벤트를 *포커스 위젯* 의 부모 사슬로만 올려 보낸다. 라이브러리에서
+        영상 B 를 열면 포커스가 라이브러리 목록에 남아 있어, 그 상태의 Ctrl+V 는
+        VideoTab.keyPressEvent 까지 가지 못하고 아무 일도 일어나지 않았다
+        (2026-08-19 사용자 보고: "A 영상에서 이만큼 떼서 B 영상에 붙이고 싶어서").
+
+        여기까지 이벤트가 올라왔다는 것은 포커스 위젯과 그 조상 누구도 이 키를 쓰지
+        않았다는 뜻이다 — 텍스트 입력 위젯(캡션 입력칸, 마크다운 편집기)은 Ctrl+C 를
+        스스로 처리해 여기 오지 않으므로 글자 복사를 가로채지 않는다.
+
+        WindowShortcut 컨텍스트의 QShortcut 을 쓰지 않는 이유도 같다 — 그쪽은
+        keyPressEvent 보다 먼저 발동해 포커스가 어디 있든 키를 가져가 버린다.
+        """
+        if event.modifiers() & Qt.ControlModifier and not (
+            event.modifiers() & (Qt.ShiftModifier | Qt.AltModifier)
+        ):
+            tab = self.tab_area.current_video_tab()
+            if tab is not None:
+                if event.key() == Qt.Key_C:
+                    tab.copy_active_to_clipboard()
+                    event.accept()
+                    return
+                if event.key() == Qt.Key_V:
+                    tab.paste_from_clipboard()
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
+
     def changeEvent(self, event):  # noqa: N802 — Qt signature
         """창이 다시 활성화될 때 전역 핫키 재등록 보장 — stuck-pause 안전망.
 

@@ -11,6 +11,7 @@ from ..core.settings import PlayerHotkeys, PlayerSettings
 from ..effects.types.caption import CaptionEffect
 from ..effects.types.cut import CutEffect
 from ..effects.types.speed import SpeedEffect
+from .video.clip_placement import placement_note as _placement_note
 from .video.player_widget import PlayerWidget
 from .video.player_controls import PlayerControls
 from .video.timeline import VideoTimeline
@@ -307,8 +308,8 @@ class VideoTab(QWidget):
         # Phase 116: 우클릭 메뉴의 클립 복사/붙여넣기 — 단축키와 같은 코드 경로.
         track.request_copy.connect(self._on_track_copy_requested)
         track.request_paste_at.connect(self._on_track_paste_requested)
-        # Stage 1: 박스 드래그 → start_ms 변경 (clamp 는 EditController 에서).
-        track.segment_position_changed.connect(self._edit_controller.set_segment_start)
+        # Stage 1: 박스 드래그 → start_ms 변경 (자리 결정은 EditController 에서).
+        track.segment_position_changed.connect(self._on_segment_position_changed)
 
         # player.load() 는 첫 showEvent 까지 defer (lazy load 정책 — 위 _media_loaded 주석 참조).
         # duration 은 caller 가 알려준 값이라 player 와 무관 — 즉시 controls 에 표시.
@@ -923,7 +924,28 @@ class VideoTab(QWidget):
             except (RuntimeError, AttributeError):
                 pass
 
+    def _on_segment_position_changed(self, segment_id: str, new_start_ms: int) -> None:
+        """트랙에서 클립을 끌어 놓았을 때 — 실제 배치는 EditController 가 결정한다.
+
+        좁은 빈칸에 놓으면 뒤 클립들이 밀려 들어갈 자리가 생긴다. 사용자가 지시하지 않은
+        클립까지 움직이므로 몇 개를 얼마나 밀었는지 알린다.
+        """
+        outcome = self._edit_controller.set_segment_start(segment_id, new_start_ms)
+        if not outcome.moved:
+            return
+        note = _placement_note(outcome, new_start_ms)
+        if note:
+            self.player.flash_action("↔ 클립 이동" + note)
+
     # ---------- 복사 / 붙여넣기 (탭 사이 공용 클립보드) ----------
+    def copy_active_to_clipboard(self) -> None:
+        """Ctrl+C 공개 진입점 — MainWindow 가 포커스가 탭 밖에 있을 때 대신 호출한다."""
+        self._copy_active_to_clipboard()
+
+    def paste_from_clipboard(self) -> None:
+        """Ctrl+V 공개 진입점 — MainWindow 가 포커스가 탭 밖에 있을 때 대신 호출한다."""
+        self._paste_from_clipboard()
+
     def _copy_active_to_clipboard(self) -> None:
         """Ctrl+C — 활성 선택(효과 또는 클립)을 전역 클립보드에 담는다.
 
@@ -1031,7 +1053,7 @@ class VideoTab(QWidget):
             return
         seg, effects = taken
         at_ms = max(0, int(at_ms))
-        placed = self._edit_controller.paste_clip(seg, effects, at_ms=at_ms)
+        outcome = self._edit_controller.paste_clip(seg, effects, at_ms=at_ms)
         # 붙여넣은 클립을 곧바로 활성 선택으로 — 이어서 드래그 이동/Del 가능.
         self._active_kind = "segment"
         self._active_id = seg.id
@@ -1039,12 +1061,7 @@ class VideoTab(QWidget):
             self.timeline.video_track_lane.set_selected_id(seg.id)
         except (RuntimeError, AttributeError):
             pass
-        if placed == at_ms:
-            self.player.flash_action("📋 클립 붙여넣기")
-        else:
-            self.player.flash_action(
-                f"📋 클립 붙여넣기 — 겹쳐서 {placed / 1000:.1f}초 자리로 이동"
-            )
+        self.player.flash_action("📋 클립 붙여넣기" + _placement_note(outcome, at_ms))
 
     def _paste_effect_at_cursor(self) -> None:
         """clipboard 의 효과를 deep copy → 마우스 위치 ms 를 in_ms 로, duration 보존.
@@ -1205,10 +1222,14 @@ class VideoTab(QWidget):
         """드래그-드롭 / 라이브러리 드롭 → 여러 파일을 at_combined_ms 부터 순서대로 삽입.
 
         Stage 1: idx → start_ms 로 contract 변경. 새 segment 의 start_ms 를 명시.
-        EditController.insert_segment 가 free-slot clamp 처리.
+        자리 결정(좁은 빈칸이면 뒤 클립 밀기) 은 EditController.insert_segment 가 한다.
+
+        다음 파일의 위치는 *실제로 배치된* 자리에서 이어 간다 — 요청 위치에서 이어 가면
+        첫 파일이 이음매로 당겨졌을 때 둘째부터 어긋난다.
         """
         from dataclasses import replace
         cursor_ms = max(0, int(at_combined_ms))
+        pushed = 0
         for p in paths:
             seg = self._build_segment_for_path(str(p))
             if seg is None:
@@ -1220,10 +1241,14 @@ class VideoTab(QWidget):
                 self.player.flash_action(f"⚠ 길이를 읽지 못해 건너뜀 — {Path(p).name}")
                 continue
             seg = replace(seg, start_ms=cursor_ms)
-            self._edit_controller.insert_segment(
+            outcome = self._edit_controller.insert_segment(
                 at_idx=len(self.sidecar().video_track), segment=seg,
             )
-            cursor_ms += seg.duration_ms
+            cursor_ms = outcome.start_ms + seg.duration_ms
+            pushed += outcome.pushed_count
+        if pushed:
+            # 지시하지 않은 클립이 움직였다 — 조용히 넘기지 않는다.
+            self.player.flash_action(f"⏩ 자리를 만들며 기존 클립 {pushed}개를 밀었습니다")
 
     def _on_track_insert_at(self, at_combined_ms: int) -> None:
         """우클릭 메뉴 → 트랙의 at_combined_ms 위치에 영상/이미지 파일을 삽입."""

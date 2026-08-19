@@ -100,8 +100,13 @@ def test_paste_lands_at_playhead_when_slot_is_free(qtbot, tmp_path):
     assert pasted.start_ms == 0
 
 
-def test_paste_shifts_to_free_slot_when_playhead_overlaps(qtbot, tmp_path):
-    """인디케이터 자리가 다른 클립과 겹치면 가장 가까운 빈 자리로 밀린다 (사라지지 않음)."""
+def test_paste_inserts_at_playhead_and_pushes_following_clips(qtbot, tmp_path):
+    """인디케이터 자리가 다른 클립과 겹치면 그 자리에 끼워 넣고 뒤 클립을 민다.
+
+    2026-08-19 변경: 이전에는 들어갈 빈칸을 못 찾으면 트랙 맨 뒤에 붙여, 다른 영상에서
+    가져온 클립이 엉뚱한 곳에 놓였다. 이제 놓은 지점이 가리키는 이음매에 넣고 그 뒤
+    클립들을 부족분만큼 오른쪽으로 민다.
+    """
     a_path, b_path = _mp4(tmp_path, "a.mp4"), _mp4(tmp_path, "b.mp4")
     tab_a = _make_tab(qtbot, a_path, tmp_path)
     tab_b = _make_tab(qtbot, b_path, tmp_path)
@@ -118,9 +123,11 @@ def test_paste_shifts_to_free_slot_when_playhead_overlaps(qtbot, tmp_path):
     qtbot.keyClick(tab_b, Qt.Key_V, Qt.ControlModifier)
 
     pasted = next(s for s in tab_b.sidecar().video_track if s.src == str(a_path))
-    # 기존 클립(0~10000) 과 겹치지 않는 자리.
-    assert pasted.start_ms >= 10_000
     others = [s for s in tab_b.sidecar().video_track if s.id != pasted.id]
+    # 인디케이터(2000) 에서 가장 가까운 이음매는 0 — 거기에 들어가고 B 의 클립이 밀린다.
+    assert pasted.start_ms == 0
+    assert others[0].start_ms == pasted.duration_ms, "기존 클립이 새 클립 길이만큼 밀림"
+    # 어느 것도 겹치지 않는다.
     for o in others:
         assert not (pasted.start_ms < o.end_ms and pasted.end_ms > o.start_ms)
 

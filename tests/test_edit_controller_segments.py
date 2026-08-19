@@ -67,8 +67,9 @@ def test_insert_segment_at_index(qtbot, ec_with_track):
         src="other.mp4", src_duration_ms=3000,
     )
     with qtbot.waitSignal(ec_with_track.sidecar_replaced, timeout=500):
-        ok = ec_with_track.insert_segment(at_idx=1, segment=new_seg)
-    assert ok is True
+        out = ec_with_track.insert_segment(at_idx=1, segment=new_seg)
+    # 반환은 MoveOutcome — 배치 위치와 밀린 클립 수를 함께 알려 준다.
+    assert out.moved is True and out.pushed_count == 0
     track = ec_with_track.sidecar().video_track
     assert len(track) == 2
     assert track[1].id == new_seg.id
