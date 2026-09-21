@@ -343,7 +343,15 @@ class MainWindow(QMainWindow):
 
         self._border: QWidget | None = None
         self._mini: MiniControl | None = None
-        self._self_excluded = False
+
+        # 캡처 제외(WDA_EXCLUDEFROMCAPTURE)는 "우리가 화면을 읽는 동안"만 건다. 상시로 걸면
+        # Sunshine 같은 화면 스트리밍에서 창이 통째로 사라진다(2026-09-21). depth 를 올리는
+        # 주체는 둘 — 스크린샷 구간(about_to_snap/snap_done)과 녹화 lease.
+        self._capture_depth = 0
+        self._self_exclude_ok = False
+        self._recording_lease = False
+        self._start_pending = False
+        self._start_cancelled = False
 
         # 스크린샷 컨트롤러 (캡처 → captured 시그널 → LibraryModel + TabArea 라우팅)
         self._screenshot_ctrl = ScreenshotController(
@@ -351,6 +359,8 @@ class MainWindow(QMainWindow):
             viewer_getter=lambda: None,
         )
         self._screenshot_ctrl.captured.connect(self._on_screenshot_captured)
+        self._screenshot_ctrl.about_to_snap.connect(self._begin_self_capture)
+        self._screenshot_ctrl.snap_done.connect(self._end_self_capture)
 
         # 라이브러리 Del 한 항목들 (Ctrl+Z 복원용). 가장 최근 삭제가 stack 의 끝.
         # 각 항목은 (LibraryEntry 의 핵심 메타) — entry id 는 새로 발급되므로 보관 X.
@@ -750,6 +760,7 @@ class MainWindow(QMainWindow):
 
         # 컨트롤러
         self.controller.state_changed.connect(self._on_state_changed)
+        self.controller.capture_stopped.connect(self._release_recording_lease)
         self.controller.recording_finished.connect(self._on_finished)
         self.controller.error_occurred.connect(self._on_error)
 
@@ -784,11 +795,8 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, e):
         super().showEvent(e)
-        # keep_visible_during_capture: KStudio UI 자체를 캡쳐에 담고 싶을 때.
-        # 이전 세션에 켰었다면 exclude 적용을 건너뜀 — 안 켰으면 평소대로 exclude.
-        if not self.app_settings.preferences.keep_visible_during_capture:
-            if not self._self_excluded:
-                self._self_excluded = exclude_from_capture(self)
+        # 캡처 제외는 "우리가 화면을 읽는 동안"만 — 여기서는 depth>0 일 때만 다시 건다.
+        self._apply_self_exclusion()
         self._apply_dark_titlebar()
         # dock 레이아웃 복원을 첫 show 이후로 한 번만 — 첫 show 이전 restoreState 가
         # 일부 저장본(특히 문서 모드)에서 크래시하므로. singleShot(0) 으로 paint 직후 적용.
@@ -796,16 +804,58 @@ class MainWindow(QMainWindow):
             self._did_initial_dock_restore = True
             QTimer.singleShot(0, self._restore_initial_dock_layout)
 
-    def apply_capture_visibility(self, visible_in_capture: bool) -> None:
-        """keep_visible_during_capture 토글 시 즉시 affinity 동기화 — 메인 창.
+    def event(self, e):
+        if e.type() == QEvent.Type.WinIdChange:
+            # native 핸들이 바뀌면 affinity 가 사라진다 — 캡처 중이면 다시 건다.
+            self._apply_self_exclusion()
+        return super().event(e)
 
-        True: 캡쳐에 포함 (WDA_NONE). False: 제외 (WDA_EXCLUDEFROMCAPTURE).
-        """
+    # ---------- 캡처 제외 구간 ----------
+
+    def _begin_self_capture(self) -> None:
+        self._capture_depth += 1
+        if self._capture_depth == 1:
+            self._apply_self_exclusion()
+
+    def _end_self_capture(self) -> None:
+        if self._capture_depth <= 0:
+            logging.getLogger(__name__).warning("_end_self_capture: depth 가 이미 0")
+            return
+        self._capture_depth -= 1
+        if self._capture_depth == 0:
+            include_in_capture(self)
+            self._self_exclude_ok = False
+
+    def _apply_self_exclusion(self) -> None:
+        """depth > 0 이고 「내 화면에 보이기」가 꺼져 있을 때만 실제로 건다."""
+        if self._capture_depth <= 0:
+            return
+        if self.app_settings.preferences.keep_visible_during_capture:
+            return
+        self._self_exclude_ok = exclude_from_capture(self)
+        if not self._self_exclude_ok:
+            logging.getLogger(__name__).warning("메인 창 캡처 제외 실패 — 캡처 결과에 창이 찍힐 수 있음")
+
+    def _acquire_recording_lease(self) -> None:
+        if not self._recording_lease:
+            self._recording_lease = True
+            self._begin_self_capture()
+
+    def _release_recording_lease(self) -> None:
+        if self._recording_lease:
+            self._recording_lease = False
+            self._end_self_capture()
+
+    def apply_capture_visibility(self, visible_in_capture: bool) -> None:
+        """「내 화면에 보이기」 토글 즉시 반영. 캡처 중(depth>0)일 때만 의미 있다 —
+        평소엔 이미 풀려 있다."""
+        if self._capture_depth <= 0:
+            return
         if visible_in_capture:
             include_in_capture(self)
-            self._self_excluded = False
+            self._self_exclude_ok = False
         else:
-            self._self_excluded = exclude_from_capture(self)
+            self._apply_self_exclusion()
 
     def _on_keep_visible_during_capture_changed(self, checked: bool) -> None:
         """글로벌 툴바 토글 → settings 갱신 + affinity 즉시 반영 + 저장."""
@@ -1160,8 +1210,23 @@ class MainWindow(QMainWindow):
         return prefs.use_mini_control and prefs.minimize_to_tray
 
     def _on_start_clicked(self):
+        if self._start_pending or self.controller.state != RecorderState.IDLE:
+            return   # 더블클릭·단축키 연타
         target = self._build_target()
         if target is None:
+            return
+        # 캡처 제외를 먼저 걸고 DWM 반영을 기다린 뒤 캡처를 시작 — 첫 프레임부터 창이 빠지게.
+        self._start_pending = True
+        self._start_cancelled = False
+        self._acquire_recording_lease()
+        from screen_recorder.screenshot.controller import SNAP_SETTLE_MS
+        QTimer.singleShot(SNAP_SETTLE_MS, lambda: self._start_recording_now(target))
+
+    def _start_recording_now(self, target):
+        self._start_pending = False
+        if self._start_cancelled:
+            self._start_cancelled = False
+            self._release_recording_lease()
             return
         log = logging.getLogger(__name__)
         log.info(
@@ -1173,7 +1238,12 @@ class MainWindow(QMainWindow):
         try:
             self.controller.start_recording(target)
         except Exception as e:
+            self._release_recording_lease()
             QMessageBox.warning(self, "녹화 시작 실패", str(e))
+            return
+        if self.controller.state == RecorderState.IDLE:
+            # target unavailable — 예외 없이 IDLE 로 돌아온 경우(error_occurred 가 알린다)
+            self._release_recording_lease()
             return
 
         kind = self.global_toolbar.current_target()
@@ -1183,8 +1253,8 @@ class MainWindow(QMainWindow):
         else:
             self._hide_border()
             self._border = RecordingBorder(target, mode=self.app_settings.general.mode)
+            exclude_from_capture(self._border)   # show 전 — winId() 가 핸들을 만든다
             self._border.show()
-            exclude_from_capture(self._border)
             self._border.start_recording()
 
         if self._should_minimize_main():
@@ -1195,10 +1265,13 @@ class MainWindow(QMainWindow):
             self._mini.stop_clicked.connect(self._on_stop_clicked)
             self._mini.pause_clicked.connect(self._on_pause_clicked)
             self._mini.close_requested.connect(self._on_mini_close_requested)
-            self._mini.show_at_bottom_right()
             exclude_from_capture(self._mini)
+            self._mini.show_at_bottom_right()
 
     def _on_stop_clicked(self):
+        if self._start_pending:
+            self._start_cancelled = True   # 예약된 시작 취소 — _start_recording_now 가 lease 반납
+            return
         self.controller.stop_recording()
         if self._mini:
             self._mini.stop()
@@ -5215,6 +5288,11 @@ class MainWindow(QMainWindow):
         # 헤더에 안 반영된 손상된 영상이 생긴다. 사용자가 stop 직후 바로 닫는 케이스도
         # 포함되도록 controller 의 finalizing 플래그를 본다 (state 기반은 이미 IDLE 이라
         # 놓침).
+        # 예약된 시작(캡처 제외 lease 를 건 채 대기 중)이 있으면 취소 — 대기 timer 가
+        # _start_recording_now 에서 lease 를 반납한다. 실제 종료 직전이므로 즉시 반납하지
+        # 않아도 프로세스가 끝나지만, 테스트/트레이 경로를 위해 상태를 깨끗이 둔다.
+        if self._start_pending:
+            self._start_cancelled = True   # 예약된 시작 취소 — _start_recording_now 가 lease 반납
         if self.controller.is_finalizing():
             self._wait_for_recording_finalize()
         # 모든 영상 탭의 autosave 디바운스를 즉시 flush — 사용자 보고 데이터 손실 fix.
