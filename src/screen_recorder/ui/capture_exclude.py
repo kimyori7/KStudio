@@ -1,6 +1,7 @@
 """Windows SetWindowDisplayAffinity 래퍼 — 창을 화면 캡처에서 제외."""
 from __future__ import annotations
 import ctypes
+from ctypes import wintypes
 import logging
 import sys
 
@@ -12,6 +13,19 @@ _WDA_EXCLUDEFROMCAPTURE = 0x00000011  # Windows 10 version 2004 이상
 _logged_once = False
 
 
+def _user32():
+    """ctypes.windll.user32 를 argtypes/restype 선언과 함께 돌려준다.
+
+    원형이 없으면 HWND 가 64bit 포인터여도 int 로 잘려나가고, DWORD 반환값도
+    int 로 올라와 부호/크기 오류가 날 수 있다. 플랫폼 가드는 호출부(_set_affinity)
+    에서 먼저 한다 — windll 은 win32 에서만 존재한다.
+    """
+    u = ctypes.windll.user32
+    u.SetWindowDisplayAffinity.argtypes = (wintypes.HWND, wintypes.DWORD)
+    u.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    return u
+
+
 def _set_affinity(widget: QWidget, value: int) -> bool:
     """위젯의 native 핸들에 SetWindowDisplayAffinity 적용. Windows 외에서는 False."""
     global _logged_once
@@ -21,7 +35,7 @@ def _set_affinity(widget: QWidget, value: int) -> bool:
         hwnd = int(widget.winId())
         if hwnd == 0:
             return False
-        result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, value)
+        result = _user32().SetWindowDisplayAffinity(hwnd, value)
         if not result and not _logged_once:
             err = ctypes.windll.kernel32.GetLastError()
             logging.getLogger(__name__).warning(

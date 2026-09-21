@@ -158,3 +158,42 @@ def test_real_encoder_error_still_emits_error(controller):
     controller._finalize_stop_async(None, None, fake_enc, None, None, "out.mp4")
     assert len(errors) == 1
     assert "캡처" in errors[0]
+
+
+# ----- capture_stopped (메인 창이 캡처 제외 플래그를 풀어도 되는 시점) -----
+
+def test_capture_stopped_emitted_once_after_stop(qtbot, controller):
+    """정상 정지: finalizer 스레드가 캡처 스레드를 join 한 직후, 시작 한 번당 정확히 1회.
+
+    capture_stopped 는 recording_finished(인코딩 완료) 와 별개 사건 — IDLE 전이에서
+    풀면 마지막 프레임에 창이 찍히므로, 캡처 스레드가 실제로 멈춘 뒤에 나야 한다."""
+    calls = []
+    controller.capture_stopped.connect(lambda: calls.append(1))
+    target = RegionTarget(Rect(0, 0, 100, 100))
+    with patch("screen_recorder.core.controller.VideoCaptureThread") as VC, \
+         patch("screen_recorder.core.controller.AudioCaptureThread") as AC, \
+         patch("screen_recorder.core.controller.VideoEncoder") as VE:
+        VC.return_value = MagicMock()
+        AC.return_value = MagicMock()
+        VE.return_value = MagicMock()
+        controller.start_recording(target)
+        # finalizer 는 백그라운드 스레드 — Qt 시그널이 스레드 안전이므로 메인 스레드
+        # 이벤트 루프로 dispatch 된다. 다만 MagicMock join 이라 finalizer 가 stop() 보다
+        # 먼저 끝날 수 있어, 블로커를 먼저 걸고 stop 을 그 안에서 부른다 (레이스 방지).
+        with qtbot.waitSignal(controller.capture_stopped, timeout=5000):
+            controller.stop_recording()
+    assert len(calls) == 1
+
+
+def test_capture_stopped_emitted_on_unavailable_target(controller):
+    """시작 실패(target unavailable): IDLE 복귀 직후 정확히 1회.
+
+    여기선 인코딩이 아예 시작되지 않았으므로 recording_finished 는 안 나고,
+    capture_stopped 만 나야 한다 (메인 창이 걸었던 플래그를 풀 책임)."""
+    calls = []
+    controller.capture_stopped.connect(lambda: calls.append(1))
+    target = MagicMock()
+    target.current_rect.return_value = None
+    controller.start_recording(target)
+    assert controller.state == RecorderState.IDLE
+    assert len(calls) == 1

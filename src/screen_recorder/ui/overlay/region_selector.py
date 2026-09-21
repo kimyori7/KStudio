@@ -43,6 +43,11 @@ class RegionSelector(QWidget):
             self._magnifier = Magnifier(self)
             self._magnifier.hide()  # 드래그 시작할 때만 보여줌
 
+        # 녹화 중 영역 스크린샷을 찍을 때 이 오버레이가 녹화 영상에 찍히지 않도록.
+        # show() 전에 걸어야 첫 프레임부터 빠진다 — winId() 가 native 핸들을 만든다.
+        from screen_recorder.ui.capture_exclude import exclude_from_capture
+        exclude_from_capture(self)
+
     # ---------- 외부 API ----------
 
     def set_source_image(self, img: QImage) -> None:

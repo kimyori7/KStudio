@@ -66,6 +66,11 @@ class RecorderController(QObject):
     state_changed = Signal(object)
     error_occurred = Signal(str)
     recording_finished = Signal(str)
+    # 화면을 더 이상 읽지 않는다 — 시작 한 번당 정확히 한 번. 정상 정지는 캡처 스레드
+    # join 직후(recording_finished 보다 먼저), 시작 실패(target unavailable)는 IDLE 복귀
+    # 직후. 인코딩 완료(recording_finished)와 별개 사건이다 — 메인 창이 캡처 제외
+    # 플래그를 푸는 시점은 이것이어야 한다(IDLE 전이에서 풀면 마지막 프레임에 창이 찍힌다).
+    capture_stopped = Signal()
 
     VIDEO_QUEUE_MAX = 60
 
@@ -133,6 +138,7 @@ class RecorderController(QObject):
         if rect is None or rect.w <= 0 or rect.h <= 0:
             self._set_state(RecorderState.IDLE)
             self.error_occurred.emit("Capture target unavailable")
+            self.capture_stopped.emit()
             return
 
         mode = self.settings.general.mode
@@ -266,6 +272,11 @@ class RecorderController(QObject):
                 v_thread.join(timeout=3.0)
             except RuntimeError:
                 pass
+
+        # 캡처 스레드가 실제로 멈췄으니 이제 화면을 안 읽는다 — 메인 창이 캡처 제외
+        # 플래그를 풀어도 마지막 프레임에 창이 찍히지 않는다. 인코딩 완료
+        # (recording_finished) 보다 먼저, 시작 한 번당 정확히 한 번 난다.
+        self.capture_stopped.emit()
 
         # Belt-and-suspenders: 메인 스레드의 put_nowait(None) 가 v_thread 와 경합해
         # 실패한 경우(가득 찬 큐 → drop → 그 사이 v_thread 가 새 프레임 push → 다시 가득 →
