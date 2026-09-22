@@ -144,6 +144,17 @@ def _palette_name_for_mode(mode: AppMode) -> str:
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings, ffmpeg_path: Path):
         super().__init__()
+        # 캡처 제외(WDA_EXCLUDEFROMCAPTURE)는 "우리가 화면을 읽는 동안"만 건다. 상시로 걸면
+        # Sunshine 같은 화면 스트리밍에서 창이 통째로 사라진다(2026-09-21). depth 를 올리는
+        # 주체는 둘 — 스크린샷 구간(about_to_snap/snap_done)과 녹화 lease.
+        # ⚠ __init__ 맨 앞에 둬야 한다: 아래에서 위젯(TabArea 등)을 만들며 native 핸들이
+        # 생기면 WinIdChange 이벤트가 동기로 날아오고 event() 가 이 값들을 읽는다. 늦게
+        # 초기화하면 1.0.11 회귀로 특정 PC 에서 AttributeError 시작 실패가 났다.
+        self._capture_depth = 0
+        self._self_exclude_ok = False
+        self._recording_lease = False
+        self._start_pending = False
+        self._start_cancelled = False
         # 초기화 중에는 디스크 persist 를 막는다 — Qt 위젯이 setCurrentIndex /
         # set_target 같은 프로그램 호출에도 currentIndexChanged 등 일부 시그널을
         # 발화시켜 핸들러(_on_fullscreen_monitor_changed 등)가 _persist_settings 를
@@ -343,15 +354,6 @@ class MainWindow(QMainWindow):
 
         self._border: QWidget | None = None
         self._mini: MiniControl | None = None
-
-        # 캡처 제외(WDA_EXCLUDEFROMCAPTURE)는 "우리가 화면을 읽는 동안"만 건다. 상시로 걸면
-        # Sunshine 같은 화면 스트리밍에서 창이 통째로 사라진다(2026-09-21). depth 를 올리는
-        # 주체는 둘 — 스크린샷 구간(about_to_snap/snap_done)과 녹화 lease.
-        self._capture_depth = 0
-        self._self_exclude_ok = False
-        self._recording_lease = False
-        self._start_pending = False
-        self._start_cancelled = False
 
         # 스크린샷 컨트롤러 (캡처 → captured 시그널 → LibraryModel + TabArea 라우팅)
         self._screenshot_ctrl = ScreenshotController(
@@ -828,7 +830,7 @@ class MainWindow(QMainWindow):
 
     def _apply_self_exclusion(self) -> None:
         """depth > 0 이고 「내 화면에 보이기」가 꺼져 있을 때만 실제로 건다."""
-        if self._capture_depth <= 0:
+        if getattr(self, "_capture_depth", 0) <= 0:
             return
         if self.app_settings.preferences.keep_visible_during_capture:
             return
