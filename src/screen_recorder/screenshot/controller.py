@@ -67,6 +67,10 @@ class ScreenshotController(QObject):
         - 스냅 대기 중·영역 선택 중의 두 번째 요청은 무시한다(_busy).
         """
         if self._busy:
+            # 무시는 의도한 동작이지만 조용히 삼키면 "캡처가 씹혔다"를 나중에 추적할 수 없다.
+            stage = "영역 선택 중" if self._active_selector is not None else "스냅 대기 중"
+            logging.getLogger(__name__).info(
+                "스크린샷 요청 무시(%s): 이전 캡처가 아직 %s", kind, stage)
             return
         self._busy = True
         self._to_restore = []

@@ -196,6 +196,19 @@ def test_second_request_ignored_while_pending(qtbot):
     assert len(done) == 1
 
 
+def test_ignored_request_is_logged(qtbot, caplog):
+    """_busy 로 버린 요청은 로그에 남는다 — 조용히 삼키면 '캡처가 씹힘'을 추적할 수 없다."""
+    import logging
+    ctrl = ScreenshotController(main_window=None, viewer_getter=lambda: None)
+    with patch("screen_recorder.screenshot.controller.snapshot_monitor", return_value=_fake_image()):
+        with caplog.at_level(logging.INFO, logger="screen_recorder.screenshot.controller"):
+            with qtbot.waitSignal(ctrl.captured, timeout=2000):
+                ctrl.capture_full()
+                ctrl.capture_region()
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("스크린샷 요청 무시(region)" in m and "스냅 대기 중" in m for m in msgs)
+
+
 def test_busy_clears_after_region_cancel(qtbot):
     """영역 선택 취소 뒤에는 _busy 가 풀려 capture_full() 이 다시 동작한다."""
     ctrl = ScreenshotController(main_window=None, viewer_getter=lambda: None)
