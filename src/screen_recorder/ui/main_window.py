@@ -653,6 +653,12 @@ class MainWindow(QMainWindow):
             self.app_settings.preferences.keep_visible_during_capture
         )
         self.global_toolbar.keep_visible_chk.blockSignals(False)
+        # 문서 모드 «새로고침» / «자동 갱신» — 활성 문서 탭 + 설정.
+        self.global_toolbar.doc_refresh_clicked.connect(self._on_doc_refresh_clicked)
+        self.global_toolbar.doc_auto_reload_changed.connect(
+            self._on_markdown_auto_reload_changed)
+        self.global_toolbar.set_doc_auto_reload(self.app_settings.markdown.auto_reload)
+        self.global_toolbar.set_doc_refresh_enabled(False)   # 문서 탭이 생기면 켠다
 
         # 메뉴
         self.menu_bar.new_requested.connect(self._on_file_new)
@@ -2938,7 +2944,8 @@ class MainWindow(QMainWindow):
     def _wire_markdown_tab(self, tab) -> None:
         """새 MarkdownTab 의 폰트 변경 + 드래그-드롭 라이브러리 등록을 연결."""
         tab.font_settings_changed.connect(self._on_markdown_font_changed)
-        tab.auto_reload_changed.connect(self._on_markdown_auto_reload_changed)
+        tab.disk_changed_pending_changed.connect(
+            lambda pending, t=tab: self._on_markdown_pending_changed(t, pending))
         # DIFF 칸에 올린 파일 → 라이브러리 등록(path 중복 제거).
         tab.diff_doc_loaded.connect(self._register_dropped_document)
         # 편집기에 .md 드롭 → 새 문서 탭으로 열기 + 등록(_open_markdown_path 가 둘 다).
@@ -2986,11 +2993,32 @@ class MainWindow(QMainWindow):
             self._markdown_font_persist_timer = timer
         timer.start()
 
-    def _on_markdown_auto_reload_changed(self, enabled: bool) -> None:
-        """«자동 갱신» 토글 → 설정 저장 + 열린 다른 문서 탭의 체크박스도 같은 값으로.
+    def _on_doc_refresh_clicked(self) -> None:
+        """도구줄 «새로고침» → 현재 보이는 문서 탭을 디스크 기준으로 다시 불러온다."""
+        from .markdown_tab import MarkdownTab
+        cur = self.tab_area.currentWidget()
+        if isinstance(cur, MarkdownTab):
+            cur.refresh_from_disk()
 
-        탭의 set_auto_reload 는 신호를 발화하지 않으므로 전파가 되돌아오지 않는다.
-        드문 사용자 동작이라 폰트와 달리 디바운스 없이 바로 저장한다."""
+    def _on_markdown_pending_changed(self, tab, pending: bool) -> None:
+        """문서 탭의 «새 내용 있음» 변화 — 현재 보이는 탭 것만 도구줄 ● 에 반영."""
+        if tab is self.tab_area.currentWidget():
+            self.global_toolbar.set_doc_refresh_pending(bool(pending))
+
+    def _sync_doc_toolbar(self) -> None:
+        """활성 탭에 맞춰 도구줄 새로고침 단추의 사용 가능 여부와 ● 를 맞춘다."""
+        from .markdown_tab import MarkdownTab
+        cur = self.tab_area.currentWidget()
+        is_md = isinstance(cur, MarkdownTab)
+        self.global_toolbar.set_doc_refresh_enabled(is_md)
+        self.global_toolbar.set_doc_refresh_pending(
+            cur.disk_changed_pending() if is_md else False)
+
+    def _on_markdown_auto_reload_changed(self, enabled: bool) -> None:
+        """도구줄 «자동 갱신» 토글 → 설정 저장 + 열린 모든 문서 탭에 같은 값 적용.
+
+        탭의 set_auto_reload 는 신호를 발화하지 않는다. 드문 사용자 동작이라
+        폰트와 달리 디바운스 없이 바로 저장한다."""
         from .markdown_tab import MarkdownTab
         self.app_settings.markdown.auto_reload = bool(enabled)
         for i in range(self.tab_area.count()):
@@ -4364,6 +4392,7 @@ class MainWindow(QMainWindow):
     # ---------- 탭 전환 시 옵션바·도구 동기화 ----------
 
     def _on_active_tab_changed(self) -> None:
+        self._sync_doc_toolbar()
         # 라이브러리에서 현재 탭에 해당하는 항목 강조 (탭 → 라이브러리 동기화).
         eid = self.tab_area.current_entry_id()
         if eid is not None:

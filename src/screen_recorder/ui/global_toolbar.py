@@ -1,7 +1,7 @@
 """글로벌 툴바 — 모드 토글 + 모드별 액션 (영상: 녹화 / 이미지: 캡처·저장·복사)."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QComboBox, QFrame, QLabel, QButtonGroup,
@@ -113,6 +113,10 @@ class GlobalToolbar(QWidget):
     copy_clicked = Signal()
     preferences_clicked = Signal()
     keep_visible_during_capture_changed = Signal(bool)   # 캡처 중 KStudio UI 보이기 토글
+
+    # 문서 모드 — 활성 문서 탭 새로고침 / «자동 갱신» 체크 (사용자 입력만 발화)
+    doc_refresh_clicked = Signal()
+    doc_auto_reload_changed = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -263,6 +267,24 @@ class GlobalToolbar(QWidget):
         )
         layout.addWidget(self.keep_visible_chk)
 
+        # ---------- 문서 모드: 새로고침 + 자동 갱신 ("내 화면에 보이기" 바로 오른쪽) ----------
+        self.doc_refresh_btn = QPushButton()
+        self.set_doc_refresh_pending(False)
+        self.doc_refresh_btn.setFocusPolicy(Qt.NoFocus)
+        self.doc_refresh_btn.clicked.connect(self.doc_refresh_clicked.emit)
+        layout.addWidget(self.doc_refresh_btn)
+
+        self.doc_auto_reload_chk = QCheckBox(tr("자동 갱신"))
+        self.doc_auto_reload_chk.setToolTip(tr(
+            "켜면 외부에서 파일이 바뀔 때 갱신 확인 팝업을 띄웁니다.\n"
+            "끄면 팝업 없이 «새로고침» 버튼에 ● 만 표시합니다."
+        ))
+        self.doc_auto_reload_chk.setFocusPolicy(Qt.NoFocus)
+        # clicked: 사용자 입력에만 발화(setChecked 는 안 옴) — 코드 동기화가 설정 저장을 되부르지 않는다.
+        self.doc_auto_reload_chk.clicked.connect(
+            lambda checked=False: self.doc_auto_reload_changed.emit(bool(checked)))
+        layout.addWidget(self.doc_auto_reload_chk)
+
         layout.addStretch(1)
 
         # ---------- 이미지 모드: 글로벌 액션 ----------
@@ -380,6 +402,24 @@ class GlobalToolbar(QWidget):
         editor.setKeySequence(QKeySequence(sequence_text))
         editor.blockSignals(False)
 
+    def set_doc_refresh_pending(self, pending: bool) -> None:
+        """새로고침 버튼의 «디스크에 새 내용 있음» ● 표시."""
+        if pending:
+            self.doc_refresh_btn.setText(tr("⟳ 새로고침 ●"))
+            self.doc_refresh_btn.setToolTip(tr("디스크에 바뀐 내용이 있습니다 — 눌러서 불러오기"))
+        else:
+            self.doc_refresh_btn.setText(tr("⟳ 새로고침"))
+            self.doc_refresh_btn.setToolTip(
+                tr("디스크의 최신 내용을 다시 불러오고 미리보기를 다시 그립니다"))
+
+    def set_doc_refresh_enabled(self, enabled: bool) -> None:
+        """활성 문서 탭이 없으면 새로고침을 막는다."""
+        self.doc_refresh_btn.setEnabled(enabled)
+
+    def set_doc_auto_reload(self, enabled: bool) -> None:
+        """체크 상태를 신호 없이 맞춘다 (설정값 반영용)."""
+        self.doc_auto_reload_chk.setChecked(bool(enabled))
+
     # ---------- 가시성 통합 관리 ----------
     def _refresh_widgets_visibility(self) -> None:
         # 문서(DOCUMENT) 모드 추가 후로는 "non-video == image" 가정이 깨지므로
@@ -405,6 +445,10 @@ class GlobalToolbar(QWidget):
         # 이미지=전체 캡처 대상). 문서 모드에선 무의미하므로 숨김.
         self._monitor_label.setVisible(not is_document)
         self.monitor_combo.setVisible(not is_document)
+
+        # 문서 모드 전용 — 새로고침 + 자동 갱신
+        self.doc_refresh_btn.setVisible(is_document)
+        self.doc_auto_reload_chk.setVisible(is_document)
 
         # 인라인 단축키 — 모드별로 한 쌍만 노출.
         self._video_hotkey_label.setVisible(is_video)

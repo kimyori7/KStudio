@@ -145,3 +145,53 @@ def test_document_mode_hides_recording_and_capture(qtbot):
     tb.set_mode(AppMode.DOCUMENT)
     assert not tb.record_btn.isVisible()
     assert not tb.capture_region_btn.isVisible()
+
+
+def test_doc_refresh_and_auto_reload_only_in_document_mode(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    tb.show()
+    for mode in (AppMode.IMAGE, AppMode.VIDEO):
+        tb.set_mode(mode)
+        assert not tb.doc_refresh_btn.isVisible()
+        assert not tb.doc_auto_reload_chk.isVisible()
+    tb.set_mode(AppMode.DOCUMENT)
+    assert tb.doc_refresh_btn.isVisible()
+    assert tb.doc_auto_reload_chk.isVisible()
+    # «내 화면에 보이기» 바로 오른쪽 순서
+    lay = tb.layout()
+    idx = [lay.itemAt(i).widget() for i in range(lay.count())]
+    k = idx.index(tb.keep_visible_chk)
+    assert idx[k + 1] is tb.doc_refresh_btn
+    assert idx[k + 2] is tb.doc_auto_reload_chk
+
+
+def test_doc_refresh_click_emits(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    with qtbot.waitSignal(tb.doc_refresh_clicked, timeout=200):
+        tb.doc_refresh_btn.click()
+
+
+def test_doc_auto_reload_emits_on_user_click_not_on_code_sync(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    seen = []
+    tb.doc_auto_reload_changed.connect(seen.append)
+    tb.set_doc_auto_reload(False)           # 코드 동기화 — 신호 없음
+    assert seen == [] and not tb.doc_auto_reload_chk.isChecked()
+    tb.doc_auto_reload_chk.click()          # 사용자
+    assert seen == [True]
+
+
+def test_doc_refresh_pending_marker_and_enabled(qtbot):
+    tb = GlobalToolbar()
+    qtbot.addWidget(tb)
+    assert "●" not in tb.doc_refresh_btn.text()
+    tb.set_doc_refresh_pending(True)
+    assert "●" in tb.doc_refresh_btn.text()
+    assert "바뀐 내용" in tb.doc_refresh_btn.toolTip()
+    tb.set_doc_refresh_pending(False)
+    assert "●" not in tb.doc_refresh_btn.text()
+    tb.set_doc_refresh_enabled(False)
+    assert not tb.doc_refresh_btn.isEnabled()

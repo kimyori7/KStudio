@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+    QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -60,9 +60,8 @@ class MarkdownTab(QWidget):
     # 편집기에 .md 드롭 → 새 문서 탭으로 열기 요청. main_window 가 _open_markdown_path 로
     # (열기 + 라이브러리 등록).
     open_document_requested = Signal(object)  # Path
-    # «자동 갱신» 체크박스를 사용자가 바꿨을 때만 발화(코드가 set_auto_reload 로 맞출 땐
-    # 발화하지 않음 — main_window 가 다른 탭에 전파할 때 신호가 되돌아오는 루프 차단).
-    auto_reload_changed = Signal(bool)
+    # «디스크에 새 내용 있음» 상태가 바뀔 때 발화 — main_window 가 도구줄 ● 표시를 맞춘다.
+    disk_changed_pending_changed = Signal(bool)
 
     # 폰트 크기 한계/기본값 — 편집기는 포인트, 미리보기는 배율.
     EDITOR_MIN_PT = 8
@@ -72,11 +71,6 @@ class MarkdownTab(QWidget):
     PREVIEW_MAX_ZOOM = 3.0
     PREVIEW_DEFAULT_ZOOM = 1.0
     PREVIEW_ZOOM_STEP = 0.1
-
-    _REFRESH_LABEL = "⟳ 새로고침"
-    _REFRESH_TIP = "디스크의 최신 내용을 다시 불러오고 미리보기를 다시 그립니다"
-    _REFRESH_PENDING_LABEL = "⟳ 새로고침 ●"
-    _REFRESH_PENDING_TIP = "디스크에 바뀐 내용이 있습니다 — 눌러서 불러오기"
 
     def __init__(
         self, *, source_label: str = "new",
@@ -120,23 +114,6 @@ class MarkdownTab(QWidget):
             self._btn_group.addButton(btn)
             self._buttons[mode] = btn
             bar.addWidget(btn)
-        # 수동 새로고침 — 모드가 아닌 액션 버튼(체크 없음). 외부 변경 감지가 어떤
-        # 이유로든 놓쳐도 사용자가 즉시 복구할 수 있는 안전망(2026-07-14 사용자 요청).
-        self.refresh_btn = QPushButton(self._REFRESH_LABEL)
-        self.refresh_btn.setToolTip(self._REFRESH_TIP)
-        self.refresh_btn.setFocusPolicy(Qt.NoFocus)
-        self.refresh_btn.clicked.connect(self.refresh_from_disk)
-        bar.addWidget(self.refresh_btn)
-        # 자동 갱신 — 끄면 외부 변경 때 팝업 대신 새로고침 버튼에 ● 표시만 한다.
-        self.auto_reload_cb = QCheckBox("자동 갱신")
-        self.auto_reload_cb.setToolTip(
-            "켜면 외부에서 파일이 바뀔 때 갱신 확인 팝업을 띄웁니다.\n"
-            "끄면 팝업 없이 «새로고침» 버튼에 ● 만 표시합니다."
-        )
-        self.auto_reload_cb.setFocusPolicy(Qt.NoFocus)
-        self.auto_reload_cb.setChecked(self._auto_reload)
-        self.auto_reload_cb.clicked.connect(self._on_auto_reload_clicked)
-        bar.addWidget(self.auto_reload_cb)
         bar.addStretch(1)
 
         # 폰트 크기 컨트롤 — 편집/미리보기 각각 A−/A+ + 공용 '기본' 리셋 (우측 정렬).
@@ -530,17 +507,11 @@ class MarkdownTab(QWidget):
     def auto_reload_enabled(self) -> bool:
         return self._auto_reload
 
-    def _on_auto_reload_clicked(self, checked: bool) -> None:
-        """사용자가 체크박스를 눌렀다 — 적용 후 main_window 가 영속·전파하게 알린다."""
-        self._apply_auto_reload(bool(checked))
-        self.auto_reload_changed.emit(self._auto_reload)
-
     def set_auto_reload(self, enabled: bool) -> None:
         """코드에서 값을 맞춘다(다른 탭의 변경 전파). 신호는 발화하지 않는다."""
         enabled = bool(enabled)
         if enabled == self._auto_reload:
             return
-        self.auto_reload_cb.setChecked(enabled)   # clicked 는 프로그램적 변경에 안 옴
         self._apply_auto_reload(enabled)
 
     def _apply_auto_reload(self, enabled: bool) -> None:
@@ -550,15 +521,15 @@ class MarkdownTab(QWidget):
             # 꺼진 동안 밀린 변경을 지금 정책(팝업)으로 처리. 같으면 ● 도 지운다.
             self._reload_check()
 
+    def disk_changed_pending(self) -> bool:
+        return self._disk_changed_pending
+
     def _set_disk_changed_pending(self, pending: bool) -> None:
-        """새로고침 버튼의 «새 내용 있음» 표시. 상태가 바뀔 때만 UI 를 건드린다."""
+        """«새 내용 있음» 상태. 바뀔 때만 신호를 낸다(UI 는 도구줄 몫)."""
         if pending == self._disk_changed_pending:
             return
         self._disk_changed_pending = pending
-        self.refresh_btn.setText(
-            self._REFRESH_PENDING_LABEL if pending else self._REFRESH_LABEL)
-        self.refresh_btn.setToolTip(
-            self._REFRESH_PENDING_TIP if pending else self._REFRESH_TIP)
+        self.disk_changed_pending_changed.emit(pending)
 
     # --- 외부 변경 반영 (QFileSystemWatcher) ---
     def _on_dir_changed(self, path: str) -> None:
