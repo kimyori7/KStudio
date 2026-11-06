@@ -220,6 +220,8 @@ class MarkdownSettings:
     """
     editor_font_pt: int = 11        # 편집기 폰트 포인트 (clamp 8..32)
     preview_zoom: float = 1.0       # 미리보기 줌 배율 (clamp 0.5..3.0)
+    # 외부 변경 자동 갱신(팝업) — 끄면 팝업 대신 새로고침 버튼 ● 표시. 열린 문서 탭 전체가 공유.
+    auto_reload: bool = True
 
 
 @dataclass

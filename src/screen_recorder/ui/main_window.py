@@ -2887,7 +2887,8 @@ class MainWindow(QMainWindow):
         try:
             md = self.app_settings.markdown
             tab = MarkdownTab.from_file(
-                p, editor_font_pt=md.editor_font_pt, preview_zoom=md.preview_zoom
+                p, editor_font_pt=md.editor_font_pt, preview_zoom=md.preview_zoom,
+                auto_reload=md.auto_reload,
             )
         except OSError as e:
             QMessageBox.warning(self, "열기 실패", str(e))
@@ -2926,7 +2927,8 @@ class MainWindow(QMainWindow):
         from .markdown_tab import MarkdownTab
         md = self.app_settings.markdown
         tab = MarkdownTab.from_blank(
-            editor_font_pt=md.editor_font_pt, preview_zoom=md.preview_zoom
+            editor_font_pt=md.editor_font_pt, preview_zoom=md.preview_zoom,
+            auto_reload=md.auto_reload,
         )
         self._wire_markdown_tab(tab)
         entry_id = self.library_model.next_id()
@@ -2936,6 +2938,7 @@ class MainWindow(QMainWindow):
     def _wire_markdown_tab(self, tab) -> None:
         """새 MarkdownTab 의 폰트 변경 + 드래그-드롭 라이브러리 등록을 연결."""
         tab.font_settings_changed.connect(self._on_markdown_font_changed)
+        tab.auto_reload_changed.connect(self._on_markdown_auto_reload_changed)
         # DIFF 칸에 올린 파일 → 라이브러리 등록(path 중복 제거).
         tab.diff_doc_loaded.connect(self._register_dropped_document)
         # 편집기에 .md 드롭 → 새 문서 탭으로 열기 + 등록(_open_markdown_path 가 둘 다).
@@ -2982,6 +2985,19 @@ class MainWindow(QMainWindow):
             timer.timeout.connect(self._persist_settings)
             self._markdown_font_persist_timer = timer
         timer.start()
+
+    def _on_markdown_auto_reload_changed(self, enabled: bool) -> None:
+        """«자동 갱신» 토글 → 설정 저장 + 열린 다른 문서 탭의 체크박스도 같은 값으로.
+
+        탭의 set_auto_reload 는 신호를 발화하지 않으므로 전파가 되돌아오지 않는다.
+        드문 사용자 동작이라 폰트와 달리 디바운스 없이 바로 저장한다."""
+        from .markdown_tab import MarkdownTab
+        self.app_settings.markdown.auto_reload = bool(enabled)
+        for i in range(self.tab_area.count()):
+            w = self.tab_area.widget(i)
+            if isinstance(w, MarkdownTab):
+                w.set_auto_reload(enabled)
+        self._persist_settings()
 
     # ---------- 드래그 앤 드롭 (외부 파일 → 탭) ----------
     def dragEnterEvent(self, e: QDragEnterEvent) -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
-    QButtonGroup, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+    QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -60,6 +60,9 @@ class MarkdownTab(QWidget):
     # 편집기에 .md 드롭 → 새 문서 탭으로 열기 요청. main_window 가 _open_markdown_path 로
     # (열기 + 라이브러리 등록).
     open_document_requested = Signal(object)  # Path
+    # «자동 갱신» 체크박스를 사용자가 바꿨을 때만 발화(코드가 set_auto_reload 로 맞출 땐
+    # 발화하지 않음 — main_window 가 다른 탭에 전파할 때 신호가 되돌아오는 루프 차단).
+    auto_reload_changed = Signal(bool)
 
     # 폰트 크기 한계/기본값 — 편집기는 포인트, 미리보기는 배율.
     EDITOR_MIN_PT = 8
@@ -70,13 +73,21 @@ class MarkdownTab(QWidget):
     PREVIEW_DEFAULT_ZOOM = 1.0
     PREVIEW_ZOOM_STEP = 0.1
 
+    _REFRESH_LABEL = "⟳ 새로고침"
+    _REFRESH_TIP = "디스크의 최신 내용을 다시 불러오고 미리보기를 다시 그립니다"
+    _REFRESH_PENDING_LABEL = "⟳ 새로고침 ●"
+    _REFRESH_PENDING_TIP = "디스크에 바뀐 내용이 있습니다 — 눌러서 불러오기"
+
     def __init__(
         self, *, source_label: str = "new",
         editor_font_pt: int = EDITOR_DEFAULT_PT,
         preview_zoom: float = PREVIEW_DEFAULT_ZOOM,
+        auto_reload: bool = True,
     ) -> None:
         super().__init__()
         self._source_label = source_label
+        self._auto_reload = bool(auto_reload)
+        self._disk_changed_pending = False   # 자동 갱신 꺼짐 중 디스크에 새 내용이 있음
         self._saved_path: Path | None = None
 
         # 폰트 크기 상태 — 단일 출처. 버튼/Ctrl+휠 모두 여기를 거쳐 적용 + 영속.
@@ -111,11 +122,21 @@ class MarkdownTab(QWidget):
             bar.addWidget(btn)
         # 수동 새로고침 — 모드가 아닌 액션 버튼(체크 없음). 외부 변경 감지가 어떤
         # 이유로든 놓쳐도 사용자가 즉시 복구할 수 있는 안전망(2026-07-14 사용자 요청).
-        self.refresh_btn = QPushButton("⟳ 새로고침")
-        self.refresh_btn.setToolTip("디스크의 최신 내용을 다시 불러오고 미리보기를 다시 그립니다")
+        self.refresh_btn = QPushButton(self._REFRESH_LABEL)
+        self.refresh_btn.setToolTip(self._REFRESH_TIP)
         self.refresh_btn.setFocusPolicy(Qt.NoFocus)
         self.refresh_btn.clicked.connect(self.refresh_from_disk)
         bar.addWidget(self.refresh_btn)
+        # 자동 갱신 — 끄면 외부 변경 때 팝업 대신 새로고침 버튼에 ● 표시만 한다.
+        self.auto_reload_cb = QCheckBox("자동 갱신")
+        self.auto_reload_cb.setToolTip(
+            "켜면 외부에서 파일이 바뀔 때 갱신 확인 팝업을 띄웁니다.\n"
+            "끄면 팝업 없이 «새로고침» 버튼에 ● 만 표시합니다."
+        )
+        self.auto_reload_cb.setFocusPolicy(Qt.NoFocus)
+        self.auto_reload_cb.setChecked(self._auto_reload)
+        self.auto_reload_cb.clicked.connect(self._on_auto_reload_clicked)
+        bar.addWidget(self.auto_reload_cb)
         bar.addStretch(1)
 
         # 폰트 크기 컨트롤 — 편집/미리보기 각각 A−/A+ + 공용 '기본' 리셋 (우측 정렬).
@@ -241,20 +262,24 @@ class MarkdownTab(QWidget):
     def from_blank(
         cls, *, editor_font_pt: int = EDITOR_DEFAULT_PT,
         preview_zoom: float = PREVIEW_DEFAULT_ZOOM,
+        auto_reload: bool = True,
     ) -> "MarkdownTab":
         # 미저장 blank → saved_path None 이라 needs_save() 가 항상 True.
         return cls(source_label="new",
-                   editor_font_pt=editor_font_pt, preview_zoom=preview_zoom)
+                   editor_font_pt=editor_font_pt, preview_zoom=preview_zoom,
+                   auto_reload=auto_reload)
 
     @classmethod
     def from_file(
         cls, path: Path, *, editor_font_pt: int = EDITOR_DEFAULT_PT,
         preview_zoom: float = PREVIEW_DEFAULT_ZOOM,
+        auto_reload: bool = True,
     ) -> "MarkdownTab":
         path = Path(path)
         text = _read_text_with_fallback(path)
         tab = cls(source_label="opened",
-                  editor_font_pt=editor_font_pt, preview_zoom=preview_zoom)
+                  editor_font_pt=editor_font_pt, preview_zoom=preview_zoom,
+                  auto_reload=auto_reload)
         tab.editor.setPlainText(text)   # textChanged → _dirty True 가 되므로
         tab._disk_text = text           # 외부 변경 판별 기준
         tab._set_saved_path(path)       # _saved_path 갱신 + 파일 감시 시작
@@ -360,6 +385,7 @@ class MarkdownTab(QWidget):
             _log.error("Markdown 저장 실패: %s", e)
             return False
         self._disk_text = text   # 자기 저장 → 외부 변경 오탐 방지(이 값과 비교)
+        self._set_disk_changed_pending(False)   # 방금 쓴 내용 = 디스크
         self.mark_saved(path)
         return True
 
@@ -500,6 +526,40 @@ class MarkdownTab(QWidget):
         doc_dir = self._saved_path.parent if self._saved_path else None
         self.preview.set_content(text, doc_dir)
 
+    # --- 자동 갱신 on/off ---
+    def auto_reload_enabled(self) -> bool:
+        return self._auto_reload
+
+    def _on_auto_reload_clicked(self, checked: bool) -> None:
+        """사용자가 체크박스를 눌렀다 — 적용 후 main_window 가 영속·전파하게 알린다."""
+        self._apply_auto_reload(bool(checked))
+        self.auto_reload_changed.emit(self._auto_reload)
+
+    def set_auto_reload(self, enabled: bool) -> None:
+        """코드에서 값을 맞춘다(다른 탭의 변경 전파). 신호는 발화하지 않는다."""
+        enabled = bool(enabled)
+        if enabled == self._auto_reload:
+            return
+        self.auto_reload_cb.setChecked(enabled)   # clicked 는 프로그램적 변경에 안 옴
+        self._apply_auto_reload(enabled)
+
+    def _apply_auto_reload(self, enabled: bool) -> None:
+        self._auto_reload = enabled
+        _log.info("자동 갱신 %s: %s", "켬" if enabled else "끔", self._saved_path)
+        if enabled:
+            # 꺼진 동안 밀린 변경을 지금 정책(팝업)으로 처리. 같으면 ● 도 지운다.
+            self._reload_check()
+
+    def _set_disk_changed_pending(self, pending: bool) -> None:
+        """새로고침 버튼의 «새 내용 있음» 표시. 상태가 바뀔 때만 UI 를 건드린다."""
+        if pending == self._disk_changed_pending:
+            return
+        self._disk_changed_pending = pending
+        self.refresh_btn.setText(
+            self._REFRESH_PENDING_LABEL if pending else self._REFRESH_LABEL)
+        self.refresh_btn.setToolTip(
+            self._REFRESH_PENDING_TIP if pending else self._REFRESH_TIP)
+
     # --- 외부 변경 반영 (QFileSystemWatcher) ---
     def _on_dir_changed(self, path: str) -> None:
         """감시 폴더 변경 통지 → 디바운스 재장전. 동작은 이전 lambda 와 동일.
@@ -575,7 +635,14 @@ class MarkdownTab(QWidget):
             # 진단 로그(2026-07-21) — 여기서 조용히 끝난 건지, 애초에 여기까지
             # 못 온 건지가 구분이 안 돼 3회 오진했다. _on_dir_changed 참고.
             _log.info("외부 변경 검사: 동일 내용 — 무시: %s", p)
+            self._set_disk_changed_pending(False)   # 디스크가 다시 같아짐
             return   # 자기 저장 또는 동일 내용 — 반영할 외부 변경 없음
+        if not self._auto_reload:
+            # 자동 갱신 꺼짐 — 팝업 없이 ● 표시만. _disk_text 는 건드리지 않는다
+            # (새로고침이 차이를 알아야 함). 폴링은 stat 지문이 바뀔 때만 여기까지 온다.
+            _log.info("외부 변경 감지(자동 갱신 꺼짐) — 팝업 없이 새로고침 표시: %s", p)
+            self._set_disk_changed_pending(True)
+            return
         _log.info("외부 변경 감지 — 확인 팝업 표시: %s (dirty=%s)", p, self._dirty)
         self._reload_prompt_open = True
         try:
@@ -642,6 +709,7 @@ class MarkdownTab(QWidget):
         cur_pos = self.editor.textCursor().position()
         self.editor.setPlainText(text)   # textChanged → _dirty True 가 되므로 아래서 복구
         self._disk_text = text
+        self._set_disk_changed_pending(False)
         self._dirty = False
         cur = self.editor.textCursor()
         cur.setPosition(min(cur_pos, len(text)))
@@ -672,6 +740,7 @@ class MarkdownTab(QWidget):
             self._refresh_preview(self.editor.toPlainText())
             return
         if disk == self._disk_text:
+            self._set_disk_changed_pending(False)
             self._refresh_preview(self.editor.toPlainText())
             return
         if self._dirty and not self._confirm_external_reload(True):
