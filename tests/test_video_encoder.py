@@ -4,12 +4,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from screen_recorder.core.settings import VideoSettings, SoundSettings
 from screen_recorder.encode.video_encoder import VideoEncoder
 
 
-def test_encoder_writes_frames_to_ffmpeg_stdin(tmp_path):
+@pytest.mark.parametrize("audio_requested", [False, True])
+def test_encoder_writes_frames_to_ffmpeg_stdin(tmp_path, caplog, audio_requested):
     proc = MagicMock()
     proc.stdin.closed = False
     proc.poll.return_value = None
@@ -22,11 +24,12 @@ def test_encoder_writes_frames_to_ffmpeg_stdin(tmp_path):
 
     enc = VideoEncoder(
         video_settings=VideoSettings(),
-        sound_settings=SoundSettings(system_audio_enabled=False),
+        sound_settings=SoundSettings(system_audio_enabled=audio_requested),
         width=100, height=100,
         ffmpeg_path=Path("ffmpeg"),
         output_path=tmp_path / "out.mp4",
         frame_queue=q,
+        audio_raw_path=tmp_path / "audio.raw",
     )
 
     with patch("subprocess.Popen", return_value=proc) as popen:
@@ -35,6 +38,8 @@ def test_encoder_writes_frames_to_ffmpeg_stdin(tmp_path):
         assert popen.call_count == 1
         assert proc.stdin.write.call_count >= 2
         proc.stdin.close.assert_called_once()
+    warnings = [r for r in caplog.records if "audio omitted due to invalid sample rate" in r.message]
+    assert len(warnings) == int(audio_requested)
 
 
 def test_encoder_runs_mux_when_audio_present(tmp_path):

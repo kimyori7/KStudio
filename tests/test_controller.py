@@ -1,4 +1,7 @@
-import queue
+import logging
+import subprocess
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,7 +14,8 @@ from screen_recorder.capture.targets import RegionTarget, Rect
 
 
 @pytest.fixture
-def controller(tmp_path):
+def controller(tmp_path, monkeypatch):
+    monkeypatch.setattr("screen_recorder.core.controller.resolve_output_rects", lambda: [])
     settings = AppSettings()
     settings.general.output_dir = str(tmp_path)
     return RecorderController(settings=settings, ffmpeg_path=Path("ffmpeg"))
@@ -66,6 +70,95 @@ def test_stop_returns_to_idle(controller):
         controller.start_recording(target)
         controller.stop_recording()
     assert controller.state == RecorderState.IDLE
+
+
+def test_controller_waits_for_delayed_audio_format(controller):
+    class DelayedAudioCapture(threading.Thread):
+        def __init__(self, output_path):
+            super().__init__(daemon=True)
+            self.output_path = output_path
+            self.ready = threading.Event()
+            self.sample_rate = self.channels = 0
+            self.error = None
+
+        def run(self):
+            time.sleep(0.3)
+            self.sample_rate = 48000
+            self.channels = 2
+            self.ready.set()
+
+    target = RegionTarget(Rect(0, 0, 100, 100))
+    with patch("screen_recorder.core.controller.VideoCaptureThread"), \
+         patch("screen_recorder.core.controller.AudioCaptureThread", DelayedAudioCapture), \
+         patch("screen_recorder.core.controller.VideoEncoder") as encoder:
+        controller.start_recording(target)
+        controller.pause_recording()
+        controller.resume_recording()
+
+    encoder.assert_called_once()
+    args = encoder.call_args.kwargs
+    assert args["audio_raw_path"].suffix == ".raw"
+    assert args["audio_sample_rate"] == 48000
+    assert args["audio_channels"] == 2
+    assert args["audio_start_error"] is None
+
+
+@pytest.mark.parametrize("failure", ["device", "timeout", "thread"])
+def test_controller_reports_audio_startup_failure_after_stop(
+    controller, qtbot, caplog, failure, tmp_path,
+):
+    controller.AUDIO_READY_TIMEOUT = 0.02
+    audio = MagicMock()
+    audio.ready = threading.Event()
+    audio.output_path = tmp_path / "audio.raw"
+    if failure == "device":
+        audio.error = "loopback unavailable"
+        audio.ready.set()
+        expected_reason = "loopback unavailable"
+    elif failure == "timeout":
+        expected_reason = "시간 초과"
+    else:
+        audio.start.side_effect = RuntimeError("cannot start thread")
+        expected_reason = "cannot start thread"
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.returncode = 0
+
+    def fake_popen(argv, **kwargs):
+        Path(argv[-1]).write_bytes(b"video")
+        return proc
+
+    def fake_video_capture(target, fps, frame_queue):
+        capture = MagicMock()
+        capture.start.side_effect = lambda: frame_queue.put(b"frame")
+        return capture
+
+    errors = []
+    controller.error_occurred.connect(errors.append)
+    target = RegionTarget(Rect(0, 0, 100, 100))
+    with caplog.at_level(logging.WARNING), \
+         patch("screen_recorder.core.controller.VideoCaptureThread", side_effect=fake_video_capture), \
+         patch("screen_recorder.core.controller.AudioCaptureThread", return_value=audio), \
+         patch("screen_recorder.encode.video_encoder.subprocess", wraps=subprocess) as encoder_subprocess:
+        encoder_subprocess.Popen.side_effect = fake_popen
+        controller.start_recording(target)
+        assert errors == []
+        audio.stop.assert_called_once()
+        with qtbot.waitSignal(controller.recording_finished, timeout=5000) as finished:
+            controller.stop_recording()
+
+    encoder_subprocess.Popen.assert_called_once()
+    assert Path(finished.args[0]).read_bytes() == b"video"
+    assert len(errors) == 1
+    assert "소리를 넣지 못했습니다" in errors[0]
+    assert expected_reason in errors[0]
+    assert any(
+        record.levelno == logging.WARNING
+        and "audio startup failed" in record.message
+        and expected_reason in record.message
+        for record in caplog.records
+    )
 
 
 # ----- 영역의 화면 밖/걸침 처리 (2026-06-09 빈 영상 사고 → 멀티모니터 합성으로 진화) -----

@@ -22,6 +22,7 @@ class AudioCaptureThread(threading.Thread):
         super().__init__(daemon=True, name="AudioCapture")
         self.output_path = Path(output_path)
         self._stop_event = threading.Event()
+        self.ready = threading.Event()
         self.sample_rate = 0
         self.channels = 0
         self.error: Optional[str] = None
@@ -34,42 +35,39 @@ class AudioCaptureThread(threading.Thread):
 
     def run(self) -> None:
         log = logging.getLogger(__name__)
-        pa = pyaudio.PyAudio()
+        pa = None
+        stream = None
+        chunks = 0
+        exit_reason = "stopped"
         try:
+            if pyaudio is None:
+                raise RuntimeError("PyAudioWPatch is unavailable")
+            pa = pyaudio.PyAudio()
             info = pa.get_default_wasapi_loopback()
-        except Exception as e:
-            self.error = str(e)
-            log.error("WASAPI loopback unavailable: %s", e)
-            pa.terminate()
-            return
-
-        self.sample_rate = int(info["defaultSampleRate"])
-        self.channels = int(info["maxInputChannels"])
-        device_name = info.get("name", "<unknown>")
-
-        try:
+            sample_rate = int(info["defaultSampleRate"])
+            channels = int(info["maxInputChannels"])
+            if sample_rate <= 0 or channels <= 0:
+                raise ValueError(f"invalid loopback format: sr={sample_rate} ch={channels}")
             stream = pa.open(
                 format=pyaudio.paInt16,
-                channels=self.channels,
-                rate=self.sample_rate,
+                channels=channels,
+                rate=sample_rate,
                 input=True,
                 frames_per_buffer=self.CHUNK,
                 input_device_index=info["index"],
             )
-        except Exception as e:
-            self.error = str(e)
-            log.error("audio stream open failed: %s", e)
-            pa.terminate()
-            return
-
-        log.info(
-            "audio capture started: device='%s' sr=%d ch=%d chunk=%d",
-            device_name, self.sample_rate, self.channels, self.CHUNK,
-        )
-        chunks = 0
-        exit_reason = "stopped"
-        try:
+            # 장치 열기가 지연돼 컨트롤러가 이미 포기했다면 raw 파일을 만들지 않는다.
+            if self._stop_event.is_set():
+                self.error = "audio capture stopped before startup completed"
+                return
             with self.output_path.open("wb") as f:
+                self.sample_rate = sample_rate
+                self.channels = channels
+                log.info(
+                    "audio capture started: device='%s' sr=%d ch=%d chunk=%d",
+                    info.get("name", "<unknown>"), sample_rate, channels, self.CHUNK,
+                )
+                self.ready.set()
                 while not self._stop_event.is_set():
                     # WASAPI 루프백은 출력 장치로 *실제 소리가 재생될 때만* 데이터를
                     # 준다. 조용한 화면이면 stream.read 가 무한 블록 → stop 이 와도
@@ -114,13 +112,23 @@ class AudioCaptureThread(threading.Thread):
                             "audio capture progress: chunks=%d bytes=%d",
                             chunks, self.bytes_written,
                         )
+        except Exception as e:
+            self.error = str(e) or type(e).__name__
+            exit_reason = "capture error" if self.ready.is_set() else "startup error"
+            log.error("audio %s: %s", exit_reason, self.error)
         finally:
-            try:
-                stream.stop_stream()
-                stream.close()
-            except Exception:
-                pass
-            pa.terminate()
+            # 실패 시에도 장치 정리를 기다리기 전에 시작 결과를 알린다.
+            self.ready.set()
+            if stream is not None:
+                try:
+                    try:
+                        stream.stop_stream()
+                    finally:
+                        stream.close()
+                except Exception:
+                    pass
+            if pa is not None:
+                pa.terminate()
             stop_lag = (
                 time.monotonic() - self.stop_requested_at
                 if self.stop_requested_at is not None

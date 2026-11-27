@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
+import logging
 import queue
 import threading
 from typing import Optional
@@ -73,6 +74,7 @@ class RecorderController(QObject):
     capture_stopped = Signal()
 
     VIDEO_QUEUE_MAX = 60
+    AUDIO_READY_TIMEOUT = 3.0
 
     def __init__(self, settings: AppSettings, ffmpeg_path: Path):
         super().__init__()
@@ -161,14 +163,29 @@ class RecorderController(QObject):
             audio_raw = None
             audio_sr = 0
             audio_ch = 0
+            audio_start_error = None
             if self.settings.sound.system_audio_enabled:
-                audio_raw = self._output_path.with_suffix(".audio.raw")
-                self._audio_thread = AudioCaptureThread(audio_raw)
-                self._audio_thread.start()
-                import time as _t
-                _t.sleep(0.1)
-                audio_sr = self._audio_thread.sample_rate
-                audio_ch = self._audio_thread.channels
+                audio_thread = AudioCaptureThread(self._output_path.with_suffix(".audio.raw"))
+                self._audio_thread = audio_thread
+                try:
+                    audio_thread.start()
+                except RuntimeError as e:
+                    audio_start_error = f"오디오 캡처 스레드 시작 실패 ({e})"
+                else:
+                    if not audio_thread.ready.wait(self.AUDIO_READY_TIMEOUT):
+                        audio_start_error = f"오디오 장치 준비 시간 초과 ({self.AUDIO_READY_TIMEOUT:g}초)"
+                    elif audio_thread.error is not None:
+                        audio_start_error = f"오디오 캡처 시작 실패 ({audio_thread.error})"
+                    else:
+                        audio_raw = audio_thread.output_path
+                        audio_sr = audio_thread.sample_rate
+                        audio_ch = audio_thread.channels
+                if audio_start_error is not None:
+                    audio_thread.stop()
+                    logging.getLogger(__name__).warning(
+                        "audio startup failed; recording video only: %s", audio_start_error,
+                    )
+                    audio_start_error = f"녹화에 소리를 넣지 못했습니다. {audio_start_error}"
             self._encoder = VideoEncoder(
                 video_settings=self.settings.video,
                 sound_settings=self.settings.sound,
@@ -181,6 +198,7 @@ class RecorderController(QObject):
                 audio_channels=audio_ch,
                 # 인코더가 mux 전에 캡처 스레드를 join 해 raw flush 를 보장하도록 전달.
                 audio_thread=self._audio_thread,
+                audio_start_error=audio_start_error,
             )
 
         self._encoder.start()

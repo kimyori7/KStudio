@@ -39,6 +39,7 @@ class VideoEncoder(threading.Thread):
         audio_sample_rate: int = 0,
         audio_channels: int = 0,
         audio_thread: Optional[threading.Thread] = None,
+        audio_start_error: Optional[str] = None,
     ):
         super().__init__(daemon=True, name="VideoEncoder")
         self.video_settings = video_settings
@@ -52,6 +53,7 @@ class VideoEncoder(threading.Thread):
         self.audio_sample_rate = audio_sample_rate
         self.audio_channels = audio_channels
         self.audio_thread = audio_thread
+        self.audio_start_error = audio_start_error
         # error: 사용자에게 팝업으로 알릴 진짜 실패(캡처 실패/ffmpeg 크래시/mux 실패 등).
         # notice: 녹화는 성공했고 다만 알릴 만한 사실(조용해서 오디오 제외 등) — 팝업 X.
         self.error: Optional[str] = None
@@ -59,11 +61,11 @@ class VideoEncoder(threading.Thread):
 
     def run(self) -> None:
         log = logging.getLogger(__name__)
-        has_audio = (
-            self.sound_settings.system_audio_enabled
-            and self.audio_raw_path is not None
-            and self.audio_sample_rate > 0
-        )
+        audio_requested = self.sound_settings.system_audio_enabled and self.audio_raw_path is not None
+        has_audio = audio_requested and self.audio_sample_rate > 0
+        if audio_requested and not has_audio:
+            log.warning("audio omitted due to invalid sample rate: sr=%d raw=%s",
+                        self.audio_sample_rate, self.audio_raw_path)
         if has_audio:
             video_only = self.output_path.with_suffix(".video.tmp" + self.output_path.suffix)
         else:
@@ -166,6 +168,7 @@ class VideoEncoder(threading.Thread):
             return
 
         if not has_audio:
+            self.error = self.error or self.audio_start_error
             return
 
         # ----- 오디오 인코딩 + mux. 실패해도 비디오는 살린다. -----
