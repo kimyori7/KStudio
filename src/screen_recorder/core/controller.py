@@ -5,14 +5,15 @@ from pathlib import Path
 import logging
 import queue
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Signal
 
 from .settings import AppSettings, default_video_dir
+from .i18n import tr
 from .state import RecorderState, can_transition, InvalidTransition
 from .filename import build_filename, resolve_collision
-from ..capture.targets import CaptureTarget, Rect
+from ..capture.targets import CaptureTarget, Rect, WindowTarget
 from ..capture.video import (
     VideoCaptureThread,
     plan_capture_tiles,
@@ -20,8 +21,28 @@ from ..capture.video import (
     tiles_cover_rect,
 )
 from ..capture.audio import AudioCaptureThread
+from ..capture.process_audio import (
+    ProcessAudioCaptureThread, process_loopback_supported, window_process_id,
+)
 from ..encode.video_encoder import VideoEncoder
 from ..encode.gif_encoder import GifEncoder
+
+
+_AudioCapture = AudioCaptureThread | ProcessAudioCaptureThread
+
+
+def _start_audio(
+    audio: _AudioCapture, timeout: float, cancel_pending: Callable[[], bool] | None = None,
+) -> str | None:
+    try:
+        audio.start()
+    except RuntimeError as exc:
+        return f"오디오 캡처 스레드 시작 실패 ({exc})"
+    if not audio.ready.wait(timeout) and (cancel_pending is None or cancel_pending()):
+        return f"오디오 장치 준비 시간 초과 ({timeout:g}초)"
+    if audio.error is not None:
+        return f"오디오 캡처 시작 실패 ({audio.error})"
+    return None
 
 
 def _region_off_screen(rect: Rect) -> bool:
@@ -67,6 +88,7 @@ class RecorderController(QObject):
     state_changed = Signal(object)
     error_occurred = Signal(str)
     recording_finished = Signal(str)
+    recording_notice = Signal(str)
     # 화면을 더 이상 읽지 않는다 — 시작 한 번당 정확히 한 번. 정상 정지는 캡처 스레드
     # join 직후(recording_finished 보다 먼저), 시작 실패(target unavailable)는 IDLE 복귀
     # 직후. 인코딩 완료(recording_finished)와 별개 사건이다 — 메인 창이 캡처 제외
@@ -83,7 +105,7 @@ class RecorderController(QObject):
         self._state = RecorderState.IDLE
         self._target: Optional[CaptureTarget] = None
         self._video_thread: Optional[VideoCaptureThread] = None
-        self._audio_thread: Optional[AudioCaptureThread] = None
+        self._audio_thread: Optional[_AudioCapture] = None
         self._encoder = None
         self._video_queue: Optional[queue.Queue] = None
         self._output_path: Optional[Path] = None
@@ -119,7 +141,40 @@ class RecorderController(QObject):
         )
         return resolve_collision(out_dir / name)
 
+    def _start_recording_audio(
+        self, target: CaptureTarget, raw_path: Path,
+    ) -> tuple[_AudioCapture, str | None, str | None]:
+        log = logging.getLogger(__name__)
+        fallback_notice = None
+        if isinstance(target, WindowTarget) and self.settings.sound.window_app_audio_only:
+            process_audio = None
+            try:
+                if not process_loopback_supported():
+                    raise OSError("Windows process loopback is unavailable")
+                pid = window_process_id(target.window._hWnd)
+                process_audio = ProcessAudioCaptureThread(raw_path, pid)
+                process_error = _start_audio(
+                    process_audio, self.AUDIO_READY_TIMEOUT, process_audio.cancel_pending_start,
+                )
+                if process_error is None:
+                    return process_audio, None, None
+            except (OSError, RuntimeError, AttributeError) as exc:
+                process_error = str(exc)
+            if process_audio is not None:
+                process_audio.stop()
+            log.warning("process audio startup failed; trying system loopback: %s", process_error)
+            fallback_notice = tr("그 프로그램 소리만 잡지 못해 PC 전체 소리로 녹음했습니다.")
+
+        system_audio = AudioCaptureThread(raw_path)
+        system_error = _start_audio(system_audio, self.AUDIO_READY_TIMEOUT)
+        if system_error is not None:
+            system_audio.stop()
+            log.warning("audio startup failed; recording video only: %s", system_error)
+            return system_audio, f"녹화에 소리를 넣지 못했습니다. {system_error}", None
+        return system_audio, None, fallback_notice
+
     def start_recording(self, target: CaptureTarget) -> None:
+        audio_target = target
         # 영역이 두 모니터에 걸치면 output 별 카메라를 합성해 녹화한다(VideoCaptureThread
         # 의 multi 경로). 단, 영역의 일부가 어떤 모니터에도 없으면(화면 밖) 그 부분은 검은색
         # 으로만 찍히므로 시작 전에 막고 비개발자도 이해할 수 있게 알린다.
@@ -164,28 +219,16 @@ class RecorderController(QObject):
             audio_sr = 0
             audio_ch = 0
             audio_start_error = None
+            audio_success_notice = None
             if self.settings.sound.system_audio_enabled:
-                audio_thread = AudioCaptureThread(self._output_path.with_suffix(".audio.raw"))
+                audio_thread, audio_start_error, audio_success_notice = self._start_recording_audio(
+                    audio_target, self._output_path.with_suffix(".audio.raw"),
+                )
                 self._audio_thread = audio_thread
-                try:
-                    audio_thread.start()
-                except RuntimeError as e:
-                    audio_start_error = f"오디오 캡처 스레드 시작 실패 ({e})"
-                else:
-                    if not audio_thread.ready.wait(self.AUDIO_READY_TIMEOUT):
-                        audio_start_error = f"오디오 장치 준비 시간 초과 ({self.AUDIO_READY_TIMEOUT:g}초)"
-                    elif audio_thread.error is not None:
-                        audio_start_error = f"오디오 캡처 시작 실패 ({audio_thread.error})"
-                    else:
-                        audio_raw = audio_thread.output_path
-                        audio_sr = audio_thread.sample_rate
-                        audio_ch = audio_thread.channels
-                if audio_start_error is not None:
-                    audio_thread.stop()
-                    logging.getLogger(__name__).warning(
-                        "audio startup failed; recording video only: %s", audio_start_error,
-                    )
-                    audio_start_error = f"녹화에 소리를 넣지 못했습니다. {audio_start_error}"
+                if audio_start_error is None:
+                    audio_raw = audio_thread.output_path
+                    audio_sr = audio_thread.sample_rate
+                    audio_ch = audio_thread.channels
             self._encoder = VideoEncoder(
                 video_settings=self.settings.video,
                 sound_settings=self.settings.sound,
@@ -199,6 +242,7 @@ class RecorderController(QObject):
                 # 인코더가 mux 전에 캡처 스레드를 join 해 raw flush 를 보장하도록 전달.
                 audio_thread=self._audio_thread,
                 audio_start_error=audio_start_error,
+                audio_success_notice=audio_success_notice,
             )
 
         self._encoder.start()
@@ -211,10 +255,10 @@ class RecorderController(QObject):
 
     def resume_recording(self) -> None:
         self._set_state(RecorderState.RECORDING)
-        rect = self._target.current_rect() if self._target else None
-        if rect is not None and self._video_queue is not None:
+        target = self._target
+        if target is not None and target.current_rect() is not None and self._video_queue is not None:
             self._video_thread = VideoCaptureThread(
-                self._target,
+                target,
                 self.settings.video.fps if self.settings.general.mode != "gif" else self.settings.gif.fps,
                 self._video_queue,
             )
@@ -337,3 +381,6 @@ class RecorderController(QObject):
         # Qt Signal 은 thread-safe — 자동으로 main thread 슬롯에 dispatch.
         if out_path:
             self.recording_finished.emit(str(out_path))
+            notice = getattr(encoder, "notice", None)
+            if not encoder_error and isinstance(notice, str) and Path(out_path).is_file():
+                self.recording_notice.emit(notice)

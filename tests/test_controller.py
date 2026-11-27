@@ -10,7 +10,7 @@ import pytest
 from screen_recorder.core.controller import RecorderController
 from screen_recorder.core.settings import AppSettings
 from screen_recorder.core.state import RecorderState, InvalidTransition
-from screen_recorder.capture.targets import RegionTarget, Rect
+from screen_recorder.capture.targets import RegionTarget, Rect, WindowTarget
 
 
 @pytest.fixture
@@ -57,6 +57,79 @@ def test_gif_mode_uses_gif_encoder(controller):
         controller.start_recording(target)
         GE.assert_called_once()
         VE.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["process", "disabled", "region", "unsupported", "no-pid", "error", "timeout", "thread"],
+)
+def test_select_recording_audio(controller, monkeypatch, caplog, case, tmp_path):
+    module = "screen_recorder.core.controller"
+    system = MagicMock(error=None)
+    process = MagicMock(error="activation failed" if case == "error" else None)
+    process.ready.wait.return_value = case != "timeout"
+    if case == "thread":
+        process.start.side_effect = RuntimeError("thread start failed")
+    lookup = MagicMock(return_value=42)
+    if case == "no-pid":
+        lookup.side_effect = OSError("invalid HWND")
+    system_factory = MagicMock(return_value=system)
+    process_factory = MagicMock(return_value=process)
+    monkeypatch.setattr(f"{module}.AudioCaptureThread", system_factory)
+    monkeypatch.setattr(f"{module}.ProcessAudioCaptureThread", process_factory)
+    monkeypatch.setattr(f"{module}.process_loopback_supported", lambda: case != "unsupported")
+    monkeypatch.setattr(f"{module}.window_process_id", lookup)
+    controller.settings.sound.window_app_audio_only = case != "disabled"
+    target = (RegionTarget(Rect(0, 0, 100, 100)) if case == "region"
+              else WindowTarget(MagicMock(_hWnd=123)))
+    raw = tmp_path / "recording.audio.raw"
+
+    audio, error, notice = controller._start_recording_audio(target, raw)
+
+    assert error is None
+    lookup_expected = case not in {"disabled", "region", "unsupported"}
+    if lookup_expected:
+        lookup.assert_called_once_with(123)
+    else:
+        lookup.assert_not_called()
+    if lookup_expected and case != "no-pid":
+        process_factory.assert_called_once_with(raw, 42)
+        process.start.assert_called_once()
+    else:
+        process_factory.assert_not_called()
+    if case == "process":
+        assert audio is process
+        assert notice is None
+        system_factory.assert_not_called()
+        process.stop.assert_not_called()
+    else:
+        assert audio is system
+        system_factory.assert_called_once_with(raw)
+        if case in {"disabled", "region"}:
+            assert notice is None
+        else:
+            assert notice and "PC 전체 소리" in notice
+            assert "trying system loopback" in caplog.text
+        if case in {"error", "timeout", "thread"}:
+            process.stop.assert_called_once()
+
+
+def test_window_recording_passes_fallback_notice_to_encoder(controller, monkeypatch):
+    module = "screen_recorder.core.controller"
+    system = MagicMock(error=None, sample_rate=48000, channels=2)
+    encoder = MagicMock()
+    monkeypatch.setattr(f"{module}.process_loopback_supported", lambda: False)
+    monkeypatch.setattr(f"{module}.AudioCaptureThread", MagicMock(return_value=system))
+    monkeypatch.setattr(f"{module}.VideoCaptureThread", MagicMock())
+    monkeypatch.setattr(f"{module}.VideoEncoder", encoder)
+    window = MagicMock(isMinimized=False, left=0, top=0, width=100, height=100)
+
+    controller.start_recording(WindowTarget(window))
+
+    args = encoder.call_args.kwargs
+    assert args["audio_thread"] is system
+    assert args["audio_start_error"] is None
+    assert "PC 전체 소리" in args["audio_success_notice"]
 
 
 def test_stop_returns_to_idle(controller):
@@ -229,16 +302,25 @@ def test_start_allows_region_on_second_monitor(controller):
 
 # ----- 오디오 없음은 팝업이 아니라 조용한 notice (사용자 요청 2026-06-09) -----
 
-def test_audio_absent_notice_does_not_emit_error(controller):
+@pytest.mark.parametrize("notice", [
+    "영상은 저장됐지만 오디오는 캡처된 소리가 없어 제외했습니다.",
+    "그 프로그램 소리만 잡지 못해 PC 전체 소리로 녹음했습니다.",
+])
+def test_recording_notice_does_not_emit_error(controller, tmp_path, notice):
     """인코더가 error 없이 notice(오디오 없음)만 남기면 녹화 종료 시 error_occurred
     (= 팝업)을 내지 않는다. 영상은 정상 저장됐으므로 굳이 막아 세우지 않는다."""
     errors = []
+    notices = []
     controller.error_occurred.connect(lambda m: errors.append(m))
+    controller.recording_notice.connect(notices.append)
     fake_enc = MagicMock()
     fake_enc.error = None
-    fake_enc.notice = "영상은 저장됐지만 오디오는 캡처된 소리가 없어 제외했습니다."
-    controller._finalize_stop_async(None, None, fake_enc, None, None, "out.mp4")
+    fake_enc.notice = notice
+    output = tmp_path / "out.mp4"
+    output.write_bytes(b"video")
+    controller._finalize_stop_async(None, None, fake_enc, None, None, output)
     assert errors == []
+    assert notices == [notice]
 
 
 def test_real_encoder_error_still_emits_error(controller):

@@ -64,6 +64,7 @@ class SoundSettings:
     system_audio_enabled: bool = True
     codec: str = "aac"              # aac | mp3
     bitrate_kbps: int = 192
+    window_app_audio_only: bool = True
 
 
 @dataclass

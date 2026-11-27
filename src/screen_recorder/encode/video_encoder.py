@@ -40,6 +40,7 @@ class VideoEncoder(threading.Thread):
         audio_channels: int = 0,
         audio_thread: Optional[threading.Thread] = None,
         audio_start_error: Optional[str] = None,
+        audio_success_notice: Optional[str] = None,
     ):
         super().__init__(daemon=True, name="VideoEncoder")
         self.video_settings = video_settings
@@ -54,6 +55,7 @@ class VideoEncoder(threading.Thread):
         self.audio_channels = audio_channels
         self.audio_thread = audio_thread
         self.audio_start_error = audio_start_error
+        self.audio_success_notice = audio_success_notice
         # error: 사용자에게 팝업으로 알릴 진짜 실패(캡처 실패/ffmpeg 크래시/mux 실패 등).
         # notice: 녹화는 성공했고 다만 알릴 만한 사실(조용해서 오디오 제외 등) — 팝업 X.
         self.error: Optional[str] = None
@@ -266,6 +268,7 @@ class VideoEncoder(threading.Thread):
                 log.warning("mux crashed: %s (log=%s)", e, mux_log_path)
 
         if mux_ok:
+            self.notice = self.audio_success_notice
             # mux 성공 → 임시 파일들 + ffmpeg 로그 정리
             for p in (video_only, audio_encoded, self.audio_raw_path,
                       audio_log_path, mux_log_path):

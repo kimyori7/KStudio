@@ -770,6 +770,7 @@ class MainWindow(QMainWindow):
         self.controller.state_changed.connect(self._on_state_changed)
         self.controller.capture_stopped.connect(self._release_recording_lease)
         self.controller.recording_finished.connect(self._on_finished)
+        self.controller.recording_notice.connect(self._on_recording_notice)
         self.controller.error_occurred.connect(self._on_error)
 
         # 트레이
@@ -5226,6 +5227,11 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, msg: str):
         QMessageBox.warning(self, "에러", msg)
+
+    def _on_recording_notice(self, msg: str):
+        from .toast import show_toast
+
+        show_toast(self, msg, duration_ms=6000)
 
     def _force_quit_app(self) -> None:
         """트레이 메뉴 '종료' 또는 명시적 quit 경로 — 진짜로 앱을 끝낸다."""

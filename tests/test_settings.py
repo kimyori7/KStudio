@@ -20,6 +20,7 @@ def test_default_settings_have_expected_values():
     assert s.gif.scale_percent == 100
     assert s.gif.colors == 256
     assert s.sound.system_audio_enabled is True
+    assert s.sound.window_app_audio_only is True
     assert s.sound.codec == "aac"
     assert s.sound.bitrate_kbps == 192
     assert s.hotkey.toggle_record == "Ctrl+Shift+T"
@@ -32,12 +33,14 @@ def test_save_and_load_roundtrip(tmp_path):
     s = AppSettings()
     s.video.fps = 60
     s.gif.scale_percent = 47
+    s.sound.window_app_audio_only = False
     s.hotkey.toggle_record = "Ctrl+Shift+R"
     save(s, path)
 
     loaded = load(path)
     assert loaded.video.fps == 60
     assert loaded.gif.scale_percent == 47
+    assert loaded.sound.window_app_audio_only is False
     assert loaded.hotkey.toggle_record == "Ctrl+Shift+R"
 
 
@@ -54,6 +57,18 @@ def test_load_partial_file_fills_defaults(tmp_path):
     assert s.video.fps == 60
     assert s.video.codec == "h264"  # default
     assert s.gif.fps == 10  # default
+
+
+def test_legacy_sound_settings_default_to_app_audio_for_windows(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"sound": {"system_audio_enabled": False, "codec": "mp3"}}),
+                    encoding="utf-8")
+
+    sound = load(path).sound
+
+    assert sound.system_audio_enabled is False
+    assert sound.codec == "mp3"
+    assert sound.window_app_audio_only is True
 
 
 def test_load_empty_file_returns_defaults_and_backs_up(tmp_path):

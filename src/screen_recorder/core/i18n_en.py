@@ -13,6 +13,10 @@ from .i18n import register
 
 
 _EN: dict[str, str] = {
+    "창 녹화 때 그 프로그램 소리만": "Record only the window app's audio",
+    "그 프로그램 소리만 잡지 못해 PC 전체 소리로 녹음했습니다.": (
+        "Couldn't isolate the app's audio. The recording includes all PC audio."
+    ),
     # ===== 메뉴 / 글로벌 액션 =====
     "파일": "File",
     "편집": "Edit",

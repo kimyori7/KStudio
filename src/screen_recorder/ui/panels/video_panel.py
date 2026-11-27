@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.settings import VideoSettings, GifSettings, SoundSettings
+from ...core.i18n import tr
 
 
 def _make_scale_row(initial: int) -> tuple[QWidget, QSlider, QSpinBox]:
@@ -129,6 +130,11 @@ class VideoPanel(QWidget):
         self.s_enabled.setChecked(self.sound.system_audio_enabled)
         form.addRow(self.s_enabled)
 
+        self.s_window_app_only = QCheckBox(tr("창 녹화 때 그 프로그램 소리만"))
+        self.s_window_app_only.setChecked(self.sound.window_app_audio_only)
+        self.s_window_app_only.setEnabled(self.sound.system_audio_enabled)
+        form.addRow(self.s_window_app_only)
+
         self.s_codec = QComboBox()
         for v in ("aac", "mp3"):
             self.s_codec.addItem(v.upper(), v)
@@ -143,6 +149,8 @@ class VideoPanel(QWidget):
         form.addRow("비트레이트:", self.s_bitrate)
 
         self.s_enabled.toggled.connect(self._sync)
+        self.s_enabled.toggled.connect(self.s_window_app_only.setEnabled)
+        self.s_window_app_only.toggled.connect(self._sync)
         self.s_codec.currentIndexChanged.connect(self._sync)
         self.s_bitrate.valueChanged.connect(self._sync)
 
@@ -162,6 +170,7 @@ class VideoPanel(QWidget):
         self.gif.colors = int(self.g_colors.currentData())
 
         self.sound.system_audio_enabled = self.s_enabled.isChecked()
+        self.sound.window_app_audio_only = self.s_window_app_only.isChecked()
         self.sound.codec = self.s_codec.currentData()
         self.sound.bitrate_kbps = self.s_bitrate.value()
 
@@ -174,7 +183,7 @@ class VideoPanel(QWidget):
             self.v_container, self.v_codec, self.v_fps, self.v_scale_slider,
             self.v_scale_spin, self.v_bitrate,
             self.g_fps, self.g_scale_slider, self.g_scale_spin, self.g_colors,
-            self.s_enabled, self.s_codec, self.s_bitrate,
+            self.s_enabled, self.s_window_app_only, self.s_codec, self.s_bitrate,
         )
         for w in widgets_to_block:
             w.blockSignals(True)
@@ -193,6 +202,8 @@ class VideoPanel(QWidget):
             self.g_colors.setCurrentText(str(self.gif.colors))
 
             self.s_enabled.setChecked(self.sound.system_audio_enabled)
+            self.s_window_app_only.setChecked(self.sound.window_app_audio_only)
+            self.s_window_app_only.setEnabled(self.sound.system_audio_enabled)
             self.s_codec.setCurrentText(self.sound.codec.upper())
             self.s_bitrate.setValue(self.sound.bitrate_kbps)
         finally:

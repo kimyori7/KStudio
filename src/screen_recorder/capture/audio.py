@@ -64,7 +64,7 @@ class AudioCaptureThread(threading.Thread):
                 self.sample_rate = sample_rate
                 self.channels = channels
                 log.info(
-                    "audio capture started: device='%s' sr=%d ch=%d chunk=%d",
+                    "audio capture started: system device='%s' sr=%d ch=%d chunk=%d",
                     info.get("name", "<unknown>"), sample_rate, channels, self.CHUNK,
                 )
                 self.ready.set()

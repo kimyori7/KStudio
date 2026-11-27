@@ -42,7 +42,8 @@ def test_encoder_writes_frames_to_ffmpeg_stdin(tmp_path, caplog, audio_requested
     assert len(warnings) == int(audio_requested)
 
 
-def test_encoder_runs_mux_when_audio_present(tmp_path):
+@pytest.mark.parametrize("notice", [None, "System loopback used"])
+def test_encoder_runs_mux_when_audio_present(tmp_path, notice):
     audio_raw = tmp_path / "audio.raw"
     # 48000Hz * 2ch * 2byte = 192000 B/s. 0.5s 부재 가드를 넘기려면 충분히 커야 한다.
     audio_raw.write_bytes(b"\x00" * 200_000)
@@ -69,6 +70,7 @@ def test_encoder_runs_mux_when_audio_present(tmp_path):
         audio_raw_path=audio_raw,
         audio_sample_rate=48000,
         audio_channels=2,
+        audio_success_notice=notice,
     )
 
     procs = iter([proc_video, proc_audio, proc_mux])
@@ -87,6 +89,7 @@ def test_encoder_runs_mux_when_audio_present(tmp_path):
         enc.start()
         enc.join(timeout=2.0)
         assert popen.call_count == 3
+    assert enc.notice == notice
 
 
 def test_encoder_skips_mux_when_audio_essentially_absent(tmp_path):
