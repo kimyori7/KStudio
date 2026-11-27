@@ -326,10 +326,12 @@ class VideoEncoder(threading.Thread):
             if audio_absent:
                 # 영상은 정상. 오디오만 캡처된 소리가 없어 제외 — 이건 '실패'가 아니라
                 # 정상 결과이므로 error 가 아니라 notice 로(팝업 X). 진짜 mux 실패와 구분.
-                self.notice = self.notice or (
+                # 프로그램 소리 → PC 전체 소리 폴백 알림도 함께 보여 준다.
+                self.notice = self.notice or " ".join(filter(None, (
+                    self.audio_success_notice,
                     "영상은 저장됐지만 오디오는 캡처된 소리가 없어 제외했습니다 "
-                    "(조용한 구간이었거나 선택된 출력 장치에 소리가 없었습니다)."
-                )
+                    "(조용한 구간이었거나 선택된 출력 장치에 소리가 없었습니다).",
+                )))
             else:
                 self.error = self.error or (
                     f"audio mux failed; saved video-only "
